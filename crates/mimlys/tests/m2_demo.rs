@@ -121,7 +121,7 @@ fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run
         cmd.args(["--sandbox-deadline-ms", "3000"]);
     }
     // The runtime log (the worker's standard error included) is in `Run.stderr` for the messages of failing assertions.
-    cmd.args(["--log", "debug"]);
+    cmd.args(["--log", "info,mimlys_worker=debug"]);
     cmd.args(extra);
     cmd.env_clear();
     for key in ["PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE"] {
@@ -190,7 +190,7 @@ fn m2_infinite_loop() {
     let obs = observations(&run.report);
     let termination = obs[0]["payload"]["termination"]
         .as_str()
-        .unwrap()
+        .unwrap_or_else(|| panic!("{}\n{}", obs[0], run.stderr))
         .to_owned();
     assert!(
         termination == "fuel_exhausted" || termination == "deadline",
@@ -255,8 +255,8 @@ fn m2_allocation_bomb() {
     let obs = observations(&run.report);
     assert_eq!(
         obs[0]["payload"]["termination"], "memory_limit",
-        "{}",
-        obs[0]
+        "{}\n{}",
+        obs[0], run.stderr
     );
     assert!(obs[0]["metrics"]["memory_peak_bytes"].as_u64().unwrap() <= 32 * 1024 * 1024);
 }
@@ -275,8 +275,8 @@ fn m2_print_flood() {
     let obs = observations(&run.report);
     assert_eq!(
         obs[0]["payload"]["termination"], "output_limit",
-        "{}",
-        obs[0]
+        "{}\n{}",
+        obs[0], run.stderr
     );
     assert_eq!(obs[0]["metrics"]["stdout_bytes"], 65536);
     let notices = obs[0]["notices"].as_array().unwrap();
@@ -359,7 +359,28 @@ fn m2_status_shows_tier_and_clauses() {
         "{}",
         json["clauses"]
     );
-    assert_eq!(json["clauses"]["termination"]["state"], "enforced");
+    // K: the process group on Linux and the job on Windows; macOS waits for M6c.
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            json["clauses"]["termination"]["state"], "unavailable",
+            "{}",
+            json["clauses"]
+        );
+        assert!(
+            json["clauses"]["termination"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("M6c"),
+            "{}",
+            json["clauses"]
+        );
+    } else {
+        assert_eq!(
+            json["clauses"]["termination"]["state"], "enforced",
+            "{}",
+            json["clauses"]
+        );
+    }
     assert!(json["clauses"]["network"]["state"].is_string());
     assert_eq!(json["interpreters"][0]["language"], "javascript");
     let out = Command::new(env!("CARGO_BIN_EXE_mimlys"))
@@ -415,7 +436,7 @@ fn m2_overhead_report() {
     let total_ms = started.elapsed().as_millis();
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     let obs = observations(&report);
-    assert_eq!(obs.len(), 10);
+    assert_eq!(obs.len(), 10, "{}", String::from_utf8_lossy(&out.stderr));
     println!(
         "M2 overhead report: whole run {total_ms} ms for 10 executions, including the worker start and the interpreter compilation"
     );

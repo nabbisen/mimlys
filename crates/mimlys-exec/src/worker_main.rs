@@ -187,6 +187,10 @@ fn own_clauses() -> BTreeMap<String, ClauseState> {
     if cfg!(target_os = "macos") {
         allowed.push("__CF_USER_TEXT_ENCODING");
     }
+    if cfg!(windows) {
+        // The profile and temporary locations the runtime points into `<data>/tmp`.
+        allowed.extend(["TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA"]);
+    }
     let extras = crate::confine::environment_extras(&allowed);
     let mut m: BTreeMap<String, ClauseState> =
         APPLIED.get().map(|a| a.report.clone()).unwrap_or_default();

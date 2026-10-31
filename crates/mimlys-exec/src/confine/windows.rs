@@ -27,7 +27,7 @@ use std::path::Path;
 use std::process::{ChildStderr, ChildStdin, ChildStdout, ExitStatus};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, STILL_ACTIVE,
-    SetHandleInformation, WAIT_OBJECT_0,
+    SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
@@ -170,8 +170,10 @@ impl RawChild {
         use std::os::windows::process::ExitStatusExt;
         let handle = self.process.as_raw_handle() as HANDLE;
         // SAFETY: the process handle is owned by this value and valid; a zero wait is a poll.
-        if unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0 {
-            return Ok(None);
+        match unsafe { WaitForSingleObject(handle, 0) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_FAILED => return Err(std::io::Error::last_os_error()),
+            _ => return Ok(None),
         }
         let mut code: u32 = 0;
         // SAFETY: the handle is valid and `code` is a valid out pointer.
@@ -588,6 +590,7 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
         None
     };
     let mut created = false;
+    let mut as_user_error: Option<std::io::Error> = None;
     if let Some(token) = &token {
         use std::os::windows::io::AsRawHandle;
         // SAFETY: every pointer refers to a buffer that lives until the call returns; `pi` is a valid out pointer.
@@ -606,6 +609,9 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
                 &mut pi,
             )
         } != 0;
+        if !created {
+            as_user_error = Some(std::io::Error::last_os_error());
+        }
     }
     if !created {
         // SAFETY: as above; the caller's own token applies.
@@ -640,7 +646,12 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
             CloseHandle(stdout.read);
             CloseHandle(stderr.read);
         }
-        return Err(format!("CreateProcess failed: {err}"));
+        return Err(match as_user_error {
+            Some(e) => format!(
+                "CreateProcessW failed: {err} (CreateProcessAsUserW with the restricted token: {e})"
+            ),
+            None => format!("CreateProcessW failed: {err}"),
+        });
     }
     // SAFETY: CreateProcess returned these handles for the caller to own.
     let process = unsafe { OwnedHandle::from_raw_handle(pi.hProcess as _) };

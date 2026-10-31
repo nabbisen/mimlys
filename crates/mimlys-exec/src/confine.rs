@@ -339,10 +339,21 @@ impl Confinement for Platform {
             ),
             None => None,
         };
+        // External design §13.3: the profile and temporary locations point
+        // into `<data>/tmp`; AppContainer creation also requires them.
+        let mut env = command.env.clone();
+        if let Some(s) = spec {
+            let tmp = s.data_dir.join("tmp").to_string_lossy().into_owned();
+            for name in ["TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA"] {
+                if !env.iter().any(|(k, _)| k.eq_ignore_ascii_case(name)) {
+                    env.push((name.to_owned(), tmp.clone()));
+                }
+            }
+        }
         let child = windows::spawn(windows::SpawnOptions {
             program: &command.program,
             args: &command.args,
-            env: &command.env,
+            env: &env,
             current_dir: command.current_dir.as_deref(),
             container: sid
                 .as_deref()

@@ -514,7 +514,12 @@ fn run_one(
             // or unresponsive: the log says which, with the status when there is one.
             let note = match live.child.try_wait() {
                 Ok(Some(status)) => format!("the worker exited before answering: {status}"),
-                _ => "the worker did not answer within LIM-O2".to_owned(),
+                _ => {
+                    if let Some(sample) = stack_sample(live.child.id()) {
+                        tracing::warn!(target: "mimlys_worker", "stack sample of the unresponsive worker:\n{sample}");
+                    }
+                    "the worker did not answer within LIM-O2".to_owned()
+                }
             };
             live.child.kill_tree();
             return RunResult {
@@ -586,6 +591,23 @@ fn run_one(
             Err(RecvTimeoutError::Timeout) => continue,
         }
     }
+}
+
+/// A stack sample of a worker that does not answer, for the log of debug
+/// builds on macOS (`/usr/bin/sample`); nowhere else.
+#[cfg(all(target_os = "macos", debug_assertions))]
+fn stack_sample(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/sample")
+        .args([&pid.to_string(), "1", "-mayDie"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(text.chars().take(24_000).collect())
+}
+
+#[cfg(not(all(target_os = "macos", debug_assertions)))]
+fn stack_sample(_pid: u32) -> Option<String> {
+    None
 }
 
 fn fault(detail: HostFaultDetail, started: Instant, note: Option<&str>) -> ExecutionOutcome {
