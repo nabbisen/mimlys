@@ -130,10 +130,32 @@ fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run
         }
     }
     cmd.env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
-    let out = cmd.output().expect("spawn testloop");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "{stderr}");
+    // Streams to files, not pipes: a run that hangs is killed after the bound
+    // and its log is read all the same, whatever grandchild may still live.
+    let out_path = data.join("testloop.stdout");
+    let err_path = data.join("testloop.stderr");
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(std::fs::File::create(&err_path).unwrap());
+    let mut child = cmd.spawn().expect("spawn testloop");
+    let bound = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break Some(s);
+        }
+        if std::time::Instant::now() > bound {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
+    let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+    let Some(status) = status else {
+        panic!("the test loop did not exit within 180 s\nstdout: {stdout}\nstderr: {stderr}");
+    };
+    assert!(status.success(), "{stderr}");
     Run {
         report: serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}\n{stderr}")),
         stderr,

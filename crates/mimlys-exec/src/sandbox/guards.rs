@@ -66,7 +66,11 @@ impl Interrupt {
     }
 }
 
-/// The epoch ticker: one increment every LIM-S7 while an execution runs.
+/// The epoch ticker: the engine's epoch advances by one for every LIM-S7
+/// of wall-clock time. The thread sleeps a tick at a time and then catches
+/// up to the ticks that elapsed, so a stretched sleep (a background process
+/// on macOS, a loaded runner) delays an increment but never loses one, and a
+/// deadline of N ticks stays N × LIM-S7 of wall time.
 pub struct Ticker {
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -79,9 +83,26 @@ impl Ticker {
         let handle = std::thread::Builder::new()
             .name("mimlys-epoch".into())
             .spawn(move || {
+                let start = std::time::Instant::now();
+                let tick_ms = tick.as_millis().max(1) as u64;
+                let mut ticked: u64 = 0;
+                let mut reported: u64 = 0;
                 while !flag.load(Ordering::Relaxed) {
                     std::thread::sleep(tick);
-                    engine.increment_epoch();
+                    let due = start.elapsed().as_millis() as u64 / tick_ms;
+                    while ticked < due {
+                        engine.increment_epoch();
+                        ticked += 1;
+                    }
+                    if ticked / 100 > reported {
+                        reported = ticked / 100;
+                        crate::trace::line(|| {
+                            format!(
+                                "epoch ticker: {ticked} ticks after {} ms",
+                                start.elapsed().as_millis()
+                            )
+                        });
+                    }
                 }
             })
             .expect("epoch ticker thread");

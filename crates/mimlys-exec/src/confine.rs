@@ -187,6 +187,8 @@ impl ConfinedChild {
 
     /// Terminates the whole tree (clause K).
     pub fn kill_tree(&mut self) {
+        let pid = self.id();
+        tracing::debug!(target: "mimlys_worker", "terminating the tree of {pid}");
         match &mut self.tree {
             #[cfg(unix)]
             Tree::ProcessGroup(g) => g.kill(),
@@ -194,6 +196,7 @@ impl ConfinedChild {
             Tree::Job(j) => j.kill(),
         }
         self.kill_process();
+        tracing::debug!(target: "mimlys_worker", "the tree of {pid} is ended");
     }
 
     /// Waits up to `timeout` for the child to exit; `false` when it is still running.
