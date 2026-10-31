@@ -1,0 +1,5 @@
+[
+  {"decision": "act", "tool": "run_script", "arguments": {"language": "javascript", "source": "console.log('sum', 1 + 1);", "mode": "read_only"}},
+  {"decision": "act", "tool": "run_wasm", "arguments": {"module": "tools/hello.wasm", "mode": "read_only"}},
+  {"decision": "complete", "summary": "scripts ran"}
+]

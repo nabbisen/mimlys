@@ -1,0 +1,5 @@
+[
+  {"decision": "act", "tool": "read_file", "arguments": {"path": "../../etc/shadow"}},
+  {"decision": "act", "tool": "read_file", "arguments": {"path": "../../does-not-exist"}},
+  {"decision": "give_up", "reason": "cannot read outside the workspace"}
+]

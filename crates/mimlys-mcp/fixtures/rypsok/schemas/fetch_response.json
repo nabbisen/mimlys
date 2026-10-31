@@ -1,0 +1,247 @@
+{
+  "$defs": {
+    "EngineId": {
+      "description": "The identifier of a configured engine: lowercase letters, digits and\nunderscores, starting with a letter, at most 32 characters.",
+      "type": "string"
+    },
+    "Notice": {
+      "description": "A notice: something rypsok did or could not do, from a fixed vocabulary.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/NoticeCode",
+          "description": "What happened."
+        },
+        "count": {
+          "description": "How many results or characters were affected, when the code counts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EngineId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The engine concerned, when one is."
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why, when the code carries a reason."
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "NoticeCode": {
+      "description": "A notice code (external design §3.1).",
+      "oneOf": [
+        {
+          "const": "engine_unavailable",
+          "description": "An engine failed; `reason` is its error class.",
+          "type": "string"
+        },
+        {
+          "const": "engine_skipped",
+          "description": "An engine was not asked; `reason` says why.",
+          "type": "string"
+        },
+        {
+          "const": "snippet_truncated",
+          "description": "Snippets were cut to LIM-S9; `count` says how many.",
+          "type": "string"
+        },
+        {
+          "const": "title_truncated",
+          "description": "Titles were cut to LIM-S10; `count` says how many.",
+          "type": "string"
+        },
+        {
+          "const": "characters_removed",
+          "description": "Invisible or control characters were removed; `count` says how many.",
+          "type": "string"
+        },
+        {
+          "const": "instruction_like_content",
+          "description": "Results carry instruction-like text; `count` says how many.",
+          "type": "string"
+        },
+        {
+          "const": "results_dropped",
+          "description": "Results were dropped; `reason` says why and `count` how many.",
+          "type": "string"
+        },
+        {
+          "const": "credential_masked",
+          "description": "Credentials in the query were masked (mask mode only); `count` says how many.",
+          "type": "string"
+        },
+        {
+          "const": "extraction_partial",
+          "description": "A fetched document was malformed and extracted in part (`web_fetch` only).",
+          "type": "string"
+        },
+        {
+          "const": "from_cache",
+          "description": "`engine`'s answer came from the cache and may be as old as\n`[cache] ttl_s` (RFC 014).",
+          "type": "string"
+        }
+      ]
+    },
+    "Outcome": {
+      "description": "The outcome of a successful call (REQ-ERR-001).",
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "Every engine answered and results remain.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "Results remain, but at least one engine failed.",
+          "type": "string"
+        },
+        {
+          "const": "empty",
+          "description": "At least one engine answered and no result remains.",
+          "type": "string"
+        }
+      ]
+    },
+    "Reason": {
+      "description": "A reason carried by a notice: engine error classes and skip or drop\nreasons share one closed vocabulary (external design §3.1).",
+      "oneOf": [
+        {
+          "const": "timeout",
+          "description": "Engine error class: the request timed out (REQ-ENG-006).",
+          "type": "string"
+        },
+        {
+          "const": "rate_limited",
+          "description": "Engine error class, or skip reason: the provider's or the engine's rate limit.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "Engine error class: a CAPTCHA or anti-bot response.",
+          "type": "string"
+        },
+        {
+          "const": "parse_failure",
+          "description": "Engine error class: the response did not parse.",
+          "type": "string"
+        },
+        {
+          "const": "auth_failure",
+          "description": "Engine error class: the credential was refused.",
+          "type": "string"
+        },
+        {
+          "const": "request_failure",
+          "description": "Engine error class: a network error or a 5xx status.",
+          "type": "string"
+        },
+        {
+          "const": "time_range",
+          "description": "Skip reason: the engine cannot honor `time_range`.",
+          "type": "string"
+        },
+        {
+          "const": "language",
+          "description": "Skip reason: the engine cannot honor `language`.",
+          "type": "string"
+        },
+        {
+          "const": "query_too_long",
+          "description": "Skip reason: the query exceeds the engine's limit.",
+          "type": "string"
+        },
+        {
+          "const": "cooldown",
+          "description": "Skip reason: the engine is in cooldown.",
+          "type": "string"
+        },
+        {
+          "const": "instruction_like_content",
+          "description": "Drop reason: the result carried instruction-like text.",
+          "type": "string"
+        },
+        {
+          "const": "url_too_long",
+          "description": "Drop reason: the URL exceeds LIM-F9.",
+          "type": "string"
+        },
+        {
+          "const": "url_invalid",
+          "description": "Drop reason: the URL has no `http` or `https` scheme or carries credentials.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The response of `web_fetch` (external design §3.2; milestone M3).",
+  "properties": {
+    "content": {
+      "description": "The content, as Markdown, bounded by `max_chars`.",
+      "type": "string"
+    },
+    "next_start_char": {
+      "description": "Where to continue when it was cut.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "notices": {
+      "description": "What rypsok did or could not do.",
+      "items": {
+        "$ref": "#/$defs/Notice"
+      },
+      "type": "array"
+    },
+    "outcome": {
+      "$ref": "#/$defs/Outcome",
+      "description": "The outcome."
+    },
+    "title": {
+      "description": "The page title, cleaned and bounded by LIM-S10.",
+      "type": "string"
+    },
+    "truncated": {
+      "description": "Whether the content was cut.",
+      "type": "boolean"
+    },
+    "url": {
+      "description": "The URL that was read, after same-host redirects.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "outcome",
+    "notices",
+    "url",
+    "title",
+    "content",
+    "truncated"
+  ],
+  "title": "FetchResponse",
+  "type": "object"
+}

@@ -1,0 +1,43 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "web_fetch",
+      "arguments": {
+        "url": "https://example.org/rust-ownership"
+      },
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "tutorial",
+          "version": "1"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "complete",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"content\":\"# Rust ownership, in short\\n\\nEvery value in Rust has one owner. When the owner goes out of scope, the value is dropped. A value can be moved to a new owner, or borrowed for a while by a reference.\\n\\n## Borrowing\\n\\nA shared reference lets many readers look at a value at once. A mutable reference lets one writer change it, and nobody else may look while it exists. The compiler checks these rules before the program runs.\\n\\n## Why it matters\\n\\nOwnership replaces a garbage collector with rules the compiler enforces, so memory is freed exactly once and data races are impossible in safe code. The rules take time to learn, and the compiler's messages name the conflicting borrow.\\n\\n- One owner at a time.\\n- Many readers or one writer.\\n- Checked at compile time.\",\"notices\":[],\"outcome\":\"ok\",\"title\":\"Rust ownership, in short\",\"truncated\":false,\"url\":\"https://example.org/rust-ownership\"}"
+        }
+      ],
+      "structuredContent": {
+        "content": "# Rust ownership, in short\n\nEvery value in Rust has one owner. When the owner goes out of scope, the value is dropped. A value can be moved to a new owner, or borrowed for a while by a reference.\n\n## Borrowing\n\nA shared reference lets many readers look at a value at once. A mutable reference lets one writer change it, and nobody else may look while it exists. The compiler checks these rules before the program runs.\n\n## Why it matters\n\nOwnership replaces a garbage collector with rules the compiler enforces, so memory is freed exactly once and data races are impossible in safe code. The rules take time to learn, and the compiler's messages name the conflicting borrow.\n\n- One owner at a time.\n- Many readers or one writer.\n- Checked at compile time.",
+        "notices": [],
+        "outcome": "ok",
+        "title": "Rust ownership, in short",
+        "truncated": false,
+        "url": "https://example.org/rust-ownership"
+      },
+      "isError": false
+    }
+  }
+}

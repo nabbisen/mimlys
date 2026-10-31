@@ -1,0 +1,22 @@
+# Handoff 003 — Acceptance and QA checklist
+
+- [ ] REQ-TOOL-002: seven effects; impossible declarations refused; one `derive` function used by every caller.
+- [ ] REQ-APR-001: approval required exactly for `external_write`, non-reversible `host_write`, listed tools, promotion; never for workspace effects unless listed.
+- [ ] REQ-CAP-001 / INV-02: no API lets model text create, widen or restore a grant; implicit workspace rights are a method, not data.
+- [ ] REQ-CAP-002: five grant kinds with the scopes of ED §9.1.
+- [ ] REQ-CAP-003 / CLR-3: ceiling checks with errors that state the ceiling and key path.
+- [ ] REQ-CAP-005: revocation immediate; pending approvals under the grant reported for invalidation.
+- [ ] REQ-CAP-006 / INV-11: no mutator on `GrantKind`; `reconcile` never widens.
+- [ ] REQ-CAP-007: grant-set hash canonical and recorded on actions and approvals.
+- [ ] REQ-CAP-009: shipped profiles equal ED §9.2.
+- [ ] REQ-CAP-010: policy hash; `reconcile` finds excess grants.
+- [ ] REQ-APR-002 / THR-20: rendering uses only the canonical action; model reason separate, labelled, ≤ LIM-D2.
+- [ ] REQ-APR-003 / THR-21: every external value JSON-quoted; invisible characters removed with a notice; total ≤ LIM-I6.
+- [ ] REQ-APR-004 / REQ-APR-005 / INV-06: hash binding and one-shot consumption tests pass.
+- [ ] REQ-APR-006: expiry → `Expired` and the halt reason mapping; waiting holds no resources (checked in handoff 010).
+- [ ] REQ-APR-007: approve, reject with note and halt flag; defaults from the profile's `on_reject`.
+- [ ] REQ-APR-008: no code path treats text as an approval.
+- [ ] REQ-APR-010: questions bounded, expiry handled, LIM-A2 enforced (with 010).
+- [ ] REQ-TASK-010: `Verified` only after a check passed; `Asserted` otherwise.
+- [ ] REQ-SEC-014: no shipped default requires approval for `workspace_write` tools except where ED §9.2 lists them (none).
+- [ ] Tests cite requirements; `scripts/check-core-deps.sh` passes.

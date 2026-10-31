@@ -1,0 +1,23 @@
+# Handoff 002 — Acceptance and QA checklist
+
+- [ ] REQ-DEC-002: five decision kinds, flat, unknown fields refused, bounds LIM-D1 … D4.
+- [ ] REQ-DEC-003 / REQ-SEC-009: exactly one object; trailing text, multiple values, duplicate keys, oversize → `malformed` with the right `problem`; the input bytes are never altered.
+- [ ] REQ-DEC-004: stages in order; a failed stage stops the pipeline; no filesystem access before stage 12 (grep the validator for `std::fs`, `cap_std`: none).
+- [ ] REQ-DEC-005: unknown tool → `unknown_tool` with `visible_tools`.
+- [ ] REQ-DEC-006 / REQ-WS-011: canonicalization rules and platform name rules; case modes.
+- [ ] REQ-DEC-007 / INV-03: out-of-scope `denied` byte-identical for existing and non-existing paths.
+- [ ] REQ-DEC-008: eight codes; typed `detail`; hints ≤ LIM-I5 from one table; no filesystem content or policy internals in any detail.
+- [ ] REQ-ARCH-005 / INV-01: `AuthorizedAction` constructible only by the validator; executor and tool provider take it.
+- [ ] REQ-TOOL-001: tool definition fields complete; descriptions ≤ LIM-I2; ≤ LIM-I3 parameters; depth ≤ LIM-I4.
+- [ ] REQ-CTX-005: definitions rendered within LIM-I1; oversize refused.
+- [ ] REQ-TOOL-003: six tools with the schemas and results of ED §11; `replace_in_file` match rules; `delete_path` refuses the root.
+- [ ] REQ-TOOL-004: every open through the `cap-std` directory handle; symlink escape test passes on Linux, Windows and macOS.
+- [ ] REQ-TOOL-005: output schema violation → `output_invalid`, never passed through.
+- [ ] REQ-TOOL-006 / REQ-TOOL-007: deadline = min(LIM-O4, remaining); cancellation observed between I/O operations.
+- [ ] REQ-TOOL-008 / REQ-CTX-006: every bound reported with the matching notice; excerpts cut at character boundaries.
+- [ ] REQ-CTX-008: sanitization removes control, zero-width, tag and bidirectional characters with `characters_removed`.
+- [ ] REQ-CTX-009: payloads stay JSON.
+- [ ] REQ-CTX-002 (segment writer): marker unforgeability test present.
+- [ ] REQ-MDL-001 / REQ-MDL-002 / REQ-TEST-002: SPI traits; fake backend script format documented; fake tool provider.
+- [ ] REQ-ARCH-002: core still free of I/O crates (`cap-std`, `tokio::fs`, `regex` live in `mimlys-exec`, not in core).
+- [ ] Test names cite requirements; tests in `src/<mod>/tests.rs`.

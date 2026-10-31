@@ -1,0 +1,5 @@
+[
+  {"decision": "act", "tool": "run_wasm", "arguments": {"module": "tools/write.wasm", "mode": "read_write"}},
+  {"decision": "act", "tool": "run_wasm", "arguments": {"module": "tools/write.wasm", "mode": "read_only"}},
+  {"decision": "complete", "summary": "wrote a file, then was refused"}
+]

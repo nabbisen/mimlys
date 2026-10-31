@@ -1,0 +1,22 @@
+# Handoff 005 — Acceptance and QA checklist (M2)
+
+- [ ] REQ-ARCH-007: `wasmtime` and `wasmtime-wasi` pinned with `=`; `cargo deny` sources clean; the engine version appears in the compiled-artifact cache key.
+- [ ] REQ-ARCH-008 / REQ-TEST-008: no Wasmtime type outside `mimlys-exec`; the worker's death ends only the execution; the runtime restarts it up to LIM-X3 per task.
+- [ ] REQ-SBX-002: each guard terminates alone (three tests), with the other two set wide.
+- [ ] REQ-SBX-003: eight termination names; `exit_code` only with `exited`; fuel and deadline never conflated (a loop under both limits reports the smaller one deterministically).
+- [ ] REQ-SBX-004 / REQ-SEC-006: preopens exactly `/workspace` and `/tmp`; empty environment; no socket; clocks at LIM-S6; `/tmp` removed after the execution.
+- [ ] REQ-SBX-005 / REQ-TOOL-008: output over LIM-S4 ends `output_limit`; blob, excerpt and `output_truncated{total_bytes}` present; invalid UTF-8 replaced with a notice.
+- [ ] REQ-SBX-006: a malformed module is `host_fault{invalid_module}`; the worker survives.
+- [ ] REQ-SBX-007: a fresh store per execution; the compiled interpreter shared read-only; cache files owner-only.
+- [ ] REQ-SBX-008 / REQ-TEST-016: replay mode (seed, clock) reproduces output byte for byte.
+- [ ] REQ-SBX-009 / REQ-SCHED-003: the report states setup time with and without the cache, LIM-S8, and LIM-X2 × LIM-S3 + base.
+- [ ] REQ-SBX-010: no host compiler invoked anywhere (grep for `Command::new` outside `confine` and the harness).
+- [ ] REQ-SBX-011: fuel consumed, peak memory, wall time, output bytes and setup time recorded on every execution.
+- [ ] REQ-SBX-012: a missing or mismatched interpreter, an unopenable preopen or an engine error is `host_fault{unavailable}` before anything runs.
+- [ ] REQ-CONF-001 … 003 / REQ-TEST-013: the probe reports every clause; E and K enforced on three platforms, P on Linux; the rest `unavailable` naming its milestone; the injected failure is reported; tier `core`.
+- [ ] REQ-CONF-009: cancel ends the execution within LIM-O2; the tree is killed on runtime exit; orphans of a previous runtime are terminated at startup where identifiable.
+- [ ] REQ-CONF-010 / REQ-ENG-001: `unsafe` only under `confine/`, each block justified; `scripts/check-core-deps.sh` and a new `scripts/check-unsafe.sh` pass.
+- [ ] REQ-TOOL-006 / 007: the execution deadline is the minimum of LIM-S2, the task's remaining time and the profile cap; cancellation reaches the worker.
+- [ ] `run_script{language}` outside the configured interpreters is `invalid_argument` with the allowed list; `mode` derives the effect; `run_*` in `approval_tools` of the shipped profiles until M3.
+- [ ] The M2 demonstration (ED §23) passes on Linux, Windows and macOS in CI; `mimlys status` shows the tier and every unavailable clause with its reason.
+- [ ] CHANGELOG 0.2 entry; book chapters updated; `interpreters install` documented with the offline path (`--from FILE`).

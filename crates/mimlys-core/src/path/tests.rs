@@ -1,0 +1,99 @@
+use super::*;
+
+fn posix(input: &str) -> Result<WorkspacePath, PathError> {
+    WorkspacePath::canonicalize_with(input, PlatformRules::Posix)
+}
+
+fn windows(input: &str) -> Result<WorkspacePath, PathError> {
+    WorkspacePath::canonicalize_with(input, PlatformRules::Windows)
+}
+
+/// REQ-DEC-006: separators, `.` and `..` are normalized lexically; the result is relative with forward slashes.
+#[test]
+fn req_dec_006_lexical_normalization() {
+    assert_eq!(posix("src/./lib.rs").unwrap().as_str(), "src/lib.rs");
+    assert_eq!(posix("src//x/../lib.rs").unwrap().as_str(), "src/lib.rs");
+    assert_eq!(posix("a\\b\\c.txt").unwrap().as_str(), "a/b/c.txt");
+    assert_eq!(posix("./").unwrap(), WorkspacePath::root());
+    assert_eq!(posix(".").unwrap().to_string(), ".");
+    let p = posix("a/b/c").unwrap();
+    assert_eq!(p.parent().unwrap().as_str(), "a/b");
+    assert_eq!(p.file_name(), Some("c"));
+    assert_eq!(posix("a").unwrap().parent(), Some(WorkspacePath::root()));
+    assert_eq!(WorkspacePath::root().parent(), None);
+}
+
+/// REQ-DEC-007 / THR-03: escapes, absolute paths and drive letters are detected without touching the filesystem.
+#[test]
+fn req_dec_007_escapes_and_absolute_paths() {
+    assert_eq!(posix("../x"), Err(PathError::Escapes));
+    assert_eq!(posix("a/../../x"), Err(PathError::Escapes));
+    assert_eq!(posix("a/b/../../../etc/shadow"), Err(PathError::Escapes));
+    assert_eq!(posix("/etc/shadow"), Err(PathError::Absolute));
+    assert_eq!(posix("\\\\server\\share"), Err(PathError::Absolute));
+    assert_eq!(posix("C:\\x"), Err(PathError::Absolute));
+    assert_eq!(posix("c:x"), Err(PathError::Absolute));
+    assert_eq!(posix(""), Err(PathError::Empty));
+    assert_eq!(posix("a\0b"), Err(PathError::ControlCharacter));
+    assert_eq!(posix("a\nb"), Err(PathError::ControlCharacter));
+}
+
+/// REQ-WS-011: Windows naming rules are enforced under the Windows rule set and not under POSIX.
+#[test]
+fn req_ws_011_windows_name_rules() {
+    for bad in [
+        "NUL",
+        "nul.txt",
+        "COM1",
+        "lpt9.log",
+        "a<b",
+        "a?b",
+        "x|y",
+        "trailing.",
+        "trailing ",
+    ] {
+        assert!(
+            matches!(windows(bad), Err(PathError::InvalidName { .. })),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        windows("a:b"),
+        Err(PathError::Absolute),
+        "a drive-letter prefix is absolute"
+    );
+    assert!(windows("null").is_ok());
+    assert!(windows("com10").is_ok());
+    assert!(windows("a.b.c").is_ok());
+    assert!(posix("NUL").is_ok());
+    assert!(posix("a?b").is_ok());
+    assert_eq!(
+        PlatformRules::current(),
+        if cfg!(windows) {
+            PlatformRules::Windows
+        } else {
+            PlatformRules::Posix
+        }
+    );
+}
+
+/// REQ-DEC-006: Unicode NFC applies; case modes decide identity and ancestry.
+#[test]
+fn req_dec_006_nfc_and_case_modes() {
+    let nfd = posix("caf\u{0065}\u{0301}.txt").unwrap();
+    let nfc = posix("caf\u{00e9}.txt").unwrap();
+    assert_eq!(nfd, nfc);
+    let upper = posix("Src/Lib.rs").unwrap();
+    let lower = posix("src/lib.rs").unwrap();
+    assert!(!upper.same_as(&lower, CaseMode::Sensitive));
+    assert!(upper.same_as(&lower, CaseMode::Insensitive));
+    let dir = posix("SRC").unwrap();
+    assert!(lower.starts_with(&dir, CaseMode::Insensitive));
+    assert!(!lower.starts_with(&dir, CaseMode::Sensitive));
+    assert!(lower.starts_with(&WorkspacePath::root(), CaseMode::Sensitive));
+    assert!(
+        !posix("srcx/a")
+            .unwrap()
+            .starts_with(&posix("src").unwrap(), CaseMode::Sensitive)
+    );
+}

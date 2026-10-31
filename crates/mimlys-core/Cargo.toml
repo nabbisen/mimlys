@@ -1,0 +1,28 @@
+[package]
+name = "mimlys-core"
+description = "mimlys core: task state machine, decision schema, validation, grants, effects, approvals, context assembly, recovery logic, and the adapter SPI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+jiff.workspace = true
+unicode-normalization.workspace = true
+thiserror.workspace = true
+globset.workspace = true
+regex.workspace = true
+url.workspace = true
+
+[features]
+# Deterministic clock and identifier sources for tests of this and other crates (REQ-TEST-002).
+test-support = []
+
+[lints]
+workspace = true

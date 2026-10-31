@@ -1,0 +1,29 @@
+[package]
+name = "mimlys-model"
+description = "mimlys model backends: OpenAI-compatible HTTP adapter and the fake backend used in tests and replay."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+# A scripted HTTP server speaking the protocol, for this crate's tests and
+# the CLI's demonstration tests. Never part of a release binary.
+mock-server = []
+
+[dependencies]
+mimlys-core = { path = "../mimlys-core", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile = "3"
+
+[lints]
+workspace = true

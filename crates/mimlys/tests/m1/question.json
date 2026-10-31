@@ -1,0 +1,5 @@
+[
+  {"decision": "ask_user", "question": "Which file holds the test?"},
+  {"decision": "act", "tool": "list_dir", "arguments": {"path": ""}},
+  {"decision": "complete", "summary": "listed"}
+]

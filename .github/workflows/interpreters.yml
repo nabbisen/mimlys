@@ -1,0 +1,26 @@
+# Rebuilds the pinned interpreter artifacts from their recipes and compares
+# the hashes (REQ-ARCH-007, RFC 005 §6). On demand and monthly; a mismatch is
+# reported, never silently accepted.
+name: interpreters
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 1 * *"
+
+permissions:
+  contents: read
+
+jobs:
+  quickjs:
+    name: rebuild quickjs-ng and compare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t mimlys-qjs tools/interpreters/quickjs
+      - run: |
+          actual="$(docker run --rm mimlys-qjs sha256sum /out/qjs-wasi.wasm | cut -d' ' -f1)"
+          expected="$(cat tools/interpreters/quickjs/expected.sha256)"
+          echo "expected $expected"
+          echo "actual   $actual"
+          test "$actual" = "$expected"

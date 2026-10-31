@@ -1,0 +1,50 @@
+[package]
+name = "mimlys-exec"
+description = "mimlys execution: worker protocol and entry point, Wasmtime sandbox, operating-system confinement backends, host tools."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+mimlys-core = { path = "../mimlys-core", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+cap-std.workspace = true
+regex.workspace = true
+globset.workspace = true
+tokio.workspace = true
+bytes = "1"
+thiserror.workspace = true
+tracing.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process", "thread", "fs", "param"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"
+# Syscall numbers for the seccomp filter (constants only; no foreign calls).
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Win32_Security", "Win32_Security_Isolation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_SystemServices"] }
+
+[dev-dependencies]
+mimlys-core = { path = "../mimlys-core", version = "0.0.0", features = ["test-support"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile = "3"
+
+# REQ-CONF-010: foreign-function code for confinement backends lives only in
+# this crate's confinement modules, each unsafe block justified and reviewed.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

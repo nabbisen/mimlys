@@ -1,0 +1,59 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "web_search",
+      "arguments": {
+        "query": "rust programming language"
+      },
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "tutorial",
+          "version": "1"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "complete",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"notices\":[{\"code\":\"engine_unavailable\",\"engine\":\"mirror\",\"reason\":\"request_failure\"}],\"outcome\":\"partial\",\"results\":[{\"date\":\"2026-09-01\",\"snippet\":\"Rust is a general-purpose programming language emphasizing performance, type safety, and concurrency. It enforces memory safety—meaning that all references\",\"title\":\"Rust (programming language)\",\"url\":\"https://en.wikipedia.org/wiki/Rust_(programming_language)\"},{\"date\":\"2026-07-19\",\"snippet\":\"Rust and Bone is a 2012 romantic drama film\",\"title\":\"Rust & Bone\",\"url\":\"https://en.wikipedia.org/wiki/Rust_&amp;_Bone\"}]}"
+        }
+      ],
+      "structuredContent": {
+        "notices": [
+          {
+            "code": "engine_unavailable",
+            "engine": "mirror",
+            "reason": "request_failure"
+          }
+        ],
+        "outcome": "partial",
+        "results": [
+          {
+            "date": "2026-09-01",
+            "snippet": "Rust is a general-purpose programming language emphasizing performance, type safety, and concurrency. It enforces memory safety—meaning that all references",
+            "title": "Rust (programming language)",
+            "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+          },
+          {
+            "date": "2026-07-19",
+            "snippet": "Rust and Bone is a 2012 romantic drama film",
+            "title": "Rust & Bone",
+            "url": "https://en.wikipedia.org/wiki/Rust_&amp;_Bone"
+          }
+        ]
+      },
+      "isError": false
+    }
+  }
+}

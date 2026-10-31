@@ -1,0 +1,12 @@
+[book]
+title = "mimlys"
+authors = ["nabbisen"]
+language = "en"
+src = "src"
+
+[build]
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"

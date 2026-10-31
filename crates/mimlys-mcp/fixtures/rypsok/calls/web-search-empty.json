@@ -1,0 +1,40 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "web_search",
+      "arguments": {
+        "query": "xqzvjk wq"
+      },
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "tutorial",
+          "version": "1"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "complete",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"notices\":[],\"outcome\":\"empty\",\"results\":[]}"
+        }
+      ],
+      "structuredContent": {
+        "notices": [],
+        "outcome": "empty",
+        "results": []
+      },
+      "isError": false
+    }
+  }
+}

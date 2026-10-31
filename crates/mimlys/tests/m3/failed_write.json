@@ -1,0 +1,5 @@
+[
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "notes.txt", "content": "kept: a successful write persists\n"}},
+  {"decision": "act", "tool": "run_wasm", "arguments": {"module": "tools/write_then_fail.wasm", "mode": "read_write"}},
+  {"decision": "complete", "summary": "the failed write was rolled back"}
+]

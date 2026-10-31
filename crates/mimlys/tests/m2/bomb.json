@@ -1,0 +1,4 @@
+[
+  {"decision": "act", "tool": "run_script", "arguments": {"language": "javascript", "source": "const a = []; while (true) { a.push(new Uint8Array(1 << 20)); }", "mode": "read_only"}},
+  {"decision": "complete", "summary": "the bomb was stopped"}
+]

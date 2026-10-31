@@ -1,0 +1,44 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "web_fetch",
+      "arguments": {
+        "url": "https://example.org/moved"
+      },
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "tutorial",
+          "version": "1"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "resultType": "complete",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"error\":{\"detail\":{\"location\":\"https://example.org/new\"},\"kind\":\"redirected\",\"message\":\"the page moved to another host; see detail.location\"}}"
+        }
+      ],
+      "structuredContent": {
+        "error": {
+          "detail": {
+            "location": "https://example.org/new"
+          },
+          "kind": "redirected",
+          "message": "the page moved to another host; see detail.location"
+        }
+      },
+      "isError": true
+    }
+  }
+}

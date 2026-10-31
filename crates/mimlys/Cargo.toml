@@ -1,0 +1,79 @@
+[package]
+name = "mimlys"
+description = "mimlys command line and runtime host."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+mimlys-core = { path = "../mimlys-core", version = "0.0.0" }
+mimlys-persist = { path = "../mimlys-persist", version = "0.0.0" }
+mimlys-exec = { path = "../mimlys-exec", version = "0.0.0" }
+mimlys-model = { path = "../mimlys-model", version = "0.0.0" }
+mimlys-mcp = { path = "../mimlys-mcp", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+clap.workspace = true
+toml.workspace = true
+directories.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "io-std"] }
+cap-std.workspace = true
+sha2.workspace = true
+similar = "2"
+ureq.workspace = true
+
+[dev-dependencies]
+mimlys-core = { path = "../mimlys-core", version = "0.0.0", features = ["test-support"] }
+mimlys-model = { path = "../mimlys-model", version = "0.0.0", features = ["mock-server"] }
+rusqlite.workspace = true
+tempfile = "3"
+wat = "1"
+
+[features]
+# REQ-TEST-007: forwards the persistence crate's crash injection to the test harness binary.
+crash-injection = ["mimlys-persist/crash-injection"]
+# Builds the test binaries (`mimlys-mcp-testserver`, `mimlys-probe-tool`) and the M5 and M6
+# tests that drive them; never part of a release.
+test-bins = ["mimlys-mcp/test-server"]
+
+[[bin]]
+name = "mimlys"
+path = "src/main.rs"
+
+[[bin]]
+name = "mimlys-worker"
+path = "src/bin/mimlys-worker.rs"
+
+[[bin]]
+name = "mimlys-testloop"
+path = "src/bin/mimlys-testloop.rs"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mimlys-mcp-testserver"
+required-features = ["test-bins"]
+
+[[test]]
+name = "m5_mcp"
+required-features = ["test-bins"]
+
+[[bin]]
+name = "mimlys-probe-tool"
+required-features = ["test-bins"]
+
+[[test]]
+name = "m6a_host_tools"
+required-features = ["test-bins"]
+
+[[test]]
+name = "m6b_host_tools"
+required-features = ["test-bins"]

@@ -1,0 +1,6 @@
+[
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "src/lib.rs", "content": "fn a() -> i32 { 1 }\n"}},
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "src/added.rs", "content": "pub fn added() {}\n"}},
+  {"decision": "act", "tool": "delete_path", "arguments": {"path": "src/old.rs"}},
+  {"decision": "complete", "summary": "edited"}
+]

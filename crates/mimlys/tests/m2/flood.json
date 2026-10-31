@@ -1,0 +1,4 @@
+[
+  {"decision": "act", "tool": "run_script", "arguments": {"language": "javascript", "source": "const line = 'x'.repeat(1000); while (true) { console.log(line); }", "mode": "read_only"}},
+  {"decision": "complete", "summary": "the flood was stopped"}
+]

@@ -1,0 +1,45 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "web_fetch",
+      "arguments": {
+        "url": "https://example.org/rust-ownership",
+        "max_chars": 500,
+        "start_char": 500
+      },
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "tutorial",
+          "version": "1"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "resultType": "complete",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"content\":\"r enforces, so memory is freed exactly once and data races are impossible in safe code. The rules take time to learn, and the compiler's messages name the conflicting borrow.\\n\\n- One owner at a time.\\n- Many readers or one writer.\\n- Checked at compile time.\",\"notices\":[],\"outcome\":\"ok\",\"title\":\"Rust ownership, in short\",\"truncated\":false,\"url\":\"https://example.org/rust-ownership\"}"
+        }
+      ],
+      "structuredContent": {
+        "content": "r enforces, so memory is freed exactly once and data races are impossible in safe code. The rules take time to learn, and the compiler's messages name the conflicting borrow.\n\n- One owner at a time.\n- Many readers or one writer.\n- Checked at compile time.",
+        "notices": [],
+        "outcome": "ok",
+        "title": "Rust ownership, in short",
+        "truncated": false,
+        "url": "https://example.org/rust-ownership"
+      },
+      "isError": false
+    }
+  }
+}

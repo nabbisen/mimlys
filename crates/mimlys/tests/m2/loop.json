@@ -1,0 +1,4 @@
+[
+  {"decision": "act", "tool": "run_script", "arguments": {"language": "javascript", "source": "while (true) {}", "mode": "read_only"}},
+  {"decision": "complete", "summary": "the loop was stopped"}
+]

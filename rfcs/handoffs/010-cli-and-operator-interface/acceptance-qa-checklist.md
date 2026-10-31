@@ -1,0 +1,21 @@
+# Handoff 010 — Acceptance and QA checklist (M1)
+
+- [ ] REQ-DEC-001 / REQ-PERS-004: the loop calls the eight persistence methods in order; the running intent precedes the executor call (trace test).
+- [ ] REQ-DEC-009: rejections and user notes enter the next context as labelled `feedback` / `user` segments.
+- [ ] REQ-MDL-008 / INV-02: the backend is called only for the decision; no other model call exists.
+- [ ] REQ-TASK-001 / REQ-TASK-012: creation validates goal and scope; overlapping scope → `conflict`; workspace materialized before `created` is returned.
+- [ ] REQ-TASK-005 / REQ-TASK-006: pause at the boundary with the flag; cancel aborts the backend request and the execution, persists, ends `cancelled`.
+- [ ] REQ-SCHED-001 / REQ-SCHED-002 / REQ-SCHED-005: LIM-X1, LIM-X2 honoured; one step and one execution per task; terminal tasks hold nothing.
+- [ ] REQ-CAP-010: ceiling reconciliation at each boundary.
+- [ ] REQ-CFG-001 … 005: unknown keys refused naming the key; `config_version`; secrets by reference only; defaults from limits; ranges stated; `check` works; no reload.
+- [ ] REQ-CFG-006: every user-facing string in the catalog (grep for string literals in `commands/` and `prompt.rs`: none outside `messages.rs`).
+- [ ] REQ-CLI-001 … 005: commands, exit codes, `--json` stable fields, follow mode, signal handling within LIM-O1.
+- [ ] REQ-CLI-002 / REQ-APR-009: the prompt prints only the rendered request through the template; `decided_by` records process and OS user.
+- [ ] REQ-APR-006 (waiting holds no resources): a `waiting_user` task has no backend request or execution in flight (assert in the loop test).
+- [ ] REQ-WS-002 / REQ-WS-003 / REQ-WS-008: copy with exclusions, symlink rule, size refusal before writing, quota halt.
+- [ ] REQ-OBS-004 / REQ-PRIV-004: no prompt, content or secret in logs at `info`; debug warning at start.
+- [ ] REQ-PRIV-003: child processes get an allow-listed environment (harness test).
+- [ ] REQ-OBS-006: `status` shows version, data directory, backend kind and locality, running tasks, pending items (tier fields marked "M2").
+- [ ] REQ-ENG-004: a panic in a tool handler or adapter is contained and reported as `host_fault`; the process survives.
+- [ ] The M1 demonstration of external design §23 passes on Linux, Windows and macOS in CI, including the existence-leak check and crash injection.
+- [ ] The book's user and integrator chapters describe what ships in 0.1; CHANGELOG has the 0.1 entry.

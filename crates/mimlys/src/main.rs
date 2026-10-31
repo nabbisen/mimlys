@@ -1,0 +1,426 @@
+//! `mimlys`: the commands of external design §19.2 (REQ-CLI-001 … 005).
+//! Exit codes: 0 success, 1 runtime or configuration error, 2 usage error.
+
+use clap::{Args, Parser, Subcommand};
+use mimlys::app::{App, AppError};
+use mimlys::commands::run::NewTask;
+use mimlys::config::Config;
+use mimlys::output::Output;
+use mimlys::prompt::Terminal;
+use mimlys::{commands, logging};
+use std::io::IsTerminal;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+#[derive(Parser)]
+#[command(
+    name = "mimlys",
+    version,
+    about = "A local AI-agent execution and safety runtime: the model proposes, mimlys decides."
+)]
+struct Cli {
+    /// Configuration file (else MIMLYS_CONFIG, else the platform default).
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Print one JSON value instead of text.
+    #[arg(long, global = true)]
+    json: bool,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Args, Clone)]
+struct NewArgs {
+    /// What the task should achieve.
+    goal: String,
+    /// The project directory (the task works on a private copy); the current directory, or a fork's source scope, by default.
+    #[arg(long, value_name = "DIR")]
+    scope: Option<PathBuf>,
+    /// Profile from the policy (default: the policy's default profile).
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
+    /// Extra grant, e.g. `tool:write_file` or `host_read:/path`; repeatable.
+    #[arg(long = "grant", value_name = "KIND:SCOPE")]
+    grants: Vec<String>,
+    /// Step budget within the ceiling.
+    #[arg(long, value_name = "N")]
+    steps: Option<u32>,
+    /// Deadline from now, e.g. `30m`, `2h`.
+    #[arg(long, value_name = "DURATION")]
+    deadline: Option<String>,
+    /// Completion check: `{"tool": NAME, "arguments": {...}}`.
+    #[arg(long, value_name = "JSON")]
+    completion_check: Option<String>,
+    /// Fork: materialize the workspace from this task's snapshot (its scope by default).
+    #[arg(long, value_name = "TASK")]
+    from_task: Option<String>,
+    /// Fork: the snapshot to start from (the source's latest by default).
+    #[arg(long, value_name = "SNAPSHOT")]
+    from_snapshot: Option<String>,
+}
+
+impl NewArgs {
+    fn into_new_task(self, hold: bool) -> NewTask {
+        NewTask {
+            goal: self.goal,
+            scope: self.scope.unwrap_or_default(),
+            profile: self.profile,
+            grants: self.grants,
+            steps: self.steps,
+            deadline: self.deadline,
+            completion_check: self.completion_check,
+            hold,
+            from_task: self.from_task,
+            from_snapshot: self.from_snapshot,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Create and start a task, follow its events, prompt when it waits.
+    Run(NewArgs),
+    /// Task control.
+    #[command(subcommand)]
+    Task(TaskCommand),
+    /// Approve the pending action; it runs at once.
+    Approve {
+        /// Task id or a unique prefix.
+        task: String,
+    },
+    /// Reject the pending action.
+    Reject {
+        /// Task id or a unique prefix.
+        task: String,
+        /// A note for the model.
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
+        /// Halt the task instead of continuing.
+        #[arg(long)]
+        halt: bool,
+    },
+    /// Answer the pending question.
+    Answer {
+        /// Task id or a unique prefix.
+        task: String,
+        /// The answer.
+        text: String,
+    },
+    /// Issue a grant within the ceiling: `tool NAME`, `host_tool NAME`, `network DOMAIN[:PORT]`.
+    Grant {
+        /// Task id or a unique prefix.
+        task: String,
+        /// The grant's kind and scope.
+        #[arg(required = true, num_args = 1..)]
+        kind: Vec<String>,
+    },
+    /// Revoke a grant.
+    Revoke {
+        /// Task id or a unique prefix.
+        task: String,
+        /// Grant id or a unique prefix.
+        grant: String,
+    },
+    /// Restore the workspace to a snapshot (the latest by default), or reverse a promotion.
+    Rollback {
+        /// Task id or a unique prefix.
+        task: String,
+        /// Snapshot id or prefix.
+        #[arg(long, value_name = "SNAPSHOT")]
+        snapshot: Option<String>,
+        /// Reverse this promotion from its backup instead.
+        #[arg(long, value_name = "PROMOTION", conflicts_with = "snapshot")]
+        promotion: Option<String>,
+    },
+    /// Write the workspace's changes to the project after showing the diff and asking.
+    Promote {
+        /// Task id or a unique prefix.
+        task: String,
+        /// Apply without asking (the only way without a terminal).
+        #[arg(long)]
+        yes: bool,
+        /// List the changes without the text diffs.
+        #[arg(long)]
+        summary: bool,
+        /// Print a unified patch and write nothing.
+        #[arg(long, conflicts_with = "yes")]
+        patch: bool,
+    },
+    /// Show events.
+    Events {
+        /// Task id or a unique prefix; all tasks when absent.
+        task: Option<String>,
+        /// Keep printing new events.
+        #[arg(long)]
+        follow: bool,
+        /// Start after this position.
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        since: u64,
+    },
+    /// Show derived metrics.
+    Metrics {
+        /// One task only.
+        #[arg(long, value_name = "TASK")]
+        task: Option<String>,
+    },
+    /// Show the runtime's status.
+    Status,
+    /// Validate the configuration and print it.
+    Check,
+    /// Interpreter builds for `run_script`.
+    #[command(subcommand)]
+    Interpreters(InterpretersCommand),
+    /// The toolchain paths host tools may read (RFC 011).
+    #[command(subcommand)]
+    Toolchain(ToolchainCommand),
+}
+
+#[derive(Subcommand)]
+enum ToolchainCommand {
+    /// Show the worker's read set and each declared host tool's paths (on Windows: whether each carries the container's permission).
+    List,
+    /// Windows: grant the worker's AppContainer read access to a toolchain directory, reversibly.
+    Grant {
+        /// The directory.
+        path: String,
+        /// Apply without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Windows: remove the permission `toolchain grant` applied.
+    Revoke {
+        /// The directory.
+        path: String,
+        /// Remove without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum InterpretersCommand {
+    /// Show the configured interpreters and whether they are installed.
+    List,
+    /// Verify and install an interpreter module (downloads the shipped build without --from).
+    Install {
+        /// The language, e.g. `javascript`.
+        language: String,
+        /// A local module file instead of the download.
+        #[arg(long, value_name = "FILE")]
+        from: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TaskCommand {
+    /// Create a task (started unless --hold).
+    New {
+        #[command(flatten)]
+        args: NewArgs,
+        /// Create only; start later with `task resume`.
+        #[arg(long)]
+        hold: bool,
+    },
+    /// Show a task.
+    Show {
+        /// Task id or a unique prefix.
+        task: String,
+    },
+    /// List tasks.
+    List,
+    /// Resume a created, paused or halted task.
+    Resume {
+        /// Task id or a unique prefix.
+        task: String,
+        /// Raise the step budget (from `halted`).
+        #[arg(long, value_name = "N")]
+        extend_steps: Option<u32>,
+        /// Move the deadline, e.g. `30m` (from `halted`).
+        #[arg(long, value_name = "DURATION")]
+        extend_deadline: Option<String>,
+    },
+    /// Request a pause at the next step boundary.
+    Pause {
+        /// Task id or a unique prefix.
+        task: String,
+    },
+    /// Cancel a task.
+    Cancel {
+        /// Task id or a unique prefix.
+        task: String,
+    },
+    /// Delete a terminal task's workspace, snapshots and blobs; the audit stays unless --audit.
+    Delete {
+        /// Task id or a unique prefix.
+        task: String,
+        /// Remove the task's events and records too.
+        #[arg(long)]
+        audit: bool,
+        /// Delete without asking (the only way without a terminal).
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let out = Output::new(cli.json);
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            out.error(&AppError::Io {
+                detail: format!("cannot start the async runtime: {e}"),
+            });
+            return ExitCode::from(1);
+        }
+    };
+    match runtime.block_on(run(cli, &out)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            out.error(&e);
+            ExitCode::from(1)
+        }
+    }
+}
+
+async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
+    let loaded = Config::load(Config::locate(cli.config.as_deref()).as_deref())?;
+    if let Some(warning) = logging::init(&loaded.config.logging, &loaded.secrets) {
+        eprintln!("{warning}");
+    }
+    if let Command::Check = &cli.command {
+        return commands::check::run(&loaded, out);
+    }
+    let app = App::open(loaded)?;
+    if runs_steps(&cli.command) {
+        app.backend_ready()?;
+    }
+    if needs_backend(&cli.command)
+        && let Some(notice) = app.probe_backend().await?
+    {
+        out.line(notice);
+    }
+    let interactive =
+        !cli.json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let stdin = std::io::stdin();
+    let mut terminal = Terminal::new(stdin.lock(), std::io::stdout(), interactive);
+    let result = dispatch(&app, cli.command, &mut terminal, out).await;
+    let closed = app.close();
+    result.and(closed)
+}
+
+/// Commands that run steps or report the backend probe the backend first (RFC 008 §4).
+/// Commands that will ask the backend for a decision; without a backend
+/// that can answer they stop here, not at the first step (CLR-1, CLR-5).
+fn runs_steps(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Run(_)
+            | Command::Task(TaskCommand::New { hold: false, .. })
+            | Command::Task(TaskCommand::Resume { .. })
+            | Command::Approve { .. }
+            | Command::Reject { .. }
+            | Command::Answer { .. }
+    )
+}
+
+fn needs_backend(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Run(_)
+            | Command::Task(TaskCommand::New { .. })
+            | Command::Task(TaskCommand::Resume { .. })
+            | Command::Approve { .. }
+            | Command::Reject { .. }
+            | Command::Answer { .. }
+            | Command::Status
+    )
+}
+
+async fn dispatch(
+    app: &App,
+    command: Command,
+    terminal: &mut dyn mimlys::prompt::Interaction,
+    out: &Output,
+) -> Result<(), AppError> {
+    match command {
+        Command::Run(args) => {
+            commands::run::run(app, &args.into_new_task(false), terminal, out).await
+        }
+        Command::Task(task) => match task {
+            TaskCommand::New { args, hold } => {
+                commands::run::run(app, &args.into_new_task(hold), terminal, out).await
+            }
+            TaskCommand::Show { task } => commands::task::show(app, &task, out),
+            TaskCommand::List => commands::task::list(app, out),
+            TaskCommand::Resume {
+                task,
+                extend_steps,
+                extend_deadline,
+            } => {
+                commands::task::resume(
+                    app,
+                    &task,
+                    extend_steps,
+                    extend_deadline.as_deref(),
+                    terminal,
+                    out,
+                )
+                .await
+            }
+            TaskCommand::Pause { task } => commands::task::pause(app, &task, out),
+            TaskCommand::Cancel { task } => commands::task::cancel(app, &task, out),
+            TaskCommand::Delete { task, audit, yes } => {
+                commands::task::delete(app, &task, audit, yes, terminal, out)
+            }
+        },
+        Command::Rollback {
+            task,
+            snapshot,
+            promotion,
+        } => commands::rollback::run(app, &task, snapshot.as_deref(), promotion.as_deref(), out),
+        Command::Promote {
+            task,
+            yes,
+            summary,
+            patch,
+        } => commands::promote::run(app, &task, yes, summary, patch, terminal, out),
+        Command::Approve { task } => commands::approve::run(app, &task, terminal, out).await,
+        Command::Reject { task, note, halt } => {
+            commands::reject::run(app, &task, note, halt, terminal, out).await
+        }
+        Command::Answer { task, text } => {
+            commands::answer::run(app, &task, &text, terminal, out).await
+        }
+        Command::Grant { task, kind } => {
+            commands::grant::run(app, &task, &kind, terminal, out).await
+        }
+        Command::Revoke { task, grant } => {
+            commands::revoke::run(app, &task, &grant, terminal, out).await
+        }
+        Command::Events {
+            task,
+            follow,
+            since,
+        } => commands::events::run(app, task.as_deref(), since, follow, out).await,
+        Command::Metrics { task } => commands::metrics::run(app, task.as_deref(), out),
+        Command::Status => commands::status::run(app, out),
+        Command::Toolchain(ToolchainCommand::List) => commands::toolchain::list(app, out),
+        Command::Toolchain(ToolchainCommand::Grant { path, yes }) => {
+            commands::toolchain::grant(app, &path, yes, terminal, out)
+        }
+        Command::Toolchain(ToolchainCommand::Revoke { path, yes }) => {
+            commands::toolchain::revoke(app, &path, yes, terminal, out)
+        }
+        Command::Interpreters(cmd) => match cmd {
+            InterpretersCommand::List => commands::interpreters::list(app, out),
+            InterpretersCommand::Install { language, from } => {
+                commands::interpreters::install_cmd(app, &language, from.as_deref(), out)
+            }
+        },
+        Command::Check => unreachable!("handled before the app opens"),
+    }
+}

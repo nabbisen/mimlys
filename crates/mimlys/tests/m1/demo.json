@@ -1,0 +1,7 @@
+[
+  {"decision": "plan", "steps": ["read the failing test", "write the fix", "verify the file"]},
+  {"decision": "act", "tool": "read_file", "arguments": {"path": "src/lib.rs"}, "reason": "see the current code"},
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "src/lib.rs", "content": "fn a() -> i32 { 1 }\n"}, "reason": "apply the fix"},
+  {"decision": "act", "tool": "read_file", "arguments": {"path": "src/lib.rs"}},
+  {"decision": "complete", "summary": "the fix is written"}
+]

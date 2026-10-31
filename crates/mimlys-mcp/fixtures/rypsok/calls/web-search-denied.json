@@ -1,0 +1,46 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "web_search",
+      "arguments": {
+        "query": "deploy key AKIAIOSFODNN7EXAMPLE"
+      },
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "tutorial",
+          "version": "1"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "complete",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"error\":{\"detail\":{\"kind\":\"aws_access_key\",\"position\":11,\"reason\":\"secret_in_query\"},\"kind\":\"denied\",\"message\":\"query contains what looks like an AWS access key at character 11; remove it and retry\"}}"
+        }
+      ],
+      "structuredContent": {
+        "error": {
+          "detail": {
+            "kind": "aws_access_key",
+            "position": 11,
+            "reason": "secret_in_query"
+          },
+          "kind": "denied",
+          "message": "query contains what looks like an AWS access key at character 11; remove it and retry"
+        }
+      },
+      "isError": true
+    }
+  }
+}

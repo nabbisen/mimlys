@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/mimlys-core",
+  "crates/mimlys-persist",
+  "crates/mimlys-exec",
+  "crates/mimlys-model",
+  "crates/mimlys-mcp",
+  "crates/mimlys",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+authors = ["nabbisen"]
+repository = "https://github.com/nabbisen/mimlys"
+description = "A local AI-agent execution and safety runtime: the model proposes, mimlys decides."
+keywords = ["agent", "sandbox", "wasm", "safety", "runtime"]
+categories = ["development-tools"]
+
+# REQ-ENG-001: unsafe code is forbidden in every crate; `mimlys-exec` lowers
+# this to `deny` for its operating-system confinement modules only.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v7", "serde"] }
+jiff = "0.2"
+unicode-normalization = "0.1"
+thiserror = "2"
+cap-std = "3"
+regex = "1"
+globset = "0.4"
+url = "2"
+rusqlite = { version = "0.38", features = ["bundled"] }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+directories = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "fmt", "std", "env-filter"] }
+# REQ-ARCH-007: the engine is pinned to an exact version; updates are reviewed changes.
+wasmtime = { version = "=50.0.1", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation", "wat"] }
+wasmtime-wasi = { version = "=50.0.1", default-features = false, features = ["p1"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset"] }
