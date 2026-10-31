@@ -320,7 +320,8 @@ fn pipe(parent_reads: bool) -> Result<Pipe, String> {
     let mut read: HANDLE = std::ptr::null_mut();
     let mut write: HANDLE = std::ptr::null_mut();
     // SAFETY: both out pointers are valid; the attributes struct is fully initialised.
-    if unsafe { CreatePipe(&mut read, &mut write, &attrs, 0) } == 0 {
+    // 4 MiB: a frame of up to twice LIM-S4 must not block its writer on a child that stopped reading.
+    if unsafe { CreatePipe(&mut read, &mut write, &attrs, 4 << 20) } == 0 {
         return Err(format!(
             "CreatePipe failed: {}",
             std::io::Error::last_os_error()

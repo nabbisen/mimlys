@@ -53,6 +53,8 @@ pub struct Applied {
     #[serde(default)]
     pub rlimit_memory: bool,
 }
+#[cfg(windows)]
+use mimlys_core::limits::LIM_O2_CANCEL_MS;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -161,8 +163,24 @@ impl ConfinedChild {
             }
             #[cfg(windows)]
             Proc::Raw(c) => {
+                let pid = c.id();
                 let _ = c.kill();
-                let _ = c.wait();
+                // Bounded: a process the system will not end must not hold the runtime.
+                let start = std::time::Instant::now();
+                while c.try_wait().is_ok_and(|s| s.is_none())
+                    && start.elapsed() < Duration::from_millis(LIM_O2_CANCEL_MS)
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                if c.try_wait().is_ok_and(|s| s.is_none()) {
+                    tracing::warn!(
+                        target: "mimlys_worker",
+                        "process {pid} survives termination{}",
+                        c.cpu_times_ms()
+                            .map(|(k, u)| format!(" (kernel {k} ms, user {u} ms)"))
+                            .unwrap_or_default()
+                    );
+                }
             }
         }
     }

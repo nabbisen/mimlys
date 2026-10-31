@@ -360,6 +360,8 @@ impl Worker {
             facts: WorkerFacts::default(),
             cgroup: None,
         };
+        tracing::debug!(target: "mimlys_worker", "worker {} started, probing", live.child.id());
+        let probing = Instant::now();
         write_frame(&mut live.stdin, &Request::Probe).map_err(|e| e.to_string())?;
         match live
             .frames
@@ -372,6 +374,11 @@ impl Worker {
                 cgroup,
                 ..
             })) => {
+                tracing::debug!(
+                    target: "mimlys_worker",
+                    "worker probe answered in {} ms",
+                    probing.elapsed().as_millis()
+                );
                 live.cgroup = cgroup;
                 live.facts = WorkerFacts {
                     engine_version,
@@ -383,8 +390,13 @@ impl Worker {
                 Ok(live)
             }
             other => {
+                let activity = live
+                    .child
+                    .activity()
+                    .map(|a| format!("; {a}"))
+                    .unwrap_or_default();
                 live.child.kill_tree();
-                Err(format!("worker probe failed: {other:?}"))
+                Err(format!("worker probe failed: {other:?}{activity}"))
             }
         }
     }

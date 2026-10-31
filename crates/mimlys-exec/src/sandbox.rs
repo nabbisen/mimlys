@@ -9,6 +9,7 @@ mod wasi;
 
 pub use guards::{Interrupt, InterruptReason};
 pub use run::{Limits, Outcome, Request, Sandbox};
+pub use wasmtime::OptLevel;
 
 use mimlys_core::limits::LIM_S4_OUTPUT_BYTES;
 

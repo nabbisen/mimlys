@@ -241,6 +241,63 @@ fn m2_infinite_loop() {
     assert!(obs[0]["metrics"]["wall_ms"].as_i64().unwrap() < 5_000);
 }
 
+/// REQ-SBX-002 in process, at two code-generation levels: the deadline
+/// interrupts the interpreter's `while (true) {}` within a bounded time.
+/// Diagnoses the macOS runner, where the worker's guest ran past its
+/// deadline while a plain wasm loop was interrupted. Each variant runs on
+/// its own thread with a bound, so a guest that never returns fails the
+/// test instead of hanging it.
+#[test]
+fn m2_deadline_interrupts_the_interpreter_in_process() {
+    use mimlys_core::action::Termination;
+    use mimlys_exec::sandbox::{Limits, OptLevel, Request, Sandbox};
+    let bytes = std::fs::read(qjs()).unwrap();
+    let pinned = mimlys_exec::interpreters::pinned("javascript").unwrap();
+    let mut failures = Vec::new();
+    for (name, level) in [("speed", OptLevel::Speed), ("none", OptLevel::None)] {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        let tmp = dir.path().join("tmp");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(pinned.script_name), "while (true) {}").unwrap();
+        let mut args = vec!["javascript".to_owned()];
+        args.extend(pinned.args.iter().map(|a| (*a).to_owned()));
+        args.push(format!("/tmp/{}", pinned.script_name));
+        let request = Request {
+            args,
+            stdin: Vec::new(),
+            workspace,
+            read_only: true,
+            tmp,
+            replay: None,
+            limits: Limits {
+                fuel: 1_000_000_000_000,
+                deadline_ms: 500,
+                ..Limits::default()
+            },
+        };
+        let bytes = bytes.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let sb = Sandbox::with_opt_level(level).unwrap();
+            let module = sb.compile(&bytes).unwrap();
+            let interrupt = sb.interrupt(500);
+            let started = std::time::Instant::now();
+            let out = sb.run(&module, &request, &interrupt);
+            let _ = tx.send((out.termination, started.elapsed().as_millis()));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok((Termination::Deadline, ms)) => println!("opt level {name}: deadline after {ms} ms"),
+            Ok((other, ms)) => failures.push(format!("opt level {name}: {other:?} after {ms} ms")),
+            Err(_) => failures.push(format!(
+                "opt level {name}: the guest did not return within 20 s (deadline 500 ms)"
+            )),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// External design §23, M2: an allocation bomb ends `memory_limit`.
 #[test]
 fn m2_allocation_bomb() {

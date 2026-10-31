@@ -80,6 +80,13 @@ pub struct Sandbox {
 impl Sandbox {
     /// Builds the engine with the pinned configuration (RFC 005 §1).
     pub fn new() -> wasmtime::Result<Self> {
+        Self::with_opt_level(OptLevel::Speed)
+    }
+
+    /// The pinned configuration at another code-generation level; the
+    /// production engine is `new` (`Speed`). For the test suite's diagnosis
+    /// of a guest the deadline does not interrupt.
+    pub fn with_opt_level(level: OptLevel) -> wasmtime::Result<Self> {
         let mut config = Config::new();
         config
             .consume_fuel(true)
@@ -87,7 +94,7 @@ impl Sandbox {
             .wasm_multi_memory(false)
             .cranelift_nan_canonicalization(true)
             .relaxed_simd_deterministic(true)
-            .cranelift_opt_level(OptLevel::Speed);
+            .cranelift_opt_level(level);
         let engine = Engine::new(&config)?;
         let ticker = Ticker::start(engine.clone(), Duration::from_millis(LIM_S7_EPOCH_TICK_MS));
         Ok(Self {

@@ -107,6 +107,8 @@ impl MockServer {
             while !stop_flag.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // macOS hands the accepted socket the listener's non-blocking flag; Linux does not.
+                        let _ = stream.set_nonblocking(false);
                         let state = state.clone();
                         std::thread::spawn(move || state.serve(stream));
                     }
