@@ -121,7 +121,7 @@ fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run
         cmd.args(["--sandbox-deadline-ms", "3000"]);
     }
     // The runtime log (the worker's standard error included) is in `Run.stderr` for the messages of failing assertions.
-    cmd.args(["--log", "info"]);
+    cmd.args(["--log", "debug"]);
     cmd.args(extra);
     cmd.env_clear();
     for key in ["PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE"] {
@@ -354,7 +354,11 @@ fn m2_status_shows_tier_and_clauses() {
     let tier = json["tier"].as_str().unwrap();
     assert!(tier == "core" || tier == "full", "{tier}");
     assert_eq!(json["engine_version"], "50.0.1");
-    assert_eq!(json["clauses"]["environment"]["state"], "enforced");
+    assert_eq!(
+        json["clauses"]["environment"]["state"], "enforced",
+        "{}",
+        json["clauses"]
+    );
     assert_eq!(json["clauses"]["termination"]["state"], "enforced");
     assert!(json["clauses"]["network"]["state"].is_string());
     assert_eq!(json["interpreters"][0]["language"], "javascript");

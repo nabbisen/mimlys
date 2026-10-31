@@ -135,8 +135,18 @@ impl Sandbox {
             peak,
             setup_ms,
         } = setup;
+        crate::trace::line(|| format!("sandbox: set up in {setup_ms} ms, calling _start"));
         let result = instance_start.call(&mut store, ());
         let wall_ms = started.elapsed().as_millis() as i64;
+        crate::trace::line(|| {
+            format!(
+                "sandbox: _start returned after {wall_ms} ms: {}",
+                match &result {
+                    Ok(()) => "ok".to_owned(),
+                    Err(e) => e.to_string().lines().next().unwrap_or_default().to_owned(),
+                }
+            )
+        });
         let fuel_used = request
             .limits
             .fuel

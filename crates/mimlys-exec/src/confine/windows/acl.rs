@@ -165,7 +165,11 @@ pub fn has_entry(path: &Path, sid: &[u8]) -> Result<bool, String> {
             std::io::Error::from_raw_os_error(err as i32)
         ));
     }
-    // SAFETY: `count` entries are readable at `entries`; a SID trustee's name is a SID pointer.
+    if count == 0 || entries.is_null() {
+        // No explicit entry at all (a fresh directory inherits everything): nothing to free.
+        return Ok(false);
+    }
+    // SAFETY: `count` is non-zero and `entries` non-null and readable for `count` entries; a SID trustee's name is a SID pointer.
     let found = unsafe {
         std::slice::from_raw_parts(entries, count as usize)
             .iter()

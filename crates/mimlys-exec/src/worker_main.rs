@@ -130,6 +130,9 @@ pub fn main() {
         }
         return;
     }
+    if args.iter().any(|a| a == "--trace") {
+        crate::trace::enable();
+    }
     #[cfg(target_os = "linux")]
     {
         let _ = crate::confine::set_no_new_privs();
@@ -402,6 +405,9 @@ fn serve(state: State) {
                     );
                     continue;
                 }
+                crate::trace::line(|| {
+                    format!("execution {execution_id}: {tool} received, deadline {deadline_ms} ms")
+                });
                 let interrupt = state.sandbox.interrupt(deadline_ms.max(1) as u64);
                 in_flight = Some((execution_id, interrupt.clone()));
                 let done_tx = tx.clone();
@@ -449,6 +455,9 @@ fn serve(state: State) {
             Incoming::Done(response) => {
                 in_flight = None;
                 send(&stdout, &response);
+                if let Response::ExecutionRecord { execution_id, .. } = &*response {
+                    crate::trace::line(|| format!("execution {execution_id}: record sent"));
+                }
                 if shutting_down {
                     return;
                 }

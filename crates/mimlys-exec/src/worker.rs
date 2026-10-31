@@ -286,6 +286,9 @@ impl Worker {
             args.push("--confine".into());
             args.push(serde_json::to_string(spec).expect("serializes"));
         }
+        if tracing::enabled!(target: "mimlys_worker", tracing::Level::DEBUG) {
+            args.push("--trace".into());
+        }
         for d in &self.config.host_tools {
             args.push("--host-tool".into());
             args.push(serde_json::to_string(d).expect("serializes"));
@@ -322,7 +325,10 @@ impl Worker {
             .name("mimlys-worker-log".into())
             .spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    tracing::info!(target: "mimlys_worker", "{line}");
+                    match line.strip_prefix(crate::trace::PREFIX) {
+                        Some(t) => tracing::debug!(target: "mimlys_worker", "worker trace: {t}"),
+                        None => tracing::info!(target: "mimlys_worker", "{line}"),
+                    }
                 }
             })
             .map_err(|e| e.to_string())?;

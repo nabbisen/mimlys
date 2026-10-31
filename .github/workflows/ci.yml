@@ -28,7 +28,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo build --workspace --all-targets
-      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --all-features --no-fail-fast
 
   deny:
     name: dependency audit and licenses
