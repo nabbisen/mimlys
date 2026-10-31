@@ -26,8 +26,8 @@ use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::process::{ChildStderr, ChildStdin, ChildStdout, ExitStatus};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, STILL_ACTIVE,
-    SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0,
+    CloseHandle, ERROR_ALREADY_EXISTS, FILETIME, HANDLE, HANDLE_FLAG_INHERIT, LocalFree,
+    STILL_ACTIVE, SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
@@ -54,7 +54,7 @@ use windows_sys::Win32::System::SystemServices::{SE_GROUP_ENABLED, SE_GROUP_INTE
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
     CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-    GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcessToken,
+    GetExitCodeProcess, GetProcessTimes, InitializeProcThreadAttributeList, OpenProcessToken,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject,
@@ -184,6 +184,27 @@ impl RawChild {
             return Ok(None);
         }
         Ok(Some(ExitStatus::from_raw(code)))
+    }
+
+    /// The process's kernel and user CPU time so far, in milliseconds: zero
+    /// of both means it never ran an instruction.
+    pub fn cpu_times_ms(&self) -> Option<(u64, u64)> {
+        use std::os::windows::io::AsRawHandle;
+        let handle = self.process.as_raw_handle() as HANDLE;
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: the handle is valid and every out pointer refers to a live FILETIME.
+        let ok =
+            unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+        if ok == 0 {
+            return None;
+        }
+        let ms = |t: FILETIME| {
+            ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) / 10_000
+        };
+        Some((ms(kernel), ms(user)))
     }
 
     /// Waits for the process to end.
@@ -666,7 +687,12 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
     {
         use std::os::windows::io::AsRawHandle;
         // SAFETY: the thread handle is valid; the process starts running here, already in the job.
-        unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) };
+        if unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) } == u32::MAX {
+            let err = std::io::Error::last_os_error();
+            // SAFETY: the process is suspended and owned; it is ended before it ever ran.
+            unsafe { TerminateProcess(pi.hProcess, 1) };
+            return Err(format!("ResumeThread failed: {err}"));
+        }
     }
     drop(thread);
     // SAFETY: the parent's pipe ends are valid handles owned from here on by the stream types.

@@ -192,6 +192,19 @@ impl ConfinedChild {
         }
     }
 
+    /// What a child that does not answer has done so far, for the log: its
+    /// CPU times on Windows (none at all means it never ran); nothing elsewhere.
+    pub fn activity(&self) -> Option<String> {
+        match &self.proc {
+            #[cfg(unix)]
+            Proc::Std(_) => None,
+            #[cfg(windows)]
+            Proc::Raw(c) => c
+                .cpu_times_ms()
+                .map(|(k, u)| format!("kernel {k} ms, user {u} ms")),
+        }
+    }
+
     /// Process id, for the orphan marker.
     pub fn id(&self) -> u32 {
         match &self.proc {

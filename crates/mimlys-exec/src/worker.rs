@@ -212,17 +212,38 @@ impl Worker {
             .spawn(&command, self.config.spec.as_ref())
             .map_err(|e| e.to_string())?;
         drop(child.take_stdin());
-        let mut out = String::new();
-        if let Some(mut stdout) = child.take_stdout() {
-            use std::io::Read;
-            let _ = stdout.read_to_string(&mut out);
-        }
+        // Both streams are drained by threads: a worker that neither writes
+        // nor exits must end in the timed wait, never in a blocking read.
+        let out_rx = drain(child.take_stdout());
+        let err_rx = drain(child.take_stderr());
         if !child.wait_within(Duration::from_millis(LIM_X4_WORKER_START_MS)) {
+            let activity = child
+                .activity()
+                .map(|a| format!("; {a}"))
+                .unwrap_or_default();
             child.kill_tree();
-            return Err("worker probe timed out".into());
+            let err = err_rx
+                .recv_timeout(Duration::from_millis(LIM_O2_CANCEL_MS))
+                .unwrap_or_default();
+            return Err(format!(
+                "worker probe timed out after {LIM_X4_WORKER_START_MS} ms{activity}{}",
+                stderr_note(&err)
+            ));
         }
-        let value: serde_json::Value =
-            serde_json::from_str(out.trim()).map_err(|_| "worker probe unreadable".to_owned())?;
+        let status = child.try_wait().ok().flatten();
+        let out = out_rx
+            .recv_timeout(Duration::from_millis(LIM_O2_CANCEL_MS))
+            .unwrap_or_default();
+        let err = err_rx
+            .recv_timeout(Duration::from_millis(LIM_O2_CANCEL_MS))
+            .unwrap_or_default();
+        let value: serde_json::Value = serde_json::from_str(out.trim()).map_err(|_| {
+            format!(
+                "worker probe unreadable (exit {}){}",
+                status.map_or("unknown".to_owned(), |s| s.to_string()),
+                stderr_note(&err)
+            )
+        })?;
         // The probe process has exited; its own cgroup is empty and goes now.
         #[cfg(target_os = "linux")]
         if let Some(dir) = value["cgroup"].as_str() {
@@ -602,7 +623,38 @@ fn stack_sample(pid: u32) -> Option<String> {
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    Some(text.chars().take(24_000).collect())
+    let graph = text
+        .split("\nTotal number in stack")
+        .next()
+        .unwrap_or(&text)
+        .split("\nBinary Images:")
+        .next()
+        .unwrap_or(&text);
+    // Rust's v0-mangled names are long; their readable part is at the end.
+    let shortened: Vec<String> = graph
+        .lines()
+        .map(|line| {
+            line.split(' ')
+                .map(|tok| {
+                    if tok.starts_with("_R") && tok.len() > 80 {
+                        let tail: String = tok
+                            .chars()
+                            .rev()
+                            .take(72)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
+                        format!("…{tail}")
+                    } else {
+                        tok.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    Some(shortened.join("\n").chars().take(120_000).collect())
 }
 
 #[cfg(not(all(target_os = "macos", debug_assertions)))]
@@ -626,6 +678,38 @@ fn fault(detail: HostFaultDetail, started: Instant, note: Option<&str>) -> Execu
             ..ExecutionMetrics::default()
         },
     }
+}
+
+/// Reads a child's stream to its end on a thread; the receiver gets the text once.
+fn drain<R: std::io::Read + Send + 'static>(
+    stream: Option<R>,
+) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = channel();
+    if let Some(mut s) = stream {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = s.read_to_string(&mut text);
+            let _ = tx.send(text);
+        });
+    }
+    rx
+}
+
+/// The tail of a worker's standard error for a reason string, bounded.
+fn stderr_note(err: &str) -> String {
+    let t = err.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let tail: String = t
+        .chars()
+        .rev()
+        .take(1_500)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("; worker stderr: {tail}")
 }
 
 /// The worker's environment (clause E): a marker and, in debug builds, the
