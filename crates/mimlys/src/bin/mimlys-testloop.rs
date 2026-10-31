@@ -74,6 +74,9 @@ struct Cli {
     /// A JavaScript interpreter module to install into the data directory before the run.
     #[arg(long)]
     interpreter_module: Option<PathBuf>,
+    /// Write the runtime log to standard error at this level (`info`, `debug`, …).
+    #[arg(long)]
+    log: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -109,6 +112,15 @@ struct EventReport {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(level) = &cli.log {
+        let _ = mimlys::logging::init(
+            &mimlys::config::LoggingSection {
+                level: level.clone(),
+                debug_prompts: false,
+            },
+            &[],
+        );
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

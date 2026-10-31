@@ -120,6 +120,8 @@ fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run
     if !extra.contains(&"--sandbox-deadline-ms") {
         cmd.args(["--sandbox-deadline-ms", "3000"]);
     }
+    // The runtime log (the worker's standard error included) is in `Run.stderr` for the messages of failing assertions.
+    cmd.args(["--log", "info"]);
     cmd.args(extra);
     cmd.env_clear();
     for key in ["PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE"] {
@@ -231,7 +233,11 @@ fn m2_infinite_loop() {
         ],
     );
     let obs = observations(&run.report);
-    assert_eq!(obs[0]["payload"]["termination"], "deadline");
+    assert_eq!(
+        obs[0]["payload"]["termination"], "deadline",
+        "{}\n{}",
+        obs[0], run.stderr
+    );
     assert!(obs[0]["metrics"]["wall_ms"].as_i64().unwrap() < 5_000);
 }
 

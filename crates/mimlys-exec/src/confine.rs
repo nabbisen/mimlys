@@ -382,9 +382,20 @@ pub fn no_new_privs() -> bool {
     }
 }
 
-/// Clause E as the worker sees it: the environment it was given.
+/// Clause E as the worker sees it: the names in its environment that it
+/// was not given, sorted; empty when the environment is explicit.
+pub fn environment_extras(allowed: &[&str]) -> Vec<String> {
+    let mut extras: Vec<String> = std::env::vars_os()
+        .filter(|(k, _)| !allowed.iter().any(|a| k == *a))
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    extras.sort();
+    extras
+}
+
+/// Whether the environment holds nothing but `allowed` (clause E).
 pub fn environment_is_explicit(allowed: &[&str]) -> bool {
-    std::env::vars_os().all(|(k, _)| allowed.iter().any(|a| k == *a))
+    environment_extras(allowed).is_empty()
 }
 
 #[cfg(test)]

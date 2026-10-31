@@ -170,21 +170,41 @@ pub fn main() {
 
 fn own_clauses() -> BTreeMap<String, ClauseState> {
     let no_new_privs = crate::confine::no_new_privs();
-    let env_explicit = crate::confine::environment_is_explicit(&[
+    // What the runtime gives the worker (`worker_env`), plus what the
+    // platform's own libraries set inside the process: on macOS,
+    // CoreFoundation sets `__CF_USER_TEXT_ENCODING` at load from the
+    // process's user id, not from the parent's environment.
+    let mut allowed = vec![
         "MIMLYS_WORKER",
         "MIMLYS_PROBE_FAIL",
         "MIMLYS_PROBE_BEST_EFFORT",
         "SystemRoot",
         "SYSTEMROOT",
-    ]);
+    ];
+    if cfg!(target_os = "macos") {
+        allowed.push("__CF_USER_TEXT_ENCODING");
+    }
+    let extras = crate::confine::environment_extras(&allowed);
     let mut m: BTreeMap<String, ClauseState> =
         APPLIED.get().map(|a| a.report.clone()).unwrap_or_default();
     m.insert(
         "E".into(),
-        if env_explicit {
+        if extras.is_empty() {
             ClauseState::enforced("explicit_environment")
         } else {
-            ClauseState::unavailable("environment inherited")
+            // The names (never the values), so that the report says what leaked.
+            let shown = extras
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = extras.len().saturating_sub(8);
+            ClauseState::unavailable(&if more > 0 {
+                format!("environment inherited: {shown} (+{more} more)")
+            } else {
+                format!("environment inherited: {shown}")
+            })
         },
     );
     if !m.contains_key("P") {

@@ -167,8 +167,9 @@ fn rfc_007_context_chars_and_short_secret() {
     let dir = tempfile::tempdir().unwrap();
     let key = dir.path().join("key");
     std::fs::write(&key, "short\n").unwrap();
+    // A literal string: on Windows the path holds backslashes.
     let text = format!(
-        "config_version = 1\n[backend]\nkind = \"openai_compatible\"\nurl = \"http://127.0.0.1:8080/v1\"\nmodel = \"m\"\napi_key = \"file:{}\"\n",
+        "config_version = 1\n[backend]\nkind = \"openai_compatible\"\nurl = \"http://127.0.0.1:8080/v1\"\nmodel = \"m\"\napi_key = 'file:{}'\n",
         key.display()
     );
     let err = Config::parse(&text).unwrap().resolve_secrets().unwrap_err();

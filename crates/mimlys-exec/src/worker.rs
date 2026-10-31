@@ -504,13 +504,15 @@ fn run_one(
             || cancel_sent_at
                 .is_some_and(|t| t.elapsed() > Duration::from_millis(LIM_O2_CANCEL_MS));
         if overdue {
+            // Exited already (a crash the frame reader has not reported yet)
+            // or unresponsive: the log says which, with the status when there is one.
+            let note = match live.child.try_wait() {
+                Ok(Some(status)) => format!("the worker exited before answering: {status}"),
+                _ => "the worker did not answer within LIM-O2".to_owned(),
+            };
             live.child.kill_tree();
             return RunResult {
-                outcome: fault(
-                    HostFaultDetail::WorkerDied,
-                    started,
-                    Some("the worker did not answer within LIM-O2"),
-                ),
+                outcome: fault(HostFaultDetail::WorkerDied, started, Some(&note)),
                 died: true,
             };
         }
@@ -550,8 +552,20 @@ fn run_one(
             }
             Ok(Ok(_)) => continue,
             Ok(Err(FrameError::Eof)) | Err(RecvTimeoutError::Disconnected) => {
+                // Its output closed: the exit status, when it ends within LIM-O2, says how.
+                let note = if live
+                    .child
+                    .wait_within(Duration::from_millis(LIM_O2_CANCEL_MS))
+                {
+                    match live.child.try_wait() {
+                        Ok(Some(status)) => format!("the worker exited: {status}"),
+                        _ => "the worker closed its output".to_owned(),
+                    }
+                } else {
+                    "the worker closed its output and did not exit within LIM-O2".to_owned()
+                };
                 return RunResult {
-                    outcome: fault(HostFaultDetail::WorkerDied, started, None),
+                    outcome: fault(HostFaultDetail::WorkerDied, started, Some(&note)),
                     died: true,
                 };
             }
@@ -570,7 +584,7 @@ fn run_one(
 
 fn fault(detail: HostFaultDetail, started: Instant, note: Option<&str>) -> ExecutionOutcome {
     if let Some(n) = note {
-        tracing::info!(target: "mimlys_worker", "{n}");
+        tracing::warn!(target: "mimlys_worker", "{n}");
     }
     ExecutionOutcome {
         termination: Termination::HostFault { detail },
