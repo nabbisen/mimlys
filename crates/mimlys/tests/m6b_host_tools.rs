@@ -7,6 +7,9 @@
 //! Linux suite is `m6a_host_tools.rs`.
 #![cfg(windows)]
 
+mod common;
+
+use common::run_bounded;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -109,12 +112,8 @@ network = true
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = self.command(args).output().unwrap();
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+        let out = run_bounded(&mut self.command(args), self.data.path());
+        (out.code(), out.stdout, out.stderr)
     }
 
     fn json(&self, args: &[&str]) -> (i32, Value) {
@@ -659,15 +658,10 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
             .stdin(std::process::Stdio::null());
-        let out = cmd.output().unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        let value: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-            panic!(
-                "not JSON ({e}): {stdout}\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            )
-        });
-        (out.status.code().unwrap_or(-1), value)
+        let out = run_bounded(&mut cmd, data.path());
+        let value: Value = serde_json::from_str(out.stdout.trim())
+            .unwrap_or_else(|e| panic!("not JSON ({e}): {}\n{}", out.stdout, out.stderr));
+        (out.code(), value)
     };
     for dir in [&cargo_home, &rustup_home] {
         let (code, value) = run(&["toolchain", "grant", dir, "--yes"]);
