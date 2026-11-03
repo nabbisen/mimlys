@@ -2,8 +2,9 @@
 //! REQ-CONF-003, REQ-CONF-009, REQ-CONF-010). One `Confinement` per platform
 //! family spawns the worker with an explicit environment inside a process
 //! tree it can terminate, and reports per clause what it enforces. The
-//! backends for the filesystem, network, memory and count clauses arrive in
-//! M6a–M6c; until then those clauses are `unavailable` and say so.
+//! backends for the filesystem, network, memory and count clauses are the
+//! Linux one (M6a, `linux`) and the Windows one (M6b, `windows`); on macOS
+//! (M6c, not yet shipped) those clauses are `unavailable` and say so.
 //!
 //! Foreign-function code lives only in this module's platform files, each
 //! `unsafe` block justified (REQ-CONF-010).

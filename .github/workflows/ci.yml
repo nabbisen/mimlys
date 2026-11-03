@@ -1,6 +1,12 @@
 # CI gate (REQ-TEST-014): format, lints, tests and build on Linux, Windows and
-# macOS; dependency audit, license check, core-dependency rule, RFC invariants
-# and documentation checks on Linux.
+# macOS; the build and tests on the minimum Rust version; the packaging
+# dry-run; dependency audit, license check, core-dependency rule, RFC
+# invariants and documentation checks on Linux. What each job verifies is
+# written in docs/src/maintainers/repository-guards.md.
+#
+# Rules for this file: actions are pinned by commit hash with the release in
+# a comment; tools are pinned (mdbook), never `latest`; a new job never
+# changes what an existing job runs.
 name: CI
 
 on:
@@ -21,22 +27,55 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace --all-features --no-fail-fast
 
+  # REQ-PLAT-001, REQ-TEST-014: the stated minimum Rust version is real. The
+  # version is read from the workspace manifest, so it is written once.
+  msrv:
+    name: minimum Rust version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: rustc --version
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace --all-features --no-fail-fast
+
+  # REQ-TEST-014: the six crates package and verify, in dependency order,
+  # without uploading anything.
+  package:
+    name: packaging dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo publish --workspace --dry-run
+
   deny:
     name: dependency audit and licenses
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories licenses bans sources
 
@@ -44,14 +83,19 @@ jobs:
     name: core dependencies, RFCs, documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: scripts/check-core-deps.sh
       - run: scripts/check-unsafe.sh
       - run: scripts/check-rfcs.sh
       - run: scripts/check-doc-refs.sh
-      - uses: peaceiris/actions-mdbook@v2
+      # Report only (repository-guards.md §3): lists the requirements and
+      # invariants no test names; it fails the job only on a malformed map.
+      - run: scripts/check-req-tests.sh
+      - uses: peaceiris/actions-mdbook@ee69d230fe19748b7abf22df32acaa93833fad08 # v2.0.0
         with:
-          mdbook-version: latest
+          mdbook-version: 0.5.4
       - run: mdbook build docs

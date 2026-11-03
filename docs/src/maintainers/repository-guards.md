@@ -10,7 +10,7 @@
 | `msrv` job, Linux | build and test on the toolchain named by `rust-version` (REQ-PLAT-001) | the stated minimum is real |
 | `package` job, Linux | `cargo publish --workspace --dry-run` | the six crates package and verify in dependency order |
 | `deny` job | `cargo deny check advisories licenses bans sources` | REQ-SEC-012 |
-| `rules` job | `scripts/check-core-deps.sh`, `check-unsafe.sh`, `check-rfcs.sh`, `check-doc-refs.sh`, `check-req-tests.sh` (report only), `mdbook build docs` | REQ-ARCH-002, REQ-ENG-001, RFC 000, the registers, the book |
+| `rules` job | `scripts/check-core-deps.sh`, `check-unsafe.sh`, `check-rfcs.sh`, `check-doc-refs.sh`, `check-req-tests.sh` (report only), `mdbook build docs` (pinned, 0.5.4) | REQ-ARCH-002, REQ-ENG-001, RFC 000, the registers, the book |
 | `interpreters` workflow, monthly and on demand | rebuilds the pinned interpreter from its recipe and compares the hash | REQ-ARCH-007; a mismatch is a review item, never silently accepted |
 
 Rules for the workflows: tools are pinned (the `mdbook` version in use, not `latest`); actions are pinned by commit hash with the tag in a comment; a new job never changes what an existing job runs.
@@ -26,7 +26,8 @@ It lists every requirement marked `T` that no test names, and every invariant `I
 - **Report only** until the architect has decided which gaps get tests; it prints and exits 0. It is turned into a failing check when the list is empty.
 - **A mapping file**, `scripts/req-test-map.txt`, holds the requirements met structurally, one line each with the reason (REQ-TEST-014 is the CI gate itself; REQ-ENG-001 is `check-unsafe.sh`). A mapped requirement is not listed. The file is reviewed like code: a line without a reason is an error.
 - **No test is written to empty the list.** A test that names a requirement it does not verify is worse than a listed gap.
-- The state on 2026-11-03: 8 of 14 invariants and 29 of 187 `T` requirements named by no test (intake review, N-05).
+- **What is searched.** The test files only: a `tests.rs` beside a module and everything under a crate's `tests/`. A mention in ordinary source (a doc comment on an implementation: `(REQ-ARCH-002)`) is documentation, not a test, and does not count.
+- The state on 2026-11-03: the intake review (N-05) found 8 of 14 invariants and 29 of 187 `T` requirements named by no test, searching every Rust file. Searching the test files only, as above, the script finds **8 of 14 invariants and 46 of 189 `T` requirements** (four more are mapped as structural): 21 requirements are named only in source comments. The invariants agree; the requirements differ by that 21, and the script's number is the one to track.
 
 ## 4. Other scripts
 
