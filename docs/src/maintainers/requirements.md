@@ -488,7 +488,7 @@ At startup every task in `running` shall enter `recovering`. An action in `runni
 An action with effect `external_write`, a non-reversible `host_write`, or a non-idempotent `external_read`, whose outcome is `unknown`, shall never be re-executed automatically. (INV-07, THR-08)
 
 ### REQ-PERS-009 Snapshot references — M3 · T
-The database shall reference only snapshots whose objects and manifest were fully written and fsynced; unreferenced objects are collected by REQ-WS-012; recovery shall verify a manifest before trusting a checkpoint. (R-12, THR-29)
+The database shall reference only snapshots whose objects and manifest were fully written and fsynced; objects no remaining manifest references are removed with their task by REQ-WS-012; recovery shall verify a manifest before trusting a checkpoint. (R-12, THR-29)
 
 ### REQ-PERS-010 Retention — M3 · T
 Nothing is deleted without the user's command (REQ-WS-012); the only recovery point of a non-terminal task can never be deleted; the audit stays unless `task delete --audit` asks for its removal. LIM-P2 … LIM-P4 carry no timer. (RFC 006)
@@ -863,7 +863,7 @@ A release verifies that requirements, external design, limits, threat register, 
 | M3 | Snapshots, rollback, promotion and unknown-outcome recovery verified; symbolic-link tests pass in both directions |
 | M4 | A local model completes a scripted repair of a WASM-targetable workload within budgets; token and prefix measurements reported |
 | M5 | rypsok tools run under capability and destination policy; `engine_status` invisible to the model |
-| M6a / M6b / M6c | The confinement clause tests pass on the platform; a declared host tool runs offline with the ED §86 scenario of the draft |
+| M6a / M6b / M6c | The confinement clause tests pass on the platform; a declared host tool runs offline: the demonstration of external design §23 |
 
 ---
 

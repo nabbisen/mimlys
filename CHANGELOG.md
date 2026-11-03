@@ -11,7 +11,7 @@ announced here under "Changed".
 
 ## [0.7.0] - 2026-11-03
 
-The first tagged and published release: milestones M1 to M6b. Releases 0.1 to
+The first tagged release (not published to crates.io): milestones M1 to M6b. Releases 0.1 to
 0.6 were accepted milestones that were never tagged or published; their
 content is recorded here under 0.7.0.
 
