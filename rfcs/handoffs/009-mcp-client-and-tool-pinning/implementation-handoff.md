@@ -1,6 +1,6 @@
 # Handoff 009 — The MCP client, rypsok as the first external tool server (M5)
 
-**RFC.** [RFC 009](../../accepted/009-mcp-client-and-tool-pinning.md) (Accepted)
+**RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) (Accepted)
 **Specification.** REQ-MCP-001 … 010; REQ-TOOL-005, 006, 007, 008; REQ-PRIV-003; REQ-CAP-009; REQ-TEST-012, REQ-TEST-015; external design §11.1, §17.1, §19.1, §20, §23 (M5); limits LIM-I1 … I4, LIM-I5, LIM-C2, LIM-O2, LIM-O5, LIM-O6, LIM-X3, LIM-U6.
 **Crates.** `mimlys-mcp` (new: `server.rs` child lifecycle, `import.rs` definition import, `client.rs` calls and cancellation, `tools.rs` the `ToolProvider`, `testserver.rs` behind a feature), `mimlys-core` (`schema.rs` bounded JSON-Schema validator; `task.rs` `TaskVersions.tool_imports`; `tool.rs` import record types; events), `mimlys` (`[servers]` configuration, tools composed per task with the external provider, `status`, the book chapter, the M5 demonstration).
 **Milestone.** M5. Depends on 001–008, 010. Release 0.5.

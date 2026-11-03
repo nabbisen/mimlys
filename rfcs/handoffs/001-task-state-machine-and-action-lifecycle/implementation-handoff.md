@@ -1,6 +1,6 @@
 # Handoff 001 — Task state machine and action lifecycle
 
-**RFC.** [RFC 001](../../accepted/001-task-state-machine-and-action-lifecycle.md) (Accepted 2026-10-27)
+**RFC.** [RFC 001](../../done/001-task-state-machine-and-action-lifecycle.md) (Accepted 2026-10-27)
 **Specification.** Requirements §4 (REQ-ARCH-001, 002, 006), §5 (REQ-TASK-001 … 012), §6 (REQ-DEC-001, 010, 012); external design §5, §6.1, §6.5, §7.1, §7.3–7.5, §17.1; limits LIM-T1 … LIM-T6, LIM-U4 … LIM-U6.
 **Crate.** `mimlys-core`. No I/O, no Tokio needed here.
 **Milestone.** M1.

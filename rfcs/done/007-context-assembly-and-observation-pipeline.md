@@ -1,6 +1,6 @@
 # RFC 007 — Context assembly and the observation pipeline
 
-**Status.** Accepted (2026-10-29)
+**Status.** Implemented (0.7.0; accepted 2026-10-29)
 **Tracks.** Decision D-12 of the startup review; findings C-07, M-18, M-19, K-01, R-14; threats THR-01, THR-10, THR-16, THR-21, THR-33.
 **Touches.** `mimlys-core` (`context.rs`, the runtime's assembler replacing the M1 form, the step record's context measures, metrics), `mimlys` (the resolved secret values given to the runtime for redaction, `metrics`), external design §15, §17.2, §19.1 (`[backend] context_chars`); requirements REQ-CTX-001, 003, 004, 007, 010, REQ-OBS-003, REQ-TEST-010.
 

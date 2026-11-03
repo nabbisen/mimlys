@@ -1,6 +1,6 @@
 # Handoff 004 — Persistence, write ordering and recovery (M1 part)
 
-**RFC.** [RFC 004](../../accepted/004-persistence-checkpoints-and-recovery.md) (Accepted 2026-10-27)
+**RFC.** [RFC 004](../../done/004-persistence-checkpoints-and-recovery.md) (Accepted 2026-10-27)
 **Specification.** Requirements REQ-PERS-001 … 008, 012; REQ-WS-001, 008; REQ-OBS-001, 002, 003, 008; REQ-SEC-008; REQ-MAIN-002; external design §14.1, §16, §17, §21.3; limits LIM-P1, LIM-P5, LIM-O3, LIM-S4, LIM-C2, LIM-W1 … W3.
 **Crates.** `mimlys-persist` (store, blobs, migrations); `mimlys-core` (`recovery.rs`: the pure disposition logic; `Persistence` trait already defined in handoff 002).
 **Milestone.** M1. Snapshots, promotion and effect-based rollback are M3 (handoff 006); this handoff stores snapshot ids as opaque strings and implements recovery without rollback.

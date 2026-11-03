@@ -1,6 +1,6 @@
 # Handoff 003 — Effects, grants, policy and approvals
 
-**RFC.** [RFC 003](../../accepted/003-effects-grants-and-approvals.md) (Accepted 2026-10-27)
+**RFC.** [RFC 003](../../done/003-effects-grants-and-approvals.md) (Accepted 2026-10-27)
 **Specification.** Requirements REQ-TOOL-002; REQ-CAP-001 … 010; REQ-APR-001 … 010; REQ-TASK-010; REQ-SEC-002, 014; REQ-CFG-004; external design §5.3, §7.2, §9, §10, §19.1 (policy section); limits LIM-A1, LIM-A2, LIM-D2, LIM-D4, LIM-I5, LIM-I6, LIM-W4, LIM-W5.
 **Crate.** `mimlys-core` (effects, grants, policy, approvals, questions, rendering). The policy *file* parsing belongs to handoff 010; this handoff defines the typed `Policy` the file deserializes into.
 **Milestone.** M1. Depends on handoffs 001 and 002.

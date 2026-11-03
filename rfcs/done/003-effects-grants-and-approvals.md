@@ -1,6 +1,6 @@
 # RFC 003 — Effects, grants and approvals
 
-**Status.** Accepted (owner sign-off 2026-10-27)
+**Status.** Implemented (0.7.0; accepted 2026-10-27)
 **Tracks.** Decisions D-04, D-05 and D-19 of the startup review; findings C-06, X-03, X-09, R-01, R-03, R-04, A-11, M-02, M-08.
 **Touches.** `mimlys-core` (effect, grant, policy, approval modules), the CLI approval prompt, the configuration's policy section, external design §7.2, §9, §10.
 

@@ -1,6 +1,6 @@
 # RFC 002 — Decision schema and validation order
 
-**Status.** Accepted (owner sign-off 2026-10-27)
+**Status.** Implemented (0.7.0; accepted 2026-10-27)
 **Tracks.** Decision D-01 of the startup review; findings M-01, M-11, R-02, A-09, C-04, C-10.
 **Touches.** `mimlys-core` (decision, validator, rejection modules), the adapter SPI, the control API, external design §3, §4, §6.
 

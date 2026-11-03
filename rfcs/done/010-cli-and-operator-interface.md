@@ -1,6 +1,6 @@
 # RFC 010 — CLI and operator interface
 
-**Status.** Accepted (owner sign-off 2026-10-27; the M1 part implemented, M2–M5 parts open)
+**Status.** Implemented (0.7.0; accepted 2026-10-27)
 **Tracks.** Decisions D-17 and D-18 of the startup review; findings M-13, X-05, X-06, A-16; requirements REQ-CFG-001 … REQ-CFG-006, REQ-CLI-001 … REQ-CLI-006, REQ-APR-009.
 **Touches.** The `mimlys` crate (commands, configuration loading, approval prompt, follow mode, logging), the configuration schema, external design §4, §10.1, §19. Spans M1 (task control, approvals, fakes, `check`) to M5 (servers); each milestone's part is handed off separately.
 

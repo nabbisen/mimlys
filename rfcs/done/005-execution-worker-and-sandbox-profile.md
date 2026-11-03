@@ -1,6 +1,6 @@
 # RFC 005 — Execution worker and sandbox profile
 
-**Status.** Accepted (owner sign-off 2026-10-27; Q-1 … Q-4 of the review taken as recommended)
+**Status.** Implemented (0.7.0; accepted 2026-10-27)
 **Tracks.** Decisions D-10, D-16 and D-06 v2 of the startup review; findings R-06, R-18, C-12, X-07, M-14; threats THR-05, THR-11, THR-12, THR-17, THR-19, THR-32.
 **Touches.** `mimlys-exec` (the worker binary, the Wasmtime sandbox, the confinement interface and probe, `run_script` and `run_wasm`), the worker protocol, the data-directory layout (`interpreters/`), the configuration (`[interpreters]`, RFC 010's M2 part), external design §7.4, §12, §13.1, §13.4.
 

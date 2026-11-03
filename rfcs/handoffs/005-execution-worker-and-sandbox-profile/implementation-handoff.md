@@ -1,6 +1,6 @@
 # Handoff 005 — Execution worker, sandbox profile, confinement probe (M2)
 
-**RFC.** [RFC 005](../../accepted/005-execution-worker-and-sandbox-profile.md) (Accepted 2026-10-27)
+**RFC.** [RFC 005](../../done/005-execution-worker-and-sandbox-profile.md) (Accepted 2026-10-27)
 **Specification.** Requirements REQ-SBX-001 … 012; REQ-ARCH-007, 008; REQ-CONF-001, 002, 003, 009, 010; REQ-SEC-006; REQ-SCHED-003; REQ-TOOL-006, 007, 008; REQ-TEST-008, 013; REQ-PLAT-003; external design §7.4, §11 (`run_script`, `run_wasm`), §12, §13.1, §13.2, §13.4, §23 (M2); limits LIM-S1 … LIM-S8, LIM-X2, LIM-X3, LIM-O2, LIM-O1.
 **Crates.** `mimlys-exec` (worker binary, sandbox, protocol framing, confinement interface and probe, the two tools); `mimlys` (`[interpreters]` configuration, `interpreters` commands, `status` clause table, the worker as the task's tool provider for `run_*`); `mimlys-core` (small: tool definitions of `run_script` and `run_wasm` live in `mimlys-exec`; no change to the validator).
 **Milestone.** M2. Depends on handoffs 001–004 and 010.

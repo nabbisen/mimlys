@@ -1,6 +1,6 @@
 # RFC 006 — Workspace snapshots, rollback and promotion
 
-**Status.** Accepted (owner sign-off 2026-10-28, revision 2: every file hashed, ownership instead of collection)
+**Status.** Implemented (0.7.0; accepted 2026-10-28)
 **Tracks.** Decisions D-08 and D-09 of the startup review; findings R-09, R-10, R-12, R-13, A-05, A-12, X-04; threats THR-07, THR-08, THR-27, THR-28, THR-29.
 **Touches.** `mimlys-core` (the snapshot manifest and diff as pure types, the `WorkspaceProvider` SPI, the loop's write-effect lines, recovery with restore, fork), `mimlys-persist` (the snapshot store with its journal, migration 002, task deletion), `mimlys` (restore, promotion, fork, `rollback`, `promote`, `task delete`, `task new --from-task`), external design §5.4, §7.5, §14.3 … §14.6, §16.3, §16.4, §19.1, §19.2; requirements REQ-WS-009, REQ-WS-012, REQ-PERS-010, REQ-OBS-005 (amended: explicit deletion instead of timed collection).
 

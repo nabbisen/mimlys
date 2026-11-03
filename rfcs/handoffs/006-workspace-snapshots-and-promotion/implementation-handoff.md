@@ -1,6 +1,6 @@
 # Handoff 006 — Snapshots, rollback, promotion, lifecycle, fork (M3)
 
-**RFC.** [RFC 006](../../accepted/006-workspace-snapshots-and-promotion.md) (Accepted 2026-10-28)
+**RFC.** [RFC 006](../../done/006-workspace-snapshots-and-promotion.md) (Accepted 2026-10-28)
 **Specification.** REQ-WS-004 … 007, 009, 010, 012; REQ-TOOL-010; REQ-PERS-007 (M3), 009, 010, 011; REQ-TASK-004; REQ-OBS-005; REQ-SEC-015; REQ-TEST-009; external design §5.4, §7.5, §14.1, §14.3 … §14.6, §16.3, §16.4, §21.3 (CONS-04), §23 (M3); limits LIM-W1 … W5, LIM-P2 … P4, LIM-C5, LIM-U6.
 **Crates.** `mimlys-core` (`snapshot.rs`: manifest, entry, diff, pure; SPI growth; loop lines 4/6/7 with snapshots; recovery restore; fork in `create_task`; `history` segment), `mimlys-persist` (`snapshots.rs`: object and manifest store with fsync, the journal, reference counts; migration `002_snapshots.sql`; `deletion.rs`; CONS-04), `mimlys` (`workspace.rs`: snapshot, restore, diff, promote, fork, delete; `commands/{rollback,promote}.rs`, `task delete`, footprint in `task list` and `status`; prompt for promotion and deletion).
 **Milestone.** M3. Depends on handoffs 001–005 and 010.

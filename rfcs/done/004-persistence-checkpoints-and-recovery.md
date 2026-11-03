@@ -1,6 +1,6 @@
 # RFC 004 — Persistence, checkpoints and recovery
 
-**Status.** Accepted (owner sign-off 2026-10-27)
+**Status.** Implemented (0.7.0; accepted 2026-10-27)
 **Tracks.** Decision D-15 of the startup review; findings M-09, R-11, R-12, A-05, M-20; threat THR-08, THR-29, THR-31.
 **Touches.** `mimlys-persist` (SQLite store, snapshot store), `mimlys-core` (recovery logic), the data-directory layout, external design §14.1, §16.
 

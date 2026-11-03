@@ -1,6 +1,6 @@
 # Handoff 002 — Decision schema, validation pipeline and built-in tools
 
-**RFC.** [RFC 002](../../accepted/002-decision-schema-and-validation-order.md) (Accepted 2026-10-27)
+**RFC.** [RFC 002](../../done/002-decision-schema-and-validation-order.md) (Accepted 2026-10-27)
 **Specification.** Requirements REQ-ARCH-004, 005; REQ-DEC-002 … 009, 011, 012; REQ-TOOL-001, 003 … 008; REQ-WS-011; REQ-CTX-005, 006, 008, 009; REQ-SEC-009; REQ-MDL-001, 002; external design §3, §6.2–6.4, §8, §11, §15.2; limits LIM-D1 … D4, LIM-I1 … I7, LIM-C2, LIM-W3, LIM-O4.
 **Crates.** `mimlys-core` (schema, parser, validator, tool model, SPI, observation); `mimlys-exec` (built-in file tools over capability handles); `mimlys-model` (fake backend).
 **Milestone.** M1. Depends on handoff 001.

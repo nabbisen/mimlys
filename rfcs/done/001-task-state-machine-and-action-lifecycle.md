@@ -1,6 +1,6 @@
 # RFC 001 — Task state machine and action lifecycle
 
-**Status.** Accepted (owner sign-off 2026-10-27)
+**Status.** Implemented (0.7.0; accepted 2026-10-27)
 **Tracks.** Decisions D-02 and D-03 of the startup review; findings C-01, C-02, C-03, C-05, A-10, A-11, R-11.
 **Touches.** `mimlys-core` (task, step, action modules), the persistence schema, the CLI's state display, external design §5, §6.1, §7.
 

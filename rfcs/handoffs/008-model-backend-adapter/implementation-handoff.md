@@ -1,6 +1,6 @@
 # Handoff 008 — The OpenAI-compatible backend adapter (M4)
 
-**RFC.** [RFC 008](../../accepted/008-model-backend-adapter.md) (Accepted)
+**RFC.** [RFC 008](../../done/008-model-backend-adapter.md) (Accepted)
 **Specification.** REQ-MDL-001 … 008; REQ-SEC-009; REQ-SEC-010; REQ-CFG-003; REQ-OBS-006; external design §3, §19.1, §20, §23 (M4); limits LIM-M1 … M4, LIM-D1, LIM-T1.
 **Crates.** `mimlys-model` (`openai.rs`, `openai/schema.rs`, `openai/tests.rs` with a mock server), `mimlys-core` (`Profile.external`, `TaskVersions.backend`), `mimlys` (configuration keys, the probe in `status`, the demonstration script and the report).
 **Milestone.** M4, with handoff 007. Depends on 001–006, 010.

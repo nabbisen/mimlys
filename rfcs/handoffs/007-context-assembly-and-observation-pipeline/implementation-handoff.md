@@ -1,6 +1,6 @@
 # Handoff 007 — Context assembly, compression, redaction, measurement (M4)
 
-**RFC.** [RFC 007](../../accepted/007-context-assembly-and-observation-pipeline.md) (Accepted)
+**RFC.** [RFC 007](../../done/007-context-assembly-and-observation-pipeline.md) (Accepted)
 **Specification.** REQ-CTX-001 … 010; REQ-OBS-003; REQ-PRIV-002; REQ-TEST-010; REQ-TEST-016; external design §15, §17.2, §19.1; limits LIM-C1 … C4, LIM-D4, LIM-I1.
 **Crates.** `mimlys-core` (`context.rs` grown: segment writer, repeated-line collapse, step summaries, the budget algorithm, redaction; `runtime/context.rs` replacing `context_m1.rs`; `Step` measures; metrics), `mimlys-persist` (metrics derived from step records), `mimlys` (secret values to the runtime; `metrics` output; `[backend] context_chars`).
 **Milestone.** M4, with handoff 008. Depends on 001–006, 010.

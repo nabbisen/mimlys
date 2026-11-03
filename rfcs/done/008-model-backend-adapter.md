@@ -1,6 +1,6 @@
 # RFC 008 — The model backend adapter
 
-**Status.** Accepted (2026-10-29; revision 2 decided the five questions of the review package under the owner's philosophy)
+**Status.** Implemented (0.7.0; accepted 2026-10-29)
 **Tracks.** Decision D-21 of the startup review; findings A-09, M-01, M-15, R-15, R-19; threats THR-02, THR-16, THR-30.
 **Touches.** `mimlys-model` (the OpenAI-compatible adapter), `mimlys` (configuration, the backend probe in `status`, the demonstration), `mimlys-core` (the profile's `remote_backend` key, the SPI's usage report), external design §3, §19.1, §20; requirements REQ-MDL-003 … 006, REQ-SEC-010.
 

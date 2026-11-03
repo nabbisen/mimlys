@@ -1,9 +1,9 @@
 # RFC 009 — The MCP client and tool pinning
 
-**Status.** Accepted (2026-10-29; revision 2 decided the five questions of the review package under the owner's philosophy)
+**Status.** Implemented (0.7.0; accepted 2026-10-29)
 **Tracks.** Decision D-13 of the startup review; findings M-06, K-01 … K-07, K-10, R-07, R-08; threats THR-10, THR-24, THR-25, THR-26.
 **Touches.** `mimlys-mcp` (the client: child processes, discovery, import, calls, cancellation), `mimlys-core` (external tools in the ceiling, output validation of imported schemas, `tool.pinned`/`tool.unpinned` emitted), `mimlys` (`[servers.<name>]`, the tools composed per task, `status`), external design §3, §11.1, §17.1, §19.1, §20, §23 (M5); requirements REQ-MCP-001 … 010, REQ-TOOL-005, REQ-PRIV-003, REQ-TEST-012.
-**Reference contract.** rypsok 0.7.0 (`.git-exclude/projects/rypsok`, tag 0.7.0): tools `web_search`, `web_fetch`, `engine_status`; MCP over stdio (and Streamable HTTP, not used here); the handshake-based revisions and 2026-07-28 served in parallel; `notifications/cancelled` honoured within 500 ms; graceful exit on closed stdin within 3 s; `structuredContent` plus the same JSON as text; errors as `isError: true` with one `{error: {kind, message, detail}}` object; annotations `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint` per tool; server instructions one paragraph.
+**Reference contract.** rypsok 0.7.0 (rypsok 0.8.0, 2026-10-29, is contract-compatible: the three response schemas and the `rmcp =3.5.0` pin are unchanged; what changed are `web_fetch`'s error kinds and reasons, which mimlys surfaces as `kind: message` without interpreting them, so nothing depends on them; verified 2026-11-03) (`.git-exclude/projects/rypsok`, tag 0.7.0): tools `web_search`, `web_fetch`, `engine_status`; MCP over stdio (and Streamable HTTP, not used here); the handshake-based revisions and 2026-07-28 served in parallel; `notifications/cancelled` honoured within 500 ms; graceful exit on closed stdin within 3 s; `structuredContent` plus the same JSON as text; errors as `isError: true` with one `{error: {kind, message, detail}}` object; annotations `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint` per tool; server instructions one paragraph.
 
 ## Summary
 

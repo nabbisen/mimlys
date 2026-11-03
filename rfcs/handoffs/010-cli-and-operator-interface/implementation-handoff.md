@@ -1,6 +1,6 @@
 # Handoff 010 — CLI, configuration, the step loop and the M1 demonstration
 
-**RFC.** [RFC 010](../../accepted/010-cli-and-operator-interface.md) (Accepted 2026-10-27 with the M1 review)
+**RFC.** [RFC 010](../../done/010-cli-and-operator-interface.md) (Accepted 2026-10-27 with the M1 review)
 **Specification.** Requirements REQ-CFG-001 … 006; REQ-CLI-001 … 005; REQ-APR-009; REQ-TASK-001, 005, 006, 012; REQ-DEC-001, 009; REQ-SCHED-001, 002, 004, 005; REQ-OBS-004, 006; REQ-PRIV-003, 004; REQ-WS-002, 003, 008; REQ-ENG-004; REQ-ARCH-004 (loop API); external design §4, §5.1, §6.1, §10.1, §15.2, §19; limits LIM-O1, LIM-X1, LIM-X2, LIM-W1 … W5.
 **Crates.** `mimlys` (binary: commands, configuration, prompt, follow mode, logging); `mimlys-core` (`runtime/`: the step loop and the control API implementation, pure orchestration over the SPI).
 **Milestone.** M1. Depends on handoffs 001–004. Worker IPC skeleton: `mimlys-exec::protocol` message types only (M2 implements the worker).

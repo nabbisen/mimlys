@@ -21,23 +21,23 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Accepted on |
 |----|-------|-------------|
-| 001 | [Task state machine and action lifecycle](./accepted/001-task-state-machine-and-action-lifecycle.md) | 2026-10-27 |
-| 002 | [Decision schema and validation order](./accepted/002-decision-schema-and-validation-order.md) | 2026-10-27 |
-| 003 | [Effects, grants and approvals](./accepted/003-effects-grants-and-approvals.md) | 2026-10-27 |
-| 004 | [Persistence, checkpoints and recovery](./accepted/004-persistence-checkpoints-and-recovery.md) | 2026-10-27 |
-| 005 | [Execution worker and sandbox profile](./accepted/005-execution-worker-and-sandbox-profile.md) | 2026-10-27 |
-| 006 | [Workspace snapshots, rollback and promotion](./accepted/006-workspace-snapshots-and-promotion.md) | 2026-10-28 |
-| 007 | [Context assembly and the observation pipeline](./accepted/007-context-assembly-and-observation-pipeline.md) | 2026-10-29 |
-| 008 | [The model backend adapter](./accepted/008-model-backend-adapter.md) | 2026-10-29 |
-| 009 | [The MCP client and tool pinning](./accepted/009-mcp-client-and-tool-pinning.md) | 2026-10-29 |
-| 011 | [Confinement backends and host tools](./accepted/011-confinement-backends.md) | 2026-10-29 |
-| 010 | [CLI and operator interface](./accepted/010-cli-and-operator-interface.md) | 2026-10-27 (M1 part implemented; M2–M5 parts open) |
+| 011 | [Confinement backends and host tools](./accepted/011-confinement-backends.md) | 2026-10-29 (§1–§3 and §6–§10 shipped in 0.7.0 on Linux and Windows; the macOS backend, §4, is open: M6c) |
 
 ## Implemented
 
 | ID | Title | Shipped in |
 |----|-------|------------|
 | 000 | [RFC lifecycle policy](./done/000-rfc-lifecycle-policy.md) | In effect since project startup (2026-10-02) |
+| 001 | [Task state machine and action lifecycle](./done/001-task-state-machine-and-action-lifecycle.md) | 0.7.0 (M1) |
+| 002 | [Decision schema and validation order](./done/002-decision-schema-and-validation-order.md) | 0.7.0 (M1) |
+| 003 | [Effects, grants and approvals](./done/003-effects-grants-and-approvals.md) | 0.7.0 (M1) |
+| 004 | [Persistence, checkpoints and recovery](./done/004-persistence-checkpoints-and-recovery.md) | 0.7.0 (M1) |
+| 005 | [Execution worker and sandbox profile](./done/005-execution-worker-and-sandbox-profile.md) | 0.7.0 (M2) |
+| 006 | [Workspace snapshots, rollback and promotion](./done/006-workspace-snapshots-and-promotion.md) | 0.7.0 (M3) |
+| 007 | [Context assembly and the observation pipeline](./done/007-context-assembly-and-observation-pipeline.md) | 0.7.0 (M4) |
+| 008 | [The model backend adapter](./done/008-model-backend-adapter.md) | 0.7.0 (M4) |
+| 009 | [The MCP client and tool pinning](./done/009-mcp-client-and-tool-pinning.md) | 0.7.0 (M5) |
+| 010 | [CLI and operator interface](./done/010-cli-and-operator-interface.md) | 0.7.0 (M1 to M5) |
 
 ## Archive
 
