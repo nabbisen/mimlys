@@ -73,7 +73,7 @@ secrets = [".env", ".env.*", "*.pem", "*.key", "id_*", ".ssh/", ".aws/", ".gnupg
 auto_resume = false             # return a cleanly recovered task to running
 
 [host_tools.cargo_test]         # a declared host tool; see Host tools
-command = "~/.cargo/bin/cargo"  # absolute, or a name resolved in read_paths/*/bin, never PATH
+command = "~/.cargo/bin/cargo"  # absolute, or a name resolved in the read paths that are a bin directory or hold one, never the inherited PATH
 args = ["test", "--offline"]    # fixed; host tools run offline
 allowed_args = ["--lib"]        # literals the model may add
 arg_pattern = "[A-Za-z0-9_:]+"  # what any other added argument must match (a test name)
@@ -81,7 +81,7 @@ max_args = 2
 effect = "workspace_write"      # the tool writes only inside the workspace (reversible); `external_read` exactly when network = true; host writes are a later release
 timeout_ms = 600000             # LIM-H1, 10000–3600000
 read_paths = ["~/.cargo/bin", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read; a directory holding credentials (`~/.cargo` holds `credentials.toml`) is refused
-env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable", PATH = "~/.cargo/bin:/usr/bin:/bin" }   # PATH: the built one adds <read path>/bin, so name ~/.cargo/bin here
+env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 # env_allow = ["RUSTFLAGS"]     copied from mimlys's environment
 # network = true                the dependency step: the effect must then be `external_read` (and only then); approval where the profile asks; destinations unbounded
 

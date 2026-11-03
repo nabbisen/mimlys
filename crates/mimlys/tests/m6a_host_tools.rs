@@ -747,9 +747,7 @@ max_args = 1
 effect = "workspace_write"
 timeout_ms = 600000
 read_paths = ["~/.cargo/bin", "~/.rustup"]
-# The tool's PATH is built from `<read path>/bin`, so `~/.cargo/bin` declared as a
-# read path puts `~/.cargo/bin/bin` on it; name the directories explicitly.
-env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable", PATH = "~/.cargo/bin:/usr/bin:/bin" }}
+env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }}
 "#,
             data = data.path().join("data").to_string_lossy(),
             script = script.to_string_lossy(),

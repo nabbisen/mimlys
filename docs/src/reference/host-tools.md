@@ -49,14 +49,14 @@ arg_pattern = "[A-Za-z0-9_:]+"
 max_args = 2
 effect = "workspace_write"
 read_paths = ["~/.cargo/bin", "~/.rustup"]
-env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable", PATH = "~/.cargo/bin:/usr/bin:/bin" }
+env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 
 ```
 
-The tool's `PATH` is built from the `bin` directory of each read path and the
-system's, so with `~/.cargo/bin` itself declared, `rustc` is found only
-because the example names it in `PATH`; a declaration's `env` replaces the
-built value, so keep the system directories in it.
+The tool's `PATH` is built from the read paths that are themselves a `bin`
+directory (`~/.cargo/bin`) or hold one, then `/usr/bin:/bin`, so `rustc` is
+found with nothing more; a `PATH` in the declaration's `env` replaces the
+built one. A `command` that is a name is looked up in the same directories.
 
 The command and its fixed arguments are yours. The model may add a literal
 from `allowed_args` or a test name matching `arg_pattern`, and nothing
@@ -94,7 +94,7 @@ args = ["fetch"]
 effect = "external_read"
 network = true
 read_paths = ["~/.cargo/bin", "~/.rustup"]
-env = { RUSTUP_HOME = "~/.rustup", PATH = "~/.cargo/bin:/usr/bin:/bin" }
+env = { RUSTUP_HOME = "~/.rustup" }
 ```
 
 `effect` and `network` must agree: `external_read` exactly when `network =
@@ -143,8 +143,10 @@ way, and any directory that directly holds a name from the credential list
 (`credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/`,
 and the secret patterns of the workspace exclusions: `.env`, `*.pem`, `*.key`,
 `id_*`, `.ssh/`, `.aws/`, `.gnupg/`). Landlock has no deny rule, so the check
-is on the declaration, before anything is granted. `/etc` and `/opt` stay
-readable as a whole.
+is on the declaration, before anything is granted. It is a guard on what the
+administrator wrote, looking one level down: it is not a proof that a
+declared directory holds no credentials further in, so declare the narrowest
+directory the tool needs. `/etc` and `/opt` stay readable as a whole.
 
 **When the toolchain needs a file outside the set**, it fails with the
 file's name; the remedy is to declare the directory that holds it. With
@@ -172,15 +174,17 @@ fails with `failed to create directory …/registry/src/…: Permission denied`.
 it fetched being on disk for the offline tool.)
 
 **No core dump, no `ptrace`.** The runtime and the worker mark themselves
-non-dumpable at start, so no other program of yours can read their memory,
-environment or descriptors through `/proc`, and the kernel writes no core
-dump of them. The price is the same for a debugger: you cannot attach to
-`mimlys` or `mimlys-worker` as the same user unless you run it as root.
-(`env:`-referenced secrets sit in the runtime's environment, and removing a
-variable after reading it would not hide it: `/proc/<pid>/environ` shows the
-environment a process started with.) A host tool or an MCP server child is a
-new program and dumpable again; what protects their environments is the read
-set above.
+non-dumpable at start, so a same-user program that is not itself confined
+cannot read their memory, environment or descriptors through `/proc` or
+`process_vm_readv`, and the kernel writes no core dump of them. (A confined
+program, such as a host tool, is already refused that by Landlock when the
+target is outside its domain.) The price is the same for a debugger: you
+cannot attach to `mimlys` or `mimlys-worker` as the same user unless you run
+it as root. `env:`-referenced secrets sit in the runtime's environment, and
+removing a variable after reading it would not hide it: `/proc/<pid>/environ`
+shows the environment a process started with. A host tool or an MCP server
+child is a new program and dumpable again; what protects their environments
+is the read set above.
 
 ## What `toolchain list` shows
 

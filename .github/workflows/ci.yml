@@ -36,7 +36,22 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo build --workspace --all-targets
+      # Skips are recorded by `common::skip` (libtest hides a passing test's
+      # output); clear the file so that a restored cache cannot add lines.
+      - run: rm -f target/tmp/skips.log
+        shell: bash
       - run: cargo test --workspace --all-features --no-fail-fast
+      - name: skipped tests, counted per platform
+        if: always()
+        shell: bash
+        run: |
+          f=target/tmp/skips.log
+          if [ -s "$f" ]; then n=$(wc -l < "$f"); else n=0; fi
+          {
+            echo "skipped tests on ${{ matrix.os }}: $n"
+            [ "$n" -gt 0 ] && cat "$f"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          true
 
   # REQ-PLAT-001, REQ-TEST-014: the stated minimum Rust version is real. The
   # version is read from the workspace manifest, so it is written once.
@@ -54,7 +69,22 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: rustc --version
       - run: cargo build --workspace --all-targets
+      # Skips are recorded by `common::skip` (libtest hides a passing test's
+      # output); clear the file so that a restored cache cannot add lines.
+      - run: rm -f target/tmp/skips.log
+        shell: bash
       - run: cargo test --workspace --all-features --no-fail-fast
+      - name: skipped tests, counted per platform
+        if: always()
+        shell: bash
+        run: |
+          f=target/tmp/skips.log
+          if [ -s "$f" ]; then n=$(wc -l < "$f"); else n=0; fi
+          {
+            echo "skipped tests on the minimum Rust version: $n"
+            [ "$n" -gt 0 ] && cat "$f"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          true
 
   # REQ-TEST-014: the six crates package and verify, in dependency order,
   # without uploading anything.

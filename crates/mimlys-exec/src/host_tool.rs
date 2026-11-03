@@ -64,11 +64,10 @@ pub fn resolve_command(declaration: &HostToolDeclaration) -> Result<PathBuf, Str
             Err(e) => Err(format!("{}: {e}", command.display())),
         };
     }
-    declaration
-        .read_paths
-        .iter()
-        .flat_map(|p| {
-            let base = Path::new(p).join("bin").join(command);
+    bin_dirs(&declaration.read_paths)
+        .into_iter()
+        .flat_map(|dir| {
+            let base = dir.join(command);
             let mut candidates = vec![base.clone()];
             if cfg!(windows) && base.extension().is_none() {
                 candidates.push(base.with_extension("exe"));
@@ -78,10 +77,40 @@ pub fn resolve_command(declaration: &HostToolDeclaration) -> Result<PathBuf, Str
         .find(|p| p.is_file())
         .ok_or_else(|| {
             format!(
-                "{} is under the bin directory of no read path",
+                "{} is under no declared bin directory (a read path that is a bin directory or holds one)",
                 command.display()
             )
         })
+}
+
+/// The directories a tool's commands live in, from the declared read paths
+/// (external design §13.3, §13.5): on Linux and macOS a read path that is
+/// itself a `bin` directory (`~/.cargo/bin`) and a read path that holds one
+/// (`<path>/bin`), in declaration order; on Windows `<path>\bin` for every
+/// read path, as before.
+pub fn bin_dirs(read_paths: &[String]) -> Vec<PathBuf> {
+    bin_dirs_with(read_paths, |dir| dir.is_dir())
+}
+
+/// As [`bin_dirs`], with the directory test given (the rule is tested without a filesystem).
+pub fn bin_dirs_with(read_paths: &[String], is_dir: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for path in read_paths {
+        let path = Path::new(path);
+        if cfg!(windows) {
+            dirs.push(path.join("bin"));
+            continue;
+        }
+        if path.file_name().is_some_and(|name| name == "bin") {
+            dirs.push(path.to_path_buf());
+        }
+        let held = path.join("bin");
+        if is_dir(&held) {
+            dirs.push(held);
+        }
+    }
+    dirs.dedup();
+    dirs
 }
 
 /// The notice of a tool that never started, also traced.
@@ -90,15 +119,15 @@ fn not_started(tool: &str, reason: String) -> Notice {
     Notice::HostToolNotStarted { reason }
 }
 
-/// The `PATH` the child sees: the declared read paths' `bin` directories
+/// The `PATH` the child sees, unless the declaration's `env` sets one: the
+/// declared read paths that are a `bin` directory or hold one ([`bin_dirs`])
 /// and the system's, so that a toolchain finds its own helpers (`cc`, `ld`,
 /// `link.exe`).
 fn child_path(declaration: &HostToolDeclaration) -> String {
     let separator = if cfg!(windows) { ";" } else { ":" };
-    let mut dirs: Vec<String> = declaration
-        .read_paths
+    let mut dirs: Vec<String> = bin_dirs(&declaration.read_paths)
         .iter()
-        .map(|p| Path::new(p).join("bin").to_string_lossy().into_owned())
+        .map(|d| d.to_string_lossy().into_owned())
         .collect();
     if cfg!(windows) {
         if let Ok(root) = std::env::var("SystemRoot") {
@@ -115,9 +144,14 @@ fn child_path(declaration: &HostToolDeclaration) -> String {
 /// shape, every profile and temporary location inside the workspace's
 /// temporary directory, then the declaration's variables.
 fn child_env(r: &HostRun<'_>) -> Vec<(String, String)> {
-    let tmp = r.tmp.to_string_lossy().into_owned();
+    env_for(r.declaration, r.tmp)
+}
+
+/// [`child_env`] from what it depends on: the declaration and the temporary directory.
+fn env_for(declaration: &HostToolDeclaration, tmp: &Path) -> Vec<(String, String)> {
+    let tmp = tmp.to_string_lossy().into_owned();
     let mut env = vec![
-        ("PATH".to_owned(), child_path(r.declaration)),
+        ("PATH".to_owned(), child_path(declaration)),
         ("HOME".to_owned(), tmp.clone()),
         ("TMPDIR".to_owned(), tmp.clone()),
         ("TMP".to_owned(), tmp.clone()),
@@ -130,7 +164,7 @@ fn child_env(r: &HostRun<'_>) -> Vec<(String, String)> {
             env.push(("SystemRoot".to_owned(), root));
         }
     }
-    for (k, v) in &r.declaration.env {
+    for (k, v) in &declaration.env {
         env.retain(|(name, _)| !name.eq_ignore_ascii_case(k));
         env.push((k.clone(), v.clone()));
     }
@@ -450,3 +484,6 @@ fn restore_address_space_limit(previous: rustix::process::Rlimit) {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn restore_address_space_limit(_previous: ()) {}
+
+#[cfg(test)]
+mod tests;

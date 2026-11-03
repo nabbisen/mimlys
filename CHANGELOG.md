@@ -55,6 +55,12 @@ not published; 0.7.1 is the first release on crates.io.
   exactly when `network = true`; any other pairing is an error naming the
   declaration and the value to write). `effect_view()` no longer derives the
   effect from `network`.
+- **A host tool's `PATH` and a named `command`** are built from the declared read
+  paths that are themselves a `bin` directory (`~/.cargo/bin`) or hold one,
+  then `/usr/bin:/bin` (Linux and macOS code; Windows keeps its rule), unless the
+  declaration's `env` sets `PATH`. Before, `<read path>/bin` was appended to
+  every read path, so the `~/.cargo/bin` spelling of the book left `rustc` off
+  `PATH` on a machine without a system `rustc`.
 - A host tool offline that needs a file outside its read set fails with the
   file's name (the toolchain's own message); the book now shows the message and
   the remedy, how to supply dependencies offline (vendoring; the read-only

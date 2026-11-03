@@ -729,8 +729,13 @@ fn m5_configuration_and_check() {
 }
 
 /// External design §23, M5, against a real `rypsok serve` when
-/// `MIMLYS_RYPSOK_BIN` names the binary: its Wikipedia engine is pointed at
-/// a loopback fixture server, as rypsok's own tutorial test does.
+/// `MIMLYS_RYPSOK_BIN` names the binary. rypsok is started with no
+/// configuration file, so its `web_search` reaches the real Wikipedia over
+/// the internet; no fixture server is started. The test checks only that the
+/// task reaches `completed`: the scripted backend completes it whatever the
+/// tool answered, so an unavailable search (no network) passes too. It shows
+/// that the real binary starts, is imported and pinned, and is called;
+/// it does not check an answer.
 #[test]
 fn m5_real_rypsok() {
     let Some(bin) = std::env::var_os("MIMLYS_RYPSOK_BIN").filter(|v| !v.is_empty()) else {
