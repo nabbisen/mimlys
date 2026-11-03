@@ -81,7 +81,7 @@ max_args = 2
 effect = "workspace_write"      # the tool writes only inside the workspace (reversible); `external_read` exactly when network = true; host writes are a later release
 timeout_ms = 600000             # LIM-H1, 10000–3600000
 read_paths = ["~/.cargo/bin", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read; a directory holding credentials (`~/.cargo` holds `credentials.toml`) is refused
-env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
+env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable", PATH = "~/.cargo/bin:/usr/bin:/bin" }   # PATH: the built one adds <read path>/bin, so name ~/.cargo/bin here
 # env_allow = ["RUSTFLAGS"]     copied from mimlys's environment
 # network = true                the dependency step: the effect must then be `external_read` (and only then); approval where the profile asks; destinations unbounded
 

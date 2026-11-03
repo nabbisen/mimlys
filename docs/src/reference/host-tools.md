@@ -49,9 +49,14 @@ arg_pattern = "[A-Za-z0-9_:]+"
 max_args = 2
 effect = "workspace_write"
 read_paths = ["~/.cargo/bin", "~/.rustup"]
-env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
+env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable", PATH = "~/.cargo/bin:/usr/bin:/bin" }
 
 ```
+
+The tool's `PATH` is built from the `bin` directory of each read path and the
+system's, so with `~/.cargo/bin` itself declared, `rustc` is found only
+because the example names it in `PATH`; a declaration's `env` replaces the
+built value, so keep the system directories in it.
 
 The command and its fixed arguments are yours. The model may add a literal
 from `allowed_args` or a test name matching `arg_pattern`, and nothing
@@ -89,7 +94,7 @@ args = ["fetch"]
 effect = "external_read"
 network = true
 read_paths = ["~/.cargo/bin", "~/.rustup"]
-env = { RUSTUP_HOME = "~/.rustup" }
+env = { RUSTUP_HOME = "~/.rustup", PATH = "~/.cargo/bin:/usr/bin:/bin" }
 ```
 
 `effect` and `network` must agree: `external_read` exactly when `network =
