@@ -4,7 +4,10 @@ Milestone M6b (RFC 011 §3, §7; handoff 011b) was implemented on 2026-10-31
 on a Linux machine against the platform's documentation, type-checked for
 `x86_64-pc-windows-gnu`, and is gated by the Windows runner of CI
 (`windows-latest`), where the clause suite `tests/m6b_host_tools.rs` and the
-demonstration run. This report is completed from that run.
+demonstration run. Its tables are those of the CI runs of 2026-11-03 (§2: run
+41552997121; the suite's final result: runs 41566294345 and 41568150855,
+all seven clause tests passing; the `cargo` demonstration is stated as not
+met, §4).
 
 ## 1. The backend
 
@@ -42,9 +45,10 @@ synchronous files since that commit). `mimlys status` reported tier
 | C count | enforced | `job_object` | |
 
 The M1 to M6a suites passed on the same run. The M6b suite's own
-expectations were corrected in the next round (the status JSON's host-tool
+expectations were corrected in the following rounds (the status JSON's host-tool
 objects, the verbatim prefix of a path argument, the short-form temporary
-directory); its outcome is recorded in the release package of 0.7.0.
+directory, the DACL write); from run 41566294345 (2026-11-03) every suite,
+the seven clause tests included, passes on all three platforms.
 
 ## 3. What the clause tests check (REQ-TEST-013)
 
@@ -77,7 +81,8 @@ directory); its outcome is recorded in the release package of 0.7.0.
   Server 2025): `cargo` opens it for every `rustc` it starts and fails at
   `rustc -vV` with `Access is denied`. The demonstration of §23 is therefore
   not claimed on Windows in 0.7; the suite states the fact when it meets it.
-  Lending the device to the container is M6c work.
+  Whether the device can be lent to the container at all is unknown; a spike
+  on `windows-latest` and `windows-2022` decides (no date is promised).
 - Two installations writing one directory's DACL at once (both grant their
   container the worker's directory at startup) lost one another's entry,
   and a tool's command then failed to resolve inside the loser's container

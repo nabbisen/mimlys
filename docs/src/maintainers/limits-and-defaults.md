@@ -1,6 +1,6 @@
 # Limits and Defaults
 
-**Status:** Baseline 1.0 (2026-10-02). Values are provisional until the measurement reports of M2 (sandbox) and M4 (model and context).
+**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-03. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). **Still provisional: LIM-C1**, which waits for the M4 run against a real local model (the report's run B has not been made). The other values are design choices, not measurements, and change only here.
 **Governs:** every number that the [requirements](./requirements.md) and the [external design](./external-design.md) cite by a `LIM-` identifier. The documents never repeat a value; a value changes here only.
 
 "Range" is what an administrator may configure. "fixed" means no configuration changes it. Budgets a user may set per task are bounded by the administrator's ceiling, which is itself within the range.
@@ -130,3 +130,4 @@
 | LIM-H2 | Memory of a host tool tree | 2 GiB | 256 MiB – 32 GiB | Compilers |
 | LIM-H3 | Processes in a host tool tree | 64 | 1–1024 | Fork-bomb bound |
 | LIM-H4 | Captured output of a host tool, each stream | 4 MiB | 64 KiB – 64 MiB | Build logs |
+| LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | operator may add, never remove | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |

@@ -54,7 +54,6 @@ All paths are relative to the workspace root.
 | `list_dir` | `path`, `depth?` | `entries[]{path, type, size}`, `truncated` | `workspace_read` |
 | `search_files` | `pattern`, `glob?`, `max_results?` | `matches[]{path, line, text}`, `truncated` | `workspace_read` |
 | `delete_path` | `path`, `recursive?` | `deleted` | `workspace_write` |
-
 | `run_script` | `language`, `source`, `stdin?`, `args?`, `mode?` | `termination`, `exit_code?`, stdout and stderr excerpts | by `mode` |
 | `run_wasm` | `module`, `args?`, `stdin?`, `mode?` | `termination`, `exit_code?`, stdout and stderr excerpts | by `mode` |
 | `run_host_tool` | `tool` (a declared host tool the task was granted), `args?` | `termination`, `exit_code?`, stdout and stderr excerpts | as declared (`workspace_write`; `external_read` for the dependency step) |
@@ -88,7 +87,7 @@ A non-zero exit is a `tool_error` the model sees as feedback.
 The program sees exactly `/workspace` (the task's tree, read-only when
 `mode = read_only`), an empty `/tmp` discarded afterwards, its `args` and
 `stdin`, no environment, no network, clocks rounded to a millisecond. The
-`language` of `run_script` is one of the configured interpreters; in 0.2 that
+`language` of `run_script` is one of the configured interpreters; today that
 is `javascript` (QuickJS-NG, which reads stdin and args and prints; it has no
 file modules, the file tools are for files). `run_wasm` runs a wasip1 module
 from the workspace of at most LIM-S5 bytes.

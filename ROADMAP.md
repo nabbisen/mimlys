@@ -23,8 +23,10 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | M4 | Model and context | OpenAI-compatible backend adapter with structured-output modes; context assembly with stable prefix, provenance delimiting and rule-based compression; budgets and convergence end to end; locality policy; usage metrics; the measurement report that fixes the context and prefix limits | A local model repairs a scripted defect in a JavaScript workload within its budgets; the prefix is byte-stable across steps | 0.4 |
 | M5 | Integration | The MCP client: stdio children with scrubbed environments, discovery and pinning, definition sanitization, effect declarations, destination validation, output-schema validation, cancellation; rypsok as the first external tool server; user and integrator documentation | `rypsok.web_search` and `rypsok.web_fetch` run under a `network` grant; an ungranted domain is `denied`; `engine_status` is invisible to the model | 0.5 |
 | M6a | Host tools, Linux | Confinement backend (Landlock, seccomp, namespaces where available, cgroups or rlimits) meeting every clause of the contract; declared host tools (`cargo test` first); the offline dependency step | `cargo test --offline` of a native project under every mandatory clause; the clause tests pass in CI | 0.6 |
-| M6b | Host tools, Windows | AppContainer, Job Object and restricted-token backend; reversible toolchain ACL management; redirected profile and temp paths | The same demonstration on Windows | 0.7 |
+| M6b | Host tools, Windows | AppContainer, Job Object and restricted-token backend; reversible toolchain ACL management; redirected profile and temp paths | The same demonstration on Windows. **Not met in 0.7.0:** `cargo` cannot run inside an AppContainer (the `NUL` device); the clause suite passes with the probe tool. A spike decides whether a remedy exists; no date is promised | 0.7 |
 | M6c | Host tools, macOS | Seatbelt backend; resident-size watchdog for the memory clause; tree termination by process group, documented as best-effort | The same demonstration on macOS | 0.8 |
+
+**0.7.1** is a hardening patch between M6b and M6c (RFC 011 Amendment 1, handoff 011d): the Linux backend's clause N and read set, found in the intake review after 0.7.0. It adds no milestone. 0.7.0 is tagged but not published to crates.io; 0.7.1 is the first published release.
 
 ## RFCs, in order
 
@@ -43,7 +45,7 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | 010 | CLI and operator interface | M1 → M5 | D-17, D-18, M-13 |
 | 011 | Confinement backends | M6a–M6c | D-06 v2, D-07 v2 |
 
-RFCs enter `rfcs/proposed/`, move to `rfcs/accepted/` on the owner's sign-off, and to `rfcs/done/` when their milestone ships (RFC 000, five-folder variant).
+RFCs enter `rfcs/proposed/`, move to `rfcs/accepted/` on the owner's sign-off, and to `rfcs/done/` when the release that ships them is tagged (an RFC whose milestones span several releases stays in `accepted/` with a Status line saying what shipped) (RFC 000, five-folder variant).
 
 ## Gates per milestone
 

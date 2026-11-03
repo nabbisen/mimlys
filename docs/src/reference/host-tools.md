@@ -148,7 +148,7 @@ clause F filesystem   enforced (appcontainer)
 clause N network      enforced (appcontainer)
 clause E environment  enforced (explicit_environment)
 clause K termination  enforced (job_object)
-clause P privilege    enforced (restricted_token+appcontainer)
+clause P privilege    enforced (appcontainer)
 clause M memory       enforced (job_object)
 clause C count        enforced (job_object)
 ```
@@ -171,8 +171,8 @@ input of every `rustc` it starts; so `cargo test` declared as a host tool
 fails at its first `rustc -vV` on Windows Server 2025, the observation's
 `stderr` says so with the notice `host_tool_not_started` or cargo's own
 message, and the task halts. The clause suite verifies the confinement with
-its probe tool; a tool that does not need `NUL` runs today, and a way to
-lend the device to the container is M6c work.
+its probe tool; a tool that does not need `NUL` runs today, and whether any way
+to lend the device to the container exists is still being investigated.
 
 After a `grant` or a `revoke`, `icacls` prints the directory's inherited
 entries with `(I)` where it may not have before: the write marks the

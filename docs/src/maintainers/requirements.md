@@ -362,7 +362,7 @@ At startup the runtime shall probe which clauses the platform backend can enforc
 `run_host_tool` shall be invisible and unavailable unless every mandatory clause is enforced on this machine, or is best-effort and named by the administrator in `policy.accept_best_effort`, which the status and every host-tool approval then show (RFC 011 §5). (P10)
 
 ### REQ-CONF-005 Backends — M6a, M6b, M6c · T
-Linux: Landlock and seccomp, a delegated cgroup where available (else the worker as child subreaper and per-tool rlimits), each clause reporting its primitive. Windows: AppContainer without network capability, a Job Object with kill-on-close and breakaway forbidden, a restricted token. macOS: a Seatbelt profile, rlimits and a resident-size watchdog. Each backend shall pass the clause tests of REQ-TEST-013 on its platform in CI.
+Linux: Landlock and seccomp (the filter also denies `io_uring` and cross-process memory access, REQ-CONF-012), a delegated cgroup where available (else the worker as child subreaper and per-tool rlimits), each clause reporting its primitive. Windows: AppContainer without network capability, a Job Object with kill-on-close and breakaway forbidden, a restricted token. macOS: a Seatbelt profile, rlimits and a resident-size watchdog. Each backend shall pass the clause tests of REQ-TEST-013 on its platform in CI.
 
 ### REQ-CONF-006 Declared host tools — M6a · T
 Host tools exist only as administrator declarations: name, command, argument template, effect, deadline, additional read paths, environment allow-list. `run_host_tool{tool, args}` validates `args` against the template; no shell is involved. In 0.6 the effect is `workspace_write`: a host tool writes only inside the workspace, because the worker's write set holds nothing else; `host_write` host tools need declared write paths (DR-017).
@@ -378,6 +378,12 @@ All processes of an execution shall be terminated on cancel, deadline or runtime
 
 ### REQ-CONF-010 Unsafe code boundary — M2 · I
 Foreign-function code for backends shall live only in the confinement modules of `mimlys-exec`, each `unsafe` block justified in a comment and reviewed. Every other crate forbids `unsafe`. (REQ-ENG-001)
+
+### REQ-CONF-011 Read sets hold no credentials — M6a, M6b · T
+A declared read path (`read_paths`, `toolchain grant`) shall be refused, with the entry named and the narrower path suggested, when it is a filesystem root, the user's home directory or an ancestor of it, or when it directly contains an entry named by LIM-H5. The Linux read set shall contain no `/proc` entry that exposes another process's environment, memory or descriptors; the entries it does hold are listed in external design §13.3. A clause test shall show a host tool failing to read a credentials file that lies beside its declared toolchain directory, and failing to read the runtime's `/proc/<pid>/environ`. (THR-23, THR-24; amended 2026-11-03, 0.7.1)
+
+### REQ-CONF-012 Process memory and descriptors are not reachable — M6a · T
+The Linux seccomp filter shall always deny `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `process_vm_readv` and `process_vm_writev`, in every worker including the dependency step's. Where Landlock ABI 4 or later exists and network is denied, TCP `bind` and `connect` shall be handled with an empty allow-set as a second layer. The runtime and the worker shall mark themselves non-dumpable at start, so that a same-user process cannot read their memory, environment or descriptors through `/proc`. A clause test per denied route shall show the attempt failing from inside a host tool. (THR-11, THR-23, THR-24; added 2026-11-03, 0.7.1)
 
 ---
 

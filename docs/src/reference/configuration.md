@@ -26,7 +26,7 @@ config_version = 1
 data_dir = "/home/me/.local/share/mimlys"   # platform default when absent
 
 [backend]
-kind = "fake"                   # "fake" (scripted) or "openai_compatible" (a local model, 0.4)
+kind = "fake"                   # "fake" (scripted) or "openai_compatible" (a local model)
 script = "decisions.json"       # fake backend: the decisions to return, in order
 locality = "local"              # "remote" needs policy.remote_backend_allowed and a profile with external = true
 structured_output = "auto"      # auto | schema | none; auto is resolved at the probe and shown by `status`
@@ -72,7 +72,7 @@ secrets = [".env", ".env.*", "*.pem", "*.key", "id_*", ".ssh/", ".aws/", ".gnupg
 [policy.recovery]
 auto_resume = false             # return a cleanly recovered task to running
 
-[host_tools.cargo_test]         # a declared host tool (0.6); see Host tools
+[host_tools.cargo_test]         # a declared host tool; see Host tools
 command = "~/.cargo/bin/cargo"  # absolute, or a name resolved in read_paths/*/bin, never PATH
 args = ["test", "--offline"]    # fixed; host tools run offline
 allowed_args = ["--lib"]        # literals the model may add
@@ -80,12 +80,12 @@ arg_pattern = "[A-Za-z0-9_:]+"  # what any other added argument must match (a te
 max_args = 2
 effect = "workspace_write"      # the tool writes only inside the workspace (reversible); host writes are a later release
 timeout_ms = 600000             # LIM-H1, 10000–3600000
-read_paths = ["~/.cargo", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read
+read_paths = ["~/.cargo/bin", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read; a directory holding credentials (`~/.cargo` holds `credentials.toml`) is refused
 env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 # env_allow = ["RUSTFLAGS"]     copied from mimlys's environment
 # network = true                the dependency step: external_read, approval where the profile asks; destinations unbounded
 
-[servers.rypsok]                # an MCP server as a child process (0.5); see External tools
+[servers.rypsok]                # an MCP server as a child process; see External tools
 command = "rypsok"
 args = ["serve"]
 env_allow = ["PATH"]            # copied from mimlys's environment; nothing else is inherited
@@ -115,7 +115,7 @@ output_bytes = 1048576          # LIM-S4
 [workspace]
 max_bytes = 1073741824          # LIM-W1, 64 MiB – 64 GiB
 max_files = 200000              # LIM-W2
-# retention_days was removed in 0.3: nothing expires; `mimlys task delete` removes a task
+# retention_days does not exist: nothing expires; `mimlys task delete` removes a task
 
 [logging]
 level = "info"                  # error | warn | info | debug | trace
@@ -213,7 +213,7 @@ return when a tool carries that effect.
 
 `run_script` runs a language only when an interpreter module for it is
 configured and installed. mimlys ships one pinned build per language it
-knows (0.2: `javascript`, QuickJS-NG v0.17.0 as a wasip1 module); `mimlys
+knows (`javascript`: QuickJS-NG v0.17.0 as a wasip1 module); `mimlys
 interpreters install <language>` downloads it, verifies the SHA-256 the
 binary carries and stores it under `<data_dir>/interpreters/`. A section
 `[interpreters.<language>]` overrides the path or the hash; a language mimlys

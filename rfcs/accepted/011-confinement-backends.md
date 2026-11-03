@@ -1,6 +1,6 @@
 # RFC 011 — Confinement backends and host tools
 
-**Status.** Accepted (2026-10-29; the seven questions of the review package decided as recommended)
+**Status.** Accepted (2026-10-29; the seven questions of the review package decided as recommended). Shipped in 0.7.0: §1–§3 and §6–§10 (the Linux and Windows backends, host tools, the dependency step, orphans, tests); open: §4 (macOS) and its use of §5 accepted best-effort (M6c, release 0.8). The Windows demonstration of §10 (`cargo test --offline`) is not met on Windows in 0.7.0: `cargo` cannot run in an AppContainer (the `NUL` device); a spike decides whether a remedy exists (see external design §23).
 **Tracks.** Decisions D-06 v2 and D-07 v2 of the startup review; the cross-platform confinement assessment (`05-cross-platform-confinement-assessment.md`); findings R-05, R-06, R-07, R-13, R-16, R-18; threats THR-11, THR-17, THR-23, THR-24, THR-32.
 **Touches.** `mimlys-exec` (the confinement backends per platform, the worker's self-confinement, `run_host_tool`), `mimlys-core` (host-tool declarations, the `host_tool` grant's validation, the probe's new states), `mimlys` (`[host_tools.<name>]`, `[policy] accept_best_effort`, `mimlys toolchain`, `status`), external design §13, §11, §19.1, §19.2, §20, §23 (M6a–c); requirements REQ-CONF-001 … 010, REQ-TEST-013; limits LIM-H1 … H4.
 **Milestones.** M6a Linux (release 0.6), M6b Windows (0.7), M6c macOS (0.8): one contract, one backend per platform, one handoff each.
@@ -50,6 +50,17 @@ The normative text is external design §13 (revised by this RFC), §11 (`run_hos
 ## Open questions
 
 - None at the RFC level; each handoff's §7 records what the platform taught during implementation.
+
+## Amendment 1 — Linux hardening (2026-11-03, release 0.7.1)
+
+The intake review after 0.7.0 found two defects in the Linux backend as shipped (`.git-exclude/reviewed/intake-0.7.0/README.md`, N-01 and N-02). The decisions above stand; these amend points 2, 6 and 7:
+
+1. **Clause N has two layers, and the first was incomplete.** A seccomp filter on `socket` does not see sockets created by `io_uring` (`IORING_OP_SOCKET`, Linux 5.19 and later; reproduced). The filter now always denies `io_uring_setup`, `io_uring_enter` and `io_uring_register` (the dependency step's worker too: it needs no ring) and `process_vm_readv` and `process_vm_writev` (cross-process memory, which `ptrace`'s denial did not cover). Where Landlock ABI 4 exists and network is denied, TCP `bind` and `connect` are handled with an empty allow-set; UDP stays with seccomp. The N cell reads `seccomp+landlock_net` when both hold, `seccomp` otherwise.
+2. **Other processes are not part of the read set.** `/proc` is no longer readable as a whole: `/proc/<pid>/environ` of the runtime (and of an MCP server child) held `env:`-referenced secrets. The set keeps only the `/proc` files a toolchain proves it needs; the runtime and the worker are non-dumpable (`PR_SET_DUMPABLE` 0), which closes `/proc/<pid>/{environ,mem,fd}` and `process_vm_readv` for the processes that matter most. Removing a variable from the runtime's own environment was considered and rejected: `/proc/<pid>/environ` keeps the environment the process started with. An MCP server child is `exec`'d and dumpable again; its environment is protected by the host tools' read set, not by a flag.
+3. **A declared read path may not contain credentials.** `read_paths = ["~/.cargo"]` made `~/.cargo/credentials.toml` readable to project code. A declared path that is a root, the home directory or an ancestor of it, or that directly holds a name of LIM-H5, is refused with the narrower path suggested (`~/.cargo/bin`); the same check guards `toolchain grant` on Windows. Landlock has no deny rule, so the check is on the declaration, not in the kernel. `/etc` and `/opt` stay readable as a whole; the residual is stated in the threat register.
+4. **Open, for a later handoff:** Windows lifecycle (a command that removes the container profile and every entry; THR-36), and the same read-set question for macOS in 011c.
+
+Requirements REQ-CONF-011 and REQ-CONF-012, limit LIM-H5 and threat THR-36 carry the normative text; external design §13.3 and §13.5 are amended. Handoff 011d executes this amendment; it changes no contract of the control API, the CLI or the configuration beyond the new refusal in point 3.
 
 ## References
 

@@ -16,7 +16,7 @@ Boundaries B1 to B9 are defined in requirements §3. Every threat names its cont
 | THR-08 | Replay of an irreversible action after a crash | B7 | Duplicate external effect | REQ-PERS-004, REQ-PERS-007, REQ-PERS-008 | REQ-TEST-007 |
 | THR-09 | Capability escalation through model text, plan revision or tool chaining | B2 | Broader permissions | REQ-CAP-001, REQ-CAP-006, REQ-SEC-002 | REQ-TEST-006, REQ-TEST-017 |
 | THR-10 | Malicious tool output steering the model | B3, B6 | Unsafe proposal | REQ-CTX-002, REQ-CTX-009, REQ-MCP-006 | REQ-TEST-010, REQ-TEST-012 |
-| THR-11 | Network exfiltration from generated code or the worker | B5 | Data leaves the host | REQ-SBX-004, REQ-SEC-006, REQ-CONF-002 | REQ-TEST-008, REQ-TEST-013 |
+| THR-11 | Network exfiltration from generated code or the worker | B5 | Data leaves the host | REQ-SBX-004, REQ-SEC-006, REQ-CONF-002, REQ-CONF-012 (`io_uring` denied; Landlock TCP rules) | REQ-TEST-008, REQ-TEST-013 |
 | THR-12 | Supply chain: a vulnerable dependency, engine drift, a hostile interpreter build | — | Any of the above | REQ-SEC-012, REQ-ARCH-007, REQ-SBX-007 | REQ-TEST-014 |
 | THR-13 | Policy misconfiguration: a ceiling or profile that grants too much | B9 | Excess authority | REQ-CFG-001, REQ-CFG-004, REQ-CAP-009, REQ-SEC-014 | tests of REQ-CFG-001 |
 | THR-14 | Compromise of the runtime process or the operating system | — | Everything | Out of scope beyond REQ-SEC-008, REQ-CONF-002 and REQ-ARCH-008 | accepted residual |
@@ -28,8 +28,8 @@ Boundaries B1 to B9 are defined in requirements §3. Every threat names its cont
 | THR-20 | Approval spoofing: model-authored text on the approval screen | B1 | The user approves the wrong thing | REQ-APR-002, REQ-APR-008 | REQ-TEST-006 |
 | THR-21 | Approval display spoofing with control, invisible or bidirectional characters | B1 | The user approves the wrong thing | REQ-APR-003, REQ-CTX-008 | REQ-TEST-006 |
 | THR-22 | Approval swap: action content or grants change after approval | B7 | Unapproved execution | REQ-APR-004, REQ-APR-005, REQ-CAP-007 | REQ-TEST-006 |
-| THR-23 | Host tools execute project code (build scripts, macros, tests) with the user's privileges | B5 | Arbitrary code execution | REQ-CONF-001, REQ-CONF-004, REQ-CONF-005, REQ-SBX-010 | REQ-TEST-013 |
-| THR-24 | Secret leakage through child environments | B4, B6 | Credential theft | REQ-PRIV-003, REQ-MCP-001, REQ-SBX-004 | REQ-TEST-015 |
+| THR-23 | Host tools execute project code (build scripts, macros, tests) with the user's privileges | B5 | Arbitrary code execution | REQ-CONF-001, REQ-CONF-004, REQ-CONF-005, REQ-CONF-011, REQ-CONF-012, REQ-SBX-010 | REQ-TEST-013 |
+| THR-24 | Secret leakage through child environments | B4, B6 | Credential theft | REQ-PRIV-003, REQ-MCP-001, REQ-SBX-004, REQ-CONF-011, REQ-CONF-012 | REQ-TEST-015, REQ-TEST-013 |
 | THR-25 | Tool-description poisoning and definition drift from MCP servers | B6 | Prompt injection; silent behaviour change | REQ-MCP-002, REQ-MCP-003, REQ-CTX-005 | REQ-TEST-012 |
 | THR-26 | Misdeclared effects: a destructive external tool presented as read-only | B6 | Unapproved destructive call | REQ-MCP-004, REQ-APR-001 | REQ-TEST-012 |
 | THR-27 | Snapshot or restore through symbolic links | B8 | Intra-host exfiltration; writes outside the workspace | REQ-WS-002, REQ-WS-005, REQ-TOOL-004 | REQ-TEST-009 |
@@ -41,6 +41,7 @@ Boundaries B1 to B9 are defined in requirements §3. Every threat names its cont
 | THR-33 | Model-based summarization laundering injected content into runtime text | B2 | Instruction bypass | REQ-CTX-004, REQ-MDL-008 | REQ-TEST-010 |
 | THR-34 | Approval fatigue: routine prompts train the user to approve without reading | B1 | Human control erodes | REQ-APR-001, REQ-SEC-014 | review (REQ-SEC-014) |
 | THR-35 | The dependency step as an egress channel: a declared host tool with `network = true` reaches any destination, so project content (a crafted manifest, a build script's request) can leave the host without a destination check | B5 | Disclosure | REQ-CONF-007 (declared by the administrator, `external_read`, approval per profile, every other clause in force), REQ-CAP-001 (a `host_tool` grant per task), REQ-CONF-004 (the status and the approval name the step and its network), REQ-SEC-006 (amended: the exception is stated) | REQ-TEST-013 (the offline tool cannot connect; the step runs in its own worker) |
+| THR-36 | Lasting permission changes on the user's directories: `toolchain grant` writes an entry for the container on a directory the user names (any existing one is accepted today), a lost update between two installations drops an entry, and nothing removes the entries or the container profile when the installation is deleted | B5, B9 | A container that can read more than intended, for longer than intended; a tool unresolvable without a reason | REQ-CONF-008 (confirmation, exact record, `revoke`), REQ-CONF-011 (refused paths), a named mutex per directory that fails open after LIM-O2 (a DACL write takes milliseconds and a deadlock would be worse), a cleanup command (open: handoff 011e) | REQ-TEST-013 (M6b suite: `revoke` leaves the entries as they were) |
 
 ## Residual risks, accepted
 
@@ -50,6 +51,7 @@ Boundaries B1 to B9 are defined in requirements §3. Every threat names its cont
 | A user who approves without reading | The screen is rendered by the runtime and reserved for real risk; the rest is the user's attention | User |
 | A deliberately misdeclared effect by an administrator | Administrators are trusted to the extent of their configuration | Administrator |
 | A WASM-hosted interpreter with its own defect | Bounded by the triple guard and WASI; pinned builds | Maintainers, through pinning |
+| A world-readable `/etc` and `/opt` inside the Linux read set | Their contents are world-readable by design or root-only; narrowing them breaks toolchains for no secret gained | Administrator |
 | A workspace size limit that is best-effort between step boundaries | No portable kernel quota; the worker's OS limits add a ceiling where available | Administrator |
 | Information in the model's `reason` that the user chooses to believe | Labelled untrusted and separated on the screen | User |
 
@@ -65,3 +67,4 @@ Boundaries B1 to B9 are defined in requirements §3. Every threat names its cont
 | 2026-10-29 | M5 (RFC 009) | THR-24 … THR-26 verified against the test server and rypsok 0.7.0 (REQ-TEST-012); effects come from the administrator, never from annotations |
 | 2026-10-31 | M6a (RFC 011) and the design review of 0.6 | THR-23 and THR-32 verified on Linux (REQ-TEST-013; K through `cgroup.kill` where the session delegates a cgroup, else the subreaper walk); THR-35 added for the dependency step; INV-13 and REQ-SEC-006 amended to state the exception |
 | 2026-11-03 | M6b (RFC 011 §3, §7) and release 0.7.0 | THR-23 and THR-32 verified on Windows (REQ-TEST-013: the AppContainer, the Job Object's kill-on-close, every mandatory clause enforced on `windows-latest`); THR-35's dependency step shown by its capability; two platform findings recorded in the M6b report §4: `cargo` cannot run inside an AppContainer on current Windows (the `NUL` device), and two installations writing one directory's permissions at once lost one another's entry (serialized by a named mutex since); the permission record names a directory in one spelling, so a runtime entry is recognised under every form; no new threat |
+| 2026-11-03 | Intake review after 0.7.0 (architect) | THR-36 added for the Windows permission mechanism, which the M6b row wrongly logged as "no new threat". Two defects found in the Linux backend and recorded under THR-11, THR-23 and THR-24: clause N was bypassable through `io_uring` (a socket created by `IORING_OP_SOCKET` after the filter), and the read set exposed `/proc/<pid>/environ` and whole toolchain directories holding credentials; REQ-CONF-011 and REQ-CONF-012 added, fix in 0.7.1 (handoff 011d). The "verified on Linux" of the M6a row held for the controls as written, not for these routes |

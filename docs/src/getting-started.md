@@ -1,8 +1,9 @@
 # Getting started
 
 mimlys 0.7 (milestones M1 to M6b) is the deterministic core with the sandbox,
-the transactional workspace, a local model, external tools and, on Linux and
-Windows, confined host tools: a task runs one validated step at a time
+the transactional workspace, a local model, external tools and confined host
+tools (on Linux with `cargo test` as the demonstration; on Windows the
+confinement is verified, but `cargo` itself cannot run yet): a task runs one validated step at a time
 against a private copy of your project, with the built-in file tools,
 `run_script` (JavaScript) and `run_wasm` in a Wasmtime sandbox inside a
 separate worker process, approvals, questions, budgets and durable records.
