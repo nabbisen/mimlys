@@ -18,9 +18,13 @@ such as `cargo test` runs under kernel confinement (see
 ## Install
 
 ```sh
-cargo install mimlys
+cargo install mimlys --locked
 mimlys interpreters install javascript
 ```
+
+`--locked` builds with the dependency versions this release was tested with: the
+exact pins of Wasmtime and the MCP SDK are in the lock file, and without it every
+other dependency is resolved to whatever is newest on the day you install.
 
 The second command downloads the pinned QuickJS-NG build, verifies its
 SHA-256 and stores it under the data directory; `mimlys interpreters list`

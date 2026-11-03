@@ -40,7 +40,7 @@ an AppContainer the `NUL` device cargo's child processes open). macOS
 follows in 0.8.
 
 ```sh
-cargo install mimlys
+cargo install mimlys --locked
 mimlys interpreters install javascript   # the pinned QuickJS build, verified by hash
 cat > ~/.config/mimlys/config.toml <<'EOF'
 config_version = 1

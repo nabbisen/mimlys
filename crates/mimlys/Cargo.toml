@@ -51,9 +51,12 @@ path = "src/main.rs"
 name = "mimlys-worker"
 path = "src/bin/mimlys-worker.rs"
 
+# The M1 test harness answers approvals and questions from its command line
+# instead of a terminal: it is built only with `test-bins` and is never installed.
 [[bin]]
 name = "mimlys-testloop"
 path = "src/bin/mimlys-testloop.rs"
+required-features = ["test-bins"]
 
 [lints]
 workspace = true
@@ -76,4 +79,12 @@ required-features = ["test-bins"]
 
 [[test]]
 name = "m6b_host_tools"
+required-features = ["test-bins"]
+
+[[test]]
+name = "m1_demo"
+required-features = ["test-bins"]
+
+[[test]]
+name = "m2_demo"
 required-features = ["test-bins"]
