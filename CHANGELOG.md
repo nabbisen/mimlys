@@ -73,6 +73,9 @@ not published; 0.7.1 is the first release on crates.io.
   `mimlys/test-bins`; a debug build honours `MIMLYS_PROBE_NO_CGROUP` (the
   worker skips the cgroup rung, so clause K's `subreaper` rung is testable on a
   machine that delegates a cgroup).
+- Platform matrix (REQ-PLAT-002): macOS x86_64 is built and tested under Rosetta 2 on the arm64 runner (a CI job of its own); Intel-hardware confinement behaviour is stated as untested, and no Intel runner image is used (they end in 2027). CI also runs on Linux aarch64 (`ubuntu-24.04-arm`), counts skipped tests per platform, builds on the minimum Rust version, dry-runs the workspace publish and pins its actions by commit.
+- The interpreter recipe now rebuilds the pinned QuickJS-NG byte for byte (wasi-sdk 29, as upstream's release job; the wasi-sdk package pinned by SHA-256 and the source by commit): the scheduled check had failed since its first run because the recipe used wasi-sdk 25.
+- The Windows `cargo` demonstration is an exception without a remedy: the refusal of the `NUL` device to an AppContainer is the same on Windows Server 2022 and 2025, and no way that keeps clauses F, N and P was found (external design §23).
 - Document amendments of 2026-11-03 (the architect's): REQ-CONF-011 and
   REQ-CONF-012, LIM-H5, THR-36 and the review-log row; the Windows `NUL`
   exception recorded in external design §23 and the ROADMAP's M6b row; RFC 011
