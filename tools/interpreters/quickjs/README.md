@@ -44,7 +44,16 @@ The scheduled check failed from its first run (rebuilt `cd7da6cb…`, pin `42a73
 
 Result: with the aligned recipe the `interpreters` workflow rebuilds `42a732a6…` (1 569 050 bytes), equal to the pin and to `expected.sha256` (run 41601316708 on branch `t3-interpreter-recipe`). Building the aligned recipe locally with podman and `--build-arg WASI_SDK_VERSION=25` gives `cd7da6cb…` again, so the wasi-sdk version is what changed the bytes; the other three differences did not.
 
-Not pinned by the recipe: the wasi-sdk download is not hash-verified, the apt packages (`cmake`, `make`, `git`, `curl`) are not version-pinned, and the upstream tag is resolved at build time. Only the base image is pinned by digest.
+## Inputs from outside (pinned 2026-11-03, T3b)
+
+| Input | How it is pinned | Checked against |
+|---|---|---|
+| base image | digest of `debian:bookworm-slim` | (unchanged) |
+| wasi-sdk 29 `.deb` | SHA-256 `20a5b880814adc14b93f8b14a2230e75a6174a1b77493c50e8fc00d27dcfdcb2` (82 995 002 bytes), verified by `sha256sum -c` before it is installed | the digest GitHub shows for the release asset, and two separate downloads: all three equal. The wasi-sdk release publishes no checksum file |
+| QuickJS-NG source | commit `6d46d07d04041b40f4f49eaa7fdebe44c314c699` (`git clone`, then `git checkout --detach`), the commit tag `v0.17.0` points at | `git ls-remote` of the tag and GitHub's API for `v0.17.0`: the same commit |
+| apt packages (`cmake`, `make`, `git`, `curl`) | **not pinned**, deliberately | the base image is pinned, so the set is fixed per image; and the output does not depend on them: upstream's release job builds on `ubuntu-22.04` (cmake 3.22) and this recipe on bookworm (cmake 3.25), and both give `42a732a6…` |
+
+To update wasi-sdk or the source, change the version, the SHA-256 and the commit together, and re-run the `interpreters` workflow: a build with a version whose digest is not given fails at `sha256sum -c`.
 
 ## Updating
 
