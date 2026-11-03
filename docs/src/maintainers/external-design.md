@@ -336,7 +336,7 @@ A failed `workspace_write` execution is rolled back before feedback (REQ-TOOL-01
 | `payload` | tool, validated against its output schema | external data |
 | `stdout`, `stderr` | tool | external data, excerpts per LIM-C2 |
 
-Notice codes: `output_truncated{stream, total_bytes}`, `content_truncated{total_chars}`, `entries_truncated{total}`, `entries_skipped{reason, count}` (reason from `symlink`, `too_large`, `unreadable`), `invalid_utf8_replaced{stream}`, `characters_removed{count}`, `symlink_omitted{path}` (materialization), `secret_redacted{name}`, `rolled_back`, `retried{attempt}`. Every code carries at most the keys named here.
+Notice codes: `output_truncated{stream, total_bytes}`, `content_truncated{total_chars}`, `entries_truncated{total}`, `entries_skipped{reason, count}` (reason from `symlink`, `too_large`, `unreadable`), `invalid_utf8_replaced{stream}`, `characters_removed{count}`, `symlink_omitted{path}` (materialization), `secret_redacted{name}`, `rolled_back`, `retried{attempt}`, `host_tool_not_started{reason}` (with `host_fault{unavailable}`: the command, its temporary directory or the spawn). Every code carries at most the keys named here.
 
 ---
 
@@ -437,7 +437,7 @@ External tools appear with the name `<server>.<tool>` and the declaration of REQ
 | Item | Value |
 |---|---|
 | Engine | Wasmtime, pinned version; wasip1 core modules (D-16) |
-| Guards | fuel LIM-S1; epoch deadline LIM-S2 with tick LIM-S7; memory LIM-S3; each independent |
+| Guards | fuel LIM-S1; epoch deadline LIM-S2 with tick LIM-S7 (armed two ticks past its quotient: the ticker catches up by the wall clock, and an execution never ends before its deadline, at most three ticks after it); memory LIM-S3; each independent |
 | Filesystem | preopened `/workspace` (read-write or read-only by `mode`); preopened ephemeral `/tmp` discarded after the execution; nothing else |
 | Network | none; no socket capability |
 | Environment | empty; `args` and `stdin` as declared |

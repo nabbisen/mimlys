@@ -76,6 +76,11 @@ pub enum Notice {
         /// The attempt number.
         attempt: u32,
     },
+    /// A host tool never started; the execution is `host_fault{unavailable}`.
+    HostToolNotStarted {
+        /// Why: the command, its temporary directory or the spawn.
+        reason: String,
+    },
 }
 
 /// Why a listing or search skipped entries.

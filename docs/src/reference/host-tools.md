@@ -159,3 +159,17 @@ The profile paths a toolchain writes to (`USERPROFILE`, `LOCALAPPDATA`,
 dependency step's worker carries the internet client capability; a container
 never reaches loopback, so a `network = true` tool talks to the network, not
 to a server on this machine.
+
+Where the system refuses the restricted token together with the container,
+the worker runs under the container's own lowbox token, which has no
+privilege and cannot elevate, and `status` says `enforced (appcontainer)`
+for clause P.
+
+**`cargo` on current Windows.** A process inside an AppContainer cannot open
+the `NUL` device (`Access is denied`), and `cargo` opens it for the standard
+input of every `rustc` it starts; so `cargo test` declared as a host tool
+fails at its first `rustc -vV` on Windows Server 2025, the observation's
+`stderr` says so with the notice `host_tool_not_started` or cargo's own
+message, and the task halts. The clause suite verifies the confinement with
+its probe tool; a tool that does not need `NUL` runs today, and a way to
+lend the device to the container is M6c work.

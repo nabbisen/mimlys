@@ -55,10 +55,14 @@ pub struct HostOutcome {
 /// Resolves the command: an absolute path as it is; a name against the
 /// `bin` directories of the declared read paths, never the inherited `PATH`
 /// (on Windows the name may omit `.exe`).
-pub fn resolve_command(declaration: &HostToolDeclaration) -> Option<PathBuf> {
+pub fn resolve_command(declaration: &HostToolDeclaration) -> Result<PathBuf, String> {
     let command = Path::new(&declaration.command);
     if command.is_absolute() {
-        return command.is_file().then(|| command.to_path_buf());
+        return match std::fs::metadata(command) {
+            Ok(m) if m.is_file() => Ok(command.to_path_buf()),
+            Ok(_) => Err(format!("{} is not a file", command.display())),
+            Err(e) => Err(format!("{}: {e}", command.display())),
+        };
     }
     declaration
         .read_paths
@@ -72,6 +76,18 @@ pub fn resolve_command(declaration: &HostToolDeclaration) -> Option<PathBuf> {
             candidates
         })
         .find(|p| p.is_file())
+        .ok_or_else(|| {
+            format!(
+                "{} is under the bin directory of no read path",
+                command.display()
+            )
+        })
+}
+
+/// The notice of a tool that never started, also traced.
+fn not_started(tool: &str, reason: String) -> Notice {
+    crate::trace::line(|| format!("host tool {tool}: not started: {reason}"));
+    Notice::HostToolNotStarted { reason }
 }
 
 /// The `PATH` the child sees: the declared read paths' `bin` directories
@@ -258,15 +274,31 @@ pub fn run(r: HostRun<'_>) -> HostOutcome {
         },
         notices,
     };
-    let Some(program) = resolve_command(r.declaration) else {
-        return fault(HostFaultDetail::Unavailable, vec![]);
+    let name = r.declaration.name.as_str();
+    let program = match resolve_command(r.declaration) {
+        Ok(p) => p,
+        Err(reason) => {
+            return fault(
+                HostFaultDetail::Unavailable,
+                vec![not_started(name, reason)],
+            );
+        }
     };
-    if std::fs::create_dir_all(r.tmp).is_err() {
-        return fault(HostFaultDetail::Unavailable, vec![]);
+    if let Err(e) = std::fs::create_dir_all(r.tmp) {
+        let reason = format!("temporary directory {}: {e}", r.tmp.display());
+        return fault(
+            HostFaultDetail::Unavailable,
+            vec![not_started(name, reason)],
+        );
     }
     let mut child = match spawn_tool(&program, &r) {
         Ok(c) => c,
-        Err(_) => return fault(HostFaultDetail::Unavailable, vec![]),
+        Err(reason) => {
+            return fault(
+                HostFaultDetail::Unavailable,
+                vec![not_started(name, reason)],
+            );
+        }
     };
     let stdout = capture(child.take_stdout(), Stream::Stdout);
     let stderr = capture(child.take_stderr(), Stream::Stderr);

@@ -270,8 +270,12 @@ struct Setup {
     setup_ms: i64,
 }
 
+/// The epoch ticks of a deadline: two past the quotient. The ticker advances
+/// by the wall clock and may owe a tick when a run starts, which it then
+/// delivers at once; with the margin an execution never ends before its
+/// deadline and ends at most three ticks after it.
 fn ticks(deadline_ms: u64) -> u64 {
-    deadline_ms.div_ceil(LIM_S7_EPOCH_TICK_MS).max(1)
+    deadline_ms.div_ceil(LIM_S7_EPOCH_TICK_MS) + 2
 }
 
 /// The exact mapping of REQ-SBX-003.

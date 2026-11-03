@@ -3,16 +3,23 @@
 //! path of the read set (read and execute) and of the write set (full
 //! access), added by `mimlys toolchain grant` and removed by `revoke`,
 //! inheritable to what lies beneath. Nothing else in the directory's
-//! security descriptor is touched, and `has_entry` reads the descriptor
-//! back rather than trusting any record.
+//! security descriptor is touched: the entries the directory inherits stay
+//! inherited and its protection flag stays as it was; and `has_entry` reads
+//! the descriptor back rather than trusting any record. A write is a merge
+//! into the DACL read a moment earlier, so one writer at a time per
+//! directory holds a named mutex across the runtimes of this machine (two
+//! installations granting their containers one directory at once would
+//! otherwise lose one another's entry).
 //!
 //! Every `unsafe` block is justified (REQ-CONF-010).
 
+use mimlys_core::limits::LIM_O2_CANCEL_MS;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows_sys::Win32::Foundation::{
-    ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, LocalFree,
+    CloseHandle, ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, HANDLE, LocalFree,
+    WAIT_ABANDONED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetExplicitEntriesFromAclW, GetNamedSecurityInfoW,
@@ -20,9 +27,11 @@ use windows_sys::Win32::Security::Authorization::{
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    ACL, DACL_SECURITY_INFORMATION, EqualSid, PSECURITY_DESCRIPTOR, PSID,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    ACL, DACL_SECURITY_INFORMATION, EqualSid, GetSecurityDescriptorControl,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+    SUB_CONTAINERS_AND_OBJECTS_INHERIT, UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
+use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
 /// What an entry grants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -90,8 +99,77 @@ fn read_dacl(path: &Path) -> Result<Dacl, String> {
     Ok(Dacl { acl, descriptor })
 }
 
+/// The named mutex that serializes the writers of one directory's DACL.
+struct DaclLock {
+    handle: HANDLE,
+}
+
+impl DaclLock {
+    /// Takes the lock within LIM-O2; `None` when the system refuses the
+    /// mutex or the wait runs out (the write goes ahead, noted in the log:
+    /// a DACL write takes milliseconds and a holder that died abandons it).
+    fn acquire(path: &Path) -> Option<Self> {
+        let mut key: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in path.to_string_lossy().to_lowercase().bytes() {
+            key ^= u64::from(b);
+            key = key.wrapping_mul(0x0100_0000_01b3);
+        }
+        let name = wide(Path::new(&format!("Global\\mimlys-dacl-{key:016x}")));
+        // SAFETY: default security, not initially owned, a null-terminated name.
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            tracing::debug!(
+                target: "mimlys_worker",
+                "no mutex for the permissions of {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        // SAFETY: the handle was just created and is valid.
+        match unsafe { WaitForSingleObject(handle, LIM_O2_CANCEL_MS as u32) } {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(Self { handle }),
+            _ => {
+                tracing::warn!(
+                    target: "mimlys_worker",
+                    "the permissions of {} are being written by another runtime past LIM-O2; writing anyway",
+                    path.display()
+                );
+                // SAFETY: the handle is valid and closed exactly once.
+                unsafe { CloseHandle(handle) };
+                None
+            }
+        }
+    }
+}
+
+impl Drop for DaclLock {
+    fn drop(&mut self) {
+        // SAFETY: the mutex is owned by this thread and the handle is closed exactly once.
+        unsafe {
+            ReleaseMutex(self.handle);
+            CloseHandle(self.handle);
+        }
+    }
+}
+
 fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
+    let _lock = DaclLock::acquire(path);
     let old = read_dacl(path)?;
+    // The directory's protection flag, kept as it is: with `UNPROTECTED` the
+    // system takes the inherited entries of the ACL just read as inherited
+    // and recomputes them from the parent; without a flag it would make
+    // them explicit copies, which `revoke` could never undo.
+    let mut control: u16 = 0;
+    let mut revision: u32 = 0;
+    // SAFETY: the descriptor lives in `old`; both out pointers are valid.
+    let read_control =
+        unsafe { GetSecurityDescriptorControl(old.descriptor, &mut control, &mut revision) };
+    let protection = if read_control != 0 && control & SE_DACL_PROTECTED != 0 {
+        PROTECTED_DACL_SECURITY_INFORMATION
+    } else {
+        UNPROTECTED_DACL_SECURITY_INFORMATION
+    };
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: access.mask(),
         grfAccessMode: mode,
@@ -119,7 +197,7 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
         SetNamedSecurityInfoW(
             path_w.as_mut_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | protection,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             new_acl,

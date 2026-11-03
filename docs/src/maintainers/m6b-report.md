@@ -24,7 +24,27 @@ job (`QueryInformationJobObject`), never from what the parent intended.
 
 ## 2. The clause table on `windows-latest`
 
-*Filled from the first CI run on Windows.*
+From CI run 41552997121 on `windows-latest` (2026-11-03, commit `30fa57a`),
+the first run on which the worker's pipes carried its answer (the parent's
+ends had been wrapped in the standard library's child-stream types, whose
+alertable overlapped I/O stalls on an anonymous pipe handle; they are
+synchronous files since that commit). `mimlys status` reported tier
+**full**:
+
+| Clause | State | Primitive | Note |
+|---|---|---|---|
+| F filesystem | enforced | `appcontainer` | |
+| N network | enforced | `appcontainer` | no capability on the offline worker |
+| E environment | enforced | `explicit_environment` | |
+| K termination | enforced | `job_object` | |
+| P privilege | enforced | `appcontainer` | `CreateProcessAsUserW` refuses the restricted low-integrity token together with the container on this runner, so the worker runs under the container's lowbox token alone, which the code accepts as P (no privileges, no elevation) and reports as such |
+| M memory | enforced | `job_object` | |
+| C count | enforced | `job_object` | |
+
+The M1 to M6a suites passed on the same run. The M6b suite's own
+expectations were corrected in the next round (the status JSON's host-tool
+objects, the verbatim prefix of a path argument, the short-form temporary
+directory); its outcome is recorded in the release package of 0.7.0.
 
 ## 3. What the clause tests check (REQ-TEST-013)
 
@@ -53,3 +73,15 @@ job (`QueryInformationJobObject`), never from what the parent intended.
   as a runtime entry that `revoke` refuses.
 - There is no orphan to reap: the job's kill-on-close ends the worker's tree
   when the runtime's handle closes, a crash included.
+- An AppContainer cannot open the `NUL` device on `windows-latest` (Windows
+  Server 2025): `cargo` opens it for every `rustc` it starts and fails at
+  `rustc -vV` with `Access is denied`. The demonstration of §23 is therefore
+  not claimed on Windows in 0.7; the suite states the fact when it meets it.
+  Lending the device to the container is M6c work.
+- Two installations writing one directory's DACL at once (both grant their
+  container the worker's directory at startup) lost one another's entry,
+  and a tool's command then failed to resolve inside the loser's container
+  with no reason recorded; the writers hold a named mutex per directory
+  since round 11, and a tool that does not start carries its reason. The
+  DACL write names the directory's protection flag, so inherited entries
+  stay inherited and `revoke` leaves the directory exactly as it was.
