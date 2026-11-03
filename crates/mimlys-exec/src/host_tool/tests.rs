@@ -1,3 +1,6 @@
+//! Linux and macOS: Windows keeps its own `PATH` rule (external design §13.3).
+#![cfg(unix)]
+
 use super::*;
 use std::collections::BTreeMap;
 
@@ -34,7 +37,6 @@ fn path_of(env: &[(String, String)]) -> String {
 /// (`~/.cargo/bin`) or hold one, then `/usr/bin:/bin`; a declaration's `env`
 /// that sets `PATH` wins; a command given as a name resolves against the
 /// same directories. (Linux and macOS: Windows keeps its own rule.)
-#[cfg(unix)]
 #[test]
 fn req_conf_006_path_is_built_from_declared_bin_paths() {
     let root = tempfile::tempdir().unwrap();
@@ -101,7 +103,6 @@ fn req_conf_006_path_is_built_from_declared_bin_paths() {
 
 /// The rule itself, without a filesystem: only a directory that is named
 /// `bin`, or that the test says holds one, contributes.
-#[cfg(unix)]
 #[test]
 fn req_conf_006_bin_dirs_rule_without_a_filesystem() {
     let held = Path::new("/h/sdk/bin");
