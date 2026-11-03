@@ -70,14 +70,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: rosetta
-      - run: rm -f target/tmp/skips.log
+      # With `--target`, CARGO_TARGET_TMPDIR is `target/<triple>/tmp` (verified), not `target/tmp`.
+      - run: rm -f target/x86_64-apple-darwin/tmp/skips.log
         shell: bash
       - run: cargo test --workspace --all-features --target x86_64-apple-darwin --no-fail-fast
       - name: skipped tests, counted per platform
         if: always()
         shell: bash
         run: |
-          f=target/tmp/skips.log
+          f=target/x86_64-apple-darwin/tmp/skips.log
           if [ -s "$f" ]; then n=$(wc -l < "$f"); else n=0; fi
           {
             echo "skipped tests on macOS x86_64 under Rosetta: $n"
