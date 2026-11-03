@@ -7,6 +7,7 @@
 | Where | Check | Verifies |
 |---|---|---|
 | `check` job, Linux, Windows, macOS (and Linux aarch64) | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`, `cargo test --all-features --no-fail-fast` | formatting, lints, build, tests |
+| `rosetta` job, `macos-latest` | installs Rosetta, adds `x86_64-apple-darwin`, runs `cargo test --workspace --all-features --target x86_64-apple-darwin --no-fail-fast` | REQ-PLAT-002 (macOS x86_64): the Intel build and tests under translation; it does not show an Intel Mac's kernel, and a problem here never hides the native macOS result |
 | `msrv` job, Linux | build and test on the toolchain named by `rust-version` (REQ-PLAT-001) | the stated minimum is real |
 | `package` job, Linux | `cargo publish --workspace --dry-run` | the six crates package and verify in dependency order |
 | `deny` job | `cargo deny check advisories licenses bans sources` | REQ-SEC-012 |
