@@ -91,12 +91,9 @@ pub fn revoke(
         return Ok(());
     };
     let dir = existing_dir(path)?;
-    if container
-        .record
-        .entries
-        .iter()
-        .any(|e| e.path == dir && e.source == crate::toolchain::Source::Runtime)
-    {
+    if container.record.entries.iter().any(|e| {
+        e.source == crate::toolchain::Source::Runtime && crate::toolchain::same_path(&e.path, &dir)
+    }) {
         return Err(AppError::Io {
             detail: messages::toolchain_revoke_runtime_path(&dir),
         });
@@ -112,6 +109,7 @@ pub fn revoke(
     Ok(())
 }
 
+/// The directory as the record names it: canonical, without the verbatim prefix.
 fn existing_dir(path: &str) -> Result<String, AppError> {
     let expanded = crate::config::expand_home(path);
     let dir = std::fs::canonicalize(&expanded).map_err(|_| AppError::Io {
@@ -122,5 +120,5 @@ fn existing_dir(path: &str) -> Result<String, AppError> {
             detail: format!("{path} is not a directory"),
         });
     }
-    Ok(dir.to_string_lossy().into_owned())
+    Ok(crate::toolchain::normalized(&dir))
 }

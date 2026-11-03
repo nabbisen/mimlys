@@ -13,6 +13,29 @@
 use crate::app::AppError;
 use std::path::{Path, PathBuf};
 
+/// A directory's name as the record keeps it and the commands show it:
+/// canonical where the directory exists (one spelling for the short and
+/// the long forms of the same directory on Windows), without the verbatim
+/// prefix. A path that cannot be canonicalized is kept as given.
+pub fn normalized(path: &Path) -> String {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = canonical.to_string_lossy();
+    text.strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .unwrap_or_else(|| text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned())
+}
+
+/// Whether two names denote one directory: compared normalized, and without
+/// regard to case on Windows, where the filesystem has none.
+pub fn same_path(a: &str, b: &str) -> bool {
+    let (a, b) = (normalized(Path::new(a)), normalized(Path::new(b)));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
 /// What an entry grants (the exec crate's vocabulary, serialized the same).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,8 +155,8 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
             };
             acl::grant(&path, &sid, mode).map_err(|e| AppError::Io { detail: e })?;
         }
-        let text = path.to_string_lossy().into_owned();
-        if !record.entries.iter().any(|e| e.path == text) {
+        let text = normalized(&path);
+        if !record.entries.iter().any(|e| same_path(&e.path, &text)) {
             record.entries.push(Entry {
                 path: text,
                 access,
@@ -178,8 +201,13 @@ pub fn applied(_container: &Container, _path: &Path) -> Option<bool> {
 pub fn grant(container: &mut Container, data_dir: &Path, path: &Path) -> Result<(), AppError> {
     use mimlys_exec::confine::windows::acl;
     acl::grant(path, &container.sid, acl::Access::Read).map_err(|e| AppError::Io { detail: e })?;
-    let text = path.to_string_lossy().into_owned();
-    if !container.record.entries.iter().any(|e| e.path == text) {
+    let text = normalized(path);
+    if !container
+        .record
+        .entries
+        .iter()
+        .any(|e| same_path(&e.path, &text))
+    {
         container.record.entries.push(Entry {
             path: text,
             access: Access::Read,
@@ -195,8 +223,11 @@ pub fn grant(container: &mut Container, data_dir: &Path, path: &Path) -> Result<
 pub fn revoke(container: &mut Container, data_dir: &Path, path: &Path) -> Result<(), AppError> {
     use mimlys_exec::confine::windows::acl;
     acl::revoke(path, &container.sid).map_err(|e| AppError::Io { detail: e })?;
-    let text = path.to_string_lossy().into_owned();
-    container.record.entries.retain(|e| e.path != text);
+    let text = normalized(path);
+    container
+        .record
+        .entries
+        .retain(|e| !same_path(&e.path, &text));
     container.record.save(data_dir)
 }
 
@@ -230,3 +261,6 @@ pub fn unavailable_reason(
 fn now_text() -> String {
     mimlys_core::clock::Clock::now(&mimlys_core::clock::SystemClock).to_rfc3339()
 }
+
+#[cfg(test)]
+mod tests;
