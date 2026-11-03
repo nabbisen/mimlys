@@ -303,7 +303,7 @@ Every result, stdout and stderr shall be bounded (LIM-S4, LIM-H4, LIM-I7, LIM-C2
 The runtime shall re-execute an action without consulting the model only when the failure cause is `tool_unavailable` or `timeout`, the tool is idempotent, executions are below LIM-T3, and, for a write effect, the previous execution was rolled back first.
 
 ### REQ-TOOL-010 Transaction equals action — M3 · T
-A failed `workspace_write` execution shall be rolled back to its pre-execution snapshot before its observation is produced, and the observation shall state `rolled_back = true`. Successful write actions persist. (FR-098 of the draft, THR-07)
+A failed `workspace_write` execution shall be rolled back to its pre-execution snapshot before its observation is produced, and the observation shall state `rolled_back = true`. The rollback covers what snapshots cover: paths excluded by LIM-W4 and LIM-W5 are outside it, and the observation's documentation says so. Successful write actions persist. (FR-098 of the draft, THR-07)
 
 ---
 

@@ -273,7 +273,7 @@ proposed ──▶ rejected
 |---|---|---|---|---|
 | `none` | No side effect and no data read | no | re-execution permitted | yes |
 | `workspace_read` | Reads inside the workspace | no | re-execution permitted | yes |
-| `workspace_write` | Writes inside the workspace; always reversible | no, unless the profile lists the tool | rollback to the pre-execution snapshot; re-execution permitted | no |
+| `workspace_write` | Writes inside the workspace; reversible through the snapshots, which cover everything materialized: paths excluded by LIM-W4 and LIM-W5 (`target/`, `node_modules/`, secret patterns) are neither snapshotted nor restored, so a write there is not undone | no, unless the profile lists the tool | rollback to the pre-execution snapshot; re-execution permitted | no |
 | `host_read` | Reads a granted host path | no | re-execution permitted | yes |
 | `host_write` | Writes a granted host path; reversible only when the tool backs up first | yes, unless reversible | reversible: undo, then halt `recovered`; else halt `unknown_outcome` | no |
 | `external_read` | Sends arguments to an external service, mutates nothing | no, unless the profile requires it | idempotent: re-execution permitted; else halt `unknown_outcome` | yes |
