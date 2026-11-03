@@ -1,0 +1,42 @@
+# SPIKE T5 (cycle 1; owner's question on D-H2): does the workspace build and
+# pass its tests for x86_64-apple-darwin under Rosetta on an arm macOS runner?
+# Exists on this branch only; never merged. Triggered by pushes to the branch.
+name: spike-rosetta
+on:
+  push:
+    branches: [t5-rosetta-spike]
+permissions:
+  contents: read
+jobs:
+  rosetta:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: machine
+        run: |
+          uname -m; sw_vers; sysctl -n machdep.cpu.brand_string
+          sysctl -n sysctl.proc_translated || true
+      - name: install Rosetta
+        run: |
+          date -u +%T
+          softwareupdate --install-rosetta --agree-to-license
+          date -u +%T
+          arch -x86_64 /usr/bin/uname -m
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: rosetta
+      - name: build for x86_64-apple-darwin
+        run: |
+          date -u +%T
+          time cargo build --workspace --all-targets --target x86_64-apple-darwin
+          date -u +%T
+      - name: test for x86_64-apple-darwin (under Rosetta)
+        run: |
+          date -u +%T
+          time cargo test --workspace --all-features --target x86_64-apple-darwin --no-fail-fast
+          date -u +%T
