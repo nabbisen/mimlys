@@ -974,11 +974,18 @@ fn pid_aware(mut cmd: Command) -> Command {
     wrapped
 }
 
-/// REQ-CONF-011: `/proc/<pid>/environ` is not in the host tool's read set.
-/// Two targets: the runtime itself (also non-dumpable, REQ-CONF-012) and the
-/// test process, a same-user dumpable process holding an environment, which
-/// only the read set keeps out: the control reads it from the unconfined
-/// tool, so the denial is the confinement's.
+/// REQ-CONF-011: another process's `/proc` files are not in the host tool's
+/// read set. Three reads, each with a control from the unconfined tool:
+/// the runtime's `environ` (also non-dumpable, REQ-CONF-012), a same-user
+/// dumpable process's `environ`, and that process's `cmdline`.
+///
+/// What each pins: Landlock's own ptrace scoping already refuses `environ`
+/// (and `maps`, `fd`, `mem`) of a process outside the sandbox's domain even
+/// when `/proc` is readable (shown by the mutation run in the review
+/// request), so the two `environ` reads hold whichever way the read set
+/// goes. `cmdline` has no such check: it is world-readable, so only the read
+/// set keeps it out, and that third read is the one that fails when `/proc`
+/// is put back.
 #[test]
 fn req_conf_011_proc_environ_is_unreadable() {
     let test = "req_conf_011_proc_environ_is_unreadable";
