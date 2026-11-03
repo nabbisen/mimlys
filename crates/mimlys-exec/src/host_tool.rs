@@ -11,7 +11,6 @@ use crate::sandbox::{Interrupt, InterruptReason};
 use mimlys_core::action::{ExecutionMetrics, HostFaultDetail, Termination};
 use mimlys_core::host_tool::HostToolDeclaration;
 use mimlys_core::limits::LIM_H4_HOST_OUTPUT_BYTES;
-#[cfg(target_os = "linux")]
 use mimlys_core::limits::LIM_O2_CANCEL_MS;
 use mimlys_core::observation::{Notice, Stream};
 use std::io::Read;
@@ -368,9 +367,20 @@ fn capture<R: Read + Send + 'static>(reader: Option<R>, stream: Stream) -> Captu
 }
 
 impl Capture {
+    /// What was captured. The tool's process has ended or been terminated
+    /// here; the reader is given LIM-O2 to reach the end of its stream, in
+    /// case a survivor of the termination still holds the pipe, and is then
+    /// left to end on its own: the worker never waits on a process it has
+    /// already terminated.
     fn finish(self) -> (Vec<u8>, Option<Notice>) {
         if let Some(h) = self.handle {
-            let _ = h.join();
+            let start = Instant::now();
+            while !h.is_finished() && start.elapsed() < Duration::from_millis(LIM_O2_CANCEL_MS) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if h.is_finished() {
+                let _ = h.join();
+            }
         }
         let (bytes, total) = std::mem::take(&mut *self.buffer.lock().expect("capture"));
         let notice = (total as usize > bytes.len()).then_some(Notice::OutputTruncated {

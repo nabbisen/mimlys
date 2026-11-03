@@ -222,7 +222,8 @@ fn req_apr_006_007_expiry_rejection_invalidation() {
 /// REQ-APR-008: the only path to `approved` is `decide` with a `UserDecision`; model text never reaches it.
 #[test]
 fn req_apr_008_no_inferred_approval() {
-    let source = include_str!("../approval.rs");
+    // Line endings as the checkout made them: the positions below are relative.
+    let source = include_str!("../approval.rs").replace("\r\n", "\n");
     let assignments: Vec<usize> = source
         .match_indices(" = ApprovalStatus::Approved")
         .map(|(i, _)| i)

@@ -23,7 +23,37 @@ fn outside() -> PathBuf {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/m6b-outside");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("secret.txt"), "s").unwrap();
-    dir.canonicalize().unwrap()
+    // Without the verbatim prefix: it is an argument of the probe tool.
+    let dir = dir.canonicalize().unwrap();
+    PathBuf::from(dir.to_string_lossy().trim_start_matches(r"\\?\"))
+}
+
+/// The observations of a task, in order, from the store under `data`.
+fn observations_in(data: &Path, task_id: &str) -> Vec<Value> {
+    let conn = rusqlite::Connection::open(data.join("data/mimlys.db")).unwrap();
+    let mut stmt = conn
+        .prepare("select o.record from observations o join actions a on a.action_id = o.action_id where a.task_id = ?1 order by o.rowid")
+        .unwrap();
+    stmt.query_map([task_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+        .collect()
+}
+
+/// A short account of each observation: exit code, termination, both streams.
+fn account(obs: &[Value]) -> String {
+    obs.iter()
+        .map(|o| {
+            format!(
+                "exit {} termination {} stdout {:?} stderr {:?}",
+                o["payload"]["exit_code"],
+                o["payload"]["termination"],
+                o["stdout"].as_str().unwrap_or(""),
+                o["stderr"].as_str().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 const BUILTIN: &str = r#""read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm""#;
@@ -51,13 +81,15 @@ data_dir = {data:?}
 [backend]
 kind = "fake"
 script = {script:?}
+[logging]
+level = "debug"
 {extra}
 [policy.profiles.workspace]
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
-arg_pattern = "[A-Za-z0-9_./:=\\\\-]+"
+arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
 max_args = 3
 effect = "workspace_write"
 timeout_ms = 10000
@@ -113,7 +145,18 @@ network = true
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
         let out = run_bounded(&mut self.command(args), self.data.path());
+        // The runtime's log, shown with a failing test.
+        eprintln!("--- mimlys {args:?}\n{}", out.stderr);
         (out.code(), out.stdout, out.stderr)
+    }
+
+    /// The rejected decisions of a task: `code: reason`, in order.
+    fn rejections(&self, id: &str) -> Vec<String> {
+        self.events(id)
+            .iter()
+            .filter(|e| e["event"] == "decision.rejected")
+            .map(|e| format!("{}: {}", e["code"], e["reason"]))
+            .collect()
     }
 
     fn json(&self, args: &[&str]) -> (i32, Value) {
@@ -151,14 +194,7 @@ network = true
     }
 
     fn observations(&self, id: &str) -> Vec<Value> {
-        let conn = rusqlite::Connection::open(self.data.path().join("data/mimlys.db")).unwrap();
-        let mut stmt = conn
-            .prepare("select o.record from observations o join actions a on a.action_id = o.action_id where a.task_id = ?1 order by o.rowid")
-            .unwrap();
-        stmt.query_map([id], |r| r.get::<_, String>(0))
-            .unwrap()
-            .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
-            .collect()
+        observations_in(self.data.path(), id)
     }
 }
 
@@ -262,16 +298,25 @@ fn m6b_clauses_hold_inside_a_host_tool() {
     assert_eq!(value["task"]["state"], "completed", "{value}");
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let obs = env.observations(&id);
-    assert_eq!(obs.len(), 10, "{}", obs.len());
+    assert_eq!(
+        obs.len(),
+        10,
+        "rejections {:?}\n{}",
+        env.rejections(&id),
+        account(&obs)
+    );
     assert_eq!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
     assert_eq!(stdout_of(&obs[0]).trim(), "ok");
+    // Both canonical: the temporary directory may be spelled in its short form.
     assert_eq!(
-        stdout_of(&obs[1]).trim().to_lowercase(),
+        Path::new(stdout_of(&obs[1]).trim())
+            .canonicalize()
+            .map(|p| p.to_string_lossy().to_lowercase())
+            .unwrap_or_else(|_| stdout_of(&obs[1])),
         env.tree(&id)
             .canonicalize()
             .unwrap()
             .to_string_lossy()
-            .trim_start_matches(r"\\?\")
             .to_lowercase(),
         "cwd is the workspace tree"
     );
@@ -334,13 +379,22 @@ fn m6b_deadline_kills_the_whole_tree() {
         "host_tool:probe",
     ]);
     assert_eq!(code, 0, "{value}");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(40),
-        "the deadline of 10 s ended the tool"
-    );
+    let elapsed = started.elapsed();
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let obs = env.observations(&id);
-    assert_eq!(obs[0]["payload"]["termination"], "deadline", "{obs:?}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(40),
+        "the deadline of 10 s ended the tool: the run took {:.1} s; task {}\n{}",
+        elapsed.as_secs_f64(),
+        value["task"],
+        account(&obs)
+    );
+    assert_eq!(
+        obs[0]["payload"]["termination"],
+        "deadline",
+        "{}",
+        account(&obs)
+    );
     let child = stdout_of(&obs[0])
         .lines()
         .find_map(|l| l.strip_prefix("child "))
@@ -430,7 +484,14 @@ fn m6b_argument_rules_are_enforced() {
         .filter(|e| e["event"] == "decision.rejected")
         .map(|e| e["code"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(rejected, ["denied", "denied", "denied", "denied"]);
+    assert_eq!(
+        rejected,
+        ["denied", "denied", "denied", "denied"],
+        "rejections {:?}; task {}\n{}",
+        env.rejections(&id),
+        value["task"],
+        account(&env.observations(&id))
+    );
 }
 
 /// REQ-CONF-007 / RFC 011 §8: the dependency step runs in its own worker
@@ -630,6 +691,8 @@ data_dir = {data:?}
 [backend]
 kind = "fake"
 script = {script:?}
+[logging]
+level = "debug"
 [policy.profiles.workspace]
 tools = [{builtin}]
 [host_tools.cargo_test]
@@ -659,6 +722,7 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
             .stdin(std::process::Stdio::null());
         let out = run_bounded(&mut cmd, data.path());
+        eprintln!("--- mimlys {args:?}\n{}", out.stderr);
         let value: Value = serde_json::from_str(out.stdout.trim())
             .unwrap_or_else(|e| panic!("not JSON ({e}): {}\n{}", out.stdout, out.stderr));
         (out.code(), value)
@@ -681,7 +745,14 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
         &json!({"tool": "run_host_tool", "arguments": {"tool": "cargo_test"}}).to_string(),
     ]);
     assert_eq!(code, 0, "{value}");
-    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap_or_default();
+    assert_eq!(
+        value["task"]["state"],
+        "completed",
+        "task {}\n{}",
+        value["task"],
+        account(&observations_in(data.path(), id))
+    );
     assert_eq!(value["task"]["completion"], "verified", "{value}");
     eprintln!(
         "m6b demonstration: completed{{verified}} in {:.2} s",

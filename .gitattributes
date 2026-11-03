@@ -1,0 +1,2 @@
+# One line ending everywhere: the source tests read files as checked out.
+* text=auto eol=lf

@@ -19,10 +19,22 @@ struct Status<'a> {
     interpreters: Vec<serde_json::Value>,
     /// The configured MCP servers (RFC 009 §8).
     servers: Vec<mimlys_mcp::ServerStatus>,
-    /// The declared host tools, by name (RFC 011 §6).
-    host_tools: Vec<String>,
+    /// The declared host tools (RFC 011 §6, §7).
+    host_tools: Vec<HostToolView>,
     /// The worker's read set (REQ-CONF-008).
     read_set: Vec<String>,
+}
+
+/// One declared host tool: its command, whether it is the dependency step
+/// (`network`), and the reason it cannot run on this machine, if any
+/// (`acl_not_applied: <path>` until `toolchain grant`; RFC 011 §7).
+#[derive(Serialize)]
+struct HostToolView {
+    name: String,
+    command: String,
+    network: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable: Option<String>,
 }
 
 /// `backend` in the status: the descriptor and the probe (RFC 008 §4).
@@ -138,7 +150,16 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
             .map(|p| p.to_string_lossy().into_owned()),
         engine_version: mimlys_exec::sandbox::ENGINE_VERSION,
         servers,
-        host_tools: app.host_tools.iter().map(|d| d.name.clone()).collect(),
+        host_tools: app
+            .host_tools
+            .iter()
+            .map(|d| HostToolView {
+                name: d.name.clone(),
+                command: d.command.clone(),
+                network: d.network,
+                unavailable: app.host_tools_unavailable.get(&d.name).cloned(),
+            })
+            .collect(),
         read_set: app.read_set(),
         interpreters: app
             .interpreters
