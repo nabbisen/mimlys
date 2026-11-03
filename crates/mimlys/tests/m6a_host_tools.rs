@@ -797,6 +797,21 @@ env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }}
         value["task"]["state"],
         started.elapsed()
     );
+    if value["task"]["state"] != "completed" {
+        // Evidence first: what each action printed, so that a failure on a
+        // machine we cannot log into (a CI runner) explains itself.
+        let conn = rusqlite::Connection::open(data.path().join("data/mimlys.db")).unwrap();
+        let mut stmt = conn
+            .prepare("select o.record from observations o order by o.rowid")
+            .unwrap();
+        for record in stmt.query_map([], |r| r.get::<_, String>(0)).unwrap() {
+            let o: Value = serde_json::from_str(&record.unwrap()).unwrap();
+            eprintln!(
+                "observation: status {} cause {} payload {} stdout {:?} stderr {:?} notices {}",
+                o["status"], o["cause"], o["payload"], o["stdout"], o["stderr"], o["notices"]
+            );
+        }
+    }
     assert_eq!(code, 0, "{value}\n{stderr}");
     assert_eq!(value["task"]["state"], "completed", "{value}\n{stderr}");
     assert_eq!(value["task"]["completion"], "verified", "{value}");
