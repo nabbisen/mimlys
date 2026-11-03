@@ -17,23 +17,34 @@ whose hash differs is never loaded (REQ-SBX-007, REQ-SBX-012).
 ## Reproducing the build
 
 `Dockerfile` in this directory rebuilds the artifact from the pinned upstream
-tag with the pinned wasi-sdk, so that a reviewer can compare the hash:
+tag with upstream's wasi-sdk version, so that a reviewer can compare the hash:
 
 ```sh
 docker build -t mimlys-qjs tools/interpreters/quickjs
 docker run --rm mimlys-qjs sha256sum /out/qjs-wasi.wasm
 ```
 
-The recipe follows upstream's own release workflow (`cmake` with the wasi-sdk
-toolchain file, target `qjs_exe`). Byte-for-byte reproducibility depends on
-upstream's toolchain pin; the `check` in `.github/workflows/interpreters.yml`
+The recipe repeats upstream's own release job (wasi-sdk 29 `.deb`, `cmake` with
+the wasi-sdk toolchain file and `-DQJS_BUILD_WERROR=ON`, `make -C build
+qjs_exe`) and reproduces the pinned artifact byte for byte. The `check` in `.github/workflows/interpreters.yml`
 rebuilds on demand and reports whether the hash matches `expected.sha256`.
 A mismatch is a review item, not a release blocker: the pinned artifact stays
 what the binary verifies.
 
-## Known differences from upstream's release job (2026-11-03)
+## What was wrong with the recipe (2026-11-03)
 
-The scheduled check has failed since its first run (rebuilt `cd7da6cb…`, pin `42a732a6…`). The pin is authentic: the `v0.17.0` release asset `qjs-wasi.wasm` is 1 569 050 bytes with that SHA-256. The recipe differs from upstream's `wasi` job at that tag (`.github/workflows/release.yml`) in four places: wasi-sdk 25 (upstream 29), `-DCMAKE_BUILD_TYPE=Release` (upstream: the default), no `-DQJS_BUILD_WERROR=ON` (upstream: on), and `cmake --build --target qjs_exe` on Debian bookworm (upstream: `make -C build qjs_exe` on ubuntu-22.04). The recipe is to be aligned with the job; the result of that run is recorded here when it exists. The pin does not change on the strength of a mismatch.
+The scheduled check failed from its first run (rebuilt `cd7da6cb…`, pin `42a732a6…`). The pin was never at fault: the `v0.17.0` release asset `qjs-wasi.wasm` is 1 569 050 bytes with that SHA-256. The recipe differed from upstream's `wasi` job at that tag (`.github/workflows/release.yml`, lines 142-154) in four places, and was aligned with it:
+
+| | Old recipe | Upstream job, now the recipe |
+|---|---|---|
+| wasi-sdk | 25, tarball | 29, the `.deb` upstream installs (unpacks to `/opt/wasi-sdk`) |
+| Build type | `-DCMAKE_BUILD_TYPE=Release` | not set (upstream's `CMakeLists.txt` defaults to Release, so no effect on the output) |
+| Warnings | not set | `-DQJS_BUILD_WERROR=ON` |
+| Build command | `cmake --build --target qjs_exe` | `make -C build qjs_exe` |
+
+Result: with the aligned recipe the `interpreters` workflow rebuilds `42a732a6…` (1 569 050 bytes), equal to the pin and to `expected.sha256` (run 41601316708 on branch `t3-interpreter-recipe`). Building the aligned recipe locally with podman and `--build-arg WASI_SDK_VERSION=25` gives `cd7da6cb…` again, so the wasi-sdk version is what changed the bytes; the other three differences did not.
+
+Not pinned by the recipe: the wasi-sdk download is not hash-verified, the apt packages (`cmake`, `make`, `git`, `curl`) are not version-pinned, and the upstream tag is resolved at build time. Only the base image is pinned by digest.
 
 ## Updating
 
