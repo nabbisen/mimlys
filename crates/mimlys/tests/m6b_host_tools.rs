@@ -106,7 +106,7 @@ command = {tool:?}
 allowed_args = ["ok", "connect"]
 arg_pattern = "[A-Za-z0-9_.:]+"
 max_args = 2
-effect = "workspace_write"
+effect = "external_read"
 timeout_ms = 20000
 network = true
 "#,

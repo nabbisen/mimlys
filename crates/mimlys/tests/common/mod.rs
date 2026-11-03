@@ -69,3 +69,24 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
         stderr,
     }
 }
+
+/// Records that a test did not run its subject, and why. libtest has no
+/// skipped state and hides the output of a passing test, so the line goes to
+/// standard error and is also appended to `skips.log` in the target's
+/// temporary directory (`CARGO_TARGET_TMPDIR`), which survives; a review
+/// request counts the lines of that file per platform and reports them apart
+/// from the passes. Delete the file before a run to count that run alone.
+pub fn skip(test: &str, reason: &str) {
+    use std::io::Write;
+    let line = format!("SKIPPED {test}: {reason}");
+    eprintln!("{line}");
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("skips.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        // One write per line: appends from parallel tests do not interleave.
+        let _ = file.write_all(format!("{line}\n").as_bytes());
+    }
+}

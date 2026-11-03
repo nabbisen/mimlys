@@ -263,6 +263,12 @@ enum TaskCommand {
 }
 
 fn main() -> ExitCode {
+    // REQ-CONF-012: first thing, before any thread exists (the async runtime
+    // below starts them). Fail closed: the guarantee is stated in the book.
+    if let Err(e) = mimlys_exec::confine::harden_process() {
+        eprintln!("mimlys: cannot mark the process non-dumpable: {e}");
+        return ExitCode::from(1);
+    }
     let cli = Cli::parse();
     let out = Output::new(cli.json);
     let runtime = match tokio::runtime::Builder::new_multi_thread()

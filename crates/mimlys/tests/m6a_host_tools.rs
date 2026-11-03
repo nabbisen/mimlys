@@ -58,6 +58,7 @@ max_args = 3
 effect = "workspace_write"
 timeout_ms = 20000
 env = {{ PROBE_OK = "1" }}
+env_allow = ["MIMLYS_TEST_RUNTIME_PID", "MIMLYS_TEST_OWNER_PID"]
 [host_tools.strict]
 command = {tool:?}
 allowed_args = ["ok"]
@@ -70,7 +71,7 @@ command = {tool:?}
 allowed_args = ["connect"]
 arg_pattern = "[A-Za-z0-9_.:]+"
 max_args = 2
-effect = "workspace_write"
+effect = "external_read"
 timeout_ms = 20000
 network = true
 "#,
@@ -298,11 +299,39 @@ fn m6a_clauses_hold_inside_a_host_tool() {
 /// is terminated with its whole tree when the task is cancelled, within LIM-O2.
 #[test]
 fn m6a_cancel_kills_the_whole_tree() {
-    let env = Env::new(&[probe(&["setsid-sleep", "1234"]), complete()], "");
-    let (tier, _) = clauses(&env);
+    cancel_kills_the_whole_tree(false, "1234", None);
+}
+
+/// The same, on the `subreaper` rung of clause K (the rung a runner without
+/// a delegated cgroup gets): the worker's read set holds no `/proc`
+/// (REQ-CONF-011), so the descendants a cancelled tool left re-parented to
+/// the worker are swept by the runtime. A different sleep length keeps the
+/// two tests' processes apart when they run side by side.
+#[test]
+fn m6a_cancel_kills_the_whole_tree_on_the_subreaper_rung() {
+    cancel_kills_the_whole_tree(true, "1235", Some("subreaper"));
+}
+
+fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&str>) {
+    let name = if no_cgroup {
+        "m6a_cancel_kills_the_whole_tree_on_the_subreaper_rung"
+    } else {
+        "m6a_cancel_kills_the_whole_tree"
+    };
+    let mut env = Env::new(&[probe(&["setsid-sleep", secs]), complete()], "");
+    if no_cgroup {
+        env = env.env("MIMLYS_PROBE_NO_CGROUP", "1");
+    }
+    let (tier, table) = clauses(&env);
     if tier != "full" {
-        eprintln!("skipped: tier {tier}");
+        common::skip(name, &format!("tier {tier}"));
         return;
+    }
+    if let Some(primitive) = primitive {
+        assert_eq!(
+            table["termination"]["primitive"], primitive,
+            "the knob selects the rung under test: {table:?}"
+        );
     }
     let scope = env.scope();
     let run = env
@@ -324,11 +353,11 @@ fn m6a_cancel_kills_the_whole_tree() {
     // running step (external design §19.2); the store lock admits one
     // runtime at a time, so this is how a user cancels from the terminal.
     let started = std::time::Instant::now();
-    while sleepers("1234") < 2 && started.elapsed() < std::time::Duration::from_secs(20) {
+    while sleepers(secs) < 2 && started.elapsed() < std::time::Duration::from_secs(20) {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     assert!(
-        sleepers("1234") >= 2,
+        sleepers(secs) >= 2,
         "the host tool and its setsid child run"
     );
     let cancel_at = std::time::Instant::now();
@@ -339,11 +368,11 @@ fn m6a_cancel_kills_the_whole_tree() {
     }
     let out = run.wait_with_output().unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while sleepers("1234") > 0 && std::time::Instant::now() < deadline {
+    while sleepers(secs) > 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     assert_eq!(
-        sleepers("1234"),
+        sleepers(secs),
         0,
         "every sleeper, the setsid one included, is gone"
     );
@@ -714,7 +743,7 @@ allowed_args = ["--lib"]
 max_args = 1
 effect = "workspace_write"
 timeout_ms = 600000
-read_paths = ["~/.cargo", "~/.rustup"]
+read_paths = ["~/.cargo/bin", "~/.rustup"]
 env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }}
 "#,
             data = data.path().join("data").to_string_lossy(),
@@ -788,4 +817,402 @@ env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }}
             .is_dir(),
         "the build happened inside the workspace"
     );
+}
+
+// ---------------------------------------------------------------------
+// 0.7.1 (handoff 011d; REQ-CONF-011, REQ-CONF-012): the clause tests of
+// the hardening. Each guards one rule and was shown to fail without it
+// (the mutation outputs are in the review request). Where a test needs
+// a kernel feature or a tier the machine lacks, it says so through
+// `common::skip` and the review request counts it apart from the passes.
+// ---------------------------------------------------------------------
+
+/// The probe tool run directly, outside every confinement: the control that
+/// shows the thing is possible on this machine, so that a denial inside the
+/// worker is the confinement's doing and not the kernel's.
+fn control(args: &[&str]) -> (i32, String) {
+    let out = Command::new(probe_tool())
+        .args(args)
+        .env_clear()
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+    )
+}
+
+/// Runs the script's host-tool calls under a full-tier worker and returns the
+/// observations, or `None` (recorded as a skip) below tier `full`.
+fn run_probe_script(test: &str, env: &Env) -> Option<Vec<Value>> {
+    let (tier, table) = clauses(env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return None;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "probe",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    Some(env.observations(&id))
+}
+
+/// REQ-CONF-012: a socket created through `io_uring` never passes the
+/// `socket` rule of the filter, so the ring itself is denied. Inside the host
+/// tool `io_uring_setup` answers `EPERM`; the same command outside any
+/// confinement creates the socket (the control).
+#[test]
+fn req_conf_012_io_uring_socket_is_denied() {
+    let test = "req_conf_012_io_uring_socket_is_denied";
+    let (code, line) = control(&["uring-socket"]);
+    if code != 0 {
+        common::skip(test, &format!("io_uring is not usable here: {line}"));
+        return;
+    }
+    let env = Env::new(&[probe(&["uring-socket"]), complete()], "");
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_ne!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
+    assert!(
+        stdout_of(&obs[0]).contains("uring-socket failed: io_uring_setup errno=1"),
+        "the filter answers EPERM at the ring's creation: {}",
+        stdout_of(&obs[0])
+    );
+}
+
+/// REQ-CONF-012: nor can `io_uring` connect: a live loopback listener sees
+/// no connection from the host tool, and sees one from the control.
+#[test]
+fn req_conf_012_io_uring_connect_is_denied() {
+    let test = "req_conf_012_io_uring_connect_is_denied";
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let (code, line) = control(&["uring-connect", &addr]);
+    if code != 0 {
+        common::skip(test, &format!("io_uring is not usable here: {line}"));
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        listener.accept().is_ok(),
+        "the control reached the listener"
+    );
+    let env = Env::new(&[probe(&["uring-connect", &addr]), complete()], "");
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_ne!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
+    assert!(
+        stdout_of(&obs[0]).contains("uring-connect failed: io_uring_setup errno=1"),
+        "{}",
+        stdout_of(&obs[0])
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        listener.accept().is_err(),
+        "the listener saw no connection from the host tool"
+    );
+}
+
+/// REQ-CONF-012: `process_vm_readv` is denied. The tool reads a string held
+/// by a descendant of its own (which the kernel's own checks allow: the
+/// control does it), so a failure inside the worker is the filter's `EPERM`
+/// and nothing else.
+#[test]
+fn req_conf_012_cross_process_memory_is_denied() {
+    let test = "req_conf_012_cross_process_memory_is_denied";
+    let (code, line) = control(&["vm-read", "child"]);
+    if code != 0 {
+        common::skip(
+            test,
+            &format!("process_vm_readv is not usable here: {line}"),
+        );
+        return;
+    }
+    assert!(line.contains("mimlys-vm-read-probe"), "{line}");
+    let env = Env::new(&[probe(&["vm-read", "child"]), complete()], "");
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_ne!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
+    assert!(
+        stdout_of(&obs[0]).contains("vm-read failed: errno=1"),
+        "{}",
+        stdout_of(&obs[0])
+    );
+    assert!(!stdout_of(&obs[0]).contains("mimlys-vm-read-probe"));
+}
+
+/// The runtime as a child that knows its own process id: `sh` sets
+/// `MIMLYS_TEST_RUNTIME_PID` to its pid and `exec`s the runtime, which keeps
+/// the pid.
+fn pid_aware(mut cmd: Command) -> Command {
+    let mut wrapped = Command::new("sh");
+    wrapped
+        .arg("-c")
+        .arg("MIMLYS_TEST_RUNTIME_PID=$$ exec \"$0\" \"$@\"")
+        .arg(cmd.get_program())
+        .args(cmd.get_args());
+    for (k, v) in cmd.get_envs() {
+        match v {
+            Some(v) => wrapped.env(k, v),
+            None => wrapped.env_remove(k),
+        };
+    }
+    wrapped.stdin(std::process::Stdio::null());
+    let _ = &mut cmd;
+    wrapped
+}
+
+/// REQ-CONF-011: `/proc/<pid>/environ` is not in the host tool's read set.
+/// Two targets: the runtime itself (also non-dumpable, REQ-CONF-012) and the
+/// test process, a same-user dumpable process holding an environment, which
+/// only the read set keeps out: the control reads it from the unconfined
+/// tool, so the denial is the confinement's.
+#[test]
+fn req_conf_011_proc_environ_is_unreadable() {
+    let test = "req_conf_011_proc_environ_is_unreadable";
+    let me = std::process::id().to_string();
+    let out = Command::new(probe_tool())
+        .args(["read-proc", "MIMLYS_TEST_OWNER_PID", "environ"])
+        .env_clear()
+        .env("MIMLYS_TEST_OWNER_PID", &me)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("read-proc read"),
+        "the control reads a same-user process's environment: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let env = Env::new(
+        &[
+            probe(&["read-proc", "MIMLYS_TEST_RUNTIME_PID", "environ"]),
+            probe(&["read-proc", "MIMLYS_TEST_OWNER_PID", "environ"]),
+            probe(&["read-proc", "MIMLYS_TEST_OWNER_PID", "cmdline"]),
+            complete(),
+        ],
+        "",
+    )
+    .env("MIMLYS_TEST_OWNER_PID", &me);
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let cmd = pid_aware(env.command(&[
+        "--json",
+        "run",
+        "probe",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]));
+    let mut cmd = cmd;
+    let out = run_bounded(&mut cmd, env.data.path());
+    let value: Value = serde_json::from_str(out.stdout.trim())
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}\n{}", out.stdout, out.stderr));
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    for (i, what) in [
+        (0, "the runtime's environment"),
+        (1, "a same-user process's environment"),
+        (2, "a same-user process's command line"),
+    ] {
+        assert_ne!(exit_code_of(&obs[i]), 0, "{what}: {}", stdout_of(&obs[i]));
+        assert!(
+            stdout_of(&obs[i]).contains("read-proc failed: permission denied"),
+            "{what}: {}",
+            stdout_of(&obs[i])
+        );
+    }
+}
+
+/// REQ-CONF-011: a credentials file beside the declared toolchain directory
+/// cannot be read; the declared directory itself can. The declaration is
+/// `<toolchain>/bin`, the file is `<toolchain>/credentials.toml`: the read
+/// set holds the former and not its parent.
+#[test]
+fn req_conf_011_credentials_beside_toolchain_are_unreadable() {
+    let test = "req_conf_011_credentials_beside_toolchain_are_unreadable";
+    let toolchain = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(toolchain.path().join("bin")).unwrap();
+    std::fs::write(toolchain.path().join("bin/marker"), "m").unwrap();
+    std::fs::write(
+        toolchain.path().join("credentials.toml"),
+        "token = \"secret\"\n",
+    )
+    .unwrap();
+    let beside = toolchain.path().join("credentials.toml");
+    let inside = toolchain.path().join("bin/marker");
+    let extra = format!(
+        "[host_tools.beside]\ncommand = {tool:?}\nallowed_args = [\"read\"]\narg_pattern = \"[A-Za-z0-9_./:=-]+\"\nmax_args = 2\neffect = \"workspace_write\"\ntimeout_ms = 20000\nread_paths = [{bin:?}]\n",
+        tool = probe_tool().to_string_lossy(),
+        bin = toolchain.path().join("bin").to_string_lossy(),
+    );
+    let beside_call = |path: &Path| json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "beside", "args": ["read", path.to_str().unwrap()]}});
+    let env = Env::new(
+        &[beside_call(&beside), beside_call(&inside), complete()],
+        &extra,
+    );
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "probe",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:beside",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert!(
+        stdout_of(&obs[0]).contains("read failed: permission denied"),
+        "the credentials file beside the toolchain: {}",
+        stdout_of(&obs[0])
+    );
+    assert!(
+        stdout_of(&obs[1]).contains("read 1 bytes"),
+        "the declared directory is readable: {}",
+        stdout_of(&obs[1])
+    );
+}
+
+/// REQ-CONF-012: the runtime and the worker are non-dumpable. Seen from the
+/// test process (the same user): the files inside `/proc/<pid>` of each are
+/// owned by root, the kernel's mark of a non-dumpable process (the directory
+/// itself keeps its owner), and `environ` cannot be opened. (The kernel's
+/// `status` file has no `Dumpable` field, so the ownership is the evidence.)
+#[test]
+fn req_conf_012_runtime_is_not_dumpable() {
+    use std::os::unix::fs::MetadataExt;
+    let test = "req_conf_012_runtime_is_not_dumpable";
+    let env = Env::new(&[probe(&["setsid-sleep", "1236"]), complete()], "");
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let mut run = env
+        .command(&[
+            "--json",
+            "run",
+            "dumpable",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The host tool is running when its sleepers exist: runtime and worker are both up.
+    let started = std::time::Instant::now();
+    while sleepers("1236") < 2 && started.elapsed() < std::time::Duration::from_secs(20) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(sleepers("1236") >= 2, "the host tool runs");
+    let runtime = run.id();
+    let worker = child_of(runtime, "mimlys-worker")
+        .unwrap_or_else(|| panic!("no mimlys-worker under pid {runtime}"));
+    for (what, pid) in [("the runtime", runtime), ("the worker", worker)] {
+        let dir = format!("/proc/{pid}");
+        assert_eq!(
+            std::fs::metadata(format!("{dir}/status")).unwrap().uid(),
+            0,
+            "{what} ({pid}) is non-dumpable: its /proc files belong to root"
+        );
+        let opened = std::fs::File::open(format!("{dir}/environ"));
+        assert!(
+            opened.is_err(),
+            "{what} ({pid}): the environment cannot be opened by the same user"
+        );
+    }
+    // The control: this test process is dumpable and the same user's.
+    assert_ne!(
+        std::fs::metadata(format!("/proc/{}/status", std::process::id()))
+            .unwrap()
+            .uid(),
+        0
+    );
+    for _ in 0..2 {
+        let _ = Command::new("kill")
+            .args(["-INT", &runtime.to_string()])
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    let _ = run.wait();
+}
+
+/// The first live child of `parent` whose command name is `comm`.
+fn child_of(parent: u32, comm: &str) -> Option<u32> {
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((head, rest)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let name = head.split_once('(').map(|(_, n)| n).unwrap_or("");
+        let ppid: u32 = rest
+            .split_whitespace()
+            .nth(1)
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(0);
+        if ppid == parent && name == comm {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// REQ-CONF-012: where the kernel's Landlock has the TCP layer (ABI 4), the
+/// N clause reports both layers; below it, the filter alone (still
+/// enforced, because it denies the `io_uring` route).
+#[test]
+fn req_conf_012_landlock_net_layer_is_reported() {
+    let test = "req_conf_012_landlock_net_layer_is_reported";
+    let env = Env::new(&[], "");
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let abi4 = mimlys_exec::confine::linux::landlock_net_supported();
+    assert_eq!(table["network"]["state"], "enforced", "{table:?}");
+    let expected = if abi4 {
+        "seccomp+landlock_net"
+    } else {
+        "seccomp"
+    };
+    assert_eq!(table["network"]["primitive"], expected, "{table:?}");
+    if !abi4 {
+        common::skip(
+            test,
+            "kernel Landlock below ABI 4: the TCP layer is not testable here",
+        );
+    }
 }

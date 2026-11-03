@@ -66,8 +66,8 @@ fn req_conf_006_argument_validation() {
     );
 }
 
-/// RFC 011 §6, §8: the effect is the declaration's, `workspace_write`
-/// reversible; the dependency step is `external_read`.
+/// RFC 011 §6, §8: the effect is the declaration's; `workspace_write` is
+/// reversible, the dependency step (`external_read`) never.
 #[test]
 fn rfc_011_effects() {
     let d = cargo_test();
@@ -75,14 +75,60 @@ fn rfc_011_effects() {
     assert_eq!(e.kind, EffectKind::WorkspaceWrite);
     assert!(e.reversible);
     assert!(!e.idempotent);
-    let mut fetch = cargo_test();
-    fetch.network = true;
+    let fetch = fetch();
     assert_eq!(fetch.effect_view().kind, EffectKind::ExternalRead);
+    assert!(!fetch.effect_view().reversible);
     let mut host = cargo_test();
     host.effect = EffectKind::HostWrite;
     assert!(!host.effect_view().reversible);
     host.reversible = true;
     assert!(host.effect_view().reversible);
+    // Nothing is derived from `network`: the declared effect is what the view shows.
+    let mut mismatched = cargo_test();
+    mismatched.network = true;
+    assert_eq!(mismatched.effect_view().kind, EffectKind::WorkspaceWrite);
+}
+
+fn fetch() -> HostToolDeclaration {
+    let mut d = cargo_test();
+    d.name = "cargo_fetch".into();
+    d.network = true;
+    d.effect = EffectKind::ExternalRead;
+    d.reversible = true;
+    d
+}
+
+/// REQ-CONF-006 / CLR-1, CLR-2: `external_read` exactly when `network = true`.
+/// Both accepted pairings pass; both refused pairings name the declaration,
+/// the pair found and the value to write.
+#[test]
+fn req_conf_006_effect_and_network_must_agree() {
+    assert!(cargo_test().check().is_ok(), "workspace_write, offline");
+    assert!(fetch().check().is_ok(), "external_read, network");
+
+    let mut d = cargo_test();
+    d.name = "cargo_fetch".into();
+    d.network = true; // effect stays workspace_write
+    let e = d.check().unwrap_err();
+    assert_eq!(e.key, "host_tools.cargo_fetch.effect");
+    assert!(
+        e.reason
+            .contains("effect = \"workspace_write\" with network = true"),
+        "{e}"
+    );
+    assert!(e.reason.contains("write effect = \"external_read\""), "{e}");
+
+    let mut d = cargo_test();
+    d.effect = EffectKind::ExternalRead; // network stays false
+    let e = d.check().unwrap_err();
+    assert_eq!(e.key, "host_tools.cargo_test.effect");
+    assert!(
+        e.reason
+            .contains("effect = \"external_read\" with network = false"),
+        "{e}"
+    );
+    assert!(e.reason.contains("effect = \"workspace_write\""), "{e}");
+    assert!(e.reason.contains("network = true"), "{e}");
 }
 
 /// REQ-CFG-001: a declaration's own rules name the key.
@@ -104,4 +150,141 @@ fn req_cfg_001_declaration_rules() {
     let mut d = cargo_test();
     d.max_args = 0;
     assert!(d.check().unwrap_err().key.ends_with(".max_args"));
+}
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// REQ-CONF-011 / LIM-H5: a root, the home directory and an ancestor of it
+/// are refused whatever they hold; the message names the path and a
+/// narrower one to declare.
+#[test]
+fn req_conf_011_root_home_and_ancestors_are_refused() {
+    use std::path::Path;
+    let home = Path::new("/home/me");
+    assert_eq!(
+        check_read_path(Path::new("/"), Some(home), &[], false),
+        Err(ReadPathRefusal::Root)
+    );
+    assert_eq!(
+        check_read_path(Path::new("/home/me"), Some(home), &[], false),
+        Err(ReadPathRefusal::Home)
+    );
+    assert_eq!(
+        check_read_path(Path::new("/home/me/"), Some(home), &[], false),
+        Err(ReadPathRefusal::Home)
+    );
+    assert_eq!(
+        check_read_path(Path::new("/home"), Some(home), &[], false),
+        Err(ReadPathRefusal::AncestorOfHome)
+    );
+    // A sibling that merely shares a prefix is not an ancestor.
+    assert_eq!(
+        check_read_path(Path::new("/home/me2"), Some(home), &[], false),
+        Ok(())
+    );
+    let text = ReadPathRefusal::Home.reason("~");
+    assert!(text.contains("home directory") && text.contains("~/.cargo/bin"));
+}
+
+/// REQ-CONF-011 / LIM-H5: a directory that directly holds a credential name
+/// (LIM-H5's or LIM-W5's) is refused with the entry named and the narrower
+/// path suggested; `~/.cargo/bin` and `~/.rustup` pass.
+#[test]
+fn req_conf_011_directory_holding_credentials_is_refused() {
+    use std::path::Path;
+    let home = Path::new("/home/me");
+    let cargo = Path::new("/home/me/.cargo");
+    for name in [
+        "credentials.toml",
+        "credentials",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".docker",
+        ".env",
+        ".env.local",
+        "server.pem",
+        "tls.key",
+        "id_ed25519",
+        ".ssh",
+        ".aws",
+        ".gnupg",
+    ] {
+        let found = check_read_path(cargo, Some(home), &names(&["bin", name]), false);
+        assert_eq!(
+            found,
+            Err(ReadPathRefusal::HoldsCredentials {
+                entry: name.to_owned()
+            }),
+            "{name}"
+        );
+    }
+    let err = check_read_path(
+        cargo,
+        Some(home),
+        &names(&["bin", "credentials.toml"]),
+        false,
+    )
+    .unwrap_err()
+    .reason("~/.cargo");
+    assert!(err.contains("credentials.toml"), "{err}");
+    assert!(err.contains("~/.cargo/bin"), "{err}");
+    assert_eq!(
+        check_read_path(
+            Path::new("/home/me/.cargo/bin"),
+            Some(home),
+            &names(&["cargo", "rustc", "rustup"]),
+            false
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        check_read_path(
+            Path::new("/home/me/.rustup"),
+            Some(home),
+            &names(&[
+                "downloads",
+                "settings.toml",
+                "tmp",
+                "toolchains",
+                "update-hashes"
+            ]),
+            false
+        ),
+        Ok(())
+    );
+    // Only direct entries count: the check receives depth one, by design.
+    assert_eq!(
+        check_read_path(cargo, Some(home), &names(&["registry", "git"]), false),
+        Ok(())
+    );
+}
+
+/// REQ-CONF-011: case-insensitive filesystems (Windows, macOS) compare the
+/// home directory and the names without regard to case.
+#[test]
+fn req_conf_011_case_insensitive_comparison() {
+    use std::path::Path;
+    let home = Path::new("C:\\Users\\Me");
+    assert_eq!(
+        check_read_path(Path::new("c:\\users\\me"), Some(home), &[], true),
+        Err(ReadPathRefusal::Home)
+    );
+    assert_eq!(
+        check_read_path(
+            Path::new("c:\\users\\me\\.cargo"),
+            Some(home),
+            &names(&["Credentials.TOML"]),
+            true
+        ),
+        Err(ReadPathRefusal::HoldsCredentials {
+            entry: "Credentials.TOML".into()
+        })
+    );
+    assert_eq!(
+        check_read_path(Path::new("/x"), None, &names(&["Credentials.toml"]), false),
+        Ok(())
+    );
 }

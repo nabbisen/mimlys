@@ -29,7 +29,8 @@ pub struct HostToolDeclaration {
     /// How many arguments the model may add.
     #[serde(default)]
     pub max_args: usize,
-    /// `workspace_write` (writes only inside the workspace) or `host_write`.
+    /// `workspace_write` (writes only inside the workspace), `host_write`, or
+    /// `external_read` exactly when `network` is `true` (the dependency step).
     pub effect: EffectKind,
     /// Whether a `host_write` is reversible (the tool backs up first).
     #[serde(default)]
@@ -46,7 +47,8 @@ pub struct HostToolDeclaration {
     /// Variables copied from the runtime's environment.
     #[serde(default)]
     pub env_allow: Vec<String>,
-    /// `true` makes this the dependency step: clause N lifted, effect `external_read` (REQ-CONF-007).
+    /// `true` makes this the dependency step: clause N lifted; the effect must
+    /// then be declared `external_read` (REQ-CONF-007, REQ-CONF-006).
     #[serde(default)]
     pub network: bool,
 }
@@ -81,24 +83,20 @@ pub enum ArgViolation {
 }
 
 impl HostToolDeclaration {
-    /// The effect the runtime derives (RFC 011 §6, §8): `external_read`
-    /// for the dependency step, else the declared effect.
+    /// The declared effect (RFC 011 §6, §8; REQ-CONF-006): `check` has
+    /// already refused every declaration whose effect and `network` disagree,
+    /// so this derives nothing from `network` and the file says what the
+    /// runtime does (CLR-1). `workspace_write` is reversible through the
+    /// snapshots; `external_read` never is.
     pub fn effect_view(&self) -> EffectView {
-        if self.network {
-            EffectView {
-                kind: EffectKind::ExternalRead,
-                reversible: false,
-                idempotent: false,
-            }
-        } else {
-            EffectView {
-                kind: self.effect,
-                reversible: match self.effect {
-                    EffectKind::WorkspaceWrite => true,
-                    _ => self.reversible,
-                },
-                idempotent: false,
-            }
+        EffectView {
+            kind: self.effect,
+            reversible: match self.effect {
+                EffectKind::WorkspaceWrite => true,
+                EffectKind::HostWrite => self.reversible,
+                _ => false,
+            },
+            idempotent: false,
         }
     }
 
@@ -144,6 +142,19 @@ fn pattern_allows_paths(pattern: &Option<String>) -> bool {
         .is_some_and(|p| p.contains('/') || p.contains("\\."))
 }
 
+/// The effect as the configuration spells it (snake_case, CLR-6).
+fn effect_name(effect: EffectKind) -> &'static str {
+    match effect {
+        EffectKind::None => "none",
+        EffectKind::WorkspaceRead => "workspace_read",
+        EffectKind::WorkspaceWrite => "workspace_write",
+        EffectKind::HostRead => "host_read",
+        EffectKind::HostWrite => "host_write",
+        EffectKind::ExternalRead => "external_read",
+        EffectKind::ExternalWrite => "external_write",
+    }
+}
+
 /// A validation problem of a declaration (REQ-CFG-001 names the key).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{key}: {reason}")]
@@ -182,9 +193,34 @@ impl HostToolDeclaration {
         }
         if !matches!(
             self.effect,
-            EffectKind::WorkspaceWrite | EffectKind::HostWrite
+            EffectKind::WorkspaceWrite | EffectKind::HostWrite | EffectKind::ExternalRead
         ) {
-            return Err(err("effect", "`workspace_write` or `host_write`".into()));
+            return Err(err(
+                "effect",
+                "`workspace_write`, `host_write` or `external_read`".into(),
+            ));
+        }
+        // CLR-1, CLR-2: the file says what the runtime does. A tool with
+        // network access is the dependency step and reads from outside; a
+        // tool without it cannot declare an external read.
+        let pair = |effect: &str| format!("effect = \"{effect}\" with network = {}", self.network);
+        if self.network && self.effect != EffectKind::ExternalRead {
+            return Err(err(
+                "effect",
+                format!(
+                    "{}: a tool with network access is the dependency step; write effect = \"external_read\"",
+                    pair(effect_name(self.effect))
+                ),
+            ));
+        }
+        if !self.network && self.effect == EffectKind::ExternalRead {
+            return Err(err(
+                "effect",
+                format!(
+                    "{}: an external read needs network access; write effect = \"workspace_write\", or set network = true for the dependency step",
+                    pair(effect_name(self.effect))
+                ),
+            ));
         }
         if let Some(p) = &self.arg_pattern
             && let Err(e) = regex::Regex::new(&format!("^(?:{p})$"))
@@ -198,6 +234,117 @@ impl HostToolDeclaration {
             ));
         }
         Ok(())
+    }
+}
+
+/// Why a declared read path is refused (REQ-CONF-011).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadPathRefusal {
+    /// A filesystem root: it would make every file of the machine readable.
+    Root,
+    /// The user's home directory itself.
+    Home,
+    /// An ancestor of the user's home directory.
+    AncestorOfHome,
+    /// A directory that directly holds a name of LIM-H5 or LIM-W5.
+    HoldsCredentials {
+        /// The entry found.
+        entry: String,
+    },
+}
+
+/// Decides whether a declared read path (REQ-CONF-011, LIM-H5) may join the
+/// read set. Pure: `path` and `home` are absolute and already resolved by the
+/// caller (`~` expanded, links followed), `entries` are the names directly
+/// inside `path` (empty when it is a file or does not exist). Landlock has
+/// no deny rule and a container ACL covers a whole directory, so the check
+/// is on the declaration, before anything is granted.
+pub fn check_read_path(
+    path: &std::path::Path,
+    home: Option<&std::path::Path>,
+    entries: &[String],
+    case_insensitive: bool,
+) -> Result<(), ReadPathRefusal> {
+    let parts = |p: &std::path::Path| -> Vec<String> {
+        p.components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .map(|c| {
+                let s = c.as_os_str().to_string_lossy().into_owned();
+                if case_insensitive {
+                    s.to_lowercase()
+                } else {
+                    s
+                }
+            })
+            .collect()
+    };
+    let wanted = parts(path);
+    // A root has a prefix and a root directory component at most (`/`, `C:\`).
+    if path.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::RootDir | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(ReadPathRefusal::Root);
+    }
+    if let Some(home) = home {
+        let home = parts(home);
+        if wanted == home {
+            return Err(ReadPathRefusal::Home);
+        }
+        if home.len() > wanted.len() && home[..wanted.len()] == wanted[..] {
+            return Err(ReadPathRefusal::AncestorOfHome);
+        }
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in crate::limits::LIM_W5_SECRET_PATTERNS
+        .iter()
+        .chain(crate::limits::LIM_H5_CREDENTIAL_NAMES.iter())
+    {
+        // `name/` names a directory; an entry list has names only, so both
+        // kinds match (a file called `.ssh` is as unwelcome as the directory).
+        let name = pattern.strip_suffix('/').unwrap_or(pattern);
+        if let Ok(glob) = globset::GlobBuilder::new(name)
+            .literal_separator(true)
+            .case_insensitive(case_insensitive)
+            .build()
+        {
+            builder.add(glob);
+        }
+    }
+    if let Ok(set) = builder.build()
+        && let Some(entry) = entries.iter().find(|e| set.is_match(e.as_str()))
+    {
+        return Err(ReadPathRefusal::HoldsCredentials {
+            entry: entry.clone(),
+        });
+    }
+    Ok(())
+}
+
+impl ReadPathRefusal {
+    /// The reason, naming what was found and the narrower path to declare
+    /// (CLR-5). `shown` is the path as the administrator wrote it.
+    pub fn reason(&self, shown: &str) -> String {
+        let narrower = match self {
+            ReadPathRefusal::HoldsCredentials { .. } => format!(
+                "declare the subdirectory the tool needs, for example \"{}/bin\"",
+                shown.trim_end_matches(['/', '\\'])
+            ),
+            _ => "declare the toolchain's own directories, for example \"~/.cargo/bin\" and \"~/.rustup\"".to_owned(),
+        };
+        let found = match self {
+            ReadPathRefusal::Root => "is a filesystem root".to_owned(),
+            ReadPathRefusal::Home => "is the home directory".to_owned(),
+            ReadPathRefusal::AncestorOfHome => "contains the home directory".to_owned(),
+            ReadPathRefusal::HoldsCredentials { entry } => {
+                format!("directly holds \"{entry}\"")
+            }
+        };
+        format!(
+            "\"{shown}\" {found} (REQ-CONF-011, LIM-H5: a read path must not expose credentials); {narrower}"
+        )
     }
 }
 

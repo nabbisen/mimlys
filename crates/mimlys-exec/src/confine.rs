@@ -405,6 +405,29 @@ impl Confinement for Platform {
     }
 }
 
+/// Marks the calling process non-dumpable (REQ-CONF-012; Linux, a no-op
+/// elsewhere): a same-user process can then neither read its memory, its
+/// environment nor its descriptors through `/proc/<pid>` (`environ`, `mem`,
+/// `fd`) nor with `process_vm_readv`. The runtime holds `env:`-referenced
+/// secrets in its environment, and `/proc/<pid>/environ` shows the
+/// environment a process *started* with, so removing a variable afterwards
+/// would change nothing. Called first thing in the runtime's `main` and in
+/// the worker's, before any thread exists. The cost: no core dump of the
+/// process and no same-user `ptrace` of it. An `exec` resets the flag, so a
+/// host tool or an MCP server child is dumpable again; what protects their
+/// environments is the host tools' read set (external design §13.3).
+pub fn harden_process() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+            .map_err(std::io::Error::from)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
+}
+
 /// Clause P on Linux, from the worker's own process (no-op elsewhere).
 pub fn set_no_new_privs() -> std::io::Result<()> {
     #[cfg(unix)]

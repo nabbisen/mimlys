@@ -40,3 +40,95 @@ fn ppid_parser_handles_odd_comm() {
         "a zombie is not a descendant to kill"
     );
 }
+
+fn spec_denying_network(tmp: &Path) -> ConfinementSpec {
+    ConfinementSpec {
+        read_paths: vec![
+            PathBuf::from("/usr"),
+            PathBuf::from("/lib"),
+            PathBuf::from("/lib64"),
+        ],
+        write_paths: vec![tmp.to_path_buf()],
+        deny_network: true,
+        memory_bytes: 1 << 30,
+        max_processes: 64,
+        data_dir: tmp.to_path_buf(),
+    }
+}
+
+/// REQ-CONF-012: where Landlock has the TCP layer (ABI 4), the worker's
+/// ruleset denies TCP `connect` and `bind` by itself, without the seccomp
+/// filter (none is installed in this process). The ruleset is applied to one
+/// thread only, which is how Landlock restricts; the control, a connect from
+/// the thread that is not restricted, succeeds to the same listener.
+#[test]
+fn req_conf_012_landlock_tcp_layer_denies_connect_and_bind() {
+    let Some(abi) = detect_abi() else {
+        eprintln!("SKIPPED req_conf_012_landlock_tcp_layer: no Landlock on this kernel");
+        return;
+    };
+    if abi < ABI::V4 {
+        eprintln!("SKIPPED req_conf_012_landlock_tcp_layer: Landlock ABI below 4");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    assert!(
+        std::net::TcpStream::connect(addr).is_ok(),
+        "the control connects"
+    );
+    let spec = spec_denying_network(tmp.path());
+    let result = std::thread::spawn(move || {
+        let (ruleset, net) = landlock_ruleset(&spec, None, abi, &[], true).expect("ruleset");
+        assert!(net, "the TCP layer is part of the worker's ruleset");
+        ruleset.restrict_self().expect("restrict this thread");
+        let connect = std::net::TcpStream::connect(addr)
+            .map(|_| ())
+            .map_err(|e| e.kind());
+        let bind = std::net::TcpListener::bind("127.0.0.1:0")
+            .map(|_| ())
+            .map_err(|e| e.kind());
+        (connect, bind)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        result.0,
+        Err(std::io::ErrorKind::PermissionDenied),
+        "connect"
+    );
+    assert_eq!(result.1, Err(std::io::ErrorKind::PermissionDenied), "bind");
+    // The dependency step's ruleset (network allowed) leaves TCP alone.
+    let mut open = spec_denying_network(tmp.path());
+    open.deny_network = false;
+    let allowed = std::thread::spawn(move || {
+        let (ruleset, net) = landlock_ruleset(&open, None, abi, &[], true).expect("ruleset");
+        assert!(!net);
+        ruleset.restrict_self().expect("restrict this thread");
+        std::net::TcpStream::connect(addr)
+            .map(|_| ())
+            .map_err(|e| e.kind())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(allowed, Ok(()), "network allowed for the dependency step");
+}
+
+/// REQ-CONF-012: the deny table holds the five syscalls the amendment names.
+/// The table is applied whether or not network is denied (`install_seccomp`
+/// inserts every entry before it looks at `deny_network`), so pinning the
+/// table pins both workers, the dependency step's included.
+#[test]
+fn req_conf_012_always_denied_syscalls_include_io_uring_and_vm_access() {
+    for (name, nr) in [
+        ("io_uring_setup", libc::SYS_io_uring_setup),
+        ("io_uring_enter", libc::SYS_io_uring_enter),
+        ("io_uring_register", libc::SYS_io_uring_register),
+        ("process_vm_readv", libc::SYS_process_vm_readv),
+        ("process_vm_writev", libc::SYS_process_vm_writev),
+        ("ptrace", libc::SYS_ptrace),
+    ] {
+        assert!(ALWAYS_DENIED.contains(&nr), "{name}");
+    }
+}

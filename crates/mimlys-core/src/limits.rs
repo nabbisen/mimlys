@@ -144,6 +144,18 @@ pub const LIM_H2_HOST_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const LIM_H3_HOST_PROCESSES: u32 = 64;
 /// LIM-H4: captured output of a host tool, each stream, in bytes (4 MiB).
 pub const LIM_H4_HOST_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+/// LIM-H5: names refused directly under a declared read path, beyond LIM-W5's
+/// patterns (which also apply): registry and cloud tokens live beside
+/// toolchains (`~/.cargo/credentials.toml`). Patterns follow LIM-W5's rules:
+/// a trailing `/` names a directory, `*` matches within one name.
+pub const LIM_H5_CREDENTIAL_NAMES: [&str; 6] = [
+    "credentials",
+    "credentials.*",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".docker/",
+];
 /// LIM-O5: deadline of an external (MCP) tool invocation, in milliseconds.
 pub const LIM_O5_EXTERNAL_DEADLINE_MS: i64 = 60_000;
 /// LIM-O5: configurable range in milliseconds; never below a server's declared maximum.

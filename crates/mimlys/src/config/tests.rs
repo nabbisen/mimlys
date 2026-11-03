@@ -209,3 +209,121 @@ fn rfc_008_temperature_and_external() {
     assert!(policy.profiles["open"].external);
     assert!(!policy.profiles["read_only"].external);
 }
+
+fn with_host_tool(body: &str) -> Config {
+    Config::parse(&format!(
+        "config_version = 1\n[host_tools.tool]\ncommand = \"/bin/true\"\n{body}"
+    ))
+    .unwrap()
+}
+
+/// REQ-CONF-006 / CLR-1, CLR-2: `effect` and `network` must agree. The
+/// refusal is a configuration error naming the declaration, the pair found
+/// and the value to write; both accepted pairings load.
+#[test]
+fn req_conf_006_effect_and_network_must_agree() {
+    // Accepted: offline workspace_write; the dependency step as external_read.
+    with_host_tool("effect = \"workspace_write\"\n")
+        .validate()
+        .unwrap();
+    with_host_tool("effect = \"external_read\"\nnetwork = true\n")
+        .validate()
+        .unwrap();
+    // Refused: network with workspace_write.
+    let err = with_host_tool("effect = \"workspace_write\"\nnetwork = true\n")
+        .validate()
+        .unwrap_err();
+    assert_eq!(err.key, "host_tools.tool.effect");
+    assert!(
+        err.reason
+            .contains("effect = \"workspace_write\" with network = true"),
+        "{err}"
+    );
+    assert!(err.reason.contains("effect = \"external_read\""), "{err}");
+    // Refused: external_read without network.
+    let err = with_host_tool("effect = \"external_read\"\n")
+        .validate()
+        .unwrap_err();
+    assert_eq!(err.key, "host_tools.tool.effect");
+    assert!(
+        err.reason
+            .contains("effect = \"external_read\" with network = false"),
+        "{err}"
+    );
+    assert!(err.reason.contains("workspace_write"), "{err}");
+    // The effect vocabulary stays closed.
+    assert!(
+        Config::parse(
+            "config_version = 1\n[host_tools.t]\ncommand = \"x\"\neffect = \"host_write\"\n"
+        )
+        .is_err()
+    );
+}
+
+/// REQ-CONF-011 / LIM-H5: a declared read path that is a filesystem root,
+/// the home directory, an ancestor of it, or a directory directly holding
+/// credentials is a configuration error at load, naming the declaration, the
+/// path as written and the narrower path; a directory without them loads.
+#[test]
+fn req_conf_011_declaration_with_credentials_is_refused() {
+    let toolchain = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(toolchain.path().join("bin")).unwrap();
+    std::fs::write(toolchain.path().join("credentials.toml"), "token = \"x\"\n").unwrap();
+    let declare = |path: &str| {
+        with_host_tool(&format!(
+            "effect = \"workspace_write\"\nread_paths = [{path:?}]\n"
+        ))
+        .validate()
+    };
+    // The directory beside the credentials file is refused; its `bin` is not.
+    let beside = toolchain.path().to_string_lossy().into_owned();
+    let err = declare(&beside).unwrap_err();
+    assert_eq!(err.key, "host_tools.tool.read_paths");
+    assert!(err.reason.contains("credentials.toml"), "{err}");
+    assert!(err.reason.contains(&format!("{beside}/bin")), "{err}");
+    declare(&format!("{beside}/bin")).unwrap();
+    // The real home directory and its ancestors, and the root.
+    for path in ["~", "/"] {
+        let err = declare(path).unwrap_err();
+        assert!(err.reason.contains("REQ-CONF-011"), "{path}: {err}");
+    }
+    let home = directories::BaseDirs::new()
+        .unwrap()
+        .home_dir()
+        .to_path_buf();
+    if let Some(parent) = home.parent() {
+        let err = declare(&parent.to_string_lossy()).unwrap_err();
+        assert!(err.reason.contains("contains the home directory"), "{err}");
+    }
+}
+
+/// REQ-CONF-011: `toolchain grant` and the declarations share one decision,
+/// and the home directory it compares against is given (not the machine's).
+#[test]
+fn req_conf_011_one_function_decides_for_grant_and_declaration() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let cargo = home.join(".cargo");
+    std::fs::create_dir_all(cargo.join("bin")).unwrap();
+    std::fs::write(cargo.join("credentials.toml"), "x").unwrap();
+    let shown = cargo.to_string_lossy().into_owned();
+    let refused = crate::toolchain::read_path_refusal_with(&shown, Some(&home)).unwrap();
+    assert!(
+        refused.contains("credentials.toml") && refused.contains("/bin"),
+        "{refused}"
+    );
+    assert!(
+        crate::toolchain::read_path_refusal_with(&cargo.join("bin").to_string_lossy(), Some(&home))
+            .is_none()
+    );
+    assert!(
+        crate::toolchain::read_path_refusal_with(&home.to_string_lossy(), Some(&home))
+            .unwrap()
+            .contains("home directory")
+    );
+    assert!(
+        crate::toolchain::read_path_refusal_with(&root.path().to_string_lossy(), Some(&home))
+            .unwrap()
+            .contains("contains the home directory")
+    );
+}

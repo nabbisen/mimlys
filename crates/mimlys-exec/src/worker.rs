@@ -737,7 +737,11 @@ fn worker_env() -> Vec<(String, String)> {
         env.push(("SystemRoot".to_owned(), root));
     }
     if cfg!(debug_assertions) {
-        for name in ["MIMLYS_PROBE_FAIL", "MIMLYS_PROBE_BEST_EFFORT"] {
+        for name in [
+            "MIMLYS_PROBE_FAIL",
+            "MIMLYS_PROBE_BEST_EFFORT",
+            "MIMLYS_PROBE_NO_CGROUP",
+        ] {
             if let Ok(v) = std::env::var(name) {
                 env.push((name.to_owned(), v));
             }

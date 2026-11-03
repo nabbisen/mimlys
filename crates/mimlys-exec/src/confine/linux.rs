@@ -1,9 +1,12 @@
 //! The Linux backend (RFC 011 §2; REQ-CONF-005): applied by the worker to
 //! itself, in this order, each rung recorded: a delegated cgroup (memory,
 //! pids, kill) or the fallbacks; the worker as child subreaper;
-//! `no_new_privs`; a seccomp filter denying sockets outside `AF_UNIX` and
-//! the privilege and namespace syscalls; Landlock last, with the read and
-//! write sets and, where the ABI allows, abstract Unix sockets scoped. No
+//! `no_new_privs`; a seccomp filter denying sockets outside `AF_UNIX`, the
+//! privilege and namespace syscalls, `io_uring` (which creates sockets the
+//! `socket` rule never sees) and cross-process memory access; Landlock last,
+//! with the read and write sets, TCP `bind` and `connect` handled with no
+//! rule where the ABI (4 and later) allows and network is denied, and
+//! abstract Unix sockets scoped where the ABI allows (REQ-CONF-012). No
 //! foreign-function code: `landlock`, `seccompiler` and `rustix` are safe
 //! interfaces, and `libc` contributes syscall numbers only. The one
 //! `unsafe` block is the `pre_exec` hook that puts a host tool's process
@@ -13,8 +16,8 @@
 
 use super::{Applied, ConfinementSpec};
 use landlock::{
-    ABI, Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetCreatedAttr,
-    RulesetStatus, path_beneath_rules,
+    ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, Ruleset, RulesetAttr,
+    RulesetCreatedAttr, RulesetStatus, path_beneath_rules,
 };
 use mimlys_core::confine::ClauseState;
 use rustix::process::{Pid, Signal, kill_process};
@@ -68,16 +71,6 @@ pub fn apply(spec: &ConfinementSpec) -> Applied {
     };
     report.remove("seccomp_error");
     report.insert(
-        "N".into(),
-        if !spec.deny_network {
-            ClauseState::unavailable("network allowed for the dependency step")
-        } else if seccomp {
-            ClauseState::enforced("seccomp")
-        } else {
-            ClauseState::unavailable("seccomp_unsupported")
-        },
-    );
-    report.insert(
         "P".into(),
         match (no_new_privs, seccomp) {
             (true, true) => ClauseState::enforced("no_new_privs+seccomp"),
@@ -88,13 +81,48 @@ pub fn apply(spec: &ConfinementSpec) -> Applied {
 
     // F: Landlock last, so that the rules above could still read what they
     // needed; the worker's own cgroup stays writable for the tool sub-cgroup.
+    // Where the ABI is 4 or later and network is denied, the same ruleset
+    // also handles TCP `bind` and `connect` with no rule: a second layer
+    // under the seccomp filter (UDP stays with seccomp).
+    let landlock = apply_landlock(spec, cgroup.dir.as_deref());
+    let landlock_net = matches!(
+        &landlock,
+        Ok(Landlock {
+            status: RulesetStatus::FullyEnforced,
+            net: true
+        })
+    );
     report.insert(
         "F".into(),
-        match apply_landlock(spec, cgroup.dir.as_deref()) {
-            Ok(RulesetStatus::FullyEnforced) => ClauseState::enforced("landlock"),
-            Ok(RulesetStatus::PartiallyEnforced) => ClauseState::best_effort("landlock_partial"),
-            Ok(RulesetStatus::NotEnforced) => ClauseState::unavailable("landlock_not_enforced"),
-            Err(reason) => ClauseState::unavailable(&reason),
+        match &landlock {
+            Ok(Landlock {
+                status: RulesetStatus::FullyEnforced,
+                ..
+            }) => ClauseState::enforced("landlock"),
+            Ok(Landlock {
+                status: RulesetStatus::PartiallyEnforced,
+                ..
+            }) => ClauseState::best_effort("landlock_partial"),
+            Ok(Landlock {
+                status: RulesetStatus::NotEnforced,
+                ..
+            }) => ClauseState::unavailable("landlock_not_enforced"),
+            Err(reason) => ClauseState::unavailable(reason),
+        },
+    );
+    // N reads from what held: the filter alone is complete (it denies the
+    // `socket` rule's bypass, `io_uring`), and the Landlock layer is named
+    // when it held too.
+    report.insert(
+        "N".into(),
+        if !spec.deny_network {
+            ClauseState::unavailable("network allowed for the dependency step")
+        } else if seccomp && landlock_net {
+            ClauseState::enforced("seccomp+landlock_net")
+        } else if seccomp {
+            ClauseState::enforced("seccomp")
+        } else {
+            ClauseState::unavailable("seccomp_unsupported")
         },
     );
 
@@ -229,6 +257,12 @@ fn own_cgroup_dir() -> Option<PathBuf> {
 /// that refuses a controller (the "no internal processes" rule of a scope
 /// that still holds the terminal) keeps the directory and `cgroup.kill`.
 fn join_cgroup(spec: &ConfinementSpec) -> Cgroup {
+    // Test builds: `MIMLYS_PROBE_NO_CGROUP` skips the rung, so that the
+    // `subreaper` rung of clause K (what a runner without a delegated cgroup
+    // gets) is exercised on any machine (REQ-TEST-013).
+    if cfg!(debug_assertions) && std::env::var_os("MIMLYS_PROBE_NO_CGROUP").is_some() {
+        return Cgroup::none("injected (MIMLYS_PROBE_NO_CGROUP)");
+    }
     let Some(base) = own_cgroup_dir() else {
         return Cgroup::none("cgroup_v1");
     };
@@ -263,8 +297,42 @@ fn join_cgroup(spec: &ConfinementSpec) -> Cgroup {
     }
 }
 
-/// The filter: sockets outside `AF_UNIX` when network is denied, and the
-/// privilege and namespace syscalls always, answered `EPERM`.
+/// The syscalls the filter always denies, answered `EPERM`: the privilege and
+/// namespace group of M6a, `io_uring` and cross-process memory (REQ-CONF-012).
+const ALWAYS_DENIED: [i64; 22] = [
+    libc::SYS_ptrace,
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_chroot,
+    libc::SYS_keyctl,
+    libc::SYS_add_key,
+    libc::SYS_request_key,
+    libc::SYS_bpf,
+    libc::SYS_unshare,
+    libc::SYS_setns,
+    libc::SYS_kexec_load,
+    libc::SYS_init_module,
+    libc::SYS_finit_module,
+    libc::SYS_delete_module,
+    libc::SYS_swapon,
+    libc::SYS_reboot,
+    // REQ-CONF-012: a socket created by `IORING_OP_SOCKET` (Linux 5.19
+    // and later) never passes the `socket` rule below, so the ring is
+    // never created; `enter` and `register` are denied for clarity.
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
+    // REQ-CONF-012: another process's memory, which `ptrace`'s denial
+    // does not cover.
+    libc::SYS_process_vm_readv,
+    libc::SYS_process_vm_writev,
+];
+
+/// The filter: sockets outside `AF_UNIX` when network is denied, and always,
+/// answered `EPERM`: the privilege and namespace syscalls, `io_uring` and
+/// cross-process memory access (also in the dependency step's worker, which
+/// needs none of them).
 fn install_seccomp(deny_network: bool) -> Result<(), String> {
     let arch = match std::env::consts::ARCH {
         "x86_64" => TargetArch::x86_64,
@@ -272,25 +340,7 @@ fn install_seccomp(deny_network: bool) -> Result<(), String> {
         other => return Err(format!("seccomp_arch:{other}")),
     };
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-    let always: [i64; 17] = [
-        libc::SYS_ptrace,
-        libc::SYS_mount,
-        libc::SYS_umount2,
-        libc::SYS_pivot_root,
-        libc::SYS_chroot,
-        libc::SYS_keyctl,
-        libc::SYS_add_key,
-        libc::SYS_request_key,
-        libc::SYS_bpf,
-        libc::SYS_unshare,
-        libc::SYS_setns,
-        libc::SYS_kexec_load,
-        libc::SYS_init_module,
-        libc::SYS_finit_module,
-        libc::SYS_delete_module,
-        libc::SYS_swapon,
-        libc::SYS_reboot,
-    ];
+    let always = ALWAYS_DENIED;
     for nr in always {
         rules.insert(nr, vec![]);
     }
@@ -344,29 +394,75 @@ fn detect_abi() -> Option<ABI> {
     None
 }
 
-/// The ruleset: every access right the kernel's ABI knows handled as a
-/// hard requirement, the read set readable and executable, the write set
-/// fully accessible, and abstract Unix sockets scoped where the ABI allows
-/// (so that no socket outside the sandbox can be reached through them).
-fn apply_landlock(spec: &ConfinementSpec, cgroup: Option<&Path>) -> Result<RulesetStatus, String> {
-    let abi = detect_abi().ok_or_else(|| "landlock_unsupported".to_owned())?;
+/// Whether this kernel's Landlock has the TCP layer (ABI 4, Linux 6.7), for
+/// the clause tests to know which primitive the N clause must report.
+#[cfg(feature = "probe-syscalls")]
+pub fn landlock_net_supported() -> bool {
+    detect_abi().is_some_and(|abi| abi >= ABI::V4)
+}
+
+/// What the Landlock rung produced: the status the kernel gave and whether
+/// the TCP layer was part of the ruleset.
+struct Landlock {
+    status: RulesetStatus,
+    /// TCP `bind` and `connect` were handled with an empty allow-set.
+    net: bool,
+}
+
+/// What only the worker itself reads: `/proc`, where its subreaper walk finds
+/// the descendants a cancelled host tool left (clause K). A host tool's
+/// process gets the same sets without it, through a second layer
+/// ([`restrict_child`]), so the processes of the machine are not part of
+/// what project code can read (REQ-CONF-011): Landlock layers intersect.
+const WORKER_ONLY_READ: [&str; 1] = ["/proc"];
+
+/// The tool layer's ruleset descriptor, made before the worker restricts
+/// itself and applied by each host tool's process between fork and exec.
+static TOOL_LAYER: std::sync::OnceLock<std::os::fd::OwnedFd> = std::sync::OnceLock::new();
+
+/// A ruleset over the specification: every access right the kernel's ABI
+/// knows handled as a hard requirement, the read set readable and
+/// executable (plus `extra_read`), the write set fully accessible. With
+/// `worker` set: TCP `bind` and `connect` handled with no rule when the ABI
+/// is 4 or later and network is denied (REQ-CONF-012), and abstract Unix
+/// sockets scoped where the ABI allows (so that no socket outside the
+/// sandbox can be reached through them).
+fn landlock_ruleset(
+    spec: &ConfinementSpec,
+    cgroup: Option<&Path>,
+    abi: ABI,
+    extra_read: &[&str],
+    worker: bool,
+) -> Result<(landlock::RulesetCreated, bool), String> {
     let existing = |paths: &[PathBuf]| -> Vec<PathBuf> {
         paths.iter().filter(|p| p.exists()).cloned().collect()
     };
+    let mut read_paths = spec.read_paths.clone();
+    read_paths.extend(extra_read.iter().map(PathBuf::from));
     let mut write_paths = spec.write_paths.clone();
     write_paths.extend(cgroup.map(Path::to_path_buf));
-    let status = Ruleset::default()
+    let net = worker && spec.deny_network && abi >= ABI::V4;
+    let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_all(abi))
-        .map_err(|e| format!("landlock_handle:{e}"))?
-        .set_compatibility(CompatLevel::BestEffort)
-        .scope(landlock::Scope::AbstractUnixSocket)
-        .map_err(|e| format!("landlock_scope:{e}"))?
-        .set_compatibility(CompatLevel::HardRequirement)
+        .map_err(|e| format!("landlock_handle:{e}"))?;
+    if net {
+        ruleset = ruleset
+            .handle_access(AccessNet::from_all(abi))
+            .map_err(|e| format!("landlock_handle_net:{e}"))?;
+    }
+    if worker {
+        ruleset = ruleset
+            .set_compatibility(CompatLevel::BestEffort)
+            .scope(landlock::Scope::AbstractUnixSocket)
+            .map_err(|e| format!("landlock_scope:{e}"))?
+            .set_compatibility(CompatLevel::HardRequirement);
+    }
+    let created = ruleset
         .create()
         .map_err(|e| format!("landlock_create:{e}"))?
         .add_rules(path_beneath_rules(
-            existing(&spec.read_paths),
+            existing(&read_paths),
             AccessFs::from_read(abi),
         ))
         .map_err(|e| format!("landlock_read_rules:{e}"))?
@@ -374,10 +470,53 @@ fn apply_landlock(spec: &ConfinementSpec, cgroup: Option<&Path>) -> Result<Rules
             existing(&write_paths),
             AccessFs::from_all(abi),
         ))
-        .map_err(|e| format!("landlock_write_rules:{e}"))?
+        .map_err(|e| format!("landlock_write_rules:{e}"))?;
+    Ok((created, net))
+}
+
+/// Landlock, in two layers (REQ-CONF-011, REQ-CONF-012): the host tools'
+/// ruleset is made first and kept for [`restrict_child`]; then the worker
+/// restricts itself with the same sets plus `/proc`.
+fn apply_landlock(spec: &ConfinementSpec, cgroup: Option<&Path>) -> Result<Landlock, String> {
+    let abi = detect_abi().ok_or_else(|| "landlock_unsupported".to_owned())?;
+    let (tool_layer, _) = landlock_ruleset(spec, cgroup, abi, &[], false)?;
+    let tool_fd: Option<std::os::fd::OwnedFd> = tool_layer.into();
+    let tool_fd = tool_fd.ok_or_else(|| "landlock_tool_layer: no descriptor".to_owned())?;
+    let _ = TOOL_LAYER.set(tool_fd);
+    let (worker_layer, net) = landlock_ruleset(spec, cgroup, abi, &WORKER_ONLY_READ, true)?;
+    let status = worker_layer
         .restrict_self()
         .map_err(|e| format!("landlock_restrict:{e}"))?;
-    Ok(status.ruleset)
+    Ok(Landlock {
+        status: status.ruleset,
+        net,
+    })
+}
+
+/// Restricts a host tool's process to the tool layer between fork and exec:
+/// the worker's sets without what only the worker reads. The process is
+/// then bound by both layers. A spawn whose restriction fails does not
+/// start (fail closed). A worker without Landlock has no layer and nothing
+/// to add. The ruleset descriptor is the worker's, inherited by the fork.
+pub fn restrict_child(cmd: &mut std::process::Command) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let Some(fd) = TOOL_LAYER.get() else {
+        return;
+    };
+    let raw = fd.as_raw_fd();
+    // The closure runs in the forked child before `exec`: one raw system call
+    // on an inherited descriptor, no allocation, no lock (REQ-CONF-010).
+    // SAFETY: `landlock_restrict_self` is async-signal-safe and touches only this process.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::syscall(libc::SYS_landlock_restrict_self, raw, 0u32) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
 }
 
 /// Kills every descendant of `root` (not `root` itself) until none remains
@@ -454,6 +593,9 @@ fn ppid_of(proc_dir: &Path) -> Option<u32> {
 pub fn kill_cgroup(path: &Path) -> bool {
     std::fs::write(path.join("cgroup.kill"), "1").is_ok()
 }
+
+#[cfg(feature = "probe-syscalls")]
+pub mod probe;
 
 #[cfg(test)]
 mod tests;

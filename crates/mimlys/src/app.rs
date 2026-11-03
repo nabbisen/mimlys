@@ -158,7 +158,6 @@ pub fn confinement_spec(
             "/bin",
             "/sbin",
             "/etc",
-            "/proc",
             "/dev/urandom",
             "/dev/random",
             "/dev/zero",

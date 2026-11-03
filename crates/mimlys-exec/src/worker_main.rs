@@ -123,6 +123,12 @@ enum Incoming {
 
 /// The worker's `main`.
 pub fn main() {
+    // REQ-CONF-012: first thing, before any thread exists and before the
+    // specification is applied. Fail closed: the guarantee is stated.
+    if let Err(e) = crate::confine::harden_process() {
+        eprintln!("mimlys-worker: cannot mark the process non-dumpable: {e}");
+        std::process::exit(1);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--print-env-names") {
         for (k, _) in std::env::vars_os() {
@@ -181,6 +187,7 @@ fn own_clauses() -> BTreeMap<String, ClauseState> {
         "MIMLYS_WORKER",
         "MIMLYS_PROBE_FAIL",
         "MIMLYS_PROBE_BEST_EFFORT",
+        "MIMLYS_PROBE_NO_CGROUP",
         "SystemRoot",
         "SYSTEMROOT",
     ];

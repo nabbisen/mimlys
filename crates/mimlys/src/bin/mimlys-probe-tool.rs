@@ -4,8 +4,67 @@
 //!
 //! `read <path>`, `write <path>`, `connect <addr>`, `env <name>`,
 //! `sleep <secs>`, `setsid-sleep <secs>`, `fork <n>`, `alloc <mib>`, `cwd`, `ok`.
+//!
+//! Linux only (REQ-CONF-012, REQ-CONF-011; the syscalls are in
+//! `mimlys_exec::confine::linux::probe`, the one place the tests may reach
+//! foreign-function code): `uring-socket` (an `AF_INET` socket created
+//! through `IORING_OP_SOCKET`), `uring-connect <addr>` (a socket and a
+//! connection through `io_uring`), `vm-read <pid|child> [hex-address]`
+//! (`process_vm_readv`; `child` starts a copy of this tool that holds a known
+//! string and reads it), `hold` (prints the address of that string and
+//! sleeps), `read-proc <ENVVAR> <file>` (reads `/proc/<pid in ENVVAR>/<file>`).
+//! Each prints one line and exits non-zero when the thing could not be done.
 
 use std::io::Write;
+
+/// `vm-read <pid|child> [hex-address]`: `process_vm_readv` of another
+/// process. `child` starts `hold` (a descendant, so the kernel's own checks
+/// allow the read when no filter denies it) and reads the string it holds.
+#[cfg(target_os = "linux")]
+fn vm_read(args: &[String]) -> i32 {
+    use mimlys_exec::confine::linux::probe::vm_read;
+    use std::io::BufRead;
+    let target = args.get(1).map(String::as_str).unwrap_or("");
+    let (pid, addr, mut child) = if target == "child" {
+        let mut child = std::process::Command::new(std::env::current_exe().expect("own path"))
+            .arg("hold")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn hold");
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("piped"))
+            .read_line(&mut line)
+            .expect("hold prints its address");
+        let addr = usize::from_str_radix(line.trim().trim_start_matches("addr "), 16)
+            .expect("hex address");
+        (child.id() as i32, addr, Some(child))
+    } else {
+        let pid: i32 = target.parse().unwrap_or(0);
+        let addr = args
+            .get(2)
+            .and_then(|a| usize::from_str_radix(a.trim_start_matches("0x"), 16).ok())
+            .unwrap_or(0x1000);
+        (pid, addr, None)
+    };
+    let result = vm_read(pid, addr, 20);
+    if let Some(child) = child.as_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    match result {
+        Ok(bytes) => {
+            println!("vm-read read {:?}", String::from_utf8_lossy(&bytes));
+            0
+        }
+        Err(errno) => {
+            println!(
+                "vm-read failed: errno={errno} ({})",
+                std::io::Error::from_raw_os_error(errno)
+            );
+            3
+        }
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -132,6 +191,63 @@ fn main() {
             }
             if spawned == n { 0 } else { 3 }
         }
+        #[cfg(target_os = "linux")]
+        Some("uring-socket") => match mimlys_exec::confine::linux::probe::uring_socket() {
+            Ok(fd) => {
+                println!("uring-socket created fd {fd}");
+                0
+            }
+            Err(why) => {
+                println!("uring-socket failed: {why}");
+                3
+            }
+        },
+        #[cfg(target_os = "linux")]
+        Some("uring-connect") => {
+            let addr = args.get(1).map(String::as_str).unwrap_or("127.0.0.1:9");
+            match mimlys_exec::confine::linux::probe::uring_connect(addr.parse().expect("addr")) {
+                Ok(()) => {
+                    println!("uring-connect connected");
+                    0
+                }
+                Err(why) => {
+                    println!("uring-connect failed: {why}");
+                    3
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        Some("hold") => {
+            // A known string at a known address, for `vm-read child`.
+            static HELD: &[u8] = b"mimlys-vm-read-probe";
+            println!("addr {:x}", HELD.as_ptr() as usize);
+            let _ = std::io::stdout().flush();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            0
+        }
+        #[cfg(target_os = "linux")]
+        Some("vm-read") => vm_read(&args),
+        #[cfg(target_os = "linux")]
+        Some("read-proc") => {
+            let var = args.get(1).map(String::as_str).unwrap_or("");
+            let file = args.get(2).map(String::as_str).unwrap_or("");
+            match std::env::var(var) {
+                Err(_) => {
+                    println!("read-proc: {var} unset");
+                    2
+                }
+                Ok(pid) => match std::fs::read(format!("/proc/{pid}/{file}")) {
+                    Ok(bytes) => {
+                        println!("read-proc read {} bytes", bytes.len());
+                        0
+                    }
+                    Err(e) => {
+                        println!("read-proc failed: {}", e.kind());
+                        3
+                    }
+                },
+            }
+        }
         Some("alloc") => {
             let mib: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
             let mut blocks: Vec<Vec<u8>> = Vec::new();
@@ -145,7 +261,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|env|sleep|setsid-sleep|fork|alloc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|env|sleep|setsid-sleep|fork|alloc|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }

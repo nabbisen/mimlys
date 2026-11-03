@@ -41,7 +41,7 @@ wat = "1"
 crash-injection = ["mimlys-persist/crash-injection"]
 # Builds the test binaries (`mimlys-mcp-testserver`, `mimlys-probe-tool`) and the M5 and M6
 # tests that drive them; never part of a release.
-test-bins = ["mimlys-mcp/test-server"]
+test-bins = ["mimlys-mcp/test-server", "mimlys-exec/probe-syscalls"]
 
 [[bin]]
 name = "mimlys"

@@ -232,6 +232,10 @@ fn spawn_tool(program: &Path, r: &HostRun<'_>) -> Result<ToolProc, String> {
             .map_err(|e| format!("tool cgroup: {e}"))?;
         crate::confine::linux::attach_child_to_cgroup(&mut cmd, procs);
     }
+    // REQ-CONF-011: the tool's process is bound by the worker's sets without
+    // what only the worker reads (`/proc`).
+    #[cfg(target_os = "linux")]
+    crate::confine::linux::restrict_child(&mut cmd);
     let previous = r.rlimit_memory.and_then(set_address_space_limit);
     let spawned = cmd.spawn();
     if let Some(prev) = previous {

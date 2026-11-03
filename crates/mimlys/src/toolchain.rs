@@ -257,6 +257,38 @@ pub fn unavailable_reason(
         .map(|p| format!("acl_not_applied: {p}"))
 }
 
+/// Whether a declared read path (`read_paths`, `toolchain grant`) may join
+/// the read set (REQ-CONF-011, LIM-H5): `None` when it may, else the reason,
+/// naming the path as written, what was found and the narrower path to
+/// declare. The one decision is `mimlys_core::host_tool::check_read_path`
+/// (pure); this lists the directory's entries (depth one) and resolves the
+/// path and the home directory the way the commands show them.
+pub fn read_path_refusal(written: &str) -> Option<String> {
+    let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
+    read_path_refusal_with(written, home.as_deref())
+}
+
+/// As [`read_path_refusal`], with the home directory given (tests).
+pub fn read_path_refusal_with(written: &str, home: Option<&Path>) -> Option<String> {
+    let path = PathBuf::from(normalized(Path::new(&crate::config::expand_home(written))));
+    let home = home.map(|h| PathBuf::from(normalized(h)));
+    let entries: Vec<String> = std::fs::read_dir(&path)
+        .map(|dir| {
+            dir.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    mimlys_core::host_tool::check_read_path(
+        &path,
+        home.as_deref(),
+        &entries,
+        cfg!(any(windows, target_os = "macos")),
+    )
+    .err()
+    .map(|refusal| refusal.reason(written))
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 fn now_text() -> String {
     mimlys_core::clock::Clock::now(&mimlys_core::clock::SystemClock).to_rfc3339()

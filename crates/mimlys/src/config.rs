@@ -209,7 +209,9 @@ pub struct HostToolSection {
     /// How many arguments the model may add.
     #[serde(default)]
     pub max_args: usize,
-    /// `workspace_write`: the tool writes only inside the workspace, reversible through the snapshots.
+    /// `workspace_write`: the tool writes only inside the workspace, reversible
+    /// through the snapshots; `external_read` exactly when `network = true`
+    /// (the dependency step).
     pub effect: HostToolEffect,
     /// The deadline (LIM-H1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -223,7 +225,8 @@ pub struct HostToolSection {
     /// Variables copied from mimlys's environment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_allow: Vec<String>,
-    /// `true` makes this the dependency step: network allowed, effect `external_read` (REQ-CONF-007).
+    /// `true` makes this the dependency step: network allowed; the effect must
+    /// be declared `external_read` (REQ-CONF-007, REQ-CONF-006).
     #[serde(default)]
     pub network: bool,
 }
@@ -237,6 +240,9 @@ pub struct HostToolSection {
 pub enum HostToolEffect {
     /// Writes only inside the workspace (reversible through the snapshots).
     WorkspaceWrite,
+    /// Reads from outside the host: the dependency step, the one tool with
+    /// `network = true` (and only that tool).
+    ExternalRead,
 }
 
 /// Why `host_read` and `host_write` grants, and the ceiling roots that would
@@ -283,6 +289,9 @@ impl Config {
                     effect: match s.effect {
                         HostToolEffect::WorkspaceWrite => {
                             mimlys_core::action::EffectKind::WorkspaceWrite
+                        }
+                        HostToolEffect::ExternalRead => {
+                            mimlys_core::action::EffectKind::ExternalRead
                         }
                     },
                     reversible: true,
@@ -1215,6 +1224,18 @@ impl Config {
         }
         for d in self.host_tools() {
             d.check().map_err(|e| ConfigError::new(&e.key, e.reason))?;
+        }
+        // REQ-CONF-011: a read path that would expose credentials is refused
+        // at load, as written, with the narrower path to declare.
+        for (name, s) in &self.host_tools {
+            for written in &s.read_paths {
+                if let Some(reason) = crate::toolchain::read_path_refusal(written) {
+                    return Err(ConfigError::new(
+                        &format!("host_tools.{name}.read_paths"),
+                        reason,
+                    ));
+                }
+            }
         }
         self.resolve_policy()?;
         let s = &self.sandbox;
