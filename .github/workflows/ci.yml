@@ -38,6 +38,38 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace --all-features --no-fail-fast
 
+  # REQ-PLAT-002 (macOS x86_64): the Intel build and tests under Rosetta on the
+  # arm runner. A job of its own, so a Rosetta problem never hides the native
+  # macOS result. Rosetta runs Intel user code on Apple's kernel: it does not
+  # show an Intel Mac's kernel (repository-guards.md §1).
+  rosetta:
+    name: macOS x86_64 under Rosetta
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: softwareupdate --install-rosetta --agree-to-license
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: rosetta
+      - run: rm -f target/tmp/skips.log
+        shell: bash
+      - run: cargo test --workspace --all-features --target x86_64-apple-darwin --no-fail-fast
+      - name: skipped tests, counted per platform
+        if: always()
+        shell: bash
+        run: |
+          f=target/tmp/skips.log
+          if [ -s "$f" ]; then n=$(wc -l < "$f"); else n=0; fi
+          {
+            echo "skipped tests on macOS x86_64 under Rosetta: $n"
+            if [ "$n" -gt 0 ]; then cat "$f"; fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
   # REQ-PLAT-001, REQ-TEST-014: the stated minimum Rust version is real. The
   # version is read from the workspace manifest, so it is written once.
   msrv:
