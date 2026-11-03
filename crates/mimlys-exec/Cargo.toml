@@ -9,7 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-mimlys-core = { path = "../mimlys-core", version = "0.0.0" }
+mimlys-core = { path = "../mimlys-core", version = "0.7.0" }
 serde.workspace = true
 serde_json.workspace = true
 cap-std.workspace = true
@@ -36,7 +36,7 @@ libc = "0.2"
 windows-sys = { version = "0.60", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Win32_Security", "Win32_Security_Isolation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_SystemServices"] }
 
 [dev-dependencies]
-mimlys-core = { path = "../mimlys-core", version = "0.0.0", features = ["test-support"] }
+mimlys-core = { path = "../mimlys-core", version = "0.7.0", features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tempfile = "3"
 

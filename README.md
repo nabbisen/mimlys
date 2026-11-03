@@ -28,12 +28,16 @@ Model Context Protocol.
 
 ## Quick start
 
-mimlys is pre-release. Release 0.6 (milestones M1 to M6a) is the deterministic
+mimlys is pre-release. Release 0.7 (milestones M1 to M6b) is the deterministic
 core, the sandbox, the transactional workspace, a local model behind any
 OpenAI-compatible server (llama-server, Ollama), external tools over the
 Model Context Protocol with [rypsok](https://github.com/nabbisen/rypsok) as
-the first server, and, on Linux, declared host tools such as `cargo test`
-under kernel confinement (Landlock, seccomp, tree termination).
+the first server, and declared host tools under the platform's confinement:
+on Linux Landlock, seccomp and tree termination, with `cargo test` as the
+demonstration; on Windows an AppContainer and a Job Object, verified by the
+clause suite, where `cargo` itself cannot run yet (current Windows refuses
+an AppContainer the `NUL` device cargo's child processes open). macOS
+follows in 0.8.
 
 ```sh
 cargo install mimlys
