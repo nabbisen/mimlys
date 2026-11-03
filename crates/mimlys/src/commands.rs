@@ -81,16 +81,4 @@ pub fn parse_duration_ms(text: &str) -> Result<i64, AppError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::parse_duration_ms;
-
-    #[test]
-    fn durations() {
-        assert_eq!(parse_duration_ms("30s").unwrap(), 30_000);
-        assert_eq!(parse_duration_ms("15m").unwrap(), 900_000);
-        assert_eq!(parse_duration_ms("2h").unwrap(), 7_200_000);
-        assert_eq!(parse_duration_ms("1d").unwrap(), 86_400_000);
-        assert_eq!(parse_duration_ms("5").unwrap(), 300_000);
-        assert!(parse_duration_ms("soon").is_err());
-    }
-}
+mod tests;

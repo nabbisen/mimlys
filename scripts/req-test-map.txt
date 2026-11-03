@@ -1,0 +1,6 @@
+# Requirements met structurally: one per line, `ID reason`. The file is
+# reviewed like code; a line without a reason is an error (check-req-tests.sh).
+REQ-TEST-014 the CI gate itself is the verification: .github/workflows/ci.yml, described in docs/src/maintainers/repository-guards.md
+REQ-ENG-002 "See REQ-TEST-014": the CI gate
+REQ-ENG-001 scripts/check-unsafe.sh, run by the `rules` job on every change
+REQ-SEC-012 the `deny` job runs `cargo deny check advisories licenses bans sources` on every change

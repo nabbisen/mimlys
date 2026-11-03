@@ -16,7 +16,7 @@ pub struct ActionRecovery {
     pub action_id: ActionId,
     /// The rule its effect gives.
     pub after_unknown: AfterUnknown,
-    /// The snapshot to restore when the rule says so (M3; `None` until then).
+    /// The snapshot to restore when the rule says so (REQ-PERS-007); `None` when the rule restores nothing.
     pub restore_snapshot: Option<SnapshotId>,
 }
 

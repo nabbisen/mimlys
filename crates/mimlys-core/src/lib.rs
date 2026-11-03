@@ -7,15 +7,16 @@
 //! identifiers takes a [`clock::Clock`] and an [`ids::IdSource`]
 //! (REQ-ARCH-006).
 //!
-//! Implemented so far: handoff 001 (RFC 001): identifiers, clock, canonical
-//! hashing, the task state machine, steps and counters, actions and
-//! executions, and the event vocabulary; handoff 002 (RFC 002): the decision
-//! schema and strict parser, the tool and schema model, lexical path
-//! canonicalization, the validation pipeline, observations, context
-//! segments and the adapter SPI; handoff 003 (RFC 003): effect
-//! declarations, grants and the policy ceiling, the validator hooks,
-//! approvals with runtime rendering, questions, and the completion rule;
-//! handoff 004 (RFC 004): the persistence interface and the recovery plan.
+//! What lives here (milestones M1 to M6b): identifiers, the clock, canonical
+//! hashing and the task and action state machines (`task`, `action`, `step`,
+//! `event`); the decision schema, strict parsing and the twelve-stage
+//! validator (`decision`, `schema`, `tool`, `path`, `validate`); effects,
+//! grants, the policy ceiling and approvals (`effect`, `grant`, `policy`,
+//! `hooks`, `approval`, `question`); observations and context assembly
+//! (`observation`, `context`); snapshots as pure data and the recovery plan
+//! (`snapshot`, `recovery`); the confinement vocabulary and host-tool
+//! declarations (`confine`, `host_tool`); the runtime's step loop and control
+//! API (`runtime`); and the adapter SPI (`spi`).
 
 pub mod action;
 pub mod approval;

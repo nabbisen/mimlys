@@ -1,7 +1,11 @@
-//! The adapter SPI (external design §3; REQ-ARCH-004, REQ-MDL-001). This
-//! module defines the model-backend and tool-provider interfaces (handoff
-//! 002) and the persistence interface (handoff 004); `SnapshotStore`,
-//! `Executor` and `ApprovalChannel` arrive with handoffs 006, 005 and 010.
+//! The adapter SPI (external design §3; REQ-ARCH-004, REQ-MDL-001): the
+//! model-backend interface (`ModelBackend`), the tool-provider interface
+//! (`ToolProvider`, through which built-in, sandbox, host and MCP tools are
+//! executed), the workspace interface (`WorkspaceProvider`, which widened the
+//! baseline's `SnapshotStore` in RFC 006) and the persistence interface
+//! (`Persistence`). There is no `Executor` or `ApprovalChannel` trait here:
+//! execution is `ToolProvider::execute`, and the approval prompt is the host
+//! crate's `Interaction` (`mimlys::prompt`).
 
 use crate::action::{Action, Execution, ExecutionMetrics, FailureCause, Termination};
 use crate::approval::ApprovalRequest;
