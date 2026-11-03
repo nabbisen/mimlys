@@ -1,0 +1,35 @@
+# SPIKE T6 (cycle 1; D-H1, F-02): the M6b suite and the `cargo` demonstration
+# on windows-2022 as well as windows-latest, and the null device tried from
+# inside the AppContainer. Exists on this branch only; never merged.
+name: spike-nul
+on:
+  push:
+    branches: [t6-windows-nul-spike]
+permissions:
+  contents: read
+jobs:
+  nul:
+    name: nul (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: nul-${{ matrix.os }}
+      - name: the machine
+        shell: pwsh
+        run: |
+          [Environment]::OSVersion.VersionString
+          (Get-ComputerInfo | Select-Object WindowsProductName, OsVersion, OsBuildNumber | Format-List | Out-String)
+          whoami /all | Select-String -Pattern "Mandatory|Administrators" | Select-Object -First 4
+      - name: the M6b suite, the demonstration and the spike (output shown)
+        shell: bash
+        run: cargo test -p mimlys --features test-bins --test m6b_host_tools --no-fail-fast -- --nocapture --test-threads=1

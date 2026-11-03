@@ -132,6 +132,47 @@ fn main() {
             }
             if spawned == n { 0 } else { 3 }
         }
+        // SPIKE T6 (branch only): the null device from inside the container.
+        #[cfg(windows)]
+        Some("open-null") => {
+            for path in ["NUL", r"\\.\NUL", r"\\?\GLOBALROOT\Device\Null"] {
+                for (mode, read, write) in [("read", true, false), ("write", false, true)] {
+                    let result = std::fs::OpenOptions::new()
+                        .read(read)
+                        .write(write)
+                        .open(path);
+                    match result {
+                        Ok(_) => println!("open-null {path} {mode}: ok"),
+                        Err(e) => println!(
+                            "open-null {path} {mode}: error {} ({})",
+                            e.raw_os_error().unwrap_or(-1),
+                            e
+                        ),
+                    }
+                }
+            }
+            // What cargo does for every rustc it starts: a child with a null stdin.
+            let exe = std::env::current_exe().expect("own path");
+            for (label, stdio) in [
+                ("null", std::process::Stdio::null()),
+                ("piped", std::process::Stdio::piped()),
+                ("inherit", std::process::Stdio::inherit()),
+            ] {
+                match std::process::Command::new(&exe).arg("ok").stdin(stdio).output() {
+                    Ok(o) => println!(
+                        "spawn-stdin-{label}: ok (exit {:?}, stdout {:?})",
+                        o.status.code(),
+                        String::from_utf8_lossy(&o.stdout).trim()
+                    ),
+                    Err(e) => println!(
+                        "spawn-stdin-{label}: error {} ({})",
+                        e.raw_os_error().unwrap_or(-1),
+                        e
+                    ),
+                }
+            }
+            0
+        }
         Some("alloc") => {
             let mib: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
             let mut blocks: Vec<Vec<u8>> = Vec::new();

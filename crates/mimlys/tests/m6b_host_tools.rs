@@ -793,3 +793,39 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
         assert_eq!(code, 0, "{value}");
     }
 }
+
+/// SPIKE T6 (branch only): from inside the AppContainer, open the null device
+/// in each spelling for read and write and start a child with a null, a
+/// piped and an inherited standard input; print what happened. Always passes:
+/// the output is the finding.
+#[test]
+fn m6b_spike_null_device_from_inside_the_container() {
+    let env = Env::new(&[probe(&["open-null"]), complete()], "");
+    let (tier, table) = clauses(&env);
+    eprintln!("SPIKE tier {tier}; clauses {table:?}");
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "null",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    eprintln!("SPIKE run exit {code}");
+    let id = value["task"]["task_id"].as_str().unwrap_or_default().to_owned();
+    let obs = env.observations(&id);
+    for o in &obs {
+        eprintln!(
+            "SPIKE inside the container: exit {} stdout:\n{}\nstderr: {:?}",
+            exit_code_of(o),
+            stdout_of(o),
+            o["stderr"]
+        );
+    }
+    let outside = Command::new(probe_tool()).arg("open-null").output().unwrap();
+    eprintln!(
+        "SPIKE outside the container (control):\n{}",
+        String::from_utf8_lossy(&outside.stdout)
+    );
+}
