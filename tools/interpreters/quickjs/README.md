@@ -31,6 +31,10 @@ rebuilds on demand and reports whether the hash matches `expected.sha256`.
 A mismatch is a review item, not a release blocker: the pinned artifact stays
 what the binary verifies.
 
+## Known differences from upstream's release job (2026-11-03)
+
+The scheduled check has failed since its first run (rebuilt `cd7da6cb…`, pin `42a732a6…`). The pin is authentic: the `v0.17.0` release asset `qjs-wasi.wasm` is 1 569 050 bytes with that SHA-256. The recipe differs from upstream's `wasi` job at that tag (`.github/workflows/release.yml`) in four places: wasi-sdk 25 (upstream 29), `-DCMAKE_BUILD_TYPE=Release` (upstream: the default), no `-DQJS_BUILD_WERROR=ON` (upstream: on), and `cmake --build --target qjs_exe` on Debian bookworm (upstream: `make -C build qjs_exe` on ubuntu-22.04). The recipe is to be aligned with the job; the result of that run is recorded here when it exists. The pin does not change on the strength of a mismatch.
+
 ## Updating
 
 1. Pick the new upstream release; download `qjs-wasi.wasm`; compute its SHA-256.

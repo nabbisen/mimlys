@@ -797,7 +797,7 @@ Tests shall verify pinning, environment scrubbing, output-schema validation, can
 Per platform, tests shall verify each clause the probe reports as enforced, that an unenforceable clause makes host tools unavailable, and that the probe is honest (an injected failure is reported).
 
 ### REQ-TEST-014 CI gate — M0 · T
-On every change, on Linux, Windows and macOS: formatting, lints as errors, tests, build; and on Linux: dependency audit and license check, the `unsafe` rule, the core-dependency rule (REQ-ARCH-002), the RFC-directory invariants, documentation build and documentation cross-reference check.
+On every change, on Linux, Windows and macOS: formatting, lints as errors, tests, build; and on Linux: the build and tests on the minimum Rust version (REQ-PLAT-001), the packaging dry-run of the workspace, dependency audit and license check, the `unsafe` rule, the core-dependency rule (REQ-ARCH-002), the RFC-directory invariants, documentation build and documentation cross-reference check.
 
 ### REQ-TEST-015 Privacy — M1 · T
 Tests shall verify that no configured secret appears in prompts, observations, logs or a tool's environment.

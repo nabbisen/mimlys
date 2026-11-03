@@ -24,4 +24,5 @@
 - [M4 report](./maintainers/m4-report.md)
 - [M6a report](./maintainers/m6a-report.md)
 - [M6b report](./maintainers/m6b-report.md)
+- [Repository guards](./maintainers/repository-guards.md)
 - [Glossary](./maintainers/glossary.md)
