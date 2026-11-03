@@ -9,6 +9,9 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+use common::run_bounded;
+
 fn probe_tool() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_mimlys-probe-tool"))
 }
@@ -105,12 +108,8 @@ network = true
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = self.command(args).output().unwrap();
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+        let out = run_bounded(&mut self.command(args), self.data.path());
+        (out.code(), out.stdout, out.stderr)
     }
 
     fn json(&self, args: &[&str]) -> (i32, Value) {
@@ -727,19 +726,15 @@ env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }}
     let run = |args: &[&str]| -> (i32, Value, String) {
         let mut all = vec!["--config", config.to_str().unwrap(), "--json"];
         all.extend_from_slice(args);
-        let out = Command::new(env!("CARGO_BIN_EXE_mimlys"))
-            .args(&all)
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        cmd.args(&all)
             .env("MIMLYS_CONFIG", "")
-            .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
+        let out = run_bounded(&mut cmd, data.path());
         (
-            out.status.code().unwrap_or(-1),
-            serde_json::from_str(stdout.trim()).unwrap_or(Value::Null),
-            stderr,
+            out.code(),
+            serde_json::from_str(out.stdout.trim()).unwrap_or(Value::Null),
+            out.stderr,
         )
     };
     let (_, status, _) = run(&["status"]);

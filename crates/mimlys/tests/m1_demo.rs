@@ -7,6 +7,9 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+use common::run_bounded;
+
 fn script(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/m1")
@@ -39,12 +42,12 @@ fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("spawn testloop");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let streams = tempfile::tempdir().expect("a directory for the streams");
+    let out = run_bounded(&mut cmd, streams.path());
     Run {
         status: out.status,
-        report: serde_json::from_str(&stdout).ok(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        report: serde_json::from_str(&out.stdout).ok(),
+        stderr: out.stderr,
     }
 }
 

@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Command;
 
+mod common;
+use common::run_bounded;
+
 fn testserver() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_mimlys-mcp-testserver"))
 }
@@ -114,17 +117,12 @@ idempotent = true
             .args(args)
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
-            .env("BRAVE_API_KEY", "operator-secret-brave-1234")
-            .stdin(std::process::Stdio::null());
+            .env("BRAVE_API_KEY", "operator-secret-brave-1234");
         for (k, v) in &self.extra_env {
             cmd.env(k, v);
         }
-        let out = cmd.output().unwrap();
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+        let out = run_bounded(&mut cmd, self.data.path());
+        (out.code(), out.stdout, out.stderr)
     }
 
     fn json(&self, args: &[&str]) -> (i32, Value) {
@@ -786,22 +784,21 @@ destination_arguments = ["url"]
     .unwrap();
     let scope = data.path().join("scope");
     std::fs::create_dir_all(&scope).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_mimlys"))
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "--json",
-            "run",
-            "search",
-            "--scope",
-            scope.to_str().unwrap(),
-        ])
-        .env("MIMLYS_CONFIG", "")
-        .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    eprintln!("{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    cmd.args([
+        "--config",
+        config.to_str().unwrap(),
+        "--json",
+        "run",
+        "search",
+        "--scope",
+        scope.to_str().unwrap(),
+    ])
+    .env("MIMLYS_CONFIG", "")
+    .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
+    let out = run_bounded(&mut cmd, data.path());
+    let stdout = out.stdout;
+    eprintln!("{stdout}\n{}", out.stderr);
     let value: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(value["task"]["state"], "completed");
 }

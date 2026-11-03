@@ -114,33 +114,34 @@ enum Tree {
 }
 
 impl ConfinedChild {
-    /// The child's standard input, once.
-    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+    /// The child's standard input, once. On Windows it is the backend's
+    /// own synchronous pipe end ([`windows::PipeEnd`]), hence the trait object.
+    pub fn take_stdin(&mut self) -> Option<Box<dyn std::io::Write + Send>> {
         match &mut self.proc {
             #[cfg(unix)]
-            Proc::Std(c) => c.stdin.take(),
+            Proc::Std(c) => c.stdin.take().map(|s| Box::new(s) as _),
             #[cfg(windows)]
-            Proc::Raw(c) => c.stdin.take(),
+            Proc::Raw(c) => c.stdin.take().map(|s| Box::new(s) as _),
         }
     }
 
     /// The child's standard output, once.
-    pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+    pub fn take_stdout(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
         match &mut self.proc {
             #[cfg(unix)]
-            Proc::Std(c) => c.stdout.take(),
+            Proc::Std(c) => c.stdout.take().map(|s| Box::new(s) as _),
             #[cfg(windows)]
-            Proc::Raw(c) => c.stdout.take(),
+            Proc::Raw(c) => c.stdout.take().map(|s| Box::new(s) as _),
         }
     }
 
     /// The child's standard error, once.
-    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+    pub fn take_stderr(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
         match &mut self.proc {
             #[cfg(unix)]
-            Proc::Std(c) => c.stderr.take(),
+            Proc::Std(c) => c.stderr.take().map(|s| Box::new(s) as _),
             #[cfg(windows)]
-            Proc::Raw(c) => c.stderr.take(),
+            Proc::Raw(c) => c.stderr.take().map(|s| Box::new(s) as _),
         }
     }
 

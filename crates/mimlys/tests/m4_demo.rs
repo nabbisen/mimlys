@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+mod common;
+use common::run_bounded;
+
 /// The QuickJS module, fetched once per test run.
 fn qjs() -> PathBuf {
     static MODULE: OnceLock<PathBuf> = OnceLock::new();
@@ -110,20 +113,14 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_mimlys"))
-            .arg("--config")
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        cmd.arg("--config")
             .arg(&self.config)
             .args(args)
             .env("MIMLYS_CONFIG", "")
-            .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+            .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
+        let out = run_bounded(&mut cmd, self.data.path());
+        (out.code(), out.stdout, out.stderr)
     }
 
     fn json(&self, args: &[&str]) -> (i32, Value) {

@@ -134,21 +134,21 @@ enum ToolProc {
 }
 
 impl ToolProc {
-    fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
         match self {
             #[cfg(unix)]
-            ToolProc::Std(c) => c.stdout.take(),
+            ToolProc::Std(c) => c.stdout.take().map(|s| Box::new(s) as _),
             #[cfg(windows)]
-            ToolProc::Win(c, _) => c.stdout.take(),
+            ToolProc::Win(c, _) => c.stdout.take().map(|s| Box::new(s) as _),
         }
     }
 
-    fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+    fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
         match self {
             #[cfg(unix)]
-            ToolProc::Std(c) => c.stderr.take(),
+            ToolProc::Std(c) => c.stderr.take().map(|s| Box::new(s) as _),
             #[cfg(windows)]
-            ToolProc::Win(c, _) => c.stderr.take(),
+            ToolProc::Win(c, _) => c.stderr.take().map(|s| Box::new(s) as _),
         }
     }
 

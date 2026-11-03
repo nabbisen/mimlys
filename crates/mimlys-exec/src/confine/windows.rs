@@ -9,6 +9,8 @@
 //! where the parent must act, because the container and the token are
 //! attributes of process creation; the worker still reports what it finds
 //! itself in (`inspect`), so the status is never the parent's assumption.
+//! The parent's ends of the worker's pipes are synchronous files
+//! ([`PipeEnd`]), never the standard library's child-stream types.
 //!
 //! This is the one place in the crate that calls foreign functions; every
 //! `unsafe` block is justified (REQ-CONF-010).
@@ -24,7 +26,7 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::path::Path;
-use std::process::{ChildStderr, ChildStdin, ChildStdout, ExitStatus};
+use std::process::ExitStatus;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, FILETIME, HANDLE, HANDLE_FLAG_INHERIT, LocalFree,
     STILL_ACTIVE, SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0,
@@ -146,16 +148,25 @@ impl Drop for Job {
     }
 }
 
+/// The parent's end of a child's pipe: a plain synchronous handle, read and
+/// written with `ReadFile` and `WriteFile`. The standard library's
+/// `ChildStdin`, `ChildStdout` and `ChildStderr` are not used here: they
+/// perform alertable overlapped I/O (`ReadFileEx`, `WriteFileEx` and
+/// `SleepEx`), which is correct only for the overlapped named pipes the
+/// library creates itself and stalls on an anonymous `CreatePipe` handle
+/// after its first transfers.
+pub type PipeEnd = std::fs::File;
+
 /// A process started by [`spawn`]: its handle and its piped streams.
 pub struct RawChild {
     process: OwnedHandle,
     pid: u32,
     /// The child's standard input, until taken.
-    pub stdin: Option<ChildStdin>,
+    pub stdin: Option<PipeEnd>,
     /// The child's standard output, until taken.
-    pub stdout: Option<ChildStdout>,
+    pub stdout: Option<PipeEnd>,
     /// The child's standard error, until taken.
-    pub stderr: Option<ChildStderr>,
+    pub stderr: Option<PipeEnd>,
 }
 
 impl RawChild {
@@ -696,12 +707,12 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
         }
     }
     drop(thread);
-    // SAFETY: the parent's pipe ends are valid handles owned from here on by the stream types.
+    // SAFETY: the parent's pipe ends are valid handles owned from here on by the files.
     let (stdin, stdout, stderr) = unsafe {
         (
-            ChildStdin::from(OwnedHandle::from_raw_handle(stdin.write as _)),
-            ChildStdout::from(OwnedHandle::from_raw_handle(stdout.read as _)),
-            ChildStderr::from(OwnedHandle::from_raw_handle(stderr.read as _)),
+            PipeEnd::from(OwnedHandle::from_raw_handle(stdin.write as _)),
+            PipeEnd::from(OwnedHandle::from_raw_handle(stdout.read as _)),
+            PipeEnd::from(OwnedHandle::from_raw_handle(stderr.read as _)),
         )
     };
     Ok(RawChild {

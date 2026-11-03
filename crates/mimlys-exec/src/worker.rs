@@ -142,7 +142,7 @@ pub struct Execution {
 
 struct Live {
     child: ConfinedChild,
-    stdin: std::process::ChildStdin,
+    stdin: Box<dyn std::io::Write + Send>,
     frames: Receiver<Result<Response, FrameError>>,
     facts: WorkerFacts,
     /// The worker's own cgroup, recorded for a later runtime and removed at its end.
