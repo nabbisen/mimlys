@@ -200,6 +200,93 @@ fn denied_reason(o: &Outcome) -> DeniedReason {
     }
 }
 
+/// REQ-TOOL-006 / RFC 011 §6 (stage 10): a host tool's deadline is its
+/// declaration's `timeout_ms`, bounded by the task's remaining time; the
+/// gateway definition's default applies to no declared tool.
+#[test]
+fn req_tool_006_host_tool_deadline_is_the_declared_timeout() {
+    let mut f = Fixture::new(false);
+    let ids = ScriptedIds::default();
+    let task = TaskId::new(&ids);
+    f.grants.add(Grant::issue(
+        GrantId::new(&ids),
+        task,
+        GrantKind::HostTool {
+            name: "probe".into(),
+        },
+        Actor::Runtime,
+        f.clock.now(),
+        None,
+    ));
+    f.policy.host_tools.insert(
+        "probe".into(),
+        crate::host_tool::HostToolDeclaration {
+            name: "probe".into(),
+            command: "/usr/bin/true".into(),
+            args: vec![],
+            allowed_args: vec!["ok".into()],
+            arg_pattern: None,
+            max_args: 1,
+            effect: EffectKind::WorkspaceWrite,
+            reversible: false,
+            timeout_ms: 10_000,
+            read_paths: vec![],
+            env: Default::default(),
+            env_allow: vec![],
+            network: false,
+        },
+    );
+    f.tools.push(ToolDefinition {
+        name: "run_host_tool".into(),
+        description: "h".into(),
+        input: ParamSchema {
+            params: vec![
+                Param {
+                    name: "tool".into(),
+                    ty: ParamType::Enum {
+                        values: vec!["probe".into()],
+                    },
+                    optional: false,
+                    description: "t".into(),
+                },
+                Param {
+                    name: "args".into(),
+                    ty: ParamType::StringArray {
+                        max_items: 1,
+                        max_chars: 400,
+                    },
+                    optional: true,
+                    description: "a".into(),
+                },
+            ],
+        },
+        output: None,
+        effect: EffectView {
+            kind: EffectKind::HostWrite,
+            reversible: false,
+            idempotent: false,
+        },
+        deadline_ms: 600_000,
+        profile: ResourceProfile::Host,
+        destination_arguments: vec![],
+        provider: Provider::Builtin,
+    });
+    let raw =
+        r#"{"decision":"act","tool":"run_host_tool","arguments":{"tool":"probe","args":["ok"]}}"#;
+    let Outcome::Authorized(a) = f.run(raw, 60_000, None) else {
+        panic!()
+    };
+    assert_eq!(a.deadline_ms(), 10_000, "the declaration's timeout_ms");
+    let Outcome::Authorized(a) = f.run(raw, 4_000, None) else {
+        panic!()
+    };
+    assert_eq!(
+        a.deadline_ms(),
+        4_000,
+        "bounded by the task's remaining time"
+    );
+}
+
 /// REQ-WS-003 (stage 7): excluded paths are denied with `path_excluded`; ordinary paths pass.
 #[test]
 fn req_ws_003_excluded_paths_denied() {

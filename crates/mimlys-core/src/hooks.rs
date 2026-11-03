@@ -120,7 +120,9 @@ impl EffectDerivation for PolicyHooks<'_> {
 impl BudgetReservation for PolicyHooks<'_> {
     /// Stage 10: the deadline must not have passed; a write larger than the
     /// remaining workspace quota is refused; the effective deadline is the
-    /// smaller of the tool's default and the task's remaining time.
+    /// smaller of the tool's default and the task's remaining time. A host
+    /// tool's default is its declaration's `timeout_ms` (LIM-H1 unless
+    /// declared; RFC 011 §6), not the gateway definition's.
     fn reserve(
         &self,
         tool: &ToolDefinition,
@@ -151,7 +153,14 @@ impl BudgetReservation for PolicyHooks<'_> {
                 return Err(BudgetKind::Workspace);
             }
         }
-        Ok(tool.deadline_ms.min(self.task.remaining_ms))
+        let default_ms = match (tool.name.as_str(), args.get("tool").and_then(Value::as_str)) {
+            ("run_host_tool", Some(name)) => self
+                .host_tools
+                .get(name)
+                .map_or(tool.deadline_ms, |d| d.timeout_ms),
+            _ => tool.deadline_ms,
+        };
+        Ok(default_ms.min(self.task.remaining_ms))
     }
 }
 

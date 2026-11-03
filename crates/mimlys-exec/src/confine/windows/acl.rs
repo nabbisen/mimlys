@@ -10,6 +10,8 @@
 //! directory holds a named mutex across the runtimes of this machine (two
 //! installations granting their containers one directory at once would
 //! otherwise lose one another's entry).
+//! The merge starts from the directory's explicit entries alone, and the
+//! system recomputes the inherited ones from the parent on the write.
 //!
 //! Every `unsafe` block is justified (REQ-CONF-010).
 
@@ -27,9 +29,10 @@ use windows_sys::Win32::Security::Authorization::{
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    ACL, DACL_SECURITY_INFORMATION, EqualSid, GetSecurityDescriptorControl,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT, UNPROTECTED_DACL_SECURITY_INFORMATION,
+    ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation, AddAce,
+    DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+    INHERITED_ACE, InitializeAcl, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    SE_DACL_PROTECTED, SUB_CONTAINERS_AND_OBJECTS_INHERIT, UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
@@ -153,13 +156,91 @@ impl Drop for DaclLock {
     }
 }
 
+/// The explicit entries of an ACL, as a new ACL: `SetEntriesInAclW` copies
+/// an inherited entry as an explicit one, which would make the directory's
+/// inheritance a set of copies that no `revoke` could undo; the system
+/// recomputes the inherited entries from the parent on the write instead.
+/// A null ACL (everything allowed) stays null.
+fn explicit_entries(acl: *const ACL) -> Result<Option<Vec<u8>>, String> {
+    if acl.is_null() {
+        return Ok(None);
+    }
+    let mut info = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    // SAFETY: the ACL is valid for the caller's descriptor; the out struct matches the class.
+    let ok = unsafe {
+        GetAclInformation(
+            acl,
+            (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "GetAclInformation failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // The explicit entries fit in the old size; the length is a multiple of four as the ACL requires.
+    let len = (info.AclBytesInUse as usize)
+        .max(std::mem::size_of::<ACL>())
+        .next_multiple_of(4);
+    let mut buffer = vec![0u8; len];
+    let new_acl = buffer.as_mut_ptr().cast::<ACL>();
+    // SAFETY: the buffer is zeroed, aligned for the ACL header and of the length given.
+    if unsafe { InitializeAcl(new_acl, len as u32, ACL_REVISION) } == 0 {
+        return Err(format!(
+            "InitializeAcl failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    for index in 0..info.AceCount {
+        let mut ace: *mut std::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: the index is below the count the system reported; the out pointer is valid.
+        if unsafe { GetAce(acl, index, &mut ace) } == 0 {
+            return Err(format!(
+                "GetAce failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: GetAce returned a pointer to an entry that starts with an ACE_HEADER.
+        let header = unsafe { ace.cast::<ACE_HEADER>().read_unaligned() };
+        if u32::from(header.AceFlags) & INHERITED_ACE != 0 {
+            continue;
+        }
+        // SAFETY: the entry is `AceSize` bytes long and the new ACL has room for every entry of the old one.
+        if unsafe {
+            AddAce(
+                new_acl,
+                ACL_REVISION,
+                u32::MAX,
+                ace,
+                u32::from(header.AceSize),
+            )
+        } == 0
+        {
+            return Err(format!(
+                "AddAce failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(Some(buffer))
+}
+
 fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
     let _lock = DaclLock::acquire(path);
     let old = read_dacl(path)?;
+    let mut explicit = explicit_entries(old.acl)?;
+    let base: *mut ACL = explicit
+        .as_mut()
+        .map_or(std::ptr::null_mut(), |b| b.as_mut_ptr().cast());
     // The directory's protection flag, kept as it is: with `UNPROTECTED` the
-    // system takes the inherited entries of the ACL just read as inherited
-    // and recomputes them from the parent; without a flag it would make
-    // them explicit copies, which `revoke` could never undo.
+    // system recomputes the inherited entries from the parent on the write.
     let mut control: u16 = 0;
     let mut revision: u32 = 0;
     // SAFETY: the descriptor lives in `old`; both out pointers are valid.
@@ -183,8 +264,8 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
         },
     };
     let mut new_acl: *mut ACL = std::ptr::null_mut();
-    // SAFETY: one entry is given; the old ACL lives in `old`; `new_acl` receives an allocation freed below.
-    let err = unsafe { SetEntriesInAclW(1, &entry, old.acl, &mut new_acl) };
+    // SAFETY: one entry is given; the base ACL lives in `explicit` (or is null); `new_acl` receives an allocation freed below.
+    let err = unsafe { SetEntriesInAclW(1, &entry, base, &mut new_acl) };
     if err != ERROR_SUCCESS {
         return Err(format!(
             "SetEntriesInAclW failed: {}",
