@@ -695,7 +695,11 @@ fn m6b_demonstration_cargo_test_offline() {
     ]).unwrap()).unwrap();
     // REQ-CONF-011: the toolchain's own directory, never `.cargo` as a whole
     // (`credentials.toml` lives there); `toolchain grant` refuses the latter.
-    let cargo_home = home.join(".cargo").join("bin").to_string_lossy().into_owned();
+    let cargo_home = home
+        .join(".cargo")
+        .join("bin")
+        .to_string_lossy()
+        .into_owned();
     let rustup_home = home.join(".rustup").to_string_lossy().into_owned();
     let config = data.path().join("config.toml");
     std::fs::write(

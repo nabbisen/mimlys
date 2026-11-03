@@ -294,3 +294,48 @@ fn req_cap_004_grant_and_revoke() {
     let (_, shown) = env.json(&["task", "show", &id]);
     assert_eq!(shown["grants"].as_array().unwrap().len(), 3);
 }
+
+/// REQ-CONF-011 / REQ-CFG-001: `mimlys check` and every command refuse a
+/// declared read path that holds credentials, with exit code 1 and the
+/// message naming the declaration, the entry and the narrower path; the
+/// narrower path loads. And REQ-CONF-006: a dependency step declared as
+/// `workspace_write` is refused with the value to write.
+#[test]
+fn req_conf_011_check_refuses_a_directory_that_holds_credentials() {
+    let toolchain = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(toolchain.path().join("bin")).unwrap();
+    std::fs::write(toolchain.path().join("credentials.toml"), "x").unwrap();
+    let declare = |path: &Path, tail: &str| {
+        format!(
+            "[host_tools.cargo_test]\ncommand = \"/bin/true\"\neffect = \"workspace_write\"\nread_paths = [{:?}]\n{tail}",
+            path.to_string_lossy()
+        )
+    };
+    let env = Env::new(&declare(toolchain.path(), ""));
+    let (code, value) = env.json(&["check"]);
+    assert_eq!(code, 1, "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("host_tools.cargo_test.read_paths"),
+        "{message}"
+    );
+    assert!(message.contains("credentials.toml"), "{message}");
+    assert!(
+        message.contains(&format!("{}/bin", toolchain.path().display())),
+        "{message}"
+    );
+    // The narrower path loads.
+    let env = Env::new(&declare(&toolchain.path().join("bin"), ""));
+    let (code, value) = env.json(&["check"]);
+    assert_eq!(code, 0, "{value}");
+    // The dependency step with the wrong effect names the value to write.
+    let env = Env::new(&declare(&toolchain.path().join("bin"), "network = true\n"));
+    let (code, value) = env.json(&["check"]);
+    assert_eq!(code, 1, "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("host_tools.cargo_test.effect"),
+        "{message}"
+    );
+    assert!(message.contains("external_read"), "{message}");
+}

@@ -697,7 +697,10 @@ fn m6a_demonstration_cargo_test_offline() {
         .unwrap();
     let cargo = home.join(".cargo/bin/cargo");
     if !cargo.is_file() || !home.join(".rustup").is_dir() {
-        eprintln!("skipped: no rustup toolchain under {}", home.display());
+        common::skip(
+            "m6a_demonstration_cargo_test_offline",
+            &format!("no rustup toolchain under {}", home.display()),
+        );
         return;
     }
     let data = tempfile::tempdir().unwrap();
@@ -772,7 +775,10 @@ env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }}
         status["tier"], status["clauses"]
     );
     if status["tier"] != "full" {
-        eprintln!("skipped: tier {}", status["tier"]);
+        common::skip(
+            "m6a_demonstration_cargo_test_offline",
+            &format!("tier {}", status["tier"]),
+        );
         return;
     }
     let started = std::time::Instant::now();

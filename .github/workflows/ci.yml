@@ -1,5 +1,5 @@
-# CI gate (REQ-TEST-014): format, lints, tests and build on Linux, Windows and
-# macOS; the build and tests on the minimum Rust version; the packaging
+# CI gate (REQ-TEST-014): format, lints, tests and build on Linux (x86_64 and
+# aarch64), Windows and macOS; the build and tests on the minimum Rust version; the packaging
 # dry-run; dependency audit, license check, core-dependency rule, RFC
 # invariants and documentation checks on Linux. What each job verifies is
 # written in docs/src/maintainers/repository-guards.md.
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
