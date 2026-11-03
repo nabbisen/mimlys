@@ -74,7 +74,7 @@ pub struct Outcome {
 /// The pinned engine with its epoch ticker.
 pub struct Sandbox {
     engine: Engine,
-    _ticker: Ticker,
+    ticker: Ticker,
 }
 
 impl Sandbox {
@@ -97,10 +97,7 @@ impl Sandbox {
             .cranelift_opt_level(level);
         let engine = Engine::new(&config)?;
         let ticker = Ticker::start(engine.clone(), Duration::from_millis(LIM_S7_EPOCH_TICK_MS));
-        Ok(Self {
-            engine,
-            _ticker: ticker,
-        })
+        Ok(Self { engine, ticker })
     }
 
     /// The engine (to compile modules once per process).
@@ -120,7 +117,7 @@ impl Sandbox {
 
     /// An interrupt handle for an execution with this deadline.
     pub fn interrupt(&self, deadline_ms: u64) -> Interrupt {
-        Interrupt::new(self.engine.clone(), ticks(deadline_ms))
+        Interrupt::new(self.engine.clone(), self.ticks(deadline_ms))
     }
 
     /// Runs `module` under the request's guards; `interrupt` is the handle
@@ -235,7 +232,7 @@ impl Sandbox {
         store
             .set_fuel(request.limits.fuel)
             .map_err(|_| HostFaultDetail::Unavailable)?;
-        store.set_epoch_deadline(ticks(request.limits.deadline_ms));
+        store.set_epoch_deadline(self.ticks(request.limits.deadline_ms));
         store.epoch_deadline_trap();
         let mut linker: Linker<State> = Linker::new(&self.engine);
         wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |s: &mut State| &mut s.wasi)
@@ -270,12 +267,15 @@ struct Setup {
     setup_ms: i64,
 }
 
-/// The epoch ticks of a deadline: two past the quotient. The ticker advances
-/// by the wall clock and may owe a tick when a run starts, which it then
-/// delivers at once; with the margin an execution never ends before its
-/// deadline and ends at most three ticks after it.
-fn ticks(deadline_ms: u64) -> u64 {
-    deadline_ms.div_ceil(LIM_S7_EPOCH_TICK_MS) + 2
+impl Sandbox {
+    /// The epoch ticks of a deadline armed now: the ticks the ticker owes
+    /// (it advances by the wall clock and delivers a stretched sleep's ticks
+    /// at once), then the deadline's quotient, then one more for the tick in
+    /// progress. An execution never ends before its deadline and ends at
+    /// most two ticks after it.
+    fn ticks(&self, deadline_ms: u64) -> u64 {
+        self.ticker.owed() + deadline_ms.div_ceil(LIM_S7_EPOCH_TICK_MS) + 1
+    }
 }
 
 /// The exact mapping of REQ-SBX-003.

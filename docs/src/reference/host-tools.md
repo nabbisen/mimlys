@@ -173,3 +173,9 @@ fails at its first `rustc -vV` on Windows Server 2025, the observation's
 message, and the task halts. The clause suite verifies the confinement with
 its probe tool; a tool that does not need `NUL` runs today, and a way to
 lend the device to the container is M6c work.
+
+After a `grant` or a `revoke`, `icacls` prints the directory's inherited
+entries with `(I)` where it may not have before: the write marks the
+security descriptor auto-inherited, as every write through the Windows
+security interface does, and the shell then shows the inherited flag the
+entries carried all along. The entries themselves are what they were.

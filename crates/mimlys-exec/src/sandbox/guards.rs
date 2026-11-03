@@ -74,17 +74,22 @@ impl Interrupt {
 pub struct Ticker {
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
+    start: std::time::Instant,
+    tick_ms: u64,
+    ticked: Arc<AtomicU64>,
 }
 
 impl Ticker {
     pub(crate) fn start(engine: Engine, tick: Duration) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
+        let start = std::time::Instant::now();
+        let tick_ms = tick.as_millis().max(1) as u64;
+        let counter = Arc::new(AtomicU64::new(0));
+        let ticked_shared = Arc::clone(&counter);
         let handle = std::thread::Builder::new()
             .name("mimlys-epoch".into())
             .spawn(move || {
-                let start = std::time::Instant::now();
-                let tick_ms = tick.as_millis().max(1) as u64;
                 let mut ticked: u64 = 0;
                 let mut reported: u64 = 0;
                 while !flag.load(Ordering::Relaxed) {
@@ -93,6 +98,7 @@ impl Ticker {
                     while ticked < due {
                         engine.increment_epoch();
                         ticked += 1;
+                        ticked_shared.store(ticked, Ordering::Relaxed);
                     }
                     if ticked / 100 > reported {
                         reported = ticked / 100;
@@ -109,7 +115,18 @@ impl Ticker {
         Self {
             stop,
             handle: Some(handle),
+            start,
+            tick_ms,
+            ticked: counter,
         }
+    }
+
+    /// The ticks the clock has passed that the thread has not delivered
+    /// yet (it is asleep, or stretched): they arrive at once when it wakes,
+    /// so a deadline armed now must be counted past them.
+    pub(crate) fn owed(&self) -> u64 {
+        let due = self.start.elapsed().as_millis() as u64 / self.tick_ms;
+        due.saturating_sub(self.ticked.load(Ordering::Relaxed))
     }
 }
 

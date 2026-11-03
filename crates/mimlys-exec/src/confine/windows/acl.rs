@@ -12,6 +12,10 @@
 //! otherwise lose one another's entry).
 //! The merge starts from the directory's explicit entries alone, and the
 //! system recomputes the inherited ones from the parent on the write.
+//! The write marks the descriptor auto-inherited, as every write through
+//! this interface does; `icacls` then shows the entries the directory
+//! inherits as `(I)`, which they were before the write too (their flag),
+//! and the entries themselves are what they were.
 //!
 //! Every `unsafe` block is justified (REQ-CONF-010).
 
@@ -209,7 +213,7 @@ fn explicit_entries(acl: *const ACL) -> Result<Option<Vec<u8>>, String> {
         }
         // SAFETY: GetAce returned a pointer to an entry that starts with an ACE_HEADER.
         let header = unsafe { ace.cast::<ACE_HEADER>().read_unaligned() };
-        tracing::debug!(
+        tracing::trace!(
             target: "mimlys_worker",
             "dacl entry {index}: type {} flags {:#04x} size {}",
             header.AceType,
@@ -260,10 +264,9 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
     };
     tracing::debug!(
         target: "mimlys_worker",
-        "dacl of {}: control {control:#06x} (read {}), mode {mode}, explicit base {}",
+        "dacl of {}: control {control:#06x}, mode {mode}, explicit base {}",
         path.display(),
-        read_control != 0,
-        explicit.as_ref().map_or("null".to_owned(), |b| format!("{} bytes", b.len()))
+        if explicit.is_some() { "built" } else { "null" }
     );
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: access.mask(),
@@ -307,12 +310,6 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
             path.display(),
             std::io::Error::from_raw_os_error(err as i32)
         ));
-    }
-    if tracing::enabled!(target: "mimlys_worker", tracing::Level::DEBUG)
-        && let Ok(written) = read_dacl(path)
-    {
-        tracing::debug!(target: "mimlys_worker", "dacl of {} after the write:", path.display());
-        let _ = explicit_entries(written.acl);
     }
     Ok(())
 }

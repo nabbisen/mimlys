@@ -639,9 +639,13 @@ fn m6b_toolchain_permissions_are_reversible_and_gate_tools() {
         .output()
         .unwrap()
         .stdout;
+    // The entries are what they were. The write marks the descriptor
+    // auto-inherited, after which icacls prints `(I)` on the inherited
+    // entries (their flag was set before the write too); the marker is not
+    // compared.
     assert_eq!(
-        String::from_utf8_lossy(&before),
-        String::from_utf8_lossy(&after),
+        String::from_utf8_lossy(&before).replace("(I)", ""),
+        String::from_utf8_lossy(&after).replace("(I)", ""),
         "revoke leaves the permissions as they were"
     );
     // mimlys's own directories cannot be revoked here.

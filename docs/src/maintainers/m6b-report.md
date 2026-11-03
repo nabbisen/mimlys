@@ -83,5 +83,14 @@ directory); its outcome is recorded in the release package of 0.7.0.
   and a tool's command then failed to resolve inside the loser's container
   with no reason recorded; the writers hold a named mutex per directory
   since round 11, and a tool that does not start carries its reason. The
-  DACL write names the directory's protection flag, so inherited entries
-  stay inherited and `revoke` leaves the directory exactly as it was.
+  DACL merge starts from the explicit entries alone and the write names the
+  directory's protection flag, so inherited entries stay inherited and
+  `revoke` leaves the directory's entries as they were. One bit differs: the
+  write marks the descriptor auto-inherited (`SE_DACL_AUTO_INHERITED`), as
+  every `SetNamedSecurityInfo` call does, after which `icacls` prints `(I)`
+  on the inherited entries; a directory the shell created shows them without
+  the marker although their inherited flag is set. The suite compares the
+  entries without the marker.
+- The epoch ticker owes ticks after a stretched sleep and delivers them at
+  once (a 100 ms deadline ended at 76 ms on `macos-latest`); a deadline is
+  armed past the owed ticks, so an execution never ends before its deadline.
