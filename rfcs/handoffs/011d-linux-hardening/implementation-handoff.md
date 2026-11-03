@@ -55,3 +55,13 @@ All Linux, run on `ubuntu-latest`, `ubuntu-24.04-arm` and the reference machine;
 ## 5. Return
 
 Review request at `.git-exclude/review-requests/011d-linux-hardening/README.md` with: changed files; every command of the gate and its output; the list of `/proc` entries kept, each with the reason; the mutation-check outputs; CI run ids for the three Linux/Windows/macOS platforms **and** `ubuntu-24.04-arm`, stating which platform ran which suite; the skips; differences from this handoff; limitations. Do not tag, bump the version or publish.
+
+## 6. Corrections after the architect's review (2026-11-03)
+
+Review: `.git-exclude/reviewed/cycle-1-review/README.md`. Option B of DQ-1 (the worker keeps `/proc`; each host tool's process restricts itself to the same sets without it) is **accepted**, and so are the `unsafe` additions. What is still required before the Go:
+
+1. **`PATH` and command resolution (DQ-2; owner's philosophy: the file must work as the book shows it).** External design §13.3/§13.5 now say: the tool's `PATH` is built from the declared read paths that are themselves a `bin` directory (`~/.cargo/bin`) or hold one, then `/usr/bin:/bin`, unless the declaration's `env` sets `PATH`; a `command` given as a name is resolved against the same paths. Change `child_path` and `resolve_command` (Linux and macOS code; Windows keeps its own rule), then remove the `PATH` workaround from the declarations in the tests, `host-tools.md` and `configuration.md`, so that ED §19.1's own example works on a runner without a system `rustc`. Test: `req_conf_006_path_is_built_from_declared_bin_paths` (a declared `.../bin`, a declared parent holding `bin`, neither; an `env.PATH` that wins) and the demonstration green on `ubuntu-latest` without the workaround.
+2. **CI skips (your offer in §6).** Print `skips.log` at the end of each test job (a final `if: always()` step; `cat` it, or write it to the job summary) so that skips are counted per platform from the log. Do not upload artifacts.
+3. **Book.** In "What a host tool can read" say that the refusal of credential-holding paths is a guard on what the administrator wrote (depth one), not a proof that a declared directory holds none; keep the rest. Adjust the non-dumpable paragraph to the ED wording ("a same-user program that is not itself confined").
+4. **`m5_real_rypsok` comment** (T4's proposed text, `m5_mcp.rs`): apply it as proposed; no behaviour change.
+5. **Rebase** the branch on `main` (it now holds T2 and T3; one trivial conflict in `ci.yml`), run the whole gate again, and re-request review of items 1 to 4 only. The PR stays a draft until the architect's Go; the owner tags and publishes.

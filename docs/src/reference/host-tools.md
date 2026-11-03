@@ -171,8 +171,9 @@ input of every `rustc` it starts; so `cargo test` declared as a host tool
 fails at its first `rustc -vV` on Windows Server 2025, the observation's
 `stderr` says so with the notice `host_tool_not_started` or cargo's own
 message, and the task halts. The clause suite verifies the confinement with
-its probe tool; a tool that does not need `NUL` runs today, and whether any way
-to lend the device to the container exists is still being investigated.
+its probe tool; a tool that does not need `NUL` runs today, and no way to lend the device to the container that keeps the
+confinement was found (Windows Server 2022 and 2025 behave alike). A tool
+that does not ask for a null standard input runs today.
 
 After a `grant` or a `revoke`, `icacls` prints the directory's inherited
 entries with `(I)` where it may not have before: the write marks the

@@ -81,8 +81,11 @@ the seven clause tests included, passes on all three platforms.
   Server 2025): `cargo` opens it for every `rustc` it starts and fails at
   `rustc -vV` with `Access is denied`. The demonstration of §23 is therefore
   not claimed on Windows in 0.7; the suite states the fact when it meets it.
-  Whether the device can be lent to the container at all is unknown; a spike
-  on `windows-latest` and `windows-2022` decides (no date is promised).
+  A spike on `windows-2022` and `windows-latest` (2026-11-03) found the same
+  refusal on both images, for `NUL`, `\\.\NUL` and `\\?\GLOBALROOT\Device\Null`; a
+  child started with a piped or inherited standard input runs, one with a null
+  input does not. No way to lend the device that keeps clauses F, N and P was
+  found: an exception without a remedy.
 - Two installations writing one directory's DACL at once (both grant their
   container the worker's directory at startup) lost one another's entry,
   and a tool's command then failed to resolve inside the loser's container

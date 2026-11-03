@@ -130,4 +130,4 @@
 | LIM-H2 | Memory of a host tool tree | 2 GiB | 256 MiB – 32 GiB | Compilers |
 | LIM-H3 | Processes in a host tool tree | 64 | 1–1024 | Fork-bomb bound |
 | LIM-H4 | Captured output of a host tool, each stream | 4 MiB | 64 KiB – 64 MiB | Build logs |
-| LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | operator may add, never remove | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |
+| LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | fixed | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |
