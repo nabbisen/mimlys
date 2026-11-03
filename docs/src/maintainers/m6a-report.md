@@ -71,3 +71,26 @@ model runs the test (fails), replaces the off-by-one, runs the test again
 
 LIM-H1 … LIM-H4 are kept as registered. LIM-O2 (2 s) was enough for every
 tree kill observed; the subreaper walk ended within one pass in the tests.
+
+## 5. Release 0.7.1 (2026-11-03): the clause table after the hardening
+
+Handoff 011d (RFC 011 Amendment 1). On the reference machine (kernel 7.3,
+Landlock ABI 4 or later, a session that delegates a cgroup but not the `memory` and
+`pids` controllers) the probe reports:
+
+| Clause | State | Primitive | What changed |
+|---|---|---|---|
+| F | enforced | `landlock` | the read set no longer holds `/proc` for a host tool; the worker keeps it for its own walk and a host tool restricts itself to the same sets without it (a second Landlock layer) |
+| N | enforced | `seccomp+landlock_net` | `io_uring_*` and `process_vm_*` denied always; TCP `bind` and `connect` handled with no rule from ABI 4 (Linux 6.7), otherwise `seccomp` alone, still complete |
+| E, K, P, M, C | unchanged | | |
+
+The new clause tests (REQ-TEST-013) each have a control, the same command
+outside the confinement, so that a denial is the confinement's: `uring-socket`
+and `uring-connect` (a live listener sees no connection), `vm-read` of a
+descendant, a same-user process's `cmdline` and `environ`, and a
+`credentials.toml` beside the declared toolchain directory. The read set for
+the demonstration is `~/.cargo/bin` and `~/.rustup`: the earlier §3 declared
+`~/.cargo`, which holds the crates.io token and is refused since this release.
+The measured `/proc` set for `cargo test --offline` of a project with a path
+dependency is empty: cargo and rustc fall back when `/proc` files are
+unreadable.

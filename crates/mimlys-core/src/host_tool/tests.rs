@@ -11,7 +11,7 @@ fn cargo_test() -> HostToolDeclaration {
         effect: EffectKind::WorkspaceWrite,
         reversible: false,
         timeout_ms: 600_000,
-        read_paths: vec!["~/.cargo".into(), "~/.rustup".into()],
+        read_paths: vec!["~/.cargo/bin".into(), "~/.rustup".into()],
         env: BTreeMap::new(),
         env_allow: vec![],
         network: false,

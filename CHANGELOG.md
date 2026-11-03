@@ -9,6 +9,73 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+Release 0.7.1 is the hardening of the Linux backend that the intake review
+after 0.7.0 asked for (RFC 011 Amendment 1, handoff 011d). 0.7.0 is tagged and
+not published; 0.7.1 is the first release on crates.io.
+
+### Security
+
+- `mimlys-exec` (Linux, REQ-CONF-012): clause N could be defeated by project
+  code running in a host tool. A socket created through `io_uring`
+  (`IORING_OP_SOCKET`, Linux 5.19 and later) never passes the `socket` rule of
+  the seccomp filter, so the filter now always denies `io_uring_setup`,
+  `io_uring_enter` and `io_uring_register` (in the dependency step's worker
+  too) together with `process_vm_readv` and `process_vm_writev` (another
+  process's memory, which the denial of `ptrace` did not cover). Where
+  Landlock's ABI is 4 or later (Linux 6.7) and network is denied, the ruleset
+  also handles TCP `bind` and `connect` with no rule, a second layer under the
+  filter; `status` then reads `enforced (seccomp+landlock_net)` for clause N,
+  `enforced (seccomp)` on an older kernel.
+- `mimlys`, `mimlys-exec` (REQ-CONF-012): the runtime and the worker mark
+  themselves non-dumpable first thing, so another program of the same user
+  cannot read their memory, environment or descriptors through `/proc`
+  (`env:`-referenced secrets sit in the runtime's environment). Cost: no core
+  dump of either, and no `ptrace` of either as the same user.
+- `mimlys-exec` (Linux, REQ-CONF-011): the processes of the machine left the
+  read set. `/proc` is no longer readable by a host tool: its command lines
+  and network tables stay out of project code. The worker keeps `/proc` for its
+  own descendant walk (clause K on the `subreaper` rung); a host tool's process
+  restricts itself to the same sets without it before it runs, as a second
+  Landlock layer. (Landlock's ptrace scoping already refused another process's
+  `environ`, `maps` and `fd`; the read set was where `cmdline` and the rest
+  leaked.)
+- `mimlys-core`, `mimlys` (REQ-CONF-011, LIM-H5): a declared read path may not
+  expose credentials. A filesystem root, the home directory, an ancestor of it,
+  or a directory that directly holds a name of LIM-H5 or LIM-W5 (`~/.cargo`
+  holds `credentials.toml`) is refused when the configuration loads and by
+  `toolchain grant`, naming the entry found and the narrower path to declare.
+
+### Changed
+
+- **A configuration that followed the 0.7.0 book fails to load**: write
+  `read_paths = ["~/.cargo/bin", "~/.rustup"]` instead of `["~/.cargo",
+  "~/.rustup"]` (and `mimlys toolchain grant %USERPROFILE%\.cargo\bin` on
+  Windows); and a dependency step is declared `effect = "external_read"` with
+  `network = true`, never `workspace_write` (REQ-CONF-006, CLR-1: `external_read`
+  exactly when `network = true`; any other pairing is an error naming the
+  declaration and the value to write). `effect_view()` no longer derives the
+  effect from `network`.
+- A host tool offline that needs a file outside its read set fails with the
+  file's name (the toolchain's own message); the book now shows the message and
+  the remedy, how to supply dependencies offline (vendoring; the read-only
+  `~/.cargo/registry`, which works only for crates already unpacked) and what
+  non-dumpable costs.
+- Test infrastructure: `common::skip` records a skipped test in
+  `skips.log` beside the test output (libtest has no skipped state); the probe
+  tool gains `uring-socket`, `uring-connect`, `vm-read`, `hold` and `read-proc`
+  behind the `probe-syscalls` feature of `mimlys-exec`, enabled by
+  `mimlys/test-bins`; a debug build honours `MIMLYS_PROBE_NO_CGROUP` (the
+  worker skips the cgroup rung, so clause K's `subreaper` rung is testable on a
+  machine that delegates a cgroup).
+- Document amendments of 2026-11-03 (the architect's): REQ-CONF-011 and
+  REQ-CONF-012, LIM-H5, THR-36 and the review-log row; the Windows `NUL`
+  exception recorded in external design §23 and the ROADMAP's M6b row; RFC 011
+  Amendment 1; RFCs 001 to 010 moved to `rfcs/done/` as implemented in 0.7.0;
+  the rollback wording of external design §7.2 and REQ-TOOL-010 (paths excluded
+  by LIM-W4 and LIM-W5 are neither snapshotted nor restored); REQ-PERS-009's
+  wording on collection; this changelog's statement that 0.7.0 is not
+  published.
+
 ## [0.7.0] - 2026-11-03
 
 The first tagged release (not published to crates.io): milestones M1 to M6b. Releases 0.1 to

@@ -14,7 +14,7 @@ mimlys status
 ```text
 tier            full
 clause F filesystem   enforced (landlock)
-clause N network      enforced (seccomp)
+clause N network      enforced (seccomp+landlock_net)
 clause E environment  enforced (explicit_environment)
 clause K termination  enforced (cgroup_kill)
 clause P privilege    enforced (no_new_privs+seccomp)
@@ -30,8 +30,13 @@ create its own cgroup, so every process a host tool starts is in it and
 dies with one `cgroup.kill`, while the session refuses the memory and
 process-count controllers, so those two are best effort (M and C may be;
 F, N, E, K and P may not). Where the kernel offers less the primitives
-change (`subreaper` for K) and the line still says so. The probe is a real
-worker's report of its own confinement, not a guess.
+change (`subreaper` for K) and the line still says so. N names both of its
+layers when the kernel has them: the seccomp filter (no socket outside
+`AF_UNIX`, and no `io_uring`, which would create sockets the filter never
+sees) and, from Landlock ABI 4 (Linux 6.7), a rule set that denies TCP
+`bind` and `connect`; on an older kernel it reads `enforced (seccomp)` and
+is complete all the same. The probe is a real worker's report of its own
+confinement, not a guess.
 
 ## Declare the tool
 
@@ -43,7 +48,7 @@ allowed_args = ["--lib"]
 arg_pattern = "[A-Za-z0-9_:]+"
 max_args = 2
 effect = "workspace_write"
-read_paths = ["~/.cargo", "~/.rustup"]
+read_paths = ["~/.cargo/bin", "~/.rustup"]
 env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 
 ```
@@ -81,14 +86,17 @@ is a separate declared tool with `network = true`:
 [host_tools.cargo_fetch]
 command = "~/.cargo/bin/cargo"
 args = ["fetch"]
-effect = "workspace_write"
+effect = "external_read"
 network = true
-read_paths = ["~/.cargo", "~/.rustup"]
+read_paths = ["~/.cargo/bin", "~/.rustup"]
 env = { RUSTUP_HOME = "~/.rustup" }
 ```
 
-It runs with every other clause in force and its effect is `external_read`;
-a profile that lists `run_host_tool` in `approval_tools` asks you before
+`effect` and `network` must agree: `external_read` exactly when `network =
+true`, and any other pairing is a startup error that names the declaration
+and the value to write (a tool that reaches the network is one that reads
+from outside, and the file says so). The step runs with every other clause in
+force; a profile that lists `run_host_tool` in `approval_tools` asks you before
 any host tool runs. Its destinations are not bounded: `cargo fetch` reaches
 whatever the manifests name, so grant it to a task knowingly, and `status`
 marks it `network allowed`. Nothing else a host tool does ever leaves the
@@ -104,15 +112,80 @@ reads `full (K best-effort, accepted by policy.accept_best_effort)`, and so
 does the `Tier` line of every approval of a host tool. Nothing is accepted
 by default, and a clause that is unavailable can never be accepted.
 
+## What a host tool can read
+
+Only the paths you declare in `read_paths` and the system's directories
+(`/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/opt`, a few devices).
+The home directory is not among them, and neither is any file of another
+process: `/proc` is not readable by a host tool, which keeps the command
+lines and network tables of your other programs from project code.
+
+**Declare the toolchain's own directories, never a directory that holds
+credentials.** `~/.cargo` holds `credentials.toml` (your crates.io token)
+beside `bin`, so declaring `~/.cargo` would let project code read it. mimlys
+refuses such a declaration when it loads the configuration (`mimlys check`
+and every command), naming the entry it found and the narrower path:
+
+```text
+configuration key `host_tools.cargo_test.read_paths`: "~/.cargo" directly
+holds "credentials.toml" (REQ-CONF-011, LIM-H5: a read path must not expose
+credentials); declare the subdirectory the tool needs, for example
+"~/.cargo/bin"
+```
+
+It refuses a filesystem root, the home directory and its ancestors the same
+way, and any directory that directly holds a name from the credential list
+(`credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/`,
+and the secret patterns of the workspace exclusions: `.env`, `*.pem`, `*.key`,
+`id_*`, `.ssh/`, `.aws/`, `.gnupg/`). Landlock has no deny rule, so the check
+is on the declaration, before anything is granted. `/etc` and `/opt` stay
+readable as a whole.
+
+**When the toolchain needs a file outside the set**, it fails with the
+file's name; the remedy is to declare the directory that holds it. With
+`~/.rustup` left out, for instance, the observation's `stderr` reads:
+
+```text
+error: could not read settings file: '/home/me/.rustup/settings.toml': Permission denied (os error 13)
+```
+
+and adding `"~/.rustup"` to `read_paths` is the fix. Declare the narrowest
+directory that holds what the tool names, and nothing that sits beside
+credentials.
+
+**Dependencies offline.** `cargo test --offline` needs the crates on disk,
+and a host tool cannot write the user's `~/.cargo`. The way that works for
+any dependency is to vendor them into the project: `cargo vendor` writes a
+`vendor/` directory and prints the `[source]` section for the project's own
+`.cargo/config.toml`; the task copies both like any file, and the tool reads
+them from its workspace. The other way is to declare `~/.cargo/registry` and
+set `CARGO_HOME = "~/.cargo"` in `env`; it works only for crates your own
+builds have already unpacked under `registry/src`, because the registry is
+read-only to the tool, and a crate that was downloaded but never unpacked
+fails with `failed to create directory …/registry/src/…: Permission denied`.
+(The dependency step above runs in a worker of its own; do not count on what
+it fetched being on disk for the offline tool.)
+
+**No core dump, no `ptrace`.** The runtime and the worker mark themselves
+non-dumpable at start, so no other program of yours can read their memory,
+environment or descriptors through `/proc`, and the kernel writes no core
+dump of them. The price is the same for a debugger: you cannot attach to
+`mimlys` or `mimlys-worker` as the same user unless you run it as root.
+(`env:`-referenced secrets sit in the runtime's environment, and removing a
+variable after reading it would not hide it: `/proc/<pid>/environ` shows the
+environment a process started with.) A host tool or an MCP server child is a
+new program and dumpable again; what protects their environments is the read
+set above.
+
 ## What `toolchain list` shows
 
 ```text
-read            /home/me/.cargo
+read            /home/me/.cargo/bin
 read            /home/me/.rustup
 read            /usr
 …
 host tool       cargo_test: /home/me/.cargo/bin/cargo (offline)
-  /home/me/.cargo
+  /home/me/.cargo/bin
   /home/me/.rustup
 ```
 
@@ -130,12 +203,15 @@ grants it the workspaces, its temporary directory, the interpreters and the
 worker's own directory at startup, and you grant the toolchain:
 
 ```text
-mimlys toolchain grant %USERPROFILE%\.cargo
+mimlys toolchain grant %USERPROFILE%\.cargo\bin
 mimlys toolchain grant %USERPROFILE%\.rustup
 ```
 
 Each asks before adding one inheritable read entry for the container to the
-directory, records it under the data directory, and `mimlys toolchain
+directory, records it under the data directory, and refuses the directories
+that [the read set refuses](#what-a-host-tool-can-read) (a root, the home
+directory, one that holds credentials such as `%USERPROFILE%\.cargo` with its
+`credentials.toml`), and `mimlys toolchain
 revoke <path>` removes exactly that entry. Until a declared path carries its
 entry the tool is unavailable: `status` and `toolchain list` say
 `acl_not_applied: <path>` with the command to run, and a `host_tool` grant

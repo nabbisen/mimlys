@@ -78,12 +78,12 @@ args = ["test", "--offline"]    # fixed; host tools run offline
 allowed_args = ["--lib"]        # literals the model may add
 arg_pattern = "[A-Za-z0-9_:]+"  # what any other added argument must match (a test name)
 max_args = 2
-effect = "workspace_write"      # the tool writes only inside the workspace (reversible); host writes are a later release
+effect = "workspace_write"      # the tool writes only inside the workspace (reversible); `external_read` exactly when network = true; host writes are a later release
 timeout_ms = 600000             # LIM-H1, 10000–3600000
 read_paths = ["~/.cargo/bin", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read; a directory holding credentials (`~/.cargo` holds `credentials.toml`) is refused
 env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 # env_allow = ["RUSTFLAGS"]     copied from mimlys's environment
-# network = true                the dependency step: external_read, approval where the profile asks; destinations unbounded
+# network = true                the dependency step: the effect must then be `external_read` (and only then); approval where the profile asks; destinations unbounded
 
 [servers.rypsok]                # an MCP server as a child process; see External tools
 command = "rypsok"
