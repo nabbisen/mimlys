@@ -613,6 +613,16 @@ fn m6b_toolchain_permissions_are_reversible_and_gate_tools() {
     let (code, granted) = env.json(&["toolchain", "grant", &dir_text, "--yes"]);
     assert_eq!(code, 0, "{granted}");
     assert_eq!(granted["applied"], true);
+    let granted_acl = Command::new("icacls")
+        .arg(&dir_text)
+        .output()
+        .unwrap()
+        .stdout;
+    eprintln!(
+        "--- icacls before\n{}--- icacls after grant\n{}",
+        String::from_utf8_lossy(&before),
+        String::from_utf8_lossy(&granted_acl)
+    );
     let (_, listed) = env.json(&["toolchain", "list"]);
     let entry = listed["host_tools"]
         .as_array()

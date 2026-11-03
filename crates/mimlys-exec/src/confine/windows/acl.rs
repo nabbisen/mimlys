@@ -209,6 +209,13 @@ fn explicit_entries(acl: *const ACL) -> Result<Option<Vec<u8>>, String> {
         }
         // SAFETY: GetAce returned a pointer to an entry that starts with an ACE_HEADER.
         let header = unsafe { ace.cast::<ACE_HEADER>().read_unaligned() };
+        tracing::debug!(
+            target: "mimlys_worker",
+            "dacl entry {index}: type {} flags {:#04x} size {}",
+            header.AceType,
+            header.AceFlags,
+            header.AceSize
+        );
         if u32::from(header.AceFlags) & INHERITED_ACE != 0 {
             continue;
         }
@@ -251,6 +258,13 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
     } else {
         UNPROTECTED_DACL_SECURITY_INFORMATION
     };
+    tracing::debug!(
+        target: "mimlys_worker",
+        "dacl of {}: control {control:#06x} (read {}), mode {mode}, explicit base {}",
+        path.display(),
+        read_control != 0,
+        explicit.as_ref().map_or("null".to_owned(), |b| format!("{} bytes", b.len()))
+    );
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: access.mask(),
         grfAccessMode: mode,
@@ -293,6 +307,12 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
             path.display(),
             std::io::Error::from_raw_os_error(err as i32)
         ));
+    }
+    if tracing::enabled!(target: "mimlys_worker", tracing::Level::DEBUG)
+        && let Ok(written) = read_dacl(path)
+    {
+        tracing::debug!(target: "mimlys_worker", "dacl of {} after the write:", path.display());
+        let _ = explicit_entries(written.acl);
     }
     Ok(())
 }
