@@ -1,6 +1,6 @@
 # mimlys — Roadmap
 
-**Status:** Authorized by the owner on 2026-10-02 (startup review, decisions D-01 … D-24; D-06 and D-07 in their v2 form). Release 0.7.0 (M1 to M6b) is the first tagged release, 2026-11-03; 0.1 to 0.6 were accepted milestones without a published release.
+**Status:** Authorized by the owner on 2026-10-02 (startup review, decisions D-01 … D-24; D-06 and D-07 in their v2 form). Release 0.7.0 (M1 to M6b) is the first tagged release, 2026-11-03, and was not published; 0.7.1 (the same milestones plus the Linux hardening) is the first release on crates.io; 0.1 to 0.6 were accepted milestones without a published release.
 Milestones are the unit of planning, release and acceptance. Every requirement in `docs/src/maintainers/requirements.md` names the milestone in which it is verified.
 
 ## Principles
@@ -26,7 +26,7 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | M6b | Host tools, Windows | AppContainer, Job Object and restricted-token backend; reversible toolchain ACL management; redirected profile and temp paths | The same demonstration on Windows. **Not met in 0.7.0:** `cargo` cannot run inside an AppContainer (the `NUL` device); the clause suite passes with the probe tool. Investigated 2026-11-03 on Windows Server 2022 and 2025: the same refusal, no remedy that keeps F, N and P; an exception without a remedy, revisited if Windows changes | 0.7 |
 | M6c | Host tools, macOS | Seatbelt backend; resident-size watchdog for the memory clause; tree termination by process group, documented as best-effort | The same demonstration on macOS | 0.8 |
 
-**0.7.1** is a hardening patch between M6b and M6c (RFC 011 Amendment 1, handoff 011d): the Linux backend's clause N and read set, found in the intake review after 0.7.0. It adds no milestone. 0.7.0 is tagged but not published to crates.io; 0.7.1 is the first published release.
+**0.7.1** is a hardening patch between M6b and M6c (RFC 011 Amendment 1, handoff 011d): the Linux backend's clause N and read set, found in the intake review after 0.7.0. It adds no milestone. 0.7.0 is tagged but not published to crates.io; 0.7.1 (2026-11-04) is the first release published there.
 
 ## RFCs, in order
 

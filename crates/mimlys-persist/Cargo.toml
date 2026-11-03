@@ -10,7 +10,7 @@ repository.workspace = true
 
 [dependencies]
 sha2.workspace = true
-mimlys-core = { path = "../mimlys-core", version = "0.7.0" }
+mimlys-core = { path = "../mimlys-core", version = "0.7.1" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,7 +22,7 @@ uuid.workspace = true
 crash-injection = []
 
 [dev-dependencies]
-mimlys-core = { path = "../mimlys-core", version = "0.7.0", features = ["test-support"] }
+mimlys-core = { path = "../mimlys-core", version = "0.7.1", features = ["test-support"] }
 tempfile = "3"
 
 [lints]

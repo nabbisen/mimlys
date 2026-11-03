@@ -9,6 +9,8 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-04
+
 Release 0.7.1 is the hardening of the Linux backend that the intake review
 after 0.7.0 asked for (RFC 011 Amendment 1, handoff 011d). 0.7.0 is tagged and
 not published; 0.7.1 is the first release on crates.io.

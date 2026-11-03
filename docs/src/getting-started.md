@@ -1,6 +1,6 @@
 # Getting started
 
-mimlys 0.7 (milestones M1 to M6b) is the deterministic core with the sandbox,
+mimlys 0.7.1, the first release on crates.io (milestones M1 to M6b), is the deterministic core with the sandbox,
 the transactional workspace, a local model, external tools and confined host
 tools (on Linux with `cargo test` as the demonstration; on Windows the
 confinement is verified, but `cargo` itself cannot run yet): a task runs one validated step at a time
