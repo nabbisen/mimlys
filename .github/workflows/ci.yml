@@ -49,9 +49,8 @@ jobs:
           if [ -s "$f" ]; then n=$(wc -l < "$f"); else n=0; fi
           {
             echo "skipped tests on ${{ matrix.os }}: $n"
-            [ "$n" -gt 0 ] && cat "$f"
+            if [ "$n" -gt 0 ]; then cat "$f"; fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          true
 
   # REQ-PLAT-001, REQ-TEST-014: the stated minimum Rust version is real. The
   # version is read from the workspace manifest, so it is written once.
@@ -82,9 +81,8 @@ jobs:
           if [ -s "$f" ]; then n=$(wc -l < "$f"); else n=0; fi
           {
             echo "skipped tests on the minimum Rust version: $n"
-            [ "$n" -gt 0 ] && cat "$f"
+            if [ "$n" -gt 0 ]; then cat "$f"; fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          true
 
   # REQ-TEST-014: the six crates package and verify, in dependency order,
   # without uploading anything.
