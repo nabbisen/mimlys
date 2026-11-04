@@ -14,6 +14,8 @@
 | `rules` job | `scripts/check-core-deps.sh`, `check-unsafe.sh`, `check-rfcs.sh`, `check-doc-refs.sh`, `check-req-tests.sh` (report only), `mdbook build docs` (pinned, 0.5.4) | REQ-ARCH-002, REQ-ENG-001, RFC 000, the registers, the book |
 | `interpreters` workflow, monthly and on demand | rebuilds the pinned interpreter from its recipe and compares the hash | REQ-ARCH-007; a mismatch is a review item, never silently accepted |
 
+A plain `cargo test --workspace` (default features) does not build the test-only binaries, so it skips the suites that need them (the M1 and M2 harness tests among them); the gate is `--all-features`, and the CI jobs run that.
+
 Rules for the workflows: tools are pinned (the `mdbook` version in use, not `latest`); actions are pinned by commit hash with the tag in a comment; a new job never changes what an existing job runs.
 
 ## 2. `scripts/check-rfcs.sh` (RFC 000, optional invariants)
