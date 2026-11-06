@@ -187,11 +187,23 @@ static int mode_q3(char **a) {  // q3 <profile> <tag> <ws> <othertag> <outsidepi
             for (;;) pause();
         }
         write(p[1], &g, sizeof g);
+        sleep(2);  // the tool stays alive while the worker tracks its children
         _exit(0);
     }
     close(p[1]);
     pid_t g = 0;
     read(p[0], &g, sizeof g);
+    {
+        pid_t kids2[64];
+        int kc = proc_listchildpids(t, kids2, sizeof kids2);
+        int has = 0;
+        for (int i = 0; i < kc && i < 64; i++)
+            if (kids2[i] == g) has = 1;
+        say("q3.tracking_while_tool_alive", "proc_listchildpids(tool) -> %d; contains the orphan-to-be: %s", kc, has ? "yes" : "no");
+        struct proc_bsdinfo bi2;
+        int n2 = proc_pidinfo(g, PROC_PIDTBSDINFO, 0, &bi2, sizeof bi2);
+        say("q3.tracking_while_tool_alive", "proc_pidinfo(grandchild) -> %s ppid=%u", n2 > 0 ? "ok" : strerror(errno), n2 > 0 ? bi2.pbi_ppid : 0);
+    }
     waitpid(t, NULL, 0);
     usleep(400000);  // the tool has exited; the orphan is re-parented
     char path[1100];

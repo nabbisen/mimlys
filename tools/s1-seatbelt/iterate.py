@@ -84,13 +84,15 @@ def run_once(prof_text, label):
     t0 = time.time()
     r = subprocess.run(["perl", "-e", "alarm shift; exec @ARGV", "240", "/bin/sh", "-c", cmd], capture_output=True, text=True)
     dt = time.time() - t0
-    time.sleep(2)  # let the log catch up
-    log = sh(f"log show --start '{start}' --style compact --info --predicate 'process == \"kernel\" AND eventMessage CONTAINS \"Sandbox:\"'")
-    text = log.stdout
-    if "Sandbox:" not in text:
-        log2 = sh(f"sudo -n log show --start '{start}' --style compact --info --predicate 'process == \"kernel\" AND eventMessage CONTAINS \"Sandbox:\"'")
-        if "Sandbox:" in log2.stdout:
-            text = log2.stdout
+    text = ""
+    q = f"log show --start '{start}' --style compact --info --predicate 'process == \"kernel\" AND eventMessage CONTAINS \"Sandbox:\"'"
+    for attempt in range(4):  # the unified log lags the process by a few seconds
+        time.sleep(3)
+        text = sh(q).stdout
+        if "deny(" not in text:
+            text = sh("sudo -n " + q).stdout or text
+        if "deny(" in text:
+            break
     return r, dt, text
 
 
