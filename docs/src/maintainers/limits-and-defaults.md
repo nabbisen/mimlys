@@ -131,3 +131,4 @@
 | LIM-H3 | Processes in a host tool tree | 64 | 1–1024 | Fork-bomb bound |
 | LIM-H4 | Captured output of a host tool, each stream | 4 MiB | 64 KiB – 64 MiB | Build logs |
 | LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | fixed | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |
+| LIM-H6 | Interval of the macOS tree tracker and its memory and process-count watchdogs (M6c) | 100 ms | fixed | Provisional until spike S1 and RFC 011 Amendment 2; the shorter, the fewer short-lived escapes and the more CPU |

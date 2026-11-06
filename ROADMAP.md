@@ -28,6 +28,17 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 
 **0.7.1** is a hardening patch between M6b and M6c (RFC 011 Amendment 1, handoff 011d): the Linux backend's clause N and read set, found in the intake review after 0.7.0. It adds no milestone. 0.7.0 is tagged but not published to crates.io; 0.7.1 (2026-11-04) is the first release published there.
 
+## Release 0.8 (scoped 2026-11-07)
+
+| | |
+|---|---|
+| Objective | Confined host tools on macOS (M6c), which completes the M6 confinement on the three platforms, and the release's open promises |
+| In | M6c, the macOS backend (handoff 011c: spike S1, then RFC 011 Amendment 2, then the implementation); removing every Windows trace before an uninstall (handoff 011e, RFC 011 §7's promise, THR-36); the M4 demonstration against a real local model, which fixes LIM-C1 (owner's decision of 2026-11-03); the first slice of tests for requirements and invariants that no test names (REQ-TEST-001, REQ-SEC-004) |
+| Out | the independent code audit (after M6c, owner's decision); DR-001 … DR-017; narrowing `/etc` and `/opt`; one HTTP stack instead of two; any remedy for `cargo` on Windows (none exists) |
+| Done when | the M6c demonstration and clause suite pass on `macos-latest`; 011e's tests pass on Windows; the M4 report has run B and LIM-C1 is fixed; every CI job green with skips counted; the threat register's review for 0.8; the CHANGELOG |
+| Major risks | Seatbelt facts unknown in advance (`sandbox_init` is deprecated; which mach services a toolchain needs; whether the sandbox can identify a re-parented orphan): spike S1 first; clause K may stay best-effort on macOS, which needs `accept_best_effort = ["K"]` |
+| Next | M6c is the last planned milestone: at its disposition the architect brings the owner the replanning report (roadmap governance) |
+
 ## RFCs, in order
 
 | RFC | Title | Milestone | Records |

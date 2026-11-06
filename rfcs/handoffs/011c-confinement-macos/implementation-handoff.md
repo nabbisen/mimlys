@@ -1,27 +1,96 @@
-# Handoff 011c — The macOS backend (M6c)
+# Handoff 011c — The macOS backend (M6c, release 0.8)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 · **Specification.** REQ-CONF-005 (macOS), REQ-TEST-013; external design §13.3 · **Milestone.** M6c (release 0.8). Depends on 011a.
+**RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 and Amendment 1 (the read-set rules) · **Specification.** REQ-CONF-001 … 012 (macOS), REQ-TEST-013; external design §13.2 … §13.5, §23 (M6c); limits LIM-H1 … H5, LIM-O2; threats THR-11, THR-17, THR-23, THR-24, THR-32 · **Milestone.** M6c (release 0.8). Depends on 011a, 011d (done).
+**Rewritten 2026-11-07** (the first version was a three-line stub written before any backend existed). It carries what 011a, 011b and 011d taught, in §2.
+
+## 0. How this handoff works
+
+It has two phases, and the second is not binding until the architect has amended RFC 011 from the first.
+
+1. **Spike S1** (§3): measure on `macos-latest` what Seatbelt actually does with the questions below. Report only; no change on `main`.
+2. **Implementation** (§4 … §7): the plan the architect expects, written so that you can see the whole shape and estimate it. After S1 the architect writes RFC 011 Amendment 2, which fixes the design where S1 decided it, and marks this handoff's §4 accordingly. Do not start §4 before that amendment exists.
+
+The reason is the record of 0.7: M6b took fifteen CI rounds because Windows facts were found by implementing, and 011d found two facts (the `/proc` walk for clause K, Landlock's ptrace scoping) that changed the design after the code was written. On macOS the uncertain facts are known in advance, so they are measured first.
 
 ## 1. Scope
 
-The Seatbelt backend (F, N, P), the explicit environment (E), the process-group kill with a descendant walk (K, best-effort), the resident-size watchdog (M, best-effort), rlimits (C, best-effort), the accepted-best-effort path of RFC 011 §5 exercised for K, the clause tests and the demonstration on `macos-latest` in CI.
+In: the Seatbelt backend for the worker and its host tools, self-applied like Linux; the explicit environment (E, exists); tree termination (K) by the strongest means S1 supports; the memory and process-count watchdogs (M, C); the honest probe; the accepted best-effort path of RFC 011 §5 when K is best-effort; the clause tests and the demonstration on `macos-latest` (arm64) in CI; the M6c report, the book's macOS section, CHANGELOG.
 
-## 2. Module layout
+Out: Intel hardware (REQ-PLAT-002: the Rosetta job runs the suites on the arm64 kernel and is informative for confinement); changes to Linux or Windows behaviour; App Sandbox entitlements, code signing or notarization (mimlys is installed by `cargo install`, unsigned); new configuration keys beyond what Amendment 2 decides.
+
+## 2. What the earlier backends taught (binding)
+
+- **Measure under the confinement, never from an unconfined trace** (011d §1.4): start from the smallest profile, run the tool confined, read the failure, add one rule, record the step and its reason.
+- **The worker may need more than its tools** (011d DQ-1): on Linux the worker reads `/proc` for its descendant walk while each tool is restricted to the same sets without it. On macOS the same question is whether a second, stricter profile can be applied to a tool (S1 Q2).
+- **Other processes are not part of what project code can see** (REQ-CONF-011): on macOS this is `process-info` of other processes, and in particular `sysctl KERN_PROCARGS2`, which shows **another same-user process's environment** (the runtime holds `env:` secrets there, and macOS has no "non-dumpable" against it). The profile must deny it for anything outside the tool's own tree.
+- **Paths have one spelling** (0.7.0, Windows): Seatbelt matches resolved paths. `/tmp`, `/var` and `/etc` are links into `/private`; the data directory's default contains a space (`~/Library/Application Support/mimlys`). Every path in a profile is canonical, and every string is escaped (SBPL string literals: `\` and `"`).
+- **Fail closed, report what held** (RFC 011 §1): a missing or ineffective `sandbox_init` is `unavailable{seatbelt_missing}` or `unavailable{seatbelt_ineffective}`, never a crash and never `enforced` on faith; the worker reports from what it observes in itself.
+- **Every spawned process is bounded** (`tests/common::run_bounded`), the pipe ends are read on threads, the epoch ticker runs by the wall clock (all already true on macOS; keep them).
+- **Mutation checks** for every new clause test (011d §3).
+
+## 3. Spike S1 — what Seatbelt does on macOS 26 (report only)
+
+On a branch `s1-macos-seatbelt`: a scratch test binary (or probe-tool commands behind `test-bins`) and a workflow triggered by pushes to that branch on `macos-latest`. Time-box: **four CI runs**. Each answer is a table row with the command, the result, and the macOS build. Do not merge anything.
+
+| # | Question | Why it matters |
+|---|---|---|
+| Q1 | Does `sandbox_init` (profile string, flags 0) still apply on this macOS, and does a self-test (a read the profile denies) fail as expected? What error does it give when the profile has a syntax error? | the whole backend; the self-check |
+| Q2 | Can a process that is already sandboxed apply a **second, stricter** profile to itself, or to a child between `fork` and `exec` (`sandbox_init` again; `sandbox-exec -p` as the child)? Does the child end up bound by both? | whether tools can be tighter than the worker (the Linux two-layer design) |
+| Q3 | **Membership.** With `(allow signal (target same-sandbox))` and `(allow process-info* (target same-sandbox))` and everything else about other processes denied: can the worker list and kill a re-parented orphan of its tool (`setsid`, double fork, parent exits, re-parented to `launchd`)? Does a *second* worker that applied the same profile string count as "same sandbox" (it must not see the first's tree)? What do `kill(-1, SIGKILL)` and `proc_listallpids` do inside such a profile? | if membership is reliable, clause K can be `enforced` on macOS, which RFC 011 §4 assumed impossible; otherwise K stays `best_effort` |
+| Q4 | Does the Wasmtime JIT (Cranelift, `MAP_JIT` on arm64) run under `(deny default)`, and with which rule, if any? | the sandbox itself runs in the worker |
+| Q5 | Does exec'ing a setuid binary from inside the profile gain privilege? The runner has passwordless `sudo`: compare `sudo -n id -u` outside (control: `0`) and inside. Does `(deny process-exec* (file-mode #o4000))` (or the filter Seatbelt offers) stop it? | clause P |
+| Q6 | Network: `(deny network*)` with Unix sockets allowed only under the write set and for `socketpair`. Show: a TCP connect to a loopback listener fails; **`getaddrinfo` fails** (DNS through `/private/var/run/mDNSResponder` is a Unix socket and an exfiltration channel); a Unix socket inside the workspace works. For the dependency step's profile: what minimum lets `cargo fetch` reach the network | clause N; the dependency step |
+| Q7 | `mach-lookup`: with every service denied, which ones do `cargo`, `rustc`, `cc` (through `xcrun`) and `ld` need for `cargo test --offline` of the demonstration project? List each with what it is. Do **not** add any; the architect decides the allow-list, refusing any service that can reach the network or the user's secrets on the caller's behalf (`trustd`, `nsurlsessiond`, `securityd`, `opendirectoryd` and the like are candidates to refuse) | a mach service can be a hole in N or F |
+| Q8 | The read set `cargo test --offline` needs, by the iterative method: start from the declared `~/.cargo/bin`, `~/.rustup`, the worker's directory, the interpreters and `/usr`; record every addition (`/System`, the dyld cache under `/System/Volumes/Preboot/Cryptexes`, `/Library/Developer/CommandLineTools` or the Xcode path the runner uses, `/private/etc/…`) with the failure that asked for it | F; what the book tells administrators to declare |
+| Q9 | Inside the profile: does `proc_pidinfo(PROC_PIDTASKINFO)` work on the worker's own descendants (resident size for M), and is `KERN_PROCARGS2` of the runtime refused to a tool? | M; REQ-CONF-011 on macOS |
+
+Return: `.git-exclude/review-requests/S1-macos-seatbelt/README.md` with the table, the raw logs' run ids, and for each question your reading of the answer, marked as measured or inferred.
+
+## 4. Implementation (binding only after RFC 011 Amendment 2)
+
+### 4.1 Module layout
 
 ```text
-crates/mimlys-exec/src/confine/macos.rs   seatbelt profile generation from the spec ; sandbox_init through one justified unsafe call (libc) with a startup self-check (a denied read must fail) ; kill_descendants via proc_listchildpids (libproc) repeated until none within LIM-O2 ; the RSS watchdog thread (proc_pidinfo) killing the tree above LIM-H2 ; rlimits
+crates/mimlys-exec/src/confine/macos.rs         apply(spec) -> Applied ; the profile from the spec (pure) ; sandbox_init resolved at run time (dlsym), so a removed symbol is a reported state, not a link failure ; the self-check ; the tree tracker and the watchdogs
+crates/mimlys-exec/src/confine/macos/tests.rs   unit tests of the profile (escaping, canonical paths, ordering, the network and process rules) and of the watchdog decisions
+crates/mimlys/src/app.rs                        the macOS read set (from S1 Q8)
+crates/mimlys/tests/m6c_host_tools.rs           the clause suite (cfg macOS), with tests/common::run_bounded and common::skip
 ```
 
-## 3. Behaviours
+Every `unsafe` block (the `sandbox_init` call, `proc_pidinfo`, `proc_listchildpids` or `proc_listallpids`) lives in `confine/macos.rs`, each preceded by its `SAFETY:` line (REQ-CONF-010).
 
-- The worker confines itself like on Linux (self-applied Seatbelt); the report: F, N, P `enforced (seatbelt)`, E `enforced`, K `best_effort (process_group_walk)`, M `best_effort (rss_watchdog)`, C `best_effort (rlimit)`.
-- Tier `core` unless `accept_best_effort = ["K"]`: the book's macOS section explains exactly what is best-effort (a re-parented orphan can outlive a cancel) and what the administrator accepts by the line.
-- The deprecated `sandbox_init` is checked at startup by a self-test; a macOS release that removes it makes F, N, P `unavailable{seatbelt_missing}` and the tier `core`, never a crash.
+### 4.2 Clauses (the expected outcome; Amendment 2 fixes it)
 
-## 4. Tests
+| Clause | Expected primitive | Notes |
+|---|---|---|
+| F | `seatbelt` | `(deny default)`; the read set read-only and executable, the write set writable; canonical paths; `process-info` and `signal` only for the tool's own tree |
+| N | `seatbelt` | `(deny network*)`; Unix sockets only under the write set and unnamed pairs; DNS refused; the dependency step's profile per S1 Q6 |
+| E | `explicit_environment` | exists; `__CF_USER_TEXT_ENCODING` already accepted; no `DYLD_*` ever reaches a tool (the environment is explicit) |
+| K | `sandbox_membership` (`enforced`) if S1 Q3 shows membership is reliable; otherwise `process_group_walk` (`best_effort`) | the walk: the tool's process group, then the descendants tracked while the tool runs (polled every LIM-H6) and killed even after re-parenting, repeated within LIM-O2 |
+| P | `seatbelt` | only if S1 Q5 shows setuid exec gains nothing under the profile; otherwise `unavailable` and a design request |
+| M | `rss_watchdog` (`best_effort`) | the summed resident size of the tracked tree above LIM-H2 kills the tree; the execution ends `memory_limit` |
+| C | `process_count_watchdog` (`best_effort`) plus the wall clock | the tracked count above LIM-H3 kills the tree. **Not `RLIMIT_NPROC`**: it counts every process of the user, as on Linux (011a §7), so RFC 011 §4's `RLIMIT_NPROC` is to be amended |
 
-The clause suite of 011a on macOS; K's walk kills a `setsid` child in the common case and the test documents the escape it cannot cover; the demonstration with the runner's toolchain under `accept_best_effort = ["K"]`, the approval line showing it.
+LIM-H6 (the tracking interval) is registered as provisional (100 ms); Amendment 2 confirms or changes it from S1.
 
-## 5. Return
+### 4.3 Tier
 
-Package under `.git-exclude/reviewed/m6c-011c/`, the report `docs/src/maintainers/m6c-report.md`, the book's macOS section, CHANGELOG 0.8.
+If K is `best_effort`, the tier stays `core` unless `accept_best_effort = ["K"]`, and then reads `full (K best-effort, accepted by policy.accept_best_effort)` in `status` and on the `Tier` line of every host-tool approval (exists, 011a §3.5). If S1 makes K `enforced`, the book's "What you may accept" section changes; the architect writes that change with Amendment 2.
+
+### 4.4 Runtime side
+
+The runtime's environment holds `env:`-referenced secrets and macOS lets a same-user process read another's environment through `KERN_PROCARGS2`. A host tool is refused that by the profile (§4.2 F). An *unconfined* same-user program is not, and no macOS mechanism refuses it: state it as a residual in the M6c report; do not try to work around it (removing variables after start changes nothing, RFC 011 Amendment 1, point 2).
+
+## 5. Tests (REQ-TEST-013; `m6c_host_tools.rs`, each names its requirement, each with a control and a mutation check)
+
+The 011a clause suite on macOS with the probe tool: read outside the set; write outside the workspace; TCP to a live loopback listener; `getaddrinfo` of a name; the operator's secret not in the tool's environment; `KERN_PROCARGS2` of the runtime refused; `setsid` sleepers gone after a cancel (if K is `best_effort`, a second test documents the case the walk cannot cover and asserts the state says so); `fork 100` stopped by the count watchdog; resident memory above LIM-H2 (touch the pages: resident, not virtual) ends `memory_limit`; `sudo -n id -u` inside the profile does not print `0` (runner-specific; skip with the reason elsewhere); the honest probe (`MIMLYS_PROBE_FAIL`); accepted best-effort; the dependency step's network and its offline sibling's lack of it. The demonstration: `cargo test --offline` of the native project ends `completed{verified}`, under `accept_best_effort = ["K"]` if K is best-effort, with the approval's `Tier` line asserted.
+
+The Rosetta job runs the same suite as x86_64 code on the arm64 kernel; its results are informative and stated as such.
+
+## 6. Documents
+
+External design §13.3's macOS row and §23 (M6c) as Amendment 2 fixes them (architect); `docs/src/maintainers/m6c-report.md` (the clause table from CI, what S1 measured, the residuals); `docs/src/reference/host-tools.md` macOS section (what to declare, from S1 Q8, the tier line, what `accept_best_effort` accepts if needed); CHANGELOG `Unreleased`.
+
+## 7. Return
+
+Phase 1: `.git-exclude/review-requests/S1-macos-seatbelt/README.md`. Phase 2: `.git-exclude/review-requests/011c-macos/README.md` with changed files, the gate, CI run ids per platform (macOS arm64 and the Rosetta job named apart) with skip counts, the mutation outputs, the clause table, differences from this handoff and from Amendment 2, limitations. Do not tag, bump the version or publish.

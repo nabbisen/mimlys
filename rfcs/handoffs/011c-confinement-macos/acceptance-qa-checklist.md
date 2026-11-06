@@ -1,7 +1,11 @@
-# Handoff 011c — Acceptance and QA checklist (M6c)
+# Handoff 011c — Acceptance and QA checklist (M6c, 0.8)
 
-- [ ] REQ-CONF-005 (macOS): Seatbelt (F, N, P), explicit environment (E), process group with the descendant walk (K best-effort), RSS watchdog (M best-effort), rlimits (C best-effort); states name their primitives; a missing `sandbox_init` is `unavailable`, never a crash.
-- [ ] RFC 011 §5: tier `core` by default; `accept_best_effort = ["K"]` gives `full (K best-effort, accepted …)` shown in `status` and in approvals.
-- [ ] REQ-CONF-010: the one `unsafe` call justified; `check-unsafe.sh` passes.
-- [ ] REQ-TEST-013: the clause suite and the demonstration pass on `macos-latest`.
-- [ ] Report, book section, CHANGELOG 0.8.
+- [ ] S1 reported and RFC 011 Amendment 2 written before any implementation.
+- [ ] REQ-CONF-005 (macOS): Seatbelt self-applied before the first frame, canonical and escaped paths, `(deny default)`; each clause names its primitive; a missing or ineffective `sandbox_init` is `unavailable`, never a crash.
+- [ ] REQ-CONF-011 (macOS): a host tool cannot read another process's information, `KERN_PROCARGS2` of the runtime included; the read set is the measured one, each entry with its reason.
+- [ ] REQ-CONF-001: N refuses TCP to loopback and DNS; P holds against setuid exec, or is not claimed.
+- [ ] K, M, C as Amendment 2 decides; no `RLIMIT_NPROC`; LIM-H6 used by name.
+- [ ] RFC 011 §5: the tier and the `Tier` line of approvals as decided; `accept_best_effort` only where K is best-effort.
+- [ ] REQ-CONF-010: every `unsafe` block in `confine/macos.rs` with its `SAFETY:` line; `check-unsafe.sh` green.
+- [ ] REQ-TEST-013: the clause suite and the demonstration pass on `macos-latest`; mutation outputs attached; the Rosetta job reported apart as informative.
+- [ ] M6c report, book, CHANGELOG; the gate; CI per platform with skip counts.

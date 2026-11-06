@@ -371,7 +371,7 @@ Host tools exist only as administrator declarations: name, command, argument tem
 Host tools run with network denied. Dependency fetching is a separately declared host tool with effect `external_read`, approval per profile, outside clause N and inside F, E, K and P; the documentation states this plainly. (assessment §6)
 
 ### REQ-CONF-008 Toolchain visibility — M6a · T
-Read access shall be granted only to declared toolchain paths. Grants on user-profile locations are explicit, reversible and listed by `get_runtime_status`.
+Read access shall be granted only to declared toolchain paths. Grants on user-profile locations are explicit, reversible and listed by `get_runtime_status`. Before an installation is removed, one confirmed command shall remove every permission entry mimlys added to the machine and the AppContainer profile it created (`mimlys toolchain revoke --all`), including entries whose record was lost, which it finds on mimlys's own directories and the declared read paths; it reports each entry removed and each it could not remove. (THR-36; amended 2026-11-07, 0.8)
 
 ### REQ-CONF-009 Tree termination — M2 · T
 All processes of an execution shall be terminated on cancel, deadline or runtime exit through the platform's tree primitive. Orphans of a previous runtime shall be terminated at startup where identifiable. (THR-32)
