@@ -35,11 +35,17 @@ open(f"{PROJ}/arith/Cargo.toml", "w").write('[package]\nname = "arith"\nversion 
 open(f"{PROJ}/arith/src/lib.rs", "w").write("pub fn add(a: i32, b: i32) -> i32 { a + b }\n")
 open(f"{PROJ}/src/lib.rs", "w").write("pub fn total(xs: &[i32]) -> i32 { xs.iter().fold(0, |a, x| arith::add(a, *x)) }\n#[cfg(test)] mod t { #[test] fn sums() { assert_eq!(super::total(&[1,2,3]), 6); } }\n")
 
+CARGO = sh("which cargo").stdout.strip()
+CARGO_REAL = os.path.realpath(CARGO)
+BINDIR = os.path.dirname(CARGO)
+BINDIR_REAL = os.path.dirname(CARGO_REAL)
+
+
 def diag():
-    say("iter diag: " + sh("echo HOME=$HOME; which cargo rustc rustup; ls -l $HOME/.cargo/bin | head -12; $HOME/.cargo/bin/cargo --version; rustc --print sysroot").stdout.replace("\n", " | "))
+    say("iter diag: " + sh("echo HOME=$HOME; which cargo rustc rustup; ls -l $(dirname $(which cargo)) | head -12; cargo --version; rustc --print sysroot; ls -d $HOME/.rustup/toolchains/*").stdout.replace("\n", " | "))
     base = "(version 1)(allow default)\n"
     open(f"{S}/prof/open.sb", "w").write(base)
-    r = subprocess.run(["/bin/sh", "-c", f"{PROBE} apply {S}/prof/open.sb -- /usr/bin/env -i HOME={WS}/home PATH={HOME}/.cargo/bin:/usr/bin:/bin RUSTUP_HOME={HOME}/.rustup RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR={WS}/target-open TMPDIR={WS}/tmp /bin/sh -c 'cd {PROJ} && {HOME}/.cargo/bin/cargo test --offline'"], capture_output=True, text=True)
+    r = subprocess.run(["/bin/sh", "-c", f"{PROBE} apply {S}/prof/open.sb -- /usr/bin/env -i HOME={WS}/home PATH={BINDIR}:/usr/bin:/bin RUSTUP_HOME={HOME}/.rustup RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR={WS}/target-open TMPDIR={WS}/tmp /bin/sh -c 'cd {PROJ} && {CARGO} test --offline'"], capture_output=True, text=True)
     say(f"iter baseline under (allow default): exit={r.returncode}; tail: " + (r.stdout + r.stderr)[-400:].replace("\n", " | "))
 
 
@@ -47,7 +53,7 @@ diag()
 OURS = re.compile(r"^(env|sh|bash|zsh|probe|cargo|rustc|rustup|cc|c\+\+|clang|ld|xcrun|ar|dsymutil|strip|lipo|libtool|git|arith|demo.*|build.*|rust-.*|ld64.*|ld-prime|.*-[0-9a-f]{8,})$")
 files = {}  # (op-class, path) -> first process name
 mach, other = collections.OrderedDict(), collections.OrderedDict()
-seed_reads = [f"{HOME}/.cargo/bin", f"{HOME}/.rustup", "/usr", f"{S}/bin", S]
+seed_reads = [BINDIR, BINDIR_REAL, f"{HOME}/.rustup", "/usr", f"{S}/bin", S]
 
 
 def profile(extra_files, extra_mach):
@@ -71,10 +77,10 @@ def run_once(prof_text, label):
     path = f"{S}/prof/iter.sb"
     open(path, "w").write(prof_text)
     start = (datetime.datetime.now() - datetime.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
-    env = (f"/usr/bin/env -i HOME={WS}/home PATH={HOME}/.cargo/bin:/usr/bin:/bin RUSTUP_HOME={HOME}/.rustup "
+    env = (f"/usr/bin/env -i HOME={WS}/home PATH={BINDIR}:/usr/bin:/bin RUSTUP_HOME={HOME}/.rustup "
            f"RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR={WS}/target TMPDIR={WS}/tmp")
     os.makedirs(f"{WS}/home", exist_ok=True)
-    cmd = f"{PROBE} apply {path} -- {env} /bin/sh -c 'cd {PROJ} && {HOME}/.cargo/bin/cargo test --offline'"
+    cmd = f"{PROBE} apply {path} -- {env} /bin/sh -c 'cd {PROJ} && {CARGO} test --offline'"
     t0 = time.time()
     r = subprocess.run(["perl", "-e", "alarm shift; exec @ARGV", "240", "/bin/sh", "-c", cmd], capture_output=True, text=True)
     dt = time.time() - t0

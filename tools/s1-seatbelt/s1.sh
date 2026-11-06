@@ -61,11 +61,12 @@ case " $1 " in *" 3 "*)
 hr Q3 membership
 env S1_SECRET=outside sleep 600 & OUT=$!
 echo "S1 q3.outside: pid $OUT"
-for variant in A B C; do
+for variant in A B C D; do
   case $variant in
     A) mk q3 "$SIG" '(allow process-info* (target same-sandbox))';;
     B) mk q3 "$SIG" '(allow process-info* (target same-sandbox))' '(allow process-info-listpids)';;
     C) mk q3 "$SIG" '(allow process-info-pidinfo (target same-sandbox))' '(allow process-info-rusage (target same-sandbox))' '(allow process-info-listpids)';;
+    D) mk q3 "$SIG" '(deny process-info*)' '(allow process-info* (target same-sandbox))';;
   esac
   echo "S1 q3: ---- profile variant $variant ----"
   rm -f "$S"/ws/*.pid "$S"/ws/*.done
@@ -94,11 +95,13 @@ sudo -n cp /usr/bin/id "$S/suid-id" && sudo -n chown root:wheel "$S/suid-id" && 
 ls -l "$S/suid-id" | sed 's/^/S1 q5.file: /'
 echo "S1 q5.control_unsandboxed: suid-id -u -> $("$S/suid-id" -u 2>&1)   (sudo -n id -u -> $(sudo -n /usr/bin/id -u 2>&1))"
 mk q5a
+mk q5r '(allow file-read*)'
 mk q5b '(deny process-exec* (file-mode #o4000))'
 mk q5r '(allow file-read*)'
 sudo -n cp /usr/bin/id "$S/plain-id" && sudo -n chmod 755 "$S/plain-id"
-echo "S1 q5.control_nonsuid_inside (exec of a non-setuid copy of id): $(tmo 30 "$P" apply "$S/prof/q5a.sb" -- "$S/plain-id" -u 2>&1 | tr '\n' ' ')"
-echo "S1 q5.control_system_id_inside: $(tmo 30 "$P" apply "$S/prof/q5a.sb" -- /usr/bin/id -u 2>&1 | tr '\n' ' ')"
+echo "S1 q5.control_nonsuid_inside_readall (exec of a non-setuid copy of id): $(tmo 30 "$P" apply "$S/prof/q5r.sb" -- "$S/plain-id" -u 2>&1 | tr '\n' ' ')"
+echo "S1 q5.suid_inside_readall: $(tmo 30 "$P" apply "$S/prof/q5r.sb" -- "$S/suid-id" -u 2>&1 | tr '\n' ' ')"
+echo "S1 q5.suid_inside_readall_with_deny_filemode: $(mk q5rb '(allow file-read*)' '(deny process-exec* (file-mode #o4000))'; tmo 30 "$P" apply "$S/prof/q5rb.sb" -- "$S/suid-id" -u 2>&1 | tr '\n' ' ')"
 echo "S1 q5.profile_a (exec allowed): $(tmo 30 "$P" apply "$S/prof/q5a.sb" -- "$S/suid-id" -u 2>&1 | tr '\n' ' ')"
 echo "S1 q5.profile_b (deny process-exec* file-mode #o4000): $(tmo 30 "$P" apply "$S/prof/q5b.sb" -- "$S/suid-id" -u 2>&1 | tr '\n' ' ')"
 echo "S1 q5.sudo_inside_readall: $(tmo 30 "$P" apply "$S/prof/q5r.sb" -- /usr/bin/sudo -n /usr/bin/id -u 2>&1 | tr '\n' ' ')"
@@ -146,10 +149,34 @@ mk q9c "$SIG"
 mk q9d "$SIG" '(deny process-info*)'
 mk q9e "$SIG" '(deny sysctl-read (sysctl-name "kern.procargs2"))'
 mk q9f "$SIG" '(deny process-info*)' '(deny sysctl-read (sysctl-name "kern.procargs2"))'
-for v in "q9c: no process-info rule at all" "q9d: (deny process-info*)" "q9e: (deny sysctl-read (sysctl-name kern.procargs2))" "q9f: both denies"; do
+mk q9g "$SIG" '(deny process-info*)' '(allow process-info* (target same-sandbox))'
+mk q9h "$SIG" '(deny process-info*)' '(allow process-info* (target same-sandbox))' '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))'
+{ sed '/(allow sysctl-read)/d' "$S/prof/q9g.sb"; } > "$S/prof/q9i.sb"
+for v in "q9g: (deny process-info*) then (allow process-info* (target same-sandbox))" "q9h: q9g plus deny sysctl-name-prefix kern.procargs" "q9i: q9g without any sysctl-read allow" "q9c: no process-info rule at all" "q9d: (deny process-info*)" "q9e: (deny sysctl-read (sysctl-name kern.procargs2))" "q9f: both denies"; do
   n=${v%%:*}; echo "S1 q9: ---- $v ----"; S1_SECRET=self tmo 30 "$P" q9 "$S/prof/$n.sb" $OUT 2>&1 | cat
 done
 kill $OUT 2>/dev/null; end;; esac
+
+# ---- Q4 real: Wasmtime in the worker under a profile --------------------------
+case " $1 " in *" 4real "*)
+hr Q4real Wasmtime JIT under the profile
+cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$HERE/../.."
+cargo test -p mimlys --features test-bins --test m2_demo --no-run --message-format=json 2> "$S/build.err" | python3 -c '
+import sys, json
+for l in sys.stdin:
+    try: m = json.loads(l)
+    except Exception: continue
+    if m.get("reason") == "compiler-artifact" and m.get("target", {}).get("name") == "m2_demo" and m.get("executable"): print(m["executable"])' > "$S/m2exe.txt"
+EXE=$(tail -1 "$S/m2exe.txt"); echo "S1 q4real.test_binary: $EXE"; tail -2 "$S/build.err" | sed 's/^/S1 q4real.build: /'
+curl -sSfL -o "$S/qjs.wasm" https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-wasi.wasm; echo "S1 q4real.qjs: $(shasum -a 256 "$S/qjs.wasm" | cut -c1-16)"
+mk q4real '(allow file-read*)' '(allow mach-lookup)' '(allow ipc-posix*)' '(allow sysctl*)' '(allow process-info*)' '(allow file-write* (subpath "'"$S"'/ws"))'
+START=$(date -v-2S '+%Y-%m-%d %H:%M:%S')
+mkdir -p "$S/ws/tmp"
+OUTV=$(tmo 300 "$P" apply "$S/prof/q4real.sb" -- /usr/bin/env -i HOME="$S/ws/home" PATH=/usr/bin:/bin TMPDIR="$S/ws/tmp" MIMLYS_QJS_WASM="$S/qjs.wasm" "$EXE" m2_scripts_run_in_the_worker m2_infinite_loop --test-threads=1 2>&1)
+echo "$OUTV" | tail -25 | sed 's/^/S1 q4real.out: /'
+sleep 2
+log show --start "$START" --style compact --info --predicate 'process == "kernel" AND eventMessage CONTAINS "Sandbox:"' 2>/dev/null | grep -E "deny\(" | grep -E "(env|m2_demo|mimlys|testloop|worker)" | sed -E 's/.*Sandbox: //' | awk '{print $1, $3}' | sort | uniq -c | sort -rn | head -20 | sed 's/^/S1 q4real.denials: /'
+cd "$S" ;; esac
 
 # ---- Q7, Q8 -------------------------------------------------------------------
 case " $1 " in *" 78 "*)
