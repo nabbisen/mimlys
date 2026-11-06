@@ -1,0 +1,19 @@
+# SPIKE S1 (cycle 2, handoff 011c section 3): what Seatbelt does on macOS.
+# Exists on the branch s1-macos-seatbelt only; never merged. Triggered by pushes to that branch.
+name: spike-s1
+on:
+  push:
+    branches: [s1-macos-seatbelt]
+permissions:
+  contents: read
+jobs:
+  seatbelt:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - name: the questions
+        run: bash tools/s1-seatbelt/s1.sh "$(cat tools/s1-seatbelt/QUESTIONS)"
