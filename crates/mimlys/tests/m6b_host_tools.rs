@@ -799,3 +799,182 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
         assert_eq!(code, 0, "{value}");
     }
 }
+
+// ---------------------------------------------------------------------
+// Handoff 011e (REQ-CONF-008): `toolchain revoke --all`, removing every
+// trace before an uninstall.
+// ---------------------------------------------------------------------
+
+/// `icacls` of a directory, compared without the `(I)` marker as the rest of
+/// this suite does (a write marks the descriptor auto-inherited).
+fn icacls(path: &Path) -> String {
+    let out = Command::new("icacls").arg(path).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).replace("(I)", "")
+}
+
+/// A directory path without the verbatim prefix, as a string.
+fn plain(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_owned()
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// REQ-CONF-008: after mimlys has started (its own entries) and two
+/// `toolchain grant`s, `revoke --all --yes` exits 0 and leaves every touched
+/// directory as it was before mimlys first ran; the worker's directory no
+/// longer mentions the container; the container profile and the record file
+/// are gone.
+#[test]
+fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
+    let tc_a = tempfile::tempdir().unwrap();
+    let tc_b = tempfile::tempdir().unwrap();
+    let (a, b) = (plain(tc_a.path()), plain(tc_b.path()));
+    let env = Env::new(&[], "");
+    let data = env.data.path().join("data");
+    let own = ["workspaces", "tmp", "interpreters"].map(|d| data.join(d));
+    for d in &own {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mut dirs: Vec<PathBuf> = own.to_vec();
+    dirs.push(PathBuf::from(&a));
+    dirs.push(PathBuf::from(&b));
+    let before: Vec<String> = dirs.iter().map(|d| icacls(d)).collect();
+    // The first start applies mimlys's own entries and creates the profile.
+    let (code, listed) = env.json(&["toolchain", "list"]);
+    assert_eq!(code, 0, "{listed}");
+    let sid = listed["container"]["sid"].as_str().unwrap().to_owned();
+    let profile = listed["container"]["profile"].as_str().unwrap().to_owned();
+    for dir in [&a, &b] {
+        let (code, v) = env.json(&["toolchain", "grant", dir, "--yes"]);
+        assert_eq!(code, 0, "{v}");
+    }
+    assert_ne!(icacls(&own[0]), before[0], "mimlys's own entry is in force");
+    assert_ne!(icacls(Path::new(&a)), before[3], "the grant is in force");
+    let worker_dir = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"))
+        .parent()
+        .unwrap();
+    assert!(
+        icacls(worker_dir).contains(&sid),
+        "the worker's directory carries the container"
+    );
+    let packages = std::env::var("LOCALAPPDATA")
+        .map(|l| PathBuf::from(l).join("Packages").join(&profile))
+        .unwrap();
+    let profile_folder_existed = packages.exists();
+
+    let (code, report) = env.json(&["toolchain", "revoke", "--all", "--yes"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["failed"].as_array().unwrap().len(), 0, "{report}");
+    assert_eq!(report["profile_deleted"], true, "{report}");
+    assert_eq!(report["record_deleted"], true, "{report}");
+    let removed: Vec<String> = report["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap().to_owned())
+        .collect();
+    for dir in dirs
+        .iter()
+        .map(|d| plain(d))
+        .chain(std::iter::once(plain(worker_dir)))
+    {
+        assert!(
+            removed.iter().any(|r| same(r, &dir)),
+            "{dir} is on the list: {removed:?}"
+        );
+    }
+    for (dir, was) in dirs.iter().zip(&before) {
+        eprintln!("--- icacls {}\n{}", dir.display(), icacls(dir));
+        assert_eq!(
+            &icacls(dir),
+            was,
+            "{} is as it was before mimlys",
+            dir.display()
+        );
+    }
+    assert!(
+        !icacls(worker_dir).contains(&sid),
+        "the worker's directory no longer mentions the container"
+    );
+    assert!(
+        !data.join("toolchain-acls.json").exists(),
+        "the record is gone"
+    );
+    if profile_folder_existed {
+        assert!(
+            !packages.exists(),
+            "the profile's folder {} is gone",
+            packages.display()
+        );
+    }
+}
+
+/// REQ-CONF-008: an entry whose record is lost is found by the scan of the
+/// declared read paths and removed.
+#[test]
+fn req_conf_008_revoke_all_finds_entries_without_a_record() {
+    let toolchain = tempfile::tempdir().unwrap();
+    let a = plain(toolchain.path());
+    let env = Env::new(
+        &[],
+        &format!(
+            "[host_tools.gated]\ncommand = {:?}\nallowed_args = [\"ok\"]\nmax_args = 1\neffect = \"workspace_write\"\nread_paths = [{:?}]\n",
+            probe_tool().to_string_lossy(),
+            a
+        ),
+    );
+    let before = icacls(Path::new(&a));
+    let (code, v) = env.json(&["toolchain", "grant", &a, "--yes"]);
+    assert_eq!(code, 0, "{v}");
+    assert_ne!(icacls(Path::new(&a)), before, "the grant is in force");
+    std::fs::remove_file(env.data.path().join("data/toolchain-acls.json")).unwrap();
+    let (code, report) = env.json(&["toolchain", "revoke", "--all", "--yes"]);
+    assert_eq!(code, 0, "{report}");
+    let found = report["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| same(e["path"].as_str().unwrap(), &a))
+        .unwrap_or_else(|| panic!("{a} was not found: {report}"));
+    assert_eq!(found["found_by"], "scan", "{report}");
+    assert_eq!(found["source"], "user", "{report}");
+    assert_eq!(
+        icacls(Path::new(&a)),
+        before,
+        "removed although the record was lost"
+    );
+}
+
+/// REQ-CONF-008: without `--yes` and without a terminal nothing is removed
+/// and the message names `--yes`; with it the JSON has the documented shape.
+#[test]
+fn req_conf_008_revoke_all_asks_and_reports() {
+    let env = Env::new(&[], "");
+    let (code, refused) = env.json(&["toolchain", "revoke", "--all"]);
+    assert_eq!(code, 1, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--yes"),
+        "{refused}"
+    );
+    let (code, report) = env.json(&["toolchain", "revoke", "--all", "--yes"]);
+    assert_eq!(code, 0, "{report}");
+    for key in ["removed", "failed", "profile_deleted", "record_deleted"] {
+        assert!(report.get(key).is_some(), "{key} in {report}");
+    }
+    for entry in report["removed"].as_array().unwrap() {
+        assert!(entry["path"].is_string() && entry["source"].is_string());
+        assert!(matches!(
+            entry["found_by"].as_str(),
+            Some("record" | "scan")
+        ));
+    }
+}

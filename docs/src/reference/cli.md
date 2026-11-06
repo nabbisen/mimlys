@@ -30,6 +30,7 @@ or configuration error, 2 usage error.
 | `status` | Version, data directory, backend (kind, model, locality, reachable, structured-output mode), tier, each clause by letter and word with its state and primitive, declared host tools, configured servers with their tools, running and pending tasks |
 | `toolchain list` | The read set host tools run under and each declared tool's paths; on Windows whether each carries the container's permission |
 | `toolchain grant <path> [--yes]` · `revoke <path> [--yes]` | Windows: add or remove, after asking, the worker container's read permission on a toolchain directory, recorded for exact reversal; elsewhere nothing is needed and the command says so |
+| `toolchain revoke --all [--yes]` | Windows, before an uninstall: remove every permission the container holds (mimlys's own directories and the declared read paths included, found by a bounded scan if the record lost them), delete the container profile and the record; elsewhere nothing was changed outside the data directory and the command says so. A path with `--all` is a usage error (exit 2) |
 | `check` | Validate the configuration and print it |
 | `interpreters list` | The configured interpreters and whether they are installed |
 | `interpreters install <language> [--from FILE]` | Verify by hash and install an interpreter build (download of the shipped build without `--from`) |
@@ -89,5 +90,6 @@ contract (REQ-CLI-004):
 | `rollback` | the snapshot record, or the promotion record when reversing |
 | `promote` | `{plan: {task_id, base_snapshot, current_hash, changes: [{path, kind, bytes}], excluded, text_diffs}, applied, promotion?}`; a conflict is the error `conflict` with `detail.paths` |
 | `task delete` | `{footprint, deleted, audit?}` |
+| `toolchain revoke --all` | `{removed: [{path, source: runtime \| user, found_by: record \| scan}], failed: [{path, reason}], profile_deleted, record_deleted}`; on a partial failure the same object is printed and the exit code is 1 |
 | `check` | `{ok, config_path, data_dir, config, external_tools, undeclared_external_tools, host_tools}` |
 | any error | `{"error": {"kind", "message", "detail"}}` with kind from `invalid_request`, `not_found`, `state`, `denied`, `conflict`, `unavailable`, `internal` |

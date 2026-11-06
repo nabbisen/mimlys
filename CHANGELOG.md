@@ -9,6 +9,10 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+### Added
+
+- `mimlys`: `mimlys toolchain revoke --all [--yes]` (Windows; REQ-CONF-008, handoff 011e): removes every permission the AppContainer holds, on mimlys's own directories and on the toolchain directories (the record's entries and, from a scan bounded to mimlys's own directories and the declared `read_paths`, the entries the record lost), then deletes the container profile and the record file, so that deleting mimlys leaves the user's directories as they were. One confirmation (`--yes` skips it), a report per entry, `--json` with `{removed, failed, profile_deleted, record_deleted}`, exit 1 with the same object if anything could not be removed (the record then holds exactly what failed). Elsewhere the command says nothing was changed outside the data directory.
+
 ## [0.7.1] - 2026-11-04
 
 Release 0.7.1 is the hardening of the Linux backend that the intake review

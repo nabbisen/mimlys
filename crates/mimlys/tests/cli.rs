@@ -339,3 +339,35 @@ fn req_conf_011_check_refuses_a_directory_that_holds_credentials() {
     );
     assert!(message.contains("external_read"), "{message}");
 }
+
+/// REQ-CONF-008: `toolchain revoke --all` takes no path (a usage error, exit
+/// 2), and one of the two is required.
+#[test]
+fn req_conf_008_revoke_all_with_a_path_is_a_usage_error() {
+    let env = Env::new("");
+    let (code, _, stderr) = env.run(&["toolchain", "revoke", "--all", "somewhere", "--yes"], "");
+    assert_eq!(code, 2, "{stderr}");
+    let (code, _, stderr) = env.run(&["toolchain", "revoke", "--yes"], "");
+    assert_eq!(code, 2, "a path or --all is required: {stderr}");
+}
+
+/// REQ-CONF-008: where no directory permission was ever applied (Linux,
+/// macOS) `revoke --all` says nothing was changed outside the data directory
+/// and exits 0, with the documented JSON shape.
+#[cfg(not(windows))]
+#[test]
+fn req_conf_008_revoke_all_elsewhere_says_nothing_changed() {
+    let env = Env::new("");
+    let (code, stdout, stderr) = env.run(&["toolchain", "revoke", "--all", "--yes"], "");
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("nothing was changed outside the data directory"),
+        "{stdout}"
+    );
+    let (code, value) = env.json(&["toolchain", "revoke", "--all", "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        value,
+        serde_json::json!({"removed": [], "failed": [], "profile_deleted": false, "record_deleted": false})
+    );
+}

@@ -260,6 +260,22 @@ its probe tool; a tool that does not need `NUL` runs today, and no way to lend t
 confinement was found (Windows Server 2022 and 2025 behave alike). A tool
 that does not ask for a null standard input runs today.
 
+**Removing mimlys.** On Windows mimlys changes the machine outside its data
+directory: it creates the container profile and adds permissions for the
+container to its own directories and to the toolchain directories you grant.
+Deleting mimlys without undoing them leaves those behind. Before an uninstall:
+
+1. `mimlys toolchain revoke --all` lists every permission the container holds
+   (the ones in the record, and any the scan finds in mimlys's own directories
+   and your declared `read_paths` although the record lost them), asks once,
+   removes them, deletes the container profile and the record. mimlys applies
+   the entries of its own directories again at its next start, so this is the
+   last mimlys command you run. `--yes` skips the question; the command
+   reports each entry it removed and each it could not, and exits 1 if any
+   failed (run it again to retry exactly those).
+2. `cargo uninstall mimlys`.
+3. Delete the data directory.
+
 After a `grant` or a `revoke`, `icacls` prints the directory's inherited
 entries with `(I)` where it may not have before: the write marks the
 security descriptor auto-inherited, as every write through the Windows

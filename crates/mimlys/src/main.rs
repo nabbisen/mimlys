@@ -187,10 +187,14 @@ enum ToolchainCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Windows: remove the permission `toolchain grant` applied.
+    /// Windows: remove the permission `toolchain grant` applied to a directory, or with `--all` every permission mimlys or the user added and the container profile (before an uninstall).
     Revoke {
-        /// The directory.
-        path: String,
+        /// The directory (not with `--all`).
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        path: Option<String>,
+        /// Remove every entry of the container (mimlys's own directories included) and delete the profile.
+        #[arg(long)]
+        all: bool,
         /// Remove without asking.
         #[arg(long)]
         yes: bool,
@@ -418,8 +422,12 @@ async fn dispatch(
         Command::Toolchain(ToolchainCommand::Grant { path, yes }) => {
             commands::toolchain::grant(app, &path, yes, terminal, out)
         }
-        Command::Toolchain(ToolchainCommand::Revoke { path, yes }) => {
-            commands::toolchain::revoke(app, &path, yes, terminal, out)
+        Command::Toolchain(ToolchainCommand::Revoke { all: true, yes, .. }) => {
+            commands::toolchain::revoke_all(app, yes, terminal, out)
+        }
+        Command::Toolchain(ToolchainCommand::Revoke { path, yes, .. }) => {
+            // clap guarantees a path when `--all` is absent.
+            commands::toolchain::revoke(app, &path.unwrap_or_default(), yes, terminal, out)
         }
         Command::Interpreters(cmd) => match cmd {
             InterpretersCommand::List => commands::interpreters::list(app, out),

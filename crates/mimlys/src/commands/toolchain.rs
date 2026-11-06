@@ -114,6 +114,107 @@ pub fn revoke(
     Ok(())
 }
 
+/// `toolchain revoke --all [--yes]` (REQ-CONF-008, handoff 011e): removes every
+/// permission the container holds on mimlys's own directories and the
+/// declared read paths (the record's entries and the ones a bounded scan
+/// finds although the record lacks them), then the container profile, then
+/// the record. Elsewhere nothing was changed outside the data directory.
+pub fn revoke_all(
+    app: &App,
+    yes: bool,
+    interaction: &mut dyn Interaction,
+    out: &Output,
+) -> Result<(), AppError> {
+    let guard = app.container.lock().expect("container");
+    let Some(container) = guard.as_ref() else {
+        out.line(messages::TOOLCHAIN_REVOKE_ALL_NOTHING);
+        out.value(&crate::toolchain::Outcome::default().to_json());
+        return Ok(());
+    };
+    // The bounded scan: mimlys's own directories and the declared read paths.
+    let mut candidates: Vec<(String, crate::toolchain::Source)> = Vec::new();
+    let mut own: Vec<std::path::PathBuf> = vec![
+        app.data_dir.join("workspaces"),
+        app.data_dir.join("tmp"),
+        app.data_dir.join("interpreters"),
+    ];
+    own.extend(
+        app.interpreters
+            .iter()
+            .filter_map(|i| i.module.parent().map(Path::to_path_buf)),
+    );
+    if let Some(dir) = crate::app::worker_binary().parent() {
+        own.push(dir.to_path_buf());
+    }
+    for p in own {
+        candidates.push((
+            crate::toolchain::normalized(&p),
+            crate::toolchain::Source::Runtime,
+        ));
+    }
+    for d in &app.host_tools {
+        for p in &d.read_paths {
+            candidates.push((
+                crate::toolchain::normalized(Path::new(p)),
+                crate::toolchain::Source::User,
+            ));
+        }
+    }
+    let plan = crate::toolchain::plan_revoke_all(&container.record, &candidates, |p| {
+        crate::toolchain::applied(container, Path::new(p)) == Some(true)
+    });
+    let rows: Vec<(String, &str, &str)> = plan
+        .iter()
+        .map(|p| {
+            let (source, found) = p.words();
+            (p.path.clone(), source, found)
+        })
+        .collect();
+    for line in messages::toolchain_revoke_all_plan(&container.profile, &rows) {
+        out.line(line);
+    }
+    let confirmed = yes
+        || (interaction.interactive()
+            && !out.json()
+            && interaction.confirm(&messages::toolchain_revoke_all_confirm(
+                plan.len(),
+                &container.profile,
+            )));
+    if !confirmed {
+        if !interaction.interactive() || out.json() {
+            return Err(AppError::Io {
+                detail: messages::TOOLCHAIN_REVOKE_ALL_NEEDS_YES.to_owned(),
+            });
+        }
+        out.line(messages::TOOLCHAIN_NOT_CONFIRMED);
+        out.value(&crate::toolchain::Outcome::default().to_json());
+        return Ok(());
+    }
+    let outcome = crate::toolchain::revoke_all(container, &app.data_dir, &plan);
+    for p in &outcome.removed {
+        out.line(messages::toolchain_revoke_all_removed(&p.path));
+    }
+    for (p, reason) in &outcome.failed {
+        out.line(messages::toolchain_revoke_all_failed(&p.path, reason));
+    }
+    out.line(messages::toolchain_revoke_all_profile(
+        outcome.profile_deleted,
+        outcome.record_deleted,
+    ));
+    if outcome.complete() {
+        out.value(&outcome.to_json());
+        Ok(())
+    } else {
+        Err(AppError::Partial {
+            message: format!(
+                "{} permission(s) could not be removed; run `mimlys toolchain revoke --all` again to retry exactly those",
+                outcome.failed.len()
+            ),
+            report: outcome.to_json(),
+        })
+    }
+}
+
 /// The directory as the record names it: canonical, without the verbatim prefix.
 fn existing_dir(path: &str) -> Result<String, AppError> {
     let expanded = crate::config::expand_home(path);

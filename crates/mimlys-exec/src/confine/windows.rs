@@ -33,7 +33,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
-    CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+    CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, EqualSid, FreeSid,
@@ -493,6 +493,24 @@ pub fn ensure_profile(name: &str) -> Result<Vec<u8>, String> {
     // SAFETY: the SID was allocated by the system for the caller to free once with FreeSid.
     unsafe { FreeSid(sid) };
     Ok(bytes)
+}
+
+/// Deletes the AppContainer profile (`toolchain revoke --all`, REQ-CONF-008).
+/// A profile that does not exist is already deleted. The permissions its SID
+/// holds on directories are removed first, by the caller: deleting the
+/// profile does not remove them.
+pub fn delete_profile(name: &str) -> Result<(), String> {
+    let name_w = wide(OsStr::new(name));
+    // SAFETY: the name is a null-terminated UTF-16 string that outlives the call.
+    let hr = unsafe { DeleteAppContainerProfile(name_w.as_ptr()) };
+    // ERROR_NOT_FOUND (1168): there is no such profile.
+    if hr < 0 && hr != hresult_from_win32(1168) {
+        return Err(format!(
+            "DeleteAppContainerProfile failed: 0x{:08x}",
+            hr as u32
+        ));
+    }
+    Ok(())
 }
 
 fn hresult_from_win32(code: u32) -> i32 {

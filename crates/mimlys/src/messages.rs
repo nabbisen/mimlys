@@ -294,6 +294,47 @@ pub fn toolchain_revoke_runtime_path(path: &str) -> String {
         "{path} is one of mimlys's own directories (the workspaces, the temporary directory, the interpreters, the worker); the worker cannot run without it, so it is not revoked here"
     )
 }
+/// `toolchain revoke --all` where nothing was changed outside the data directory.
+pub const TOOLCHAIN_REVOKE_ALL_NOTHING: &str = "nothing was changed outside the data directory on this platform, so there is nothing to remove (only Windows changes directory permissions)";
+/// `toolchain revoke --all`: the plan.
+pub fn toolchain_revoke_all_plan(profile: &str, rows: &[(String, &str, &str)]) -> Vec<String> {
+    let mut lines = vec![format!(
+        "container       {profile} (the AppContainer profile will be deleted)"
+    )];
+    if rows.is_empty() {
+        lines.push("no directory carries a permission for the container".to_owned());
+    }
+    for (path, source, found) in rows {
+        lines.push(format!("remove          {path}  ({source}, {found})"));
+    }
+    lines.push(
+        "mimlys applies the entries of its own directories again at its next start; delete the data directory too if mimlys is being uninstalled"
+            .to_owned(),
+    );
+    lines
+}
+/// `toolchain revoke --all`: the question.
+pub fn toolchain_revoke_all_confirm(count: usize, profile: &str) -> String {
+    format!("Remove {count} permission(s) and delete the container profile {profile}?")
+}
+/// `toolchain revoke --all`: without a terminal and without `--yes`.
+pub const TOOLCHAIN_REVOKE_ALL_NEEDS_YES: &str = "nothing changed; `toolchain revoke --all` asks before it removes anything: run it in a terminal or add --yes";
+/// `toolchain revoke --all`: one line per result.
+pub fn toolchain_revoke_all_removed(path: &str) -> String {
+    format!("removed         {path}")
+}
+/// `toolchain revoke --all`: one failure.
+pub fn toolchain_revoke_all_failed(path: &str, reason: &str) -> String {
+    format!("FAILED          {path}: {reason}")
+}
+/// `toolchain revoke --all`: the profile.
+pub fn toolchain_revoke_all_profile(deleted: bool, record_deleted: bool) -> String {
+    format!(
+        "container profile deleted: {}; record file deleted: {}",
+        if deleted { "yes" } else { "no" },
+        if record_deleted { "yes" } else { "no" }
+    )
+}
 /// A `host_tool` grant for a tool this machine cannot run yet.
 pub fn host_tool_unavailable_grant(name: &str, reason: &str) -> String {
     format!(

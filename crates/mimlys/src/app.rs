@@ -36,6 +36,15 @@ pub enum AppError {
         /// What failed.
         detail: String,
     },
+    /// A command finished only in part: the message names what did not
+    /// happen and the report (the command's own JSON shape) says what did.
+    #[error("{message}")]
+    Partial {
+        /// What did not happen.
+        message: String,
+        /// The command's report, printed as the JSON value.
+        report: serde_json::Value,
+    },
     /// A task reference matched nothing or more than one task.
     #[error("{detail}")]
     TaskRef {
@@ -52,7 +61,7 @@ impl AppError {
         match self {
             AppError::Config(_) => "invalid_request",
             AppError::Runtime(e) => e.kind(),
-            AppError::Persistence(_) | AppError::Io { .. } => "internal",
+            AppError::Persistence(_) | AppError::Io { .. } | AppError::Partial { .. } => "internal",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { .. }) => "conflict",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::NotFound { .. }) => "not_found",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Refused { .. }) => "state",
@@ -66,6 +75,9 @@ impl AppError {
 
     /// The JSON error object.
     pub fn to_json(&self) -> serde_json::Value {
+        if let AppError::Partial { report, .. } = self {
+            return report.clone();
+        }
         let detail = match self {
             AppError::Config(e) => serde_json::json!({ "parameter": e.key }),
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { paths })

@@ -243,6 +243,178 @@ pub fn revoke(_container: &mut Container, _data_dir: &Path, _path: &Path) -> Res
     Ok(())
 }
 
+/// How an entry reached the list of `toolchain revoke --all`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoundBy {
+    /// It is in the record file.
+    Record,
+    /// It is not in the record; the scan found it in the directory.
+    Scan,
+}
+
+/// One entry to remove.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Planned {
+    /// The directory.
+    pub path: String,
+    /// Whose entry it is.
+    pub source: Source,
+    /// Where the list got it from.
+    pub found_by: FoundBy,
+}
+
+impl Planned {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({ "path": self.path, "source": self.source, "found_by": self.found_by })
+    }
+
+    /// The words of the plan lines.
+    pub fn words(&self) -> (&'static str, &'static str) {
+        (
+            match self.source {
+                Source::Runtime => "runtime",
+                Source::User => "user",
+            },
+            match self.found_by {
+                FoundBy::Record => "recorded",
+                FoundBy::Scan => "found by scan",
+            },
+        )
+    }
+}
+
+/// The list of `toolchain revoke --all` (REQ-CONF-008): every entry of the
+/// record, and every candidate directory that carries the container's entry
+/// now (`in_force`, read from the directory) although the record does not
+/// list it. The candidates are a bounded set named by the caller, never a
+/// walk of the disk. A directory appears once.
+pub fn plan_revoke_all(
+    record: &Record,
+    candidates: &[(String, Source)],
+    in_force: impl Fn(&str) -> bool,
+) -> Vec<Planned> {
+    let mut plan: Vec<Planned> = Vec::new();
+    let listed = |plan: &[Planned], path: &str| plan.iter().any(|p| same_path(&p.path, path));
+    for e in &record.entries {
+        if !listed(&plan, &e.path) {
+            plan.push(Planned {
+                path: e.path.clone(),
+                source: e.source,
+                found_by: FoundBy::Record,
+            });
+        }
+    }
+    for (path, source) in candidates {
+        if !listed(&plan, path) && in_force(path) {
+            plan.push(Planned {
+                path: path.clone(),
+                source: *source,
+                found_by: FoundBy::Scan,
+            });
+        }
+    }
+    plan
+}
+
+/// What a run of `toolchain revoke --all` did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Outcome {
+    /// Removed (a directory that no longer exists counts: nothing is left to undo).
+    pub removed: Vec<Planned>,
+    /// Not removed, with the reason.
+    pub failed: Vec<(Planned, String)>,
+    /// The container profile was deleted.
+    pub profile_deleted: bool,
+    /// The record file was deleted.
+    pub record_deleted: bool,
+}
+
+impl Outcome {
+    /// Everything on the list was removed.
+    pub fn complete(&self) -> bool {
+        self.failed.is_empty()
+    }
+
+    /// The documented JSON shape.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "removed": self.removed.iter().map(Planned::to_json).collect::<Vec<_>>(),
+            "failed": self.failed.iter().map(|(p, reason)| serde_json::json!({ "path": p.path, "reason": reason })).collect::<Vec<_>>(),
+            "profile_deleted": self.profile_deleted,
+            "record_deleted": self.record_deleted,
+        })
+    }
+}
+
+/// The record after a run: exactly what was not removed, so that a second
+/// run retries exactly that. `None` when nothing is left.
+pub fn record_after(record: &Record, outcome: &Outcome) -> Option<Record> {
+    if outcome.failed.is_empty() {
+        return None;
+    }
+    let mut kept = Record {
+        profile: record.profile.clone(),
+        sid: record.sid.clone(),
+        entries: Vec::new(),
+    };
+    for (planned, _) in &outcome.failed {
+        let entry = record
+            .entries
+            .iter()
+            .find(|e| same_path(&e.path, &planned.path))
+            .cloned()
+            .unwrap_or_else(|| Entry {
+                path: planned.path.clone(),
+                access: Access::Read,
+                source: planned.source,
+                applied_at: now_text(),
+            });
+        kept.entries.push(entry);
+    }
+    Some(kept)
+}
+
+/// Removes every entry of the plan, then the container profile, then the
+/// record file (Windows). A failure of one entry does not stop the others;
+/// the record is rewritten to hold what failed, and the profile stays while
+/// anything failed.
+#[cfg(windows)]
+pub fn revoke_all(container: &Container, data_dir: &Path, plan: &[Planned]) -> Outcome {
+    use mimlys_exec::confine::windows::{acl, delete_profile};
+    let mut outcome = Outcome::default();
+    for planned in plan {
+        let path = Path::new(&planned.path);
+        if !path.exists() {
+            outcome.removed.push(planned.clone());
+            continue;
+        }
+        match acl::revoke(path, &container.sid) {
+            Ok(()) => outcome.removed.push(planned.clone()),
+            Err(reason) => outcome.failed.push((planned.clone(), reason)),
+        }
+    }
+    match record_after(&container.record, &outcome) {
+        Some(kept) => {
+            let _ = kept.save(data_dir);
+        }
+        None => {
+            outcome.profile_deleted = delete_profile(&container.profile).is_ok();
+            outcome.record_deleted = match std::fs::remove_file(data_dir.join(RECORD_FILE)) {
+                Ok(()) => true,
+                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            };
+        }
+    }
+    outcome
+}
+
+/// Nothing to remove on this platform (the command says so before it gets here).
+#[cfg(not(windows))]
+pub fn revoke_all(_container: &Container, _data_dir: &Path, _plan: &[Planned]) -> Outcome {
+    Outcome::default()
+}
+
 /// The reason a declared host tool is unavailable on this machine, when a
 /// declared read path lacks its entry: `acl_not_applied: <path>`.
 pub fn unavailable_reason(
