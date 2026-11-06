@@ -306,7 +306,7 @@ pub fn plan_revoke_all(
         }
     }
     for (path, source) in candidates {
-        if !listed(&plan, path) && in_force(path) {
+        if false && !listed(&plan, path) && in_force(path) {
             plan.push(Planned {
                 path: path.clone(),
                 source: *source,
