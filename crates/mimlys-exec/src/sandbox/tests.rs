@@ -51,8 +51,10 @@ fn run(sb: &Sandbox, wat: &str, req: &Request) -> Outcome {
 const LOOP: &str =
     r#"(module (memory 1) (export "memory" (memory 0)) (func (export "_start") (loop br 0)))"#;
 
-/// REQ-SBX-002 / REQ-SBX-003: an infinite loop ends `fuel_exhausted` under a
-/// small fuel budget and `deadline` under a short deadline; never conflated.
+/// REQ-SBX-002 / REQ-SBX-003 / INV-04 (external design §21.2): an infinite
+/// loop ends `fuel_exhausted` under a small fuel budget and `deadline` under
+/// a short deadline; never conflated. INV-04's fuel and deadline clauses: a
+/// sandbox execution that would never end is ended by each limit alone.
 #[test]
 fn req_sbx_002_fuel_and_deadline_alone() {
     let sb = sandbox();
@@ -91,7 +93,9 @@ fn req_sbx_002_fuel_and_deadline_alone() {
     );
 }
 
-/// REQ-SBX-002: growing memory past the ceiling ends `memory_limit`.
+/// REQ-SBX-002 / INV-04 (external design §21.2): growing memory past the
+/// ceiling ends `memory_limit`, and the recorded peak stays within it (the
+/// memory clause of INV-04).
 #[test]
 fn req_sbx_002_memory_alone() {
     let sb = sandbox();
@@ -152,7 +156,9 @@ fn flood(bytes_per_write: usize) -> String {
     )
 }
 
-/// REQ-SBX-005 / REQ-TOOL-008: output past LIM-S4 ends `output_limit`; the capture holds the bound.
+/// REQ-SBX-005 / REQ-TOOL-008 / INV-04 (external design §21.2): output past
+/// LIM-S4 ends `output_limit`; the capture holds the bound (the output-limit
+/// clause of INV-04).
 #[test]
 fn req_sbx_005_output_limit() {
     let sb = sandbox();
@@ -202,6 +208,11 @@ fn req_sbx_004_filesystem_boundary() {
 }
 
 /// REQ-SBX-006: a malformed module is `host_fault{invalid_module}`, never a process failure.
+/// REQ-SEC-003 (external design §12, §21), the sandbox-setup clause: a module
+/// that cannot be set up (not WebAssembly, truncated, or without `_start`)
+/// results in no execution of its code, only a fault.
+/// REQ-SEC-011 (external design §21), module content: a hostile module ends
+/// in a named fault and never in a process failure of the runtime.
 #[test]
 fn req_sbx_006_malformed_module() {
     let sb = sandbox();

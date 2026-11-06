@@ -172,6 +172,12 @@ fn names(events: &[Value]) -> Vec<String> {
 /// before anything leaves the host; `rypsok.engine_status` is not listed
 /// to the model; every imported definition is pinned; the server's start
 /// is in the audit.
+/// INV-13 (external design §21.2): external network only through a matching
+/// `network` grant; the fetch to a host outside the grant is `denied` and the
+/// server is called twice, not three times. REQ-MCP-009 / K-04: an imported
+/// tool with no `tool` grant (`rypsok.engine_status` is in the ceiling but in
+/// no profile) is imported and pinned but invisible to the model: its
+/// proposal is rejected `unknown_tool`.
 #[test]
 fn m5_search_and_fetch_under_a_network_grant() {
     let env = Env::new(
@@ -337,9 +343,11 @@ fn m5_errors_are_mapped_by_kind() {
     assert_eq!(rejected, ["denied"]);
 }
 
-/// REQ-PRIV-003 / REQ-TEST-015 / THR-24: the child sees only `env_allow`
-/// and `env_secrets`; the operator's key is absent; the secret's value is
-/// redacted from the observation and the log.
+/// REQ-PRIV-003 / REQ-TEST-015 / THR-24 / INV-14 (external design §21.2):
+/// the child sees only `env_allow` and `env_secrets`; the operator's key is
+/// absent from its environment; the secret's value is redacted from the
+/// observation (which is what the model reads) and appears nowhere in the
+/// event log, in the command's output or in its error stream.
 #[test]
 fn m5_environment_is_scrubbed_and_secrets_redacted() {
     let env = Env::new(
@@ -349,9 +357,16 @@ fn m5_environment_is_scrubbed_and_secrets_redacted() {
     )
     .env("MIMLYS_TEST_TOKEN", "tok-9f8e7d6c5b4a");
     let scope = env.scope();
-    let (code, value) = env.json(&["run", "env", "--scope", scope.to_str().unwrap()]);
+    let (code, stdout, stderr) =
+        env.run(&["--json", "run", "env", "--scope", scope.to_str().unwrap()]);
+    let value: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{stderr}"));
     assert_eq!(code, 0, "{value}");
+    assert!(!stdout.contains("tok-9f8e7d6c5b4a"), "the command's output");
+    assert!(!stderr.contains("tok-9f8e7d6c5b4a"), "the error stream");
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let events = serde_json::to_string(&env.events(&id)).unwrap();
+    assert!(!events.contains("tok-9f8e7d6c5b4a"), "the event log");
     let db = env.data.path().join("data/mimlys.db");
     let observation = read_observation(&db, &id);
     let vars = observation["payload"]["env"].as_object().unwrap();
@@ -806,4 +821,66 @@ destination_arguments = ["url"]
     eprintln!("{stdout}\n{}", out.stderr);
     let value: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(value["task"]["state"], "completed");
+}
+
+/// The effective deadline of each action of a task, by tool, from the store.
+fn deadlines(db: &std::path::Path, task_id: &str) -> std::collections::BTreeMap<String, i64> {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare("select record from actions where task_id = ?1")
+        .unwrap();
+    stmt.query_map([task_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|text| {
+            let record: Value = serde_json::from_str(&text.unwrap()).unwrap();
+            (
+                record["tool"].as_str().unwrap().to_owned(),
+                record["deadline_ms"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// K-03 (external design §11, limits LIM-O5): the deadline of an external
+/// tool is its declaration's `timeout_ms`, and LIM-O5 when none is given,
+/// for a declared tool without a `timeout_ms` and for an undeclared one.
+/// This test claims only the default. The rule that a deadline is never
+/// below a server's declared maximum (`max_call_ms`) does not hold for an
+/// undeclared tool (it keeps LIM-O5 whatever the maximum), so it is not
+/// claimed here.
+#[test]
+fn k_03_external_deadline_defaults_to_lim_o5() {
+    let env = Env::new(
+        &[
+            act("rypsok.web_search", json!({"query": "rust"})),
+            act("rypsok.echo_env", json!({})),
+            act("rypsok.engine_status", json!({})),
+            complete(),
+        ],
+        "",
+        &["rypsok.engine_status"],
+    );
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "deadlines",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "network:example.org",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap();
+    let got = deadlines(&env.data.path().join("data/mimlys.db"), id);
+    assert_eq!(got["rypsok.web_search"], 10_000, "the declared timeout_ms");
+    assert_eq!(
+        got["rypsok.echo_env"],
+        mimlys_core::limits::LIM_O5_EXTERNAL_DEADLINE_MS,
+        "declared without a timeout_ms"
+    );
+    assert_eq!(
+        got["rypsok.engine_status"],
+        mimlys_core::limits::LIM_O5_EXTERNAL_DEADLINE_MS,
+        "undeclared"
+    );
 }

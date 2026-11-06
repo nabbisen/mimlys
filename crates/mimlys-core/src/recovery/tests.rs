@@ -56,6 +56,10 @@ fn running_action(task: &Task, kind: EffectKind, reversible: bool, idempotent: b
 }
 
 /// REQ-PERS-007: the recovery plan table, per effect, with and without auto-resume.
+/// INV-12 (external design §21.2): no row of the table turns an unfinished
+/// action into a success. A read in flight is redone, a workspace write is
+/// rolled back, a non-reversible or external effect is an unknown outcome
+/// that halts the task and is never resumed.
 #[test]
 fn req_pers_007_recovery_plan_table() {
     let task = running_task();

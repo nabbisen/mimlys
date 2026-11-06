@@ -217,3 +217,41 @@ fn rfc_011_run_host_tool_is_not_a_tool_grant() {
         name: "cargo_test".into()
     }));
 }
+
+/// REQ-MCP-009 / K-04 (external design §9.1, §11): an external tool is named
+/// `server.tool` and is visible only through a `tool` grant. The shipped
+/// policy grants none: no shipped profile lists one (so no task starts with
+/// a `tool` grant for `rypsok.engine_status` or any other external tool)
+/// and the shipped ceiling does not admit one until a declaration does.
+#[test]
+fn req_mcp_009_shipped_policy_grants_no_external_tool() {
+    let p = Policy::shipped();
+    for (name, profile) in &p.profiles {
+        for kind in p.initial_grants(profile) {
+            match kind {
+                GrantKind::Tool { name: tool } => assert!(
+                    !tool.contains('.'),
+                    "profile {name} starts with a grant for the external tool {tool}"
+                ),
+                GrantKind::HostTool { .. } => {}
+                other => panic!("profile {name} starts with {other:?}"),
+            }
+        }
+        assert!(
+            !profile.approval_tools.iter().any(|t| t.contains('.')),
+            "profile {name} lists an external tool"
+        );
+    }
+    assert!(
+        p.ceiling.tools.iter().all(|t| !t.contains('.')),
+        "the shipped ceiling admits an external tool: {:?}",
+        p.ceiling.tools
+    );
+    assert!(
+        p.ceiling
+            .permits(&GrantKind::Tool {
+                name: "rypsok.engine_status".into()
+            })
+            .is_err()
+    );
+}

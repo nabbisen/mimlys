@@ -6,6 +6,9 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
+mod common;
+use common::run_bounded;
+
 struct Env {
     data: tempfile::TempDir,
     config: std::path::PathBuf,
@@ -48,6 +51,26 @@ impl Env {
         let mut all = vec!["--json"];
         all.extend_from_slice(args);
         let (code, stdout, stderr) = self.run(&all, "");
+        let value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{stderr}"));
+        (code, value)
+    }
+
+    /// A run bounded by `common::run_bounded` (no standard input): the
+    /// exit code and both streams.
+    fn bounded(&self, args: &[&str]) -> (i32, String, String) {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        cmd.arg("--config").arg(&self.config).args(args);
+        cmd.env("MIMLYS_CONFIG", "");
+        let out = run_bounded(&mut cmd, self.data.path());
+        (out.code(), out.stdout, out.stderr)
+    }
+
+    /// As [`Env::bounded`] with `--json`: the exit code and the value.
+    fn bounded_json(&self, args: &[&str]) -> (i32, Value) {
+        let mut all = vec!["--json"];
+        all.extend_from_slice(args);
+        let (code, stdout, stderr) = self.bounded(&all);
         let value = serde_json::from_str(stdout.trim())
             .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{stderr}"));
         (code, value)
@@ -370,4 +393,137 @@ fn req_conf_008_revoke_all_elsewhere_says_nothing_changed() {
         value,
         serde_json::json!({"removed": [], "failed": [], "profile_deleted": false, "record_deleted": false})
     );
+}
+
+/// REQ-WS-001 (external design §14.1): a task's workspace is created under
+/// `<data_dir>/workspaces/<task_id>/`, and the data directory, which did not
+/// exist, is created owner-only (mode 0700). The data directory of this test
+/// is a path that did not exist, so the mode is the runtime's own and not
+/// the temporary directory's. (The default location, outside any temporary
+/// directory, is `req_ws_001_default_data_dir_is_not_temporary` in the
+/// configuration tests. The owner-only DACL of Windows has no counterpart in
+/// the code; see the review request.)
+#[test]
+fn req_ws_001_workspace_under_the_owner_only_data_directory() {
+    let env = Env::new("");
+    let data_dir = env.data.path().join("data");
+    assert!(
+        !data_dir.exists(),
+        "the data directory is the runtime's to create"
+    );
+    let scope = scope();
+    let (code, created) = env.bounded_json(&[
+        "task",
+        "new",
+        "fix it",
+        "--scope",
+        scope.path().to_str().unwrap(),
+        "--hold",
+    ]);
+    assert_eq!(code, 0, "{created}");
+    let id = created["task"]["task_id"].as_str().unwrap();
+    let tree = data_dir.join("workspaces").join(id).join("tree");
+    assert!(tree.join("src/lib.rs").is_file(), "{}", tree.display());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&data_dir), 0o700);
+    }
+    #[cfg(not(unix))]
+    common::skip(
+        "req_ws_001_workspace_under_the_owner_only_data_directory",
+        "the owner-only check is a Unix mode; the code sets no DACL on this platform",
+    );
+}
+
+/// REQ-SEC-003 (external design §16.2, §21): an error in persistence results
+/// in no execution. After the task is created, a trigger in the database
+/// makes the write of the `running` line fail, as a full disk or a broken
+/// file would. The model's `write_file` is authorized and then not run: the
+/// command fails, no execution row exists and the file is nowhere.
+#[test]
+fn req_sec_003_a_persistence_error_runs_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("script.json");
+    std::fs::write(
+        &script,
+        r#"[{"decision":"act","tool":"write_file","arguments":{"path":"evidence.txt","content":"ran"}},
+            {"decision":"complete","summary":"done"}]"#,
+    )
+    .unwrap();
+    let config = format!(
+        "[backend]\nkind = \"fake\"\nscript = {:?}\n",
+        script.to_string_lossy()
+    );
+    let scope = scope();
+    // The control: without the failure the same script writes the file.
+    let control = Env::new(&config);
+    let (_, created) = control.bounded_json(&[
+        "task",
+        "new",
+        "write the evidence",
+        "--scope",
+        scope.path().to_str().unwrap(),
+        "--hold",
+    ]);
+    let control_id = created["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, _, stderr) = control.bounded(&["task", "resume", &control_id]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        control
+            .data
+            .path()
+            .join("data/workspaces")
+            .join(&control_id)
+            .join("tree/evidence.txt")
+            .is_file(),
+        "the control writes the file"
+    );
+
+    let env = Env::new(&config);
+    let (code, created) = env.bounded_json(&[
+        "task",
+        "new",
+        "write the evidence",
+        "--scope",
+        scope.path().to_str().unwrap(),
+        "--hold",
+    ]);
+    assert_eq!(code, 0, "{created}");
+    let id = created["task"]["task_id"].as_str().unwrap().to_owned();
+
+    let db = env.data.path().join("data/mimlys.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER injected_failure BEFORE UPDATE ON actions
+             WHEN NEW.status = 'running'
+             BEGIN SELECT RAISE(ABORT, 'injected persistence failure'); END;",
+        )
+        .unwrap();
+    }
+
+    let (code, stdout, stderr) = env.bounded(&["task", "resume", &id]);
+    assert_ne!(code, 0, "{stdout}\n{stderr}");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let executions: i64 = conn
+        .query_row("SELECT count(*) FROM executions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(executions, 0, "no execution was recorded");
+    let status: String = conn
+        .query_row("SELECT status FROM actions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(status, "authorized", "the action never reached `running`");
+    let tree = env
+        .data
+        .path()
+        .join("data/workspaces")
+        .join(&id)
+        .join("tree");
+    assert!(
+        !tree.join("evidence.txt").exists(),
+        "the tool did not run in the workspace"
+    );
+    assert!(!scope.path().join("evidence.txt").exists());
 }

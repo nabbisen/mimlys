@@ -22,6 +22,25 @@ fn req_cfg_002_defaults_from_limits() {
     assert_eq!(policy, Policy::shipped());
 }
 
+/// REQ-WS-001 (external design §14.1): with no `runtime.data_dir` the data
+/// directory, and so every workspace under it, is the platform's per-user
+/// data directory plus `mimlys`, never a temporary directory.
+#[test]
+fn req_ws_001_default_data_dir_is_not_temporary() {
+    let data_dir = Config::load(None).unwrap().config.data_dir().unwrap();
+    let expected = directories::BaseDirs::new()
+        .expect("a home directory")
+        .data_local_dir()
+        .join("mimlys");
+    assert_eq!(data_dir, expected);
+    assert!(
+        !data_dir.starts_with(std::env::temp_dir()),
+        "{} is under the temporary directory {}",
+        data_dir.display(),
+        std::env::temp_dir().display()
+    );
+}
+
 /// REQ-CFG-001: an unknown key is refused by name, at every level.
 #[test]
 fn req_cfg_001_unknown_keys_named() {

@@ -211,6 +211,9 @@ fn req_sbx_002_deadline_through_the_worker() {
 /// REQ-ARCH-008 / REQ-TEST-008: the worker's death is `host_fault{worker_died}`,
 /// the runtime survives, the next execution restarts the worker; the budget
 /// LIM-X3 ends in `host_fault{unavailable}`.
+/// REQ-SEC-011 (external design §12, §21), the worker clause: the worker's
+/// death is an execution failure, never a runtime failure: the test process,
+/// which is the runtime side, survives every death.
 #[test]
 fn req_arch_008_worker_death_and_restart_budget() {
     let fx = fx();

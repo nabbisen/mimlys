@@ -175,6 +175,9 @@ fn req_dec_005_unknown_tool() {
 }
 
 /// REQ-DEC-007 / INV-03 (stage 7): out-of-scope paths are denied byte-identically whether or not they exist.
+/// REQ-SEC-005 (external design §6.3), the existence leak: an escaping path
+/// that exists, one that does not and an absolute one produce the same
+/// rejection, with no path content in it.
 #[test]
 fn req_dec_007_out_of_scope_denied_identically() {
     let c = Ctx::new();

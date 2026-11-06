@@ -313,6 +313,10 @@ async fn req_tool_003_delete_path() {
 
 /// REQ-TOOL-004 / THR-03 / THR-27: a symbolic link that leaves the workspace is refused at open time;
 /// listings show links as `symlink` without a target; searches skip them and count the skips.
+/// REQ-SEC-005 (external design §11), symbolic links: reading or writing
+/// through a link to a file or directory outside the workspace fails and the
+/// outside file is neither read nor created. (Unix only: the test creates
+/// links with `std::os::unix`.)
 #[cfg(unix)]
 #[tokio::test]
 async fn req_tool_004_symlink_escape_is_refused() {
@@ -373,7 +377,10 @@ async fn req_tool_004_symlink_escape_is_refused() {
     assert!(outside.path().join("secret.txt").exists());
 }
 
-/// REQ-TOOL-006 / REQ-TOOL-007: the deadline ends an execution with `deadline`; cancellation is observed.
+/// REQ-TOOL-006 / REQ-TOOL-007 / INV-04 (external design §21.2): the
+/// deadline ends an execution with `deadline`; cancellation is observed.
+/// INV-04's deadline clause for a built-in (non-sandbox) execution: a search
+/// over a large workspace given 1 ms ends `deadline`/`timeout`.
 #[tokio::test]
 async fn req_tool_006_007_deadline_and_cancellation() {
     let f = Fixture::new();

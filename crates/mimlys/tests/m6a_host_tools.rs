@@ -399,6 +399,10 @@ fn sleepers(secs: &str) -> usize {
 /// REQ-CONF-003 / REQ-CONF-004: an injected failure of a mandatory clause
 /// makes the tier `core` with the reason, and `run_host_tool` is neither
 /// listed nor accepted.
+/// REQ-SEC-003 (external design §13.4, §21), the confinement clause: a
+/// confinement error (clause F failing) results in no execution: the model's
+/// proposal of the host tool, granted at creation, is rejected `unknown_tool`
+/// and nothing runs.
 #[test]
 fn m6a_probe_is_honest_and_fails_closed() {
     let env = Env::new(&[probe(&["ok"]), complete()], "").env("MIMLYS_PROBE_FAIL", "F");
@@ -594,6 +598,9 @@ fn m6a_argument_rules_are_enforced() {
 /// REQ-CONF-007 / RFC 011 §8: the dependency step runs in a worker without
 /// clause N, is `external_read` (approval where a profile says so), and reaches the network;
 /// the offline tool in the same task cannot.
+/// INV-13 (external design §21.2): the worker has no network except the
+/// declared dependency step. A loopback listener is connected to from the
+/// dependency step and refused to the offline host tool.
 #[test]
 fn m6a_dependency_step_has_network() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

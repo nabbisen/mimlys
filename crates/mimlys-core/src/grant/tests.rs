@@ -61,6 +61,9 @@ fn req_cap_002_grant_kinds() {
 }
 
 /// REQ-CAP-005 / REQ-CAP-006: revocation is immediate and final; no API widens a grant; expiry is honoured.
+/// INV-11 (external design §21.2), grants never widen: a revoked grant cannot
+/// be acted on again, an expired one leaves the visible set, and the grant's
+/// kind has no setter, so nothing changes what an issued grant authorizes.
 #[test]
 fn req_cap_005_006_revocation_and_expiry() {
     let (mut s, clock, ids) = set(vec![
@@ -213,6 +216,9 @@ fn req_cap_001_destination_matching() {
 }
 
 /// REQ-CAP-010: reconciliation names the grants a reduced ceiling no longer permits, and never widens anything.
+/// INV-11 (external design §21.2), grants never exceed the ceiling: a grant
+/// the ceiling does not permit (an unlisted tool, a host tool) is named for
+/// revocation, and one it permits is not.
 #[test]
 fn req_cap_010_reconcile_against_ceiling() {
     let (s, clock, ids) = set(vec![

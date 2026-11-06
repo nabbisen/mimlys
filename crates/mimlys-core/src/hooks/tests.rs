@@ -321,6 +321,9 @@ fn req_ws_003_excluded_paths_denied() {
 }
 
 /// K-02 / REQ-MCP-005 (stage 7): a destination argument needs a matching network grant.
+/// INV-13 (external design §21.2), external network only through a matching
+/// `network` grant: without a grant the destination is `DestinationNotGranted`;
+/// with a grant for one host, a call to another host is too.
 #[test]
 fn k_02_destination_needs_network_grant() {
     let no_net = Fixture::new(false);
@@ -337,6 +340,10 @@ fn k_02_destination_needs_network_grant() {
 }
 
 /// REQ-APR-001 (stage 9) and REQ-TOOL-006 / REQ-WS-008 (stage 10): approval from the profile, deadline and quota.
+/// INV-04 (external design §21.2): every authorized action carries a deadline
+/// (the smaller of the tool's default and the task's remaining time), and an
+/// action with no time left is rejected on the deadline budget instead of
+/// being given an unbounded one.
 #[test]
 fn req_apr_001_tool_006_ws_008_effect_and_budget_hooks() {
     let mut f = Fixture::new(false);

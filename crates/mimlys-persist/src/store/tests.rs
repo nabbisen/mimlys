@@ -630,6 +630,11 @@ fn req_pers_006_integrity_rules() {
 }
 
 /// REQ-PERS-007 / REQ-PERS-008: recovery of a running task per effect, and expiry of waiting items.
+/// INV-12 (external design §21.2): a restart never turns an unfinished
+/// action into a success. A write that was running when the process ended is
+/// `unknown` after recovery, never `succeeded`; nothing is left running; the
+/// task is not resumed past it (no snapshot) and a second recovery changes
+/// nothing.
 #[test]
 fn req_pers_007_008_recovery() {
     let fx = Fx::new();
@@ -1019,6 +1024,40 @@ mod snapshots_m3 {
                 .contains("CONS-04")
         );
         let _ = c;
+    }
+
+    /// INV-08 (external design §21.2): the database references only
+    /// materialized snapshots. A snapshot row is written after its manifest
+    /// and objects are durable; the consistency check refuses a row whose
+    /// manifest file is missing, and passes once the manifest is back.
+    #[test]
+    fn inv_08_a_snapshot_row_needs_its_materialized_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let store = open(&data).unwrap();
+        let files = SnapshotFiles::open(&data).unwrap();
+        let fx = Fx::new();
+        let (task, _) = sequence(&store, &fx, 0, false);
+        let snap = snapshot_with(&store, &files, &fx, &task, b"content", SnapshotReason::Base);
+        integrity::check(&store, fx.now()).unwrap();
+        let manifest = data
+            .join("snapshots/manifests")
+            .join(format!("{}.json", snap.snapshot_id));
+        assert!(manifest.is_file(), "the manifest was durable with the row");
+        let saved = std::fs::read(&manifest).unwrap();
+        let mut writable = std::fs::metadata(&manifest).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        writable.set_readonly(false);
+        std::fs::set_permissions(&manifest, writable).unwrap();
+        std::fs::remove_file(&manifest).unwrap();
+        let err = integrity::check(&store, fx.now()).unwrap_err();
+        assert!(err.to_string().contains("CONS-04"), "{err}");
+        assert!(
+            err.to_string().contains("no manifest"),
+            "the row references a snapshot that is not materialized: {err}"
+        );
+        std::fs::write(&manifest, saved).unwrap();
+        integrity::check(&store, fx.now()).unwrap();
     }
 
     /// RFC 006 §6: deleting a task's data releases its objects in the same

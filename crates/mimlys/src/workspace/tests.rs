@@ -354,8 +354,11 @@ mod snapshots {
         assert!(!next.reused, "the change is seen without any index");
     }
 
-    /// REQ-WS-005 / THR-27: links are entries; a link whose target leaves the
-    /// root is stored but never followed, and refused at restore.
+    /// REQ-WS-005 / THR-27 / INV-08 (external design §21.2): links are
+    /// entries; a link whose target leaves the root is stored but never
+    /// followed (`/etc/passwd` is not hashed into the snapshot), and refused
+    /// at restore (never recreated). INV-08's symbolic-link clause for both
+    /// snapshot and restore.
     #[cfg(unix)]
     #[test]
     fn req_ws_005_symlinks_both_directions() {

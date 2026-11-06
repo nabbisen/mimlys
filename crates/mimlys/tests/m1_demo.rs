@@ -242,6 +242,9 @@ fn m1_demonstration_verified() {
 
 /// External design §23 / INV-03: an out-of-scope path that exists and one
 /// that does not yield byte-identical `denied` feedback.
+/// REQ-SEC-005 (external design §6.3), the existence leak end to end: the
+/// feedback the model receives for the two paths is the same text, and
+/// nothing was proposed or run.
 #[test]
 fn m1_existence_leak() {
     let scope = scope();
@@ -343,6 +346,10 @@ fn m1_reject_and_halt() {
 /// REQ-PRIV-003: a child process receives only the allow-listed
 /// environment: a variable present in the parent (passed to a first child
 /// to prove it is there) is absent from the allow-listed child.
+/// INV-14 (external design §21.2), child environments: a secret-shaped
+/// variable of the parent (`MIMLYS_SECRET_PROBE`) is absent from the child
+/// unless it is passed on purpose (the control), and the child's variable
+/// names are all in the allow-list.
 #[test]
 fn m1_child_environment_is_allow_listed() {
     let scope = scope();

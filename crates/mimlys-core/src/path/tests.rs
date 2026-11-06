@@ -24,6 +24,9 @@ fn req_dec_006_lexical_normalization() {
 }
 
 /// REQ-DEC-007 / THR-03: escapes, absolute paths and drive letters are detected without touching the filesystem.
+/// REQ-SEC-005 (external design §6.3), traversal: `..` that leaves the root,
+/// absolute POSIX, UNC and drive-letter forms are refused, as are NUL and
+/// newline in a path.
 #[test]
 fn req_dec_007_escapes_and_absolute_paths() {
     assert_eq!(posix("../x"), Err(PathError::Escapes));
@@ -39,6 +42,9 @@ fn req_dec_007_escapes_and_absolute_paths() {
 }
 
 /// REQ-WS-011: Windows naming rules are enforced under the Windows rule set and not under POSIX.
+/// REQ-SEC-005 (external design §6.3), Windows path forms and reserved
+/// names: `NUL`, `COM1`, `lpt9.log`, forbidden characters, trailing dot or
+/// space and a drive-letter prefix are refused under the Windows rules.
 #[test]
 fn req_ws_011_windows_name_rules() {
     for bad in [
@@ -78,6 +84,10 @@ fn req_ws_011_windows_name_rules() {
 }
 
 /// REQ-DEC-006: Unicode NFC applies; case modes decide identity and ancestry.
+/// REQ-SEC-005 (external design §6.3), case folding: `Src/Lib.rs` and
+/// `src/lib.rs` are the same path, and `SRC` an ancestor of it, under the
+/// case-insensitive mode and not under the sensitive one; NFD and NFC
+/// spellings of one name are equal.
 #[test]
 fn req_dec_006_nfc_and_case_modes() {
     let nfd = posix("caf\u{0065}\u{0301}.txt").unwrap();
