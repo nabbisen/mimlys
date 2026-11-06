@@ -51,7 +51,10 @@ hr Q1 sandbox_init; "$P" selftest "$S/prof/q1.sb" "$S/ws" 2>&1 | cat; end;; esac
 
 # ---- Q2 ---------------------------------------------------------------------
 case " $1 " in *" 2 "*)
-hr Q2 second profile; tmo 60 "$P" stack "$S/prof/q2A.sb" "$S/prof/q2B.sb" "$P" 2>&1 | cat; end;; esac
+hr Q2 second profile; tmo 60 "$P" stack "$S/prof/q2A.sb" "$S/prof/q2B.sb" "$P" 2>&1 | cat
+echo "S1 q2.sandbox_exec_stderr: $(tmo 30 "$P" apply "$S/prof/q2A.sb" -- /usr/bin/sandbox-exec -f "$S/prof/q2B.sb" /usr/bin/true 2>&1 | tr '\n' ' ')"
+echo "S1 q2.sandbox_exec_unsandboxed_control: $(/usr/bin/sandbox-exec -f "$S/prof/q2B.sb" /usr/bin/true 2>&1 | tr '\n' ' ') exit=$?"
+end;; esac
 
 # ---- Q3 ---------------------------------------------------------------------
 case " $1 " in *" 3 "*)
@@ -93,6 +96,9 @@ echo "S1 q5.control_unsandboxed: suid-id -u -> $("$S/suid-id" -u 2>&1)   (sudo -
 mk q5a
 mk q5b '(deny process-exec* (file-mode #o4000))'
 mk q5r '(allow file-read*)'
+sudo -n cp /usr/bin/id "$S/plain-id" && sudo -n chmod 755 "$S/plain-id"
+echo "S1 q5.control_nonsuid_inside (exec of a non-setuid copy of id): $(tmo 30 "$P" apply "$S/prof/q5a.sb" -- "$S/plain-id" -u 2>&1 | tr '\n' ' ')"
+echo "S1 q5.control_system_id_inside: $(tmo 30 "$P" apply "$S/prof/q5a.sb" -- /usr/bin/id -u 2>&1 | tr '\n' ' ')"
 echo "S1 q5.profile_a (exec allowed): $(tmo 30 "$P" apply "$S/prof/q5a.sb" -- "$S/suid-id" -u 2>&1 | tr '\n' ' ')"
 echo "S1 q5.profile_b (deny process-exec* file-mode #o4000): $(tmo 30 "$P" apply "$S/prof/q5b.sb" -- "$S/suid-id" -u 2>&1 | tr '\n' ' ')"
 echo "S1 q5.sudo_inside_readall: $(tmo 30 "$P" apply "$S/prof/q5r.sb" -- /usr/bin/sudo -n /usr/bin/id -u 2>&1 | tr '\n' ' ')"
@@ -136,6 +142,13 @@ mk q9b "$SIG" '(allow process-info*)'
 echo "S1 q9: ---- control, no sandbox ----"; S1_SECRET=self tmo 30 "$P" q9 - $OUT 2>&1 | cat
 echo "S1 q9: ---- process-info* limited to same-sandbox ----"; S1_SECRET=self tmo 30 "$P" q9 "$S/prof/q9a.sb" $OUT 2>&1 | cat
 echo "S1 q9: ---- process-info* open ----"; S1_SECRET=self tmo 30 "$P" q9 "$S/prof/q9b.sb" $OUT 2>&1 | cat
+mk q9c "$SIG"
+mk q9d "$SIG" '(deny process-info*)'
+mk q9e "$SIG" '(deny sysctl-read (sysctl-name "kern.procargs2"))'
+mk q9f "$SIG" '(deny process-info*)' '(deny sysctl-read (sysctl-name "kern.procargs2"))'
+for v in "q9c: no process-info rule at all" "q9d: (deny process-info*)" "q9e: (deny sysctl-read (sysctl-name kern.procargs2))" "q9f: both denies"; do
+  n=${v%%:*}; echo "S1 q9: ---- $v ----"; S1_SECRET=self tmo 30 "$P" q9 "$S/prof/$n.sb" $OUT 2>&1 | cat
+done
 kill $OUT 2>/dev/null; end;; esac
 
 # ---- Q7, Q8 -------------------------------------------------------------------

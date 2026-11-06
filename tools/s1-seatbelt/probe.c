@@ -3,6 +3,7 @@
 // Build: clang -O0 -Wno-deprecated-declarations -o probe probe.c
 #define _DARWIN_C_SOURCE
 #include <arpa/inet.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <libkern/OSCacheControl.h>
@@ -77,6 +78,7 @@ static void report_create(const char *key, const char *path) {
 
 // ---- Q1 ---------------------------------------------------------------
 static int mode_selftest(char **a) {  // selftest <profile> <ws>
+    say("q1.dlsym", "sandbox_init resolvable at run time: %s", dlsym(RTLD_DEFAULT, "sandbox_init") ? "yes" : "NO");
     report_open("q1.pre", "/private/etc/hosts");
     apply_text("(version 1)(deny defaultt)", "q1.syntax_error_profile");
     if (apply_file(a[0], "q1.apply") != 0) return 77;

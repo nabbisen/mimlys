@@ -35,6 +35,16 @@ open(f"{PROJ}/arith/Cargo.toml", "w").write('[package]\nname = "arith"\nversion 
 open(f"{PROJ}/arith/src/lib.rs", "w").write("pub fn add(a: i32, b: i32) -> i32 { a + b }\n")
 open(f"{PROJ}/src/lib.rs", "w").write("pub fn total(xs: &[i32]) -> i32 { xs.iter().fold(0, |a, x| arith::add(a, *x)) }\n#[cfg(test)] mod t { #[test] fn sums() { assert_eq!(super::total(&[1,2,3]), 6); } }\n")
 
+def diag():
+    say("iter diag: " + sh("echo HOME=$HOME; which cargo rustc rustup; ls -l $HOME/.cargo/bin | head -12; $HOME/.cargo/bin/cargo --version; rustc --print sysroot").stdout.replace("\n", " | "))
+    base = "(version 1)(allow default)\n"
+    open(f"{S}/prof/open.sb", "w").write(base)
+    r = subprocess.run(["/bin/sh", "-c", f"{PROBE} apply {S}/prof/open.sb -- /usr/bin/env -i HOME={WS}/home PATH={HOME}/.cargo/bin:/usr/bin:/bin RUSTUP_HOME={HOME}/.rustup RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR={WS}/target-open TMPDIR={WS}/tmp /bin/sh -c 'cd {PROJ} && {HOME}/.cargo/bin/cargo test --offline'"], capture_output=True, text=True)
+    say(f"iter baseline under (allow default): exit={r.returncode}; tail: " + (r.stdout + r.stderr)[-400:].replace("\n", " | "))
+
+
+diag()
+OURS = re.compile(r"^(env|sh|bash|zsh|probe|cargo|rustc|rustup|cc|c\+\+|clang|ld|xcrun|ar|dsymutil|strip|lipo|libtool|git|arith|demo.*|build.*|rust-.*|ld64.*|ld-prime|.*-[0-9a-f]{8,})$")
 files = {}  # (op-class, path) -> first process name
 mach, other = collections.OrderedDict(), collections.OrderedDict()
 seed_reads = [f"{HOME}/.cargo/bin", f"{HOME}/.rustup", "/usr", f"{S}/bin", S]
@@ -82,7 +92,7 @@ def parse(text):
     out = []
     for line in text.splitlines():
         m = DENY.search(line)
-        if m:
+        if m and OURS.match(m.group(1)):
             out.append((m.group(1), m.group(3), m.group(4).strip()))
     return out
 
@@ -95,6 +105,8 @@ for rnd in range(1, 41):
     dens = parse(text)
     ok = r.returncode == 0
     say(f"iter round {rnd} (phase {phase}): exit={r.returncode} {dt:.0f}s, {len(dens)} denial lines, files so far {len(added)}, mach so far {len(added_mach)}")
+    if rnd in (1, 2) or rnd % 5 == 0:
+        say("iter raw denials (ours): " + " ;; ".join(f"{p} {o} {a}" for p, o, a in dens[:25]))
     if rnd == 1:
         say("iter first output tail: " + (r.stdout + r.stderr)[-600:].replace("\n", " | "))
         if not dens:
