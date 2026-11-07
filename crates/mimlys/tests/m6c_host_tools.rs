@@ -858,6 +858,15 @@ fn ppid_of(pid: u32) -> Option<u32> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
+/// Ends the sleepers of an earlier run of the same test that nobody reaped
+/// (a failed run leaves them: they sleep for the length in their name), so
+/// that a test starts from none.
+fn clear_stale_sleepers(secs: &str) {
+    let _ = Command::new("pkill")
+        .args(["-f", &format!("^/bin/sleep {secs}$")])
+        .status();
+}
+
 fn wait_until(limit: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < limit {
@@ -880,6 +889,7 @@ fn wait_until(limit: std::time::Duration, mut done: impl FnMut() -> bool) -> boo
 fn req_conf_009_cancel_kills_the_whole_tree() {
     let test = "req_conf_009_cancel_kills_the_whole_tree";
     let secs = "2341";
+    clear_stale_sleepers(secs);
     let env = Env::new(&[probe(&["setsid-sleep", secs]), complete()], "");
     let (tier, table) = clauses(&env);
     if !seatbelt_or_skip(test, &table) {
@@ -947,6 +957,9 @@ fn req_conf_009_cancel_kills_the_whole_tree() {
 #[test]
 fn req_conf_009_the_tools_end_leaves_no_member() {
     let test = "req_conf_009_the_tools_end_leaves_no_member";
+    for secs in ["2342", "2343"] {
+        clear_stale_sleepers(secs);
+    }
     let (code, line) = control(&["orphan", "2343"]);
     assert_eq!(code, 0, "{line}");
     assert!(
