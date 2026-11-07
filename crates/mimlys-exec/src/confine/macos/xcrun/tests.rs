@@ -59,7 +59,11 @@ mod with_a_stand_in {
         SCRIPT.get_or_init(|| {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("runner");
-            std::fs::write(&path, "#!/bin/sh\nexec sh \"$(dirname \"$0\")/body\" \"$@\"\n").unwrap();
+            std::fs::write(
+                &path,
+                "#!/bin/sh\nexec sh \"$(dirname \"$0\")/body\" \"$@\"\n",
+            )
+            .unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             (dir, path)
         })
