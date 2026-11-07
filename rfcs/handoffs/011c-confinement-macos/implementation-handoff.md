@@ -3,6 +3,10 @@
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 and Amendment 1 (the read-set rules) · **Specification.** REQ-CONF-001 … 012 (macOS), REQ-TEST-013; external design §13.2 … §13.5, §23 (M6c); limits LIM-H1 … H5, LIM-O2; threats THR-11, THR-17, THR-23, THR-24, THR-32 · **Milestone.** M6c (release 0.8). Depends on 011a, 011d (done).
 **Rewritten 2026-11-07** (the first version was a three-line stub written before any backend existed). It carries what 011a, 011b and 011d taught, in §2.
 
+## Status, second update (2026-11-07)
+
+S1b and 011c-1 are reviewed. **RFC 011 Amendment 2 is settled** (its section "Amendment 2, settled"): points 6 to 9 are decided and may be implemented. 011c-2 and 011c-3 may start once 011c-1 is rebased on `main` and merged. Binding changes against §4 below: K is the membership kill loop and is **`enforced (seatbelt_membership)`**, so the demonstration runs **without** `accept_best_effort` and the test hook `MIMLYS_PROBE_BEST_EFFORT=K` leaves the m6c suite; the read set is the measured minimum of the settled point 8; the dependency step's profile is point 9's three rules. The book's macOS section (011c-4) says host tools need no accepted clause on macOS.
+
 ## Status (2026-11-07)
 
 S1 is done and reviewed. **RFC 011 Amendment 2 exists.** Its points 1 to 5 are decided: **011c-1 may start now** (the profile generator, the self-application through `dlsym`, the self-check, F, N, P, the process-information and `kern.procargs` rules, the runtime side of point 2). Points 6 to 9 (K by membership, M and C, the read set's measured part, the dependency step's minimum) wait for **spike S1b** (§3b); do not implement them before the architect has marked them settled here. Where §4 below differs from Amendment 2, Amendment 2 wins: notably §4.2's F/K/M/C rows are replaced by Amendment 2 points 3, 6 and 7, and the read set is Amendment 2 point 8.
