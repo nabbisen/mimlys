@@ -6,6 +6,7 @@
 //! decision | action lines 1–8). The executor is reached only through an
 //! `AuthorizedAction`; the backend is called only for the decision.
 
+use super::contain::{Panicked, contained, contained_call};
 use super::context::{ContextInputs, assemble};
 use super::{Runtime, RuntimeError};
 use crate::action::{
@@ -20,7 +21,8 @@ use crate::grant::GrantSet;
 use crate::hooks::{PolicyHooks, TaskView};
 use crate::ids::{ActionId, ApprovalId, ExecutionId, ObservationId, QuestionId, StepId, TaskId};
 use crate::limits::{
-    LIM_A1_EXPIRY_MS, LIM_D1_DECISION_BYTES, LIM_M1_REQUEST_MS, LIM_M3_BACKEND_RETRIES,
+    LIM_A1_EXPIRY_MS, LIM_D1_DECISION_BYTES, LIM_I5_MESSAGE_CHARS, LIM_M1_REQUEST_MS,
+    LIM_M3_BACKEND_RETRIES,
 };
 use crate::observation::{Observation, ObservationStatus, Verdict};
 use crate::path::CaseMode;
@@ -310,23 +312,60 @@ impl Runtime {
         let started = self.deps.clock.now();
         let mut attempt = 0;
         let result = loop {
-            match self
-                .deps
-                .backend
-                .generate(request.clone(), cancel.clone())
-                .await
-            {
-                Err(BackendError::Unavailable { .. }) if attempt < LIM_M3_BACKEND_RETRIES => {
+            // A panic in the adapter is contained here (REQ-SEC-011): that
+            // request is `backend_unavailable`, and it is not repeated, since
+            // the adapter's state after a panic is unknown.
+            let call = contained(|| self.deps.backend.generate(request.clone(), cancel.clone()));
+            match call.await {
+                Err(panicked) => {
+                    self.log_contained_panic("model_backend", &panicked);
+                    break Err(BackendError::Unavailable {
+                        detail: "adapter_panic".into(),
+                    });
+                }
+                Ok(Err(BackendError::Unavailable { .. })) if attempt < LIM_M3_BACKEND_RETRIES => {
                     attempt += 1
                 }
-                other => break other,
+                Ok(other) => break other,
             }
         };
         if result.is_ok() {
             measures.model_ms = Some(started.millis_until(self.deps.clock.now()).max(0));
-            measures.usage = self.deps.backend.last_usage();
+            measures.usage = match contained_call(|| self.deps.backend.last_usage()) {
+                Ok(usage) => usage,
+                Err(panicked) => {
+                    self.log_contained_panic("model_backend", &panicked);
+                    None
+                }
+            };
         }
         Ok((result, measures))
+    }
+
+    /// Logs that a panic in an adapter was contained (REQ-SEC-011). The
+    /// message is the adapter's own text: secrets are redacted, invisible and
+    /// control characters removed, whitespace collapsed and the length cut at
+    /// LIM-I5. It goes to the log only, never into an observation, an event
+    /// or a prompt, and no stack trace is part of it.
+    fn log_contained_panic(&self, adapter: &'static str, panicked: &Panicked) {
+        let (redacted, _) = self.redactor.redact(&panicked.message);
+        let (clean, _) = crate::observation::sanitize(&redacted);
+        let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+        let message = if clean.chars().count() > LIM_I5_MESSAGE_CHARS {
+            clean
+                .chars()
+                .take(LIM_I5_MESSAGE_CHARS - 1)
+                .collect::<String>()
+                + "…"
+        } else {
+            clean
+        };
+        tracing::error!(
+            target: "mimlys_core",
+            adapter,
+            panic_message = %message,
+            "a panic in an adapter was contained"
+        );
     }
 
     async fn new_step(
@@ -915,16 +954,29 @@ impl Runtime {
                 ),
             )?; // 5
             let started = self.deps.clock.now();
-            let outcome = env
-                .tools
-                .execute(
+            // A panic in the provider is contained here (REQ-SEC-011): that
+            // execution is `host_fault{unavailable}`, like a worker that
+            // could not be set up; the observation carries no panic text.
+            let call = contained(|| {
+                env.tools.execute(
                     authorized,
                     ExecutionContext {
                         deadline_ms: authorized.deadline_ms(),
                         cancel: self.cancellation(task.task_id),
                     },
                 )
-                .await;
+            });
+            let outcome = match call.await {
+                Ok(outcome) => outcome,
+                Err(panicked) => {
+                    self.log_contained_panic("tool_provider", &panicked);
+                    let wall_ms = started.millis_until(self.deps.clock.now()).max(0);
+                    crate::spi::ExecutionOutcome::host_fault(
+                        crate::action::HostFaultDetail::Unavailable,
+                        wall_ms,
+                    )
+                }
+            };
             let ended = self.deps.clock.now();
             step.phase = StepPhase::Observe;
             let (status, cause) = match (&outcome.failure, &outcome.termination) {

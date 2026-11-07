@@ -1444,6 +1444,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
  "unicode-normalization",
  "url",
  "uuid",

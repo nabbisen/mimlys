@@ -2280,3 +2280,177 @@ fn req_cap_008_workspace_sentence_follows_the_grants() {
     h.step(read_only);
     assert_eq!(sentence(&h, 2), READ_ONLY);
 }
+
+/// REQ-SEC-011, REQ-ENG-004 (external design §21): a panic in the model
+/// adapter, in the call itself or when its future is polled, does not end the
+/// process. The request is `backend_unavailable` (the task halts with that
+/// reason, as for an unreachable backend), the request is not repeated, the
+/// runtime answers the next call, and the task resumes once the backend
+/// works.
+#[test]
+fn req_sec_011_a_panicking_backend_is_backend_unavailable() {
+    use crate::spi::fake::PanicAt;
+    for at in [PanicAt::Call, PanicAt::Poll] {
+        let h = Harness::new(vec![act("read_file", "a")]);
+        h.backend.panic_on_generate(at, "backend exploded");
+        let id = h.create();
+        let result = h.step(id);
+        assert_eq!(result.outcome, StepOutcome::Halted, "{at:?}");
+        assert_eq!(
+            result.state,
+            TaskState::Halted {
+                halt_reason: HaltReason::BackendUnavailable
+            },
+            "{at:?}"
+        );
+        assert!(h.persistence.load_actions(id).unwrap().is_empty());
+        // The process goes on: the runtime answers, and the task resumes.
+        assert!(h.runtime.get_task(id).is_ok());
+        h.backend.stop_panicking();
+        h.runtime.resume_task(&h.session, id, None).unwrap();
+        assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{at:?}");
+        assert_eq!(h.persistence.load_actions(id).unwrap().len(), 1);
+    }
+}
+
+/// REQ-SEC-011, REQ-ENG-004 (external design §21, §7.4): a panic in a tool
+/// provider, in the call or when its future is polled, does not end the
+/// process. The execution ends `host_fault{unavailable}`, the observation
+/// carries neither the panic message nor a trace, and the runtime goes on.
+#[test]
+fn req_sec_011_a_panicking_tool_provider_is_host_fault_unavailable() {
+    use crate::action::{HostFaultDetail, Termination};
+    use crate::spi::fake::PanicAt;
+    for at in [PanicAt::Call, PanicAt::Poll] {
+        let h = Harness::new(vec![act("read_file", "a"), act("read_file", "b")]);
+        h.tools
+            .panic_on_execute(at, "provider exploded, secret-looking text");
+        let id = h.create();
+        let result = h.step(id);
+        let action = h.persistence.load_actions(id).unwrap().remove(0);
+        let executions = h.persistence.load_executions(action.action_id).unwrap();
+        assert_eq!(executions.len(), 1, "{at:?}");
+        assert_eq!(
+            executions[0].termination,
+            Termination::HostFault {
+                detail: HostFaultDetail::Unavailable
+            },
+            "{at:?}"
+        );
+        assert_eq!(result.outcome, StepOutcome::Halted, "{at:?}");
+        assert_eq!(
+            result.state,
+            TaskState::Halted {
+                halt_reason: HaltReason::ToolUnavailable
+            },
+            "{at:?}"
+        );
+        // Nothing of the panic reaches what is stored or what the model reads.
+        let observations = serde_json::to_string(&h.persistence.load_observations(id).unwrap())
+            .expect("serializes");
+        assert!(!observations.contains("exploded"), "{observations}");
+        assert!(!observations.contains("panicked"), "{observations}");
+        assert!(!observations.contains("backtrace"), "{observations}");
+        // The process goes on.
+        assert!(h.runtime.get_task(id).is_ok());
+        h.tools.stop_panicking();
+        h.runtime.resume_task(&h.session, id, None).unwrap();
+        let after = h.step(id);
+        assert_ne!(after.outcome, StepOutcome::Halted, "{at:?}");
+    }
+}
+
+/// REQ-SEC-011 (external design §21): the log line of a contained panic says
+/// that a panic was contained, in which adapter, and carries the panic's
+/// message bounded to LIM-I5 characters, on one line, with the configured
+/// secrets redacted; it carries no stack trace.
+#[test]
+fn req_sec_011_a_contained_panic_is_logged_bounded_and_redacted() {
+    use crate::spi::fake::PanicAt;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    use std::thread::ThreadId;
+
+    // One global subscriber for the test binary, writing each thread's lines
+    // to that thread's own buffer: a scoped subscriber is unreliable while
+    // other tests, on other threads, reach the same call sites first.
+    type Buffers = Arc<Mutex<HashMap<ThreadId, Vec<u8>>>>;
+    #[derive(Clone)]
+    struct PerThread(Buffers);
+    impl Write for PerThread {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap()
+                .entry(std::thread::current().id())
+                .or_default()
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    static BUFFERS: OnceLock<Buffers> = OnceLock::new();
+    let buffers = BUFFERS
+        .get_or_init(|| {
+            let buffers = Buffers::default();
+            let writer = PerThread(buffers.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other global subscriber in this test binary");
+            buffers
+        })
+        .clone();
+    let me = std::thread::current().id();
+    buffers.lock().unwrap().remove(&me);
+
+    let secret = "hunter2-the-secret-value";
+    let message = format!("boom {secret}\nsecond line\u{202e} {}", "x".repeat(1000));
+    for (adapter, at) in [
+        ("model_backend", PanicAt::Poll),
+        ("tool_provider", PanicAt::Call),
+    ] {
+        let h = Harness::with_context(
+            vec![act("read_file", "a")],
+            Policy::shipped(),
+            vec![("API_KEY".into(), secret.into())],
+            crate::limits::LIM_C1_CONTEXT_CHARS,
+        );
+        if adapter == "model_backend" {
+            h.backend.panic_on_generate(at, &message);
+        } else {
+            h.tools.panic_on_execute(at, &message);
+        }
+        let id = h.create();
+        h.step(id);
+    }
+    let written = buffers.lock().unwrap().remove(&me).unwrap_or_default();
+    let log = String::from_utf8(written).unwrap();
+    let lines: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("one JSON log line"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    for (line, adapter) in lines.iter().zip(["model_backend", "tool_provider"]) {
+        let fields = &line["fields"];
+        assert_eq!(
+            fields["message"], "a panic in an adapter was contained",
+            "{line}"
+        );
+        assert_eq!(fields["adapter"], adapter);
+        let text = fields["panic_message"].as_str().unwrap();
+        assert!(
+            text.starts_with("boom [redacted:API_KEY] second line"),
+            "{text}"
+        );
+        assert!(text.chars().count() <= crate::limits::LIM_I5_MESSAGE_CHARS);
+        assert!(!text.contains('\n') && !text.contains('\u{202e}'));
+    }
+    assert!(!log.contains(secret), "the secret never reaches the log");
+    assert!(!log.contains("backtrace"), "no stack trace in the log line");
+}

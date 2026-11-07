@@ -19,10 +19,14 @@ thiserror.workspace = true
 globset.workspace = true
 regex.workspace = true
 url.workspace = true
+tracing.workspace = true
 
 [features]
 # Deterministic clock and identifier sources for tests of this and other crates (REQ-TEST-002).
 test-support = []
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

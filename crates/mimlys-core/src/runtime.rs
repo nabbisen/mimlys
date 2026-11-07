@@ -5,6 +5,7 @@
 //! order of external design §16.2, the executor called only with an
 //! `AuthorizedAction`, and the backend called only for the step decision.
 
+mod contain;
 mod context;
 mod control;
 mod loop_;

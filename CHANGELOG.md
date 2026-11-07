@@ -19,6 +19,8 @@ announced here under "Changed".
 
 - `mimlys-core` (REQ-CAP-008): the workspace sentence of the capability text the model reads is generated from the grant set like the rest of it. It was a constant that said "you may read and write inside the workspace" to every task, a `read_only` one included. A task whose granted tools include none with the `workspace_write` effect is now told it may read inside the workspace and may not write; one with such a tool is told it may read and write, as before. This changes the system message, so the first request of a `read_only` task differs from the previous release's.
 
+- `mimlys-core` (REQ-SEC-011, REQ-ENG-004): a panic in the model adapter or in a tool provider is contained where the runtime calls it, in the runtime's one call site of each, not in each adapter. Until now it unwound through the runtime and ended the process (only the worker's own thread was guarded). A panicking backend is `backend_unavailable` for that request (the request is not repeated and the task halts with that reason, as for an unreachable backend); a panicking tool provider is `host_fault{unavailable}` for that execution. The process goes on and the task can be resumed. One error-level log line (`mimlys_core`, "a panic in an adapter was contained", with the adapter) carries the panic's message redacted of configured secrets, on one line and cut at LIM-I5; no panic text or stack trace reaches an observation, an event or a prompt. `mimlys-core` gains the `tracing` facade as a dependency (no I/O). Rust's own panic hook still writes the panic's message and location to the process's standard error.
+
 ## [0.7.1] - 2026-11-04
 
 Release 0.7.1 is the hardening of the Linux backend that the intake review

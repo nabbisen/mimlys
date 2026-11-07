@@ -248,6 +248,22 @@ impl ExecutionOutcome {
         }
     }
 
+    /// An outcome in which the infrastructure failed (`host_fault`).
+    pub fn host_fault(detail: crate::action::HostFaultDetail, wall_ms: i64) -> Self {
+        Self {
+            termination: Termination::HostFault { detail },
+            failure: None,
+            payload: Value::Null,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            notices: Vec::new(),
+            metrics: ExecutionMetrics {
+                wall_ms,
+                ..ExecutionMetrics::default()
+            },
+        }
+    }
+
     /// An outcome that was cancelled.
     pub fn cancelled(wall_ms: i64) -> Self {
         Self {
@@ -589,9 +605,19 @@ pub mod fake {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    /// Where a fake adapter panics (REQ-SEC-011, REQ-ENG-004).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PanicAt {
+        /// In the call itself, before a future is returned.
+        Call,
+        /// When the returned future is first polled.
+        Poll,
+    }
+
     /// Returns scripted outcomes per tool and records every call.
     #[derive(Debug, Default)]
     pub struct FakeToolProvider {
+        panic: Mutex<Option<(PanicAt, String)>>,
         definitions: Vec<ToolDefinition>,
         outcomes: Mutex<std::collections::HashMap<String, VecDeque<ExecutionOutcome>>>,
         calls: Mutex<Vec<(String, Value)>>,
@@ -604,6 +630,16 @@ pub mod fake {
                 definitions,
                 ..Self::default()
             }
+        }
+
+        /// From now on, `execute` panics with `message` at `at`.
+        pub fn panic_on_execute(&self, at: PanicAt, message: &str) {
+            *self.panic.lock().expect("fake lock") = Some((at, message.to_owned()));
+        }
+
+        /// `execute` stops panicking.
+        pub fn stop_panicking(&self) {
+            *self.panic.lock().expect("fake lock") = None;
         }
 
         /// Queues an outcome for `tool`.
@@ -632,7 +668,14 @@ pub mod fake {
             action: &'a AuthorizedAction,
             _context: ExecutionContext,
         ) -> BoxFuture<'a, ExecutionOutcome> {
+            let panic = self.panic.lock().expect("fake lock").clone();
+            if let Some((PanicAt::Call, message)) = &panic {
+                panic!("{message}");
+            }
             Box::pin(async move {
+                if let Some((PanicAt::Poll, message)) = panic {
+                    panic!("{message}");
+                }
                 self.calls.lock().expect("fake lock").push((
                     action.tool().to_owned(),
                     Value::Object(action.arguments().clone()),
@@ -650,6 +693,7 @@ pub mod fake {
     /// A backend that returns scripted bytes in order.
     #[derive(Debug, Default)]
     pub struct ScriptedBackend {
+        panic: Mutex<Option<(PanicAt, String)>>,
         responses: Mutex<VecDeque<Result<Vec<u8>, BackendError>>>,
         requests: Mutex<Vec<GenerateRequest>>,
         remote: bool,
@@ -659,6 +703,7 @@ pub mod fake {
         /// A backend returning these decisions as compact JSON.
         pub fn with_decisions(decisions: Vec<Value>) -> Self {
             Self {
+                panic: Mutex::new(None),
                 responses: Mutex::new(
                     decisions
                         .into_iter()
@@ -674,6 +719,16 @@ pub mod fake {
         pub fn remote(mut self) -> Self {
             self.remote = true;
             self
+        }
+
+        /// From now on, `generate` panics with `message` at `at`.
+        pub fn panic_on_generate(&self, at: PanicAt, message: &str) {
+            *self.panic.lock().expect("fake lock") = Some((at, message.to_owned()));
+        }
+
+        /// `generate` stops panicking.
+        pub fn stop_panicking(&self) {
+            *self.panic.lock().expect("fake lock") = None;
         }
 
         /// Queues raw bytes or a failure.
@@ -696,7 +751,14 @@ pub mod fake {
             request: GenerateRequest,
             _cancel: Cancellation,
         ) -> BoxFuture<'a, Result<Vec<u8>, BackendError>> {
+            let panic = self.panic.lock().expect("fake lock").clone();
+            if let Some((PanicAt::Call, message)) = &panic {
+                panic!("{message}");
+            }
             Box::pin(async move {
+                if let Some((PanicAt::Poll, message)) = panic {
+                    panic!("{message}");
+                }
                 self.requests.lock().expect("fake lock").push(request);
                 self.responses
                     .lock()

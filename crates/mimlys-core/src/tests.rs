@@ -47,3 +47,36 @@ fn visit(dir: &Path, f: &mut dyn FnMut(&Path, &str)) {
         }
     }
 }
+
+/// REQ-ENG-004 (external design §21): release builds unwind, which is what
+/// lets the runtime contain an adapter's panic. No profile of the workspace
+/// sets `panic`, and no cargo configuration in the repository sets a
+/// `-C panic` flag (the containment itself is shown by the REQ-SEC-011 tests
+/// of the runtime).
+#[test]
+fn req_eng_004_the_workspace_does_not_abort_on_panic() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    for line in manifest.lines().map(str::trim) {
+        assert!(
+            !(line.starts_with("panic") && line.contains('=')),
+            "a profile sets `panic`: {line}"
+        );
+    }
+    for config in [".cargo/config.toml", ".cargo/config"] {
+        if let Ok(text) = std::fs::read_to_string(root.join(config)) {
+            assert!(!text.contains("panic"), "{config} mentions panic");
+        }
+    }
+    for member in std::fs::read_dir(root.join("crates")).unwrap() {
+        let toml = member.unwrap().path().join("Cargo.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.trim().starts_with("panic") && l.contains('=')),
+            "{} sets `panic`",
+            toml.display()
+        );
+    }
+}
