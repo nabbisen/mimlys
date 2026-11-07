@@ -1444,3 +1444,60 @@ env = {{ PATH = {path:?} }}
         "the build happened inside the workspace"
     );
 }
+
+/// REQ-CONF-009 / RFC 011 Amendment 2, implementation decisions, point 6: the
+/// runtime killed with `SIGKILL` while a tool runs leaves no member alive. The
+/// worker reads end of file on its input and ends; the tool and the sleeper it
+/// left in a session of its own are swept (by the worker's last act or, when
+/// the worker is gone first, by its sweeper) within LIM-O2 plus one poll. The
+/// control: before the kill the sleeper's parent is `launchd`.
+#[test]
+fn req_conf_009_a_killed_runtime_leaves_no_member() {
+    let test = "req_conf_009_a_killed_runtime_leaves_no_member";
+    let secs = "2352";
+    clear_stale_sleepers(secs);
+    let env = Env::new(&[probe(&["setsid-sleep", secs]), complete()], "");
+    let (_, table) = clauses(&env);
+    if !seatbelt_or_skip(test, &table) {
+        return;
+    }
+    let scope = env.scope();
+    let mut run = env
+        .command(&[
+            "--json",
+            "run",
+            "sleep",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(std::time::Duration::from_secs(30), || !sleepers(secs)
+            .is_empty()),
+        "the tool's sleeper runs"
+    );
+    assert_eq!(ppid_of(sleepers(secs)[0]), Some(1));
+    let killed_at = std::time::Instant::now();
+    run.kill().unwrap();
+    let _ = run.wait();
+    let bound = std::time::Duration::from_millis(
+        mimlys_core::limits::LIM_O2_CANCEL_MS + mimlys_core::limits::LIM_H6_TRACK_INTERVAL_MS + 250,
+    );
+    let gone = wait_until(bound + std::time::Duration::from_secs(5), || {
+        sleepers(secs).is_empty()
+    });
+    let took = killed_at.elapsed();
+    assert!(
+        gone,
+        "a member is left after the runtime was killed ({took:?})"
+    );
+    assert!(
+        took <= bound,
+        "swept in {took:?}, more than LIM-O2 plus one poll ({bound:?})"
+    );
+}

@@ -742,13 +742,18 @@ fn rfc_011_a2_members_of_a_listing() {
         _ => Seen::Hidden,
     };
     // 50 is the worker itself.
-    assert_eq!(members_of(&listing, 50, see), vec![member(53, 30)]);
+    assert_eq!(members_of(&listing, &[50], see), vec![member(53, 30)]);
     // With the worker elsewhere, 50 is a member; pid 0 and 1 are never.
     assert_eq!(
-        members_of(&listing, 99, see),
+        members_of(&listing, &[99], see),
         vec![member(50, 10), member(53, 30)]
     );
-    assert!(members_of(&[], 99, see).is_empty());
+    assert!(members_of(&[], &[99], see).is_empty());
+    // The worker's sweeper is a member too and is not the tool's tree: the
+    // worker excludes it with itself, and the sweeper (which excludes only
+    // itself) kills everything else.
+    assert_eq!(members_of(&listing, &[99, 50], see), vec![member(53, 30)]);
+    assert_eq!(members_of(&listing, &[99, 53], see), vec![member(50, 10)]);
 }
 
 /// A fake process table: pids killed disappear after `lag` further listings

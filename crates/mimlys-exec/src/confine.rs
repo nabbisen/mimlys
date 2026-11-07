@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+/// The sweeper (REQ-CONF-009): a process that outlives the worker and cleans
+/// up after it; the macOS backend uses it, and its pipe behaviour is tested
+/// on Linux too.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod sweeper;
+
 /// The macOS backend (M6c). Compiled on every platform: its profile
 /// generator is pure and its unit tests run in the Linux gate; the part that
 /// applies the profile is macOS only.

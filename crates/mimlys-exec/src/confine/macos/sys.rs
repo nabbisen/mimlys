@@ -248,3 +248,22 @@ pub fn user_temp_dir() -> Option<std::path::PathBuf> {
     buffer.truncate(needed - 1);
     String::from_utf8(buffer).ok().map(std::path::PathBuf::from)
 }
+
+/// How many threads this process has (`pti_threadnum`), or `None` when the
+/// system does not say: the sweeper is forked only from a process of one.
+pub fn own_thread_count() -> Option<i32> {
+    // SAFETY: an all-zero `proc_taskinfo` is a valid value of a plain C struct of integers.
+    let mut task: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // SAFETY: `task` is `size` bytes long and `size` says so.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            std::process::id() as i32,
+            libc::PROC_PIDTASKINFO,
+            0,
+            std::ptr::addr_of_mut!(task).cast(),
+            size,
+        )
+    };
+    (written == size).then_some(task.pti_threadnum)
+}

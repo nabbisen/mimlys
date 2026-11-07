@@ -440,13 +440,19 @@ pub struct Member {
 }
 
 /// The members among a pid listing (Amendment 2, settled, point 6): the
-/// pids `see` can read, live, other than the worker itself and `launchd`
-/// (pid 1 and below are never members).
-pub fn members_of(listing: &[i32], own: i32, mut see: impl FnMut(i32) -> Seen) -> Vec<Member> {
+/// pids `see` can read, live, other than `launchd` (pid 1 and below are never
+/// members) and the ones in `exclude`: the process asking and, for the
+/// worker, its sweeper (implementation decisions, point 6), which is a
+/// member too but is not the tool's tree.
+pub fn members_of(
+    listing: &[i32],
+    exclude: &[i32],
+    mut see: impl FnMut(i32) -> Seen,
+) -> Vec<Member> {
     listing
         .iter()
         .copied()
-        .filter(|&pid| pid > 1 && pid != own)
+        .filter(|&pid| pid > 1 && !exclude.contains(&pid))
         .filter_map(|pid| match see(pid) {
             Seen::Alive { resident } => Some(Member { pid, resident }),
             Seen::Hidden | Seen::Zombie => None,
@@ -667,6 +673,34 @@ pub fn report(deny_network: bool, outcome: &Outcome) -> BTreeMap<String, ClauseS
 static MEMBERSHIP_VERIFIED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// The sweeper's process id in the worker (0: none). The worker's loop
+/// excludes it from the members it kills, counts and weighs.
+#[cfg(target_os = "macos")]
+static SWEEPER_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Forks the sweeper (implementation decisions, point 6; [`super::sweeper`]):
+/// at end of file of its pipe, that is, when the worker has ended in any way,
+/// it runs the kill loop over the sandbox (itself excluded, by `members()`)
+/// and exits. Refused unless the worker has one thread: a fork in a process
+/// with others leaves the child with locks no thread will release.
+#[cfg(target_os = "macos")]
+fn start_sweeper() -> Result<(), String> {
+    match sys::own_thread_count() {
+        Some(1) => {}
+        other => return Err(format!("the worker has {other:?} threads, not 1")),
+    }
+    let sweeper = super::sweeper::spawn(|| {
+        let _ = sweep(std::time::Duration::from_millis(
+            mimlys_core::limits::LIM_O2_CANCEL_MS,
+        ));
+    })
+    .map_err(|e| e.to_string())?;
+    SWEEPER_PID.store(sweeper.pid, std::sync::atomic::Ordering::SeqCst);
+    // The write end stays open for the life of the worker: `Sweeper` has no
+    // `Drop`, so letting it go closes nothing.
+    Ok(())
+}
+
 /// Applies the backend to the calling process and reports what held
 /// (Amendment 2 point 2). Called by the worker at start, before any thread
 /// exists.
@@ -735,8 +769,16 @@ fn apply_outcome(spec: &ConfinementSpec) -> Outcome {
             .any(|pid| sys::see(pid) != Seen::Hidden || sys::can_signal(pid)),
         outsider_control,
     };
-    let membership = membership_check(&facts);
+    let mut membership = membership_check(&facts);
     MEMBERSHIP_VERIFIED.store(membership.is_none(), std::sync::atomic::Ordering::SeqCst);
+    if membership.is_none() {
+        // Right after the verification and before any thread exists: the
+        // flag is set first, because the sweeper inherits it.
+        if let Err(why) = start_sweeper() {
+            MEMBERSHIP_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
+            membership = Some(format!("the sweeper could not be started: {why}"));
+        }
+    }
     Outcome::Applied {
         filesystem,
         network,
@@ -767,7 +809,12 @@ pub fn members() -> Option<Vec<Member>> {
         return None;
     }
     let listing = sys::list_pids().ok()?;
-    Some(members_of(&listing, std::process::id() as i32, sys::see))
+    let sweeper = SWEEPER_PID.load(std::sync::atomic::Ordering::SeqCst);
+    Some(members_of(
+        &listing,
+        &[std::process::id() as i32, sweeper],
+        sys::see,
+    ))
 }
 
 /// The membership kill loop over this sandbox ([`sweep_with`]); kills

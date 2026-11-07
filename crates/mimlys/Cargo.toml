@@ -92,3 +92,11 @@ required-features = ["test-bins"]
 [[test]]
 name = "m2_demo"
 required-features = ["test-bins"]
+
+[[test]]
+name = "sweeper"
+required-features = ["test-bins"]
+
+[[test]]
+name = "m6c_workers"
+required-features = ["test-bins"]
