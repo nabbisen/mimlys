@@ -113,15 +113,91 @@ Where this machine can enforce one of the mandatory clauses (F, N, E, K,
 P) only as best effort, mimlys says so and keeps host tools unavailable,
 unless you write that clause in `accept_best_effort` under `[policy]`, for
 example `accept_best_effort = ["K"]`. None of the backends of this release
-needs it on a supported platform; on macOS host tools arrive in 0.8. The tier line then
+needs it on a supported platform, macOS included (see "On macOS"). The tier line then
 reads `full (K best-effort, accepted by policy.accept_best_effort)`, and so
 does the `Tier` line of every approval of a host tool. Nothing is accepted
 by default, and a clause that is unavailable can never be accepted.
 
+## On macOS
+
+Host tools run on macOS (Apple silicon; 0.8). **No clause needs to be
+accepted**: the tier is `full` with nothing in `accept_best_effort`, because
+every mandatory clause is enforced by the system.
+
+```text
+tier            full
+clause F filesystem   enforced (seatbelt)
+clause N network      enforced (seatbelt)
+clause E environment  enforced (explicit_environment)
+clause K termination  enforced (seatbelt_membership)
+clause P privilege    enforced (seatbelt)
+clause M memory       best effort (rss_watchdog)
+clause C count        best effort (process_count_watchdog)
+```
+
+mimlys confines the worker with one Seatbelt profile, and every host tool
+inherits it (a sandboxed process cannot apply a second one). K is enforced
+because the sandbox itself tells the worker which processes are its own: after
+a cancel, a deadline or the end of a tool, the worker ends every one of them,
+a process that detached itself and was adopted by `launchd` included. M and C
+are watchdogs that look at the tool's processes every 100 ms and kill them
+above 2 GiB or 64 processes, so they are best effort (they may miss something
+shorter than a poll), as on Linux without a delegated cgroup. If the worker
+cannot verify the mechanism on a given macOS, K, M and C read `unavailable:
+membership_unverified: …` and host tools are not offered.
+
+**What to declare.** The system's pieces a build needs are in the set already:
+`/usr`, `/bin`, `/sbin`, two small files, the active developer directory (the
+Xcode or Command Line Tools that `xcode-select -p` names; mimlys reads the link
+`xcode-select` keeps, it does not run it), and the one cache file `xcrun`
+uses. Declare the toolchain itself, and declare **the real `cargo`, not a
+shim**: Homebrew's `rustup` puts `cargo` on the `PATH` as a link into
+`/opt/homebrew/Cellar/…`, and a confinement matches the resolved path, so
+mimlys refuses such a command when it loads the configuration, on every
+platform, and names the directory to declare:
+
+```toml
+[host_tools.cargo_test]
+command = "~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo"
+args = ["test", "--offline"]
+allowed_args = ["--lib"]
+max_args = 1
+effect = "workspace_write"
+read_paths = ["~/.rustup"]
+env = { PATH = "~/.rustup/toolchains/stable-aarch64-apple-darwin/bin:/usr/bin:/bin" }
+```
+
+(`~/.rustup` holds no credentials; do not declare `~/.cargo`.) The
+toolchain's name (`stable-aarch64-apple-darwin`) is the one `ls ~/.rustup/toolchains`
+shows. When a tool still fails with `Operation not permitted` on a file,
+the observation's `stderr` names it: declare the narrowest directory that
+holds it.
+
+**What a host tool can read on a Mac** is that and nothing else: not
+`/System` as a whole, not `/etc` (only the OpenSSL configuration file), not
+`/opt`, not any file of your home directory, not the per-user temporary
+directory (only the one cache file by name), and not another program's
+environment or arguments. A tool can learn that a path exists (the loader needs
+that) and the **numbers** of the processes on the machine (the price of the
+membership loop); it cannot learn their names, owners or arguments.
+
+**The dependency step** (`network = true`) runs in a worker of its own whose
+profile adds three things to the offline one: outbound TCP to port 443,
+name lookup through the system's one lookup socket, and the system's
+certificate file. Registries over HTTPS work; a git dependency over SSH is not
+reachable, and the offline tool cannot resolve a name at all.
+
+**One thing the system cannot give.** A program of yours that is *not*
+confined can read the runtime's environment, `env:`-referenced secrets
+included, with `sysctl KERN_PROCARGS2`; macOS has no refusal for an unconfined
+reader, and removing a variable afterwards would not help. A host tool is
+refused it by the profile.
+
 ## What a host tool can read
 
 Only the paths you declare in `read_paths` and the system's directories
-(`/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/opt`, a few devices).
+(on Linux `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/opt`, a few
+devices; on macOS the shorter list above).
 The home directory is not among them, and neither is any file of another
 process: `/proc` is not readable by a host tool, which keeps the command
 lines and network tables of your other programs from project code.
