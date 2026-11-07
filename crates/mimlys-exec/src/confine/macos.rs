@@ -685,9 +685,14 @@ static SWEEPER_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32:
 /// with others leaves the child with locks no thread will release.
 #[cfg(target_os = "macos")]
 fn start_sweeper() -> Result<(), String> {
+    // One thread of ours; Rosetta's translator runs one more in a translated
+    // (Intel) process, and holds no lock of ours.
+    let allowed = if sys::translated_by_rosetta() { 2 } else { 1 };
     match sys::own_thread_count() {
-        Some(1) => {}
-        other => return Err(format!("the worker has {other:?} threads, not 1")),
+        Some(n) if n <= allowed => {}
+        other => {
+            return Err(format!("the worker has {other:?} threads, not {allowed}"));
+        }
     }
     let sweeper = super::sweeper::spawn(|| {
         let _ = sweep(std::time::Duration::from_millis(

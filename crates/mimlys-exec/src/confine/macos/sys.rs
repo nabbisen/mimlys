@@ -267,3 +267,21 @@ pub fn own_thread_count() -> Option<i32> {
     };
     (written == size).then_some(task.pti_threadnum)
 }
+
+/// Whether this process is Intel code translated by Rosetta
+/// (`sysctl.proc_translated`); the translator adds a thread of its own.
+pub fn translated_by_rosetta() -> bool {
+    let mut value: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: `value` is `size` bytes long and `size` says so; the name is a NUL-terminated constant; no new value is set.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"sysctl.proc_translated".as_ptr(),
+            std::ptr::addr_of_mut!(value).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    rc == 0 && value == 1
+}

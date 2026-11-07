@@ -136,7 +136,7 @@ fn req_conf_009_sweeper_has_its_own_group_and_holds_no_stream() {
     );
     // The runtime's kill of a worker: its whole process group.
     let killed = Command::new("sh")
-        .args(["-c", &format!("kill -KILL -- -{group}")])
+        .args(["-c", &format!("kill -s KILL -- -{group}")])
         .status()
         .unwrap();
     assert!(killed.success());
