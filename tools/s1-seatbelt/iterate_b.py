@@ -425,10 +425,10 @@ def load(path):
 
 
 # ---- B3 -----------------------------------------------------------------------------
-def b3_loop(variant):
+def b3_loop(variant, fallbacks=None):
     tag = f"b3.{variant}"
     say(f"{tag} ===== iterative loop, shape=Amendment 2, developer directory in the seed: {DEV} =====")
-    ok, items, unhandled = loop(seeds(variant), "test", variant, tag)
+    ok, items, unhandled = loop(seeds(variant), "test", variant, tag, fallbacks=fallbacks)
     for (op, arg), proc in list(unhandled.items())[:60]:
         say(f"{tag} unhandled denial {op} {arg} ({proc})")
     list_items(tag + ".loop", items)
@@ -496,14 +496,27 @@ def b3_rest(variant, items):
         exp(tag, "minimal without the DVTSystemPrerequisites literal", [i for i in cur if i not in dvt], variant)
         shared = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(dvt[0].arg))))
         exp(tag, f"DVT literal replaced by (subpath {shared})", [i for i in cur if i not in dvt] + [Item("file", f'(allow file-read* (subpath "{esc(shared)}"))', "file-read*", shared, "exp")], variant)
+    # the grouped form an administrator could write: the per-user temp directory and the Xcode shared
+    # frameworks as subpaths instead of one literal each
+    grouped = list(cur)
+    if xdb:
+        grouped = [i for i in grouped if i not in xdb] + [Item("file", f'(allow file-read* (subpath "{esc(os.path.dirname(xdb[0].arg))}"))', "file-read*", os.path.dirname(xdb[0].arg), "exp")]
+    if dvt:
+        grouped = [i for i in grouped if i not in dvt] + [Item("file", f'(allow file-read* (subpath "{esc(shared)}"))', "file-read*", shared, "exp")]
+    if exp(tag, "grouped form (temp dir and Xcode SharedFrameworks as subpaths): cargo test --offline", grouped, variant):
+        print_profile(tag + ".grouped", grouped)
     return cur
 
 
-def b3_direct():
+def b3_direct(shim_items):
     variant = "direct"
     if variant not in VARIANTS:
         return
-    items = b3_loop(variant)
+    # the log may go silent after many denials (run 2): the shim result, minus what is specific to
+    # Homebrew's rustup, is the fallback guess; the greedy pass below prunes it
+    known = [Item(i.kind, i.rule, i.op, i.arg, "guess-from-shim") for i in (shim_items or [])
+             if i.kind in ("file", "mach", "other", "net") and "/opt/homebrew" not in i.arg and "/Xcode" not in i.arg and "SystemFrameworks" not in i.arg]
+    items = b3_loop(variant, fallbacks=[known] if known else None)
     if items is None:
         return
     tag = f"b3.{variant}"
@@ -615,6 +628,11 @@ def main():
             kept = b5(src)
         except Exception:
             say("b5 EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
+    if "b3" in todo:
+        try:
+            b3_direct(items)
+        except Exception:
+            say("b3.direct EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
     if "b3" in todo and items is not None:
         try:
             minimal = b3_rest("shim", items)
@@ -625,11 +643,6 @@ def main():
             b5_confirm("shim", minimal, kept)
         except Exception:
             say("b5.confirm EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
-    if "b3" in todo:
-        try:
-            b3_direct()
-        except Exception:
-            say("b3.direct EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
     say(f"done in {time.time() - T0:.0f}s")
 
 
