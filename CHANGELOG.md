@@ -21,6 +21,12 @@ announced here under "Changed".
 
 - `mimlys-core` (REQ-SEC-011, REQ-ENG-004): a panic in the model adapter or in a tool provider is contained where the runtime calls it, in the runtime's one call site of each, not in each adapter. Until now it unwound through the runtime and ended the process (only the worker's own thread was guarded). A panicking backend is `backend_unavailable` for that request (the request is not repeated and the task halts with that reason, as for an unreachable backend); a panicking tool provider is `host_fault{unavailable}` for that execution. The process goes on and the task can be resumed. One error-level log line (`mimlys_core`, "a panic in an adapter was contained", with the adapter) carries the panic's message redacted of configured secrets, on one line and cut at LIM-I5; no panic text or stack trace reaches an observation, an event or a prompt. `mimlys-core` gains the `tracing` facade as a dependency (no I/O). Rust's own panic hook still writes the panic's message and location to the process's standard error.
 
+- `mimlys`, `mimlys-exec` (REQ-WS-001, THR-31): the data directory is owner-only from the start. On Unix the data directory, the parents the runtime creates for it and `workspaces/`, `tmp/` and `interpreters/` are created with mode 0700 (given to `mkdir`; before, the data directory was created with the umask's mode, normally 0755, and tightened by the store a moment later, and the three subdirectories stayed 0755 under the 0700 root); an existing directory with another mode is brought to 0700 at every start. On Windows the data directory now gets a protected DACL granting the current user full control and nobody else, inherited by what is created beneath, at every start and before the AppContainer's entries are added to the subdirectories (until now it had whatever its parent's DACL inherited; the default location under the user's profile was private by that, a configured one need not have been). The system and administrator accounts therefore have no entry in it; the owner can always change the DACL. The call is a new function in `crates/mimlys-exec/src/confine/windows/acl.rs`.
+
+### Changed
+
+- `mimlys` (REQ-WS-001): `check` and `status` print one warning line when a configured `runtime.data_dir` is inside the temporary directory (a cleaner of temporary files can delete tasks); the directory is still accepted. The JSON output of both gains the boolean `data_dir_in_temporary_directory`.
+
 ## [0.7.1] - 2026-11-04
 
 Release 0.7.1 is the hardening of the Linux backend that the intake review

@@ -397,12 +397,14 @@ fn req_conf_008_revoke_all_elsewhere_says_nothing_changed() {
 
 /// REQ-WS-001 (external design §14.1): a task's workspace is created under
 /// `<data_dir>/workspaces/<task_id>/`, and the data directory, which did not
-/// exist, is created owner-only (mode 0700). The data directory of this test
-/// is a path that did not exist, so the mode is the runtime's own and not
-/// the temporary directory's. (The default location, outside any temporary
-/// directory, is `req_ws_001_default_data_dir_is_not_temporary` in the
-/// configuration tests. The owner-only DACL of Windows has no counterpart in
-/// the code; see the review request.)
+/// exist, is created owner-only: on Unix mode 0700, and `workspaces/`,
+/// `tmp/` and `interpreters/` in it 0700 too; on Windows a DACL with one
+/// entry, the current user's full control, none inherited. The data
+/// directory of this test is a path that did not exist, so the protection is
+/// the runtime's own and not the temporary directory's. (The default
+/// location, outside any temporary directory, is
+/// `req_ws_001_default_data_dir_is_not_temporary` in the configuration
+/// tests.)
 #[test]
 fn req_ws_001_workspace_under_the_owner_only_data_directory() {
     let env = Env::new("");
@@ -428,13 +430,35 @@ fn req_ws_001_workspace_under_the_owner_only_data_directory() {
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&data_dir), 0o700);
+        for dir in ["", "workspaces", "tmp", "interpreters"] {
+            assert_eq!(mode(&data_dir.join(dir)), 0o700, "{dir:?}");
+        }
     }
-    #[cfg(not(unix))]
-    common::skip(
-        "req_ws_001_workspace_under_the_owner_only_data_directory",
-        "the owner-only check is a Unix mode; the code sets no DACL on this platform",
-    );
+    #[cfg(windows)]
+    {
+        let icacls = Command::new("icacls").arg(&data_dir).output().unwrap();
+        assert!(icacls.status.success());
+        let text = String::from_utf8_lossy(&icacls.stdout).into_owned();
+        let shown = data_dir.to_string_lossy().into_owned();
+        let entries: Vec<String> = text
+            .lines()
+            .map(|l| {
+                l.strip_prefix(shown.as_str())
+                    .unwrap_or(l)
+                    .trim()
+                    .to_lowercase()
+            })
+            .filter(|l| l.contains(":("))
+            .collect();
+        let me = Command::new("whoami").output().unwrap();
+        let me = String::from_utf8_lossy(&me.stdout).trim().to_lowercase();
+        assert_eq!(entries.len(), 1, "{text}");
+        assert!(entries[0].starts_with(&format!("{me}:")), "{text}");
+        assert!(
+            entries[0].contains("(f)") && !entries[0].contains("(i)"),
+            "{text}"
+        );
+    }
 }
 
 /// REQ-SEC-003 (external design §16.2, §21): an error in persistence results
@@ -526,4 +550,78 @@ fn req_sec_003_a_persistence_error_runs_nothing() {
         "the tool did not run in the workspace"
     );
     assert!(!scope.path().join("evidence.txt").exists());
+}
+
+/// REQ-WS-001 (external design §14.1): a configured `runtime.data_dir` inside
+/// the temporary directory is named by `check` and `status`, in one line
+/// that names the key and the risk (a cleaner of temporary files can delete
+/// tasks), in the JSON output as `data_dir_in_temporary_directory`, and is
+/// not refused: both commands succeed and `status` uses the directory. A
+/// data directory outside it is not named.
+#[test]
+fn req_ws_001_a_data_directory_in_the_temporary_directory_is_warned_about_not_refused() {
+    // `Env` puts the data directory under `tempfile::tempdir()`.
+    let env = Env::new("");
+    let data_dir = env.data.path().join("data");
+    let warning_lines = |stdout: &str| -> Vec<String> {
+        stdout
+            .lines()
+            .filter(|l| l.contains("runtime.data_dir"))
+            .map(str::to_owned)
+            .collect()
+    };
+    for command in ["check", "status"] {
+        let (code, stdout, stderr) = env.bounded(&[command]);
+        assert_eq!(code, 0, "{command}: {stdout}\n{stderr}");
+        let lines = warning_lines(&stdout);
+        assert_eq!(lines.len(), 1, "{command}: {stdout}");
+        assert!(lines[0].starts_with("warning:"), "{}", lines[0]);
+        assert!(
+            lines[0].contains("temporary directory")
+                && lines[0].contains("a cleaner of temporary files can delete tasks"),
+            "{}",
+            lines[0]
+        );
+        let (code, value) = env.bounded_json(&[command]);
+        assert_eq!(code, 0, "{value}");
+        assert_eq!(value["data_dir_in_temporary_directory"], true, "{value}");
+    }
+    assert!(
+        data_dir.join("mimlys.db").is_file(),
+        "status used the directory"
+    );
+
+    // Outside the temporary directory: not named. `check` creates nothing.
+    let outside = Path::new(env!("CARGO_MANIFEST_DIR")).join("no-such-data-directory");
+    let inside_temp = |p: &Path| {
+        p.starts_with(std::env::temp_dir().canonicalize().unwrap())
+            || p.starts_with(std::env::temp_dir())
+    };
+    if inside_temp(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .unwrap(),
+    ) {
+        common::skip(
+            "req_ws_001_a_data_directory_in_the_temporary_directory_is_warned_about_not_refused",
+            "the repository itself lies inside the temporary directory",
+        );
+        return;
+    }
+    let config = env.data.path().join("outside.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "config_version = 1\n[runtime]\ndata_dir = {:?}\n",
+            outside.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    cmd.arg("--config").arg(&config).arg("check");
+    cmd.env("MIMLYS_CONFIG", "");
+    let out = run_bounded(&mut cmd, env.data.path());
+    assert_eq!(out.code(), 0, "{}\n{}", out.stdout, out.stderr);
+    assert!(warning_lines(&out.stdout).is_empty(), "{}", out.stdout);
+    assert!(!outside.exists(), "check creates no directory");
 }

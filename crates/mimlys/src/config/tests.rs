@@ -346,3 +346,56 @@ fn req_conf_011_one_function_decides_for_grant_and_declaration() {
             .contains("contains the home directory")
     );
 }
+
+/// REQ-WS-001: a configured `runtime.data_dir` is inside the temporary
+/// directory when it is the directory, a directory beneath it that exists, or
+/// one that does not exist yet; a sibling whose name only begins like it, and
+/// the default (unconfigured) location, are not. The comparison is between
+/// canonical paths, so a spelling through `..` is the same as the plain one.
+#[test]
+fn req_ws_001_data_dir_in_temp_dir() {
+    let with = |dir: &std::path::Path| {
+        Config::parse(&format!(
+            "config_version = 1\n[runtime]\ndata_dir = {:?}\n",
+            dir.to_string_lossy()
+        ))
+        .unwrap()
+    };
+    let temp = std::env::temp_dir();
+    let made = tempfile::tempdir().unwrap();
+    assert!(with(&temp).data_dir_in_temp_dir());
+    assert!(with(made.path()).data_dir_in_temp_dir());
+    assert!(with(&made.path().join("not/yet/there")).data_dir_in_temp_dir());
+    assert!(with(&made.path().join("a/../b")).data_dir_in_temp_dir());
+    let canonical_temp = temp.canonicalize().unwrap();
+    let lookalike = {
+        let mut name = canonical_temp.file_name().unwrap().to_owned();
+        name.push("-not-the-temporary-directory");
+        canonical_temp.with_file_name(name).join("data")
+    };
+    assert!(
+        !with(&lookalike).data_dir_in_temp_dir(),
+        "{}",
+        lookalike.display()
+    );
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !manifest
+        .canonicalize()
+        .unwrap()
+        .starts_with(&canonical_temp)
+    {
+        assert!(!with(&manifest.join("data")).data_dir_in_temp_dir());
+        // A link inside the temporary directory that leads out of it: the
+        // directory is not in it (the paths are compared canonical).
+        #[cfg(unix)]
+        {
+            let out = made.path().join("out");
+            std::os::unix::fs::symlink(manifest, &out).unwrap();
+            assert!(!with(&out.join("data")).data_dir_in_temp_dir());
+        }
+    }
+    assert!(
+        !Config::load(None).unwrap().config.data_dir_in_temp_dir(),
+        "the default location is not configured, so it is not in question"
+    );
+}

@@ -228,7 +228,10 @@ impl App {
         let confinement = mimlys_exec::confine::platform();
         let config = loaded.config.clone();
         let data_dir = config.data_dir()?;
-        std::fs::create_dir_all(&data_dir).map_err(|e| AppError::Io {
+        // REQ-WS-001: owner-only from the start (Unix mode 0700; Windows a
+        // protected DACL for the current user), before anything is placed
+        // in it and before the container's entries go on the subdirectories.
+        mimlys_exec::confine::create_private_dir(&data_dir).map_err(|e| AppError::Io {
             detail: format!(
                 "cannot create the data directory {}: {}",
                 data_dir.display(),
@@ -252,12 +255,14 @@ impl App {
         let host_tools = config.host_tools();
         // The write set is the workspaces and `<data>/tmp`, on every platform.
         for dir in ["workspaces", "tmp", "interpreters"] {
-            std::fs::create_dir_all(data_dir.join(dir)).map_err(|e| AppError::Io {
-                detail: format!(
-                    "cannot create {}: {}",
-                    data_dir.join(dir).display(),
-                    e.kind()
-                ),
+            mimlys_exec::confine::create_private_subdir(&data_dir.join(dir)).map_err(|e| {
+                AppError::Io {
+                    detail: format!(
+                        "cannot create {}: {}",
+                        data_dir.join(dir).display(),
+                        e.kind()
+                    ),
+                }
             })?;
         }
         // Windows (RFC 011 §3, §7): the AppContainer exists and mimlys's own

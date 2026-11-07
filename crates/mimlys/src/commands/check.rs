@@ -19,6 +19,12 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         &loaded.config.data_dir()?.to_string_lossy(),
     ));
     out.line(messages::CHECK_OK);
+    let in_temp = loaded.config.data_dir_in_temp_dir();
+    if in_temp {
+        out.line(messages::data_dir_in_temp_warning(
+            &loaded.config.data_dir()?.to_string_lossy(),
+        ));
+    }
     for (tool, server) in loaded.config.declared_external_tools() {
         out.line(messages::ceiling_external(
             &tool,
@@ -40,6 +46,7 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         "ok": true,
         "config_path": loaded.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
         "data_dir": loaded.config.data_dir()?.to_string_lossy(),
+        "data_dir_in_temporary_directory": in_temp,
         "config": loaded.config,
         "external_tools": loaded.config.declared_external_tools().into_iter().map(|(t, s)| serde_json::json!({"tool": t, "declared_by": s})).collect::<Vec<_>>(),
         "undeclared_external_tools": loaded.config.undeclared_external_tools(),

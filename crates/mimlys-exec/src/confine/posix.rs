@@ -51,3 +51,21 @@ pub fn set_no_new_privs() -> std::io::Result<()> {
 pub fn no_new_privs() -> bool {
     false
 }
+
+/// Creates `path` and any missing parent directory with mode 0700 from the
+/// start (REQ-WS-001): the mode is given to `mkdir`, so there is no moment
+/// in which the directory is more open than the owner. A directory that
+/// already existed with another mode is brought to 0700 (that is the only
+/// case in which a mode is applied afterwards).
+pub fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let existed = path.is_dir();
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    if existed && std::fs::metadata(path)?.permissions().mode() & 0o777 != 0o700 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}

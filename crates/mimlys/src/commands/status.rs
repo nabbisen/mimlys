@@ -13,6 +13,8 @@ struct Status<'a> {
     /// The backend: kind, model, locality, and the probe's findings.
     backend: BackendView,
     data_dir: String,
+    /// The configured data directory is inside the temporary directory (REQ-WS-001).
+    data_dir_in_temporary_directory: bool,
     config: Option<String>,
     recovered: Vec<RecoveredView>,
     engine_version: &'static str,
@@ -80,6 +82,12 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
         locality: status.backend.locality,
         probe,
     };
+    let data_dir_in_temp = app.loaded.config.data_dir_in_temp_dir();
+    if data_dir_in_temp {
+        out.line(messages::data_dir_in_temp_warning(
+            &app.data_dir.to_string_lossy(),
+        ));
+    }
     out.line(messages::config_source(
         app.loaded
             .path
@@ -143,6 +151,7 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
         runtime: &status,
         backend,
         data_dir: app.data_dir.to_string_lossy().into_owned(),
+        data_dir_in_temporary_directory: data_dir_in_temp,
         config: app
             .loaded
             .path

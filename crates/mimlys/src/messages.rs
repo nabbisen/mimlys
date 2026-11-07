@@ -11,6 +11,13 @@ pub const CHECK_OK: &str = "configuration ok";
 pub fn data_dir(path: &str) -> String {
     format!("data directory: {path}")
 }
+/// `check` and `status`: the configured data directory is inside the
+/// temporary directory (REQ-WS-001); one line, naming the key and the risk.
+pub fn data_dir_in_temp_warning(path: &str) -> String {
+    format!(
+        "warning: runtime.data_dir ({path}) is inside the temporary directory: a cleaner of temporary files can delete tasks"
+    )
+}
 /// The configuration file in use, or the defaults.
 pub fn config_source(path: Option<&str>) -> String {
     match path {

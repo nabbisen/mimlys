@@ -922,3 +922,11 @@ fn own_job_limits() -> Option<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
     };
     (ok != 0).then_some(info)
 }
+
+/// Creates `path` and any missing parent, then gives `path` the protected
+/// DACL of the current user alone (REQ-WS-001; `acl::protect_to_current_user`),
+/// at every call, as Unix brings the mode to 0700.
+pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    acl::protect_to_current_user(path).map_err(std::io::Error::other)
+}

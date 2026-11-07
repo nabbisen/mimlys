@@ -838,6 +838,13 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     let env = Env::new(&[], "");
     let data = env.data.path().join("data");
     let own = ["workspaces", "tmp", "interpreters"].map(|d| data.join(d));
+    // The data directory is owner-only before anything is in it (REQ-WS-001):
+    // the directories below inherit that, and it is what they were before
+    // the container's entries. (Created with the temporary directory's
+    // inheritance instead, they would change at mimlys's first start, when
+    // the data directory is protected, and that is not what this test is
+    // about.)
+    mimlys_exec::confine::create_private_dir(&data).unwrap();
     for d in &own {
         std::fs::create_dir_all(d).unwrap();
     }

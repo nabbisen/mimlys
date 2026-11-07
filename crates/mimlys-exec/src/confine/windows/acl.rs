@@ -33,12 +33,20 @@ use windows_sys::Win32::Security::Authorization::{
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation, AddAce,
-    DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-    INHERITED_ACE, InitializeAcl, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    SE_DACL_PROTECTED, SUB_CONTAINERS_AND_OBJECTS_INHERIT, UNPROTECTED_DACL_SECURITY_INFORMATION,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
+    AddAce, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+    GetLengthSid, GetSecurityDescriptorControl, INHERITED_ACE, InitializeAcl, OBJECT_INHERIT_ACE,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_USER, TokenUser,
+    UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
+use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
+
+/// `FILE_ALL_ACCESS` (winnt.h): every specific right on a file or directory.
+/// The `Win32_Storage_FileSystem` feature of `windows-sys` is not enabled
+/// for this one constant.
+const FILE_ALL_ACCESS: u32 = 0x001F_01FF;
 
 /// What an entry grants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -358,4 +366,146 @@ pub fn has_entry(path: &Path, sid: &[u8]) -> Result<bool, String> {
     // SAFETY: the entries were allocated by GetExplicitEntriesFromAclW for the caller to free once.
     unsafe { LocalFree(entries.cast()) };
     Ok(found)
+}
+
+/// The current user's SID, copied out of the process token.
+fn current_user_sid() -> Result<Vec<u8>, String> {
+    let token = super::own_token().ok_or("cannot open the process token")?;
+    let bytes =
+        super::token_bytes(&token, TokenUser).ok_or("cannot read the user of the process token")?;
+    if bytes.len() < std::mem::size_of::<TOKEN_USER>() {
+        return Err("the token's user is shorter than a TOKEN_USER".into());
+    }
+    // SAFETY: the buffer is at least a TOKEN_USER long and holds one; its SID pointer refers into the same buffer. Read unaligned.
+    let user = unsafe { bytes.as_ptr().cast::<TOKEN_USER>().read_unaligned() };
+    let sid: PSID = user.User.Sid;
+    if sid.is_null() {
+        return Err("the token's user has no SID".into());
+    }
+    // SAFETY: the SID is valid (it lives in `bytes`).
+    let len = unsafe { GetLengthSid(sid) } as usize;
+    // SAFETY: the SID is `len` readable bytes, inside `bytes`.
+    Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), len) }.to_vec())
+}
+
+/// Whether the directory's DACL is already the one `protect_to_current_user`
+/// writes: protected, one explicit allow entry, for this SID, inheritable.
+/// Reading is cheap; a write propagates to everything beneath the directory,
+/// so it is not repeated when nothing changed.
+fn is_private_to(path: &Path, sid: &[u8]) -> Result<bool, String> {
+    let dacl = read_dacl(path)?;
+    if dacl.acl.is_null() {
+        return Ok(false);
+    }
+    let mut control: u16 = 0;
+    let mut revision: u32 = 0;
+    // SAFETY: the descriptor lives in `dacl`; both out pointers are valid.
+    let read_control =
+        unsafe { GetSecurityDescriptorControl(dacl.descriptor, &mut control, &mut revision) };
+    if read_control == 0 || control & SE_DACL_PROTECTED == 0 {
+        return Ok(false);
+    }
+    let mut info = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    // SAFETY: the ACL lives in `dacl`; the out struct matches the class.
+    let ok = unsafe {
+        GetAclInformation(
+            dacl.acl,
+            (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    };
+    if ok == 0 || info.AceCount != 1 {
+        return Ok(false);
+    }
+    let mut ace: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: index 0 is below the count the system reported; the out pointer is valid.
+    if unsafe { GetAce(dacl.acl, 0, &mut ace) } == 0 {
+        return Ok(false);
+    }
+    // SAFETY: GetAce returned a pointer to an entry that starts with an ACE_HEADER.
+    let header = unsafe { ace.cast::<ACE_HEADER>().read_unaligned() };
+    let inherit = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
+    if header.AceType != ACCESS_ALLOWED_ACE_TYPE as u8
+        || u32::from(header.AceFlags) & INHERITED_ACE != 0
+        || header.AceFlags & inherit != inherit
+    {
+        return Ok(false);
+    }
+    // SAFETY: the entry is an ACCESS_ALLOWED_ACE (its type was checked); its SID starts at `SidStart`, inside the entry.
+    let same = unsafe {
+        let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
+        let entry_sid = std::ptr::addr_of!((*allowed).SidStart) as PSID;
+        EqualSid(entry_sid, sid.as_ptr() as PSID) != 0
+    };
+    Ok(same)
+}
+
+/// Gives the directory a protected DACL with one entry: the current user,
+/// full control, inherited by everything created beneath (REQ-WS-001,
+/// external design §14.1). Nothing is inherited from the parent, so no one
+/// else (the system, the administrators, other users) is granted anything
+/// through the directory; the owner keeps the right to change the DACL
+/// whatever it says, and the current user's entry is in the DACL that
+/// replaces the old one in the same call, so mimlys is never locked out.
+/// Called at every open, before the runtime adds the container's entries on
+/// the subdirectories, so that the entries it adds are the only others; when
+/// the DACL already is this one nothing is written.
+pub fn protect_to_current_user(path: &Path) -> Result<(), String> {
+    let sid = current_user_sid()?;
+    let _lock = DaclLock::acquire(path);
+    if is_private_to(path, &sid)? {
+        return Ok(());
+    }
+    // A specific mask, not GENERIC_ALL: the system turns an inheritable
+    // entry with a generic right into two (this directory, and inherit-only),
+    // and `is_private_to` expects the one entry written here.
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: FILE_ALL_ACCESS,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.as_ptr() as *mut u16,
+        },
+    };
+    let mut new_acl: *mut ACL = std::ptr::null_mut();
+    // SAFETY: one entry is given; there is no base ACL; `new_acl` receives an allocation freed below.
+    let err = unsafe { SetEntriesInAclW(1, &entry, std::ptr::null(), &mut new_acl) };
+    if err != ERROR_SUCCESS {
+        return Err(format!(
+            "SetEntriesInAclW failed: {}",
+            std::io::Error::from_raw_os_error(err as i32)
+        ));
+    }
+    let mut path_w = wide(path);
+    // SAFETY: the path is null-terminated UTF-16; only the DACL is replaced, protected, with the ACL just built.
+    let err = unsafe {
+        SetNamedSecurityInfoW(
+            path_w.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            new_acl,
+            std::ptr::null(),
+        )
+    };
+    // SAFETY: the new ACL was allocated by SetEntriesInAclW for the caller to free once.
+    unsafe { LocalFree(new_acl.cast()) };
+    if err != ERROR_SUCCESS {
+        return Err(format!(
+            "SetNamedSecurityInfoW({}) failed: {}",
+            path.display(),
+            std::io::Error::from_raw_os_error(err as i32)
+        ));
+    }
+    Ok(())
 }

@@ -1289,10 +1289,46 @@ impl Config {
             })
     }
 
+    /// Whether a configured `runtime.data_dir` lies inside the temporary
+    /// directory (REQ-WS-001): a cleaner of temporary files can then delete
+    /// tasks. Both paths are compared canonical, the data directory by its
+    /// longest existing ancestor when it does not exist yet. The default
+    /// location is never configured and never in question.
+    pub fn data_dir_in_temp_dir(&self) -> bool {
+        self.runtime.data_dir.as_deref().is_some_and(|dir| {
+            canonical_lenient(dir).starts_with(canonical_lenient(&std::env::temp_dir()))
+        })
+    }
+
     /// The resolved configuration as TOML, secrets as references only.
     pub fn to_toml(&self) -> String {
         toml::to_string_pretty(self).unwrap_or_default()
     }
+}
+
+/// The path made absolute and canonical; a path that does not exist yet is
+/// canonical up to its longest existing ancestor, followed by the rest with
+/// its `..` resolved by name (nothing that does not exist can be a link).
+fn canonical_lenient(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let components: Vec<Component<'_>> = absolute.components().collect();
+    for existing in (1..=components.len()).rev() {
+        let prefix: PathBuf = components[..existing].iter().collect();
+        if let Ok(mut canonical) = prefix.canonicalize() {
+            for component in &components[existing..] {
+                match component {
+                    Component::ParentDir => {
+                        canonical.pop();
+                    }
+                    Component::CurDir => {}
+                    other => canonical.push(other),
+                }
+            }
+            return canonical;
+        }
+    }
+    absolute
 }
 
 #[cfg(test)]

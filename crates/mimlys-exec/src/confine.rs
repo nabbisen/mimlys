@@ -428,6 +428,38 @@ pub fn harden_process() -> std::io::Result<()> {
     }
 }
 
+/// Creates the data directory, owner-only from the start (REQ-WS-001,
+/// external design §14.1). Unix: every directory it creates has mode 0700
+/// (given to `mkdir`, not applied afterwards), and an existing one is
+/// brought to 0700. Windows: the directory gets a protected DACL granting
+/// the current user full control and nothing else, at every call. The
+/// containers' entries on the subdirectories are added after this, never
+/// before.
+pub fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        posix::create_private_dir(path)
+    }
+    #[cfg(windows)]
+    {
+        windows::create_private_dir(path)
+    }
+}
+
+/// Creates a directory inside the data directory: mode 0700 from the start
+/// on Unix; on Windows an ordinary directory, which inherits the data
+/// directory's owner-only DACL.
+pub fn create_private_subdir(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        posix::create_private_dir(path)
+    }
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
 /// Clause P on Linux, from the worker's own process (no-op elsewhere).
 pub fn set_no_new_privs() -> std::io::Result<()> {
     #[cfg(unix)]
