@@ -168,6 +168,11 @@ pub const LIM_O5_EXTERNAL_DEADLINE_MS_RANGE: (i64, i64) = (1000, 600_000);
 pub const LIM_O6_SERVER_STARTUP_MS: i64 = 15_000;
 /// LIM-O6: configurable range in milliseconds.
 pub const LIM_O6_SERVER_STARTUP_MS_RANGE: (i64, i64) = (1000, 120_000);
+/// LIM-O8: the wait for `xcrun --find cc` to create its cache before the
+/// worker starts (macOS, an Xcode selected, the cache absent), in
+/// milliseconds. Past it the start goes on and `check` and `status` say the
+/// cache is missing (external design §13.3).
+pub const LIM_O8_XCRUN_CACHE_MS: u64 = 10_000;
 /// LIM-O2: time until a cancelled execution's tree is terminated, in milliseconds.
 pub const LIM_O2_CANCEL_MS: u64 = 2_000;
 /// LIM-C5: steps of a forked task's history shown as context.

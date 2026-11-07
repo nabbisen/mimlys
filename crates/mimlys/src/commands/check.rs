@@ -25,6 +25,12 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
             &loaded.config.data_dir()?.to_string_lossy(),
         ));
     }
+    // The same as the runtime does before it starts a worker: make the cache
+    // (a no-op elsewhere than macOS with an Xcode), and say if it cannot be made.
+    let xcrun_missing = crate::app::warm_xcrun_cache().map(|f| f.to_string_lossy().into_owned());
+    if let Some(file) = &xcrun_missing {
+        out.line(messages::xcrun_cache_missing_warning(file));
+    }
     for (tool, server) in loaded.config.declared_external_tools() {
         out.line(messages::ceiling_external(
             &tool,
@@ -42,7 +48,7 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
     }
     out.line("");
     out.line(loaded.config.to_toml().trim_end());
-    out.value(&serde_json::json!({
+    let mut value = serde_json::json!({
         "ok": true,
         "config_path": loaded.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
         "data_dir": loaded.config.data_dir()?.to_string_lossy(),
@@ -51,6 +57,10 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         "external_tools": loaded.config.declared_external_tools().into_iter().map(|(t, s)| serde_json::json!({"tool": t, "declared_by": s})).collect::<Vec<_>>(),
         "undeclared_external_tools": loaded.config.undeclared_external_tools(),
         "host_tools": loaded.config.host_tools.keys().collect::<Vec<_>>(),
-    }));
+    });
+    if let Some(file) = xcrun_missing {
+        value["xcrun_cache_missing"] = serde_json::Value::String(file);
+    }
+    out.value(&value);
     Ok(())
 }

@@ -49,6 +49,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 mod sys;
 
+pub mod xcrun;
+
 #[cfg(all(target_os = "macos", feature = "probe-syscalls"))]
 pub mod probe;
 
@@ -672,6 +674,47 @@ pub fn report(deny_network: bool, outcome: &Outcome) -> BTreeMap<String, ClauseS
 #[cfg(target_os = "macos")]
 static MEMBERSHIP_VERIFIED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// `xcrun`: the system's, or, in a debug build, the one `MIMLYS_TEST_XCRUN`
+/// names (the tests make the warming fail with it; absent from release builds,
+/// as the probe tool's hooks are).
+#[cfg(target_os = "macos")]
+fn xcrun_path() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("MIMLYS_TEST_XCRUN").filter(|v| !v.is_empty()) {
+        return PathBuf::from(path);
+    }
+    PathBuf::from("/usr/bin/xcrun")
+}
+
+/// The cache file this Mac's `xcrun` needs, if any ([`xcrun::cache_file`]):
+/// the active developer directory is read from the `xcode_select` link.
+#[cfg(target_os = "macos")]
+fn xcrun_cache_file() -> Option<PathBuf> {
+    xcrun::cache_file(
+        std::fs::read_link(XCODE_SELECT_LINK).ok().as_deref(),
+        sys::user_temp_dir().as_deref(),
+    )
+}
+
+/// Whether `xcrun`'s cache is needed and there, without making it.
+#[cfg(target_os = "macos")]
+pub fn xcrun_cache_state() -> xcrun::CacheState {
+    xcrun::state_of(xcrun_cache_file())
+}
+
+/// Makes `xcrun`'s cache where an Xcode is selected and it is absent, outside
+/// any sandbox (the caller is the runtime, before it starts a worker), waiting
+/// at most LIM-O8; says what is true afterwards (implementation decisions,
+/// point 8; external design §13.3).
+#[cfg(target_os = "macos")]
+pub fn ensure_xcrun_cache() -> xcrun::CacheState {
+    xcrun::ensure(
+        xcrun_cache_file(),
+        &xcrun_path(),
+        std::time::Duration::from_millis(mimlys_core::limits::LIM_O8_XCRUN_CACHE_MS),
+    )
+}
 
 /// The sweeper's process id in the worker (0: none). The worker's loop
 /// excludes it from the members it kills, counts and weighs.
