@@ -420,28 +420,21 @@ fn m2_status_shows_tier_and_clauses() {
         "{}",
         json["clauses"]
     );
-    // K: the process group on Linux and the job on Windows; macOS waits for M6c.
-    if cfg!(target_os = "macos") {
-        assert_eq!(
-            json["clauses"]["termination"]["state"], "unavailable",
-            "{}",
-            json["clauses"]
-        );
-        assert!(
-            json["clauses"]["termination"]["reason"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("M6c"),
-            "{}",
-            json["clauses"]
-        );
-    } else {
-        assert_eq!(
-            json["clauses"]["termination"]["state"], "enforced",
-            "{}",
-            json["clauses"]
-        );
-    }
+    // K: the process group on Linux, the job on Windows, sandbox membership
+    // on macOS (RFC 011 Amendment 2, settled); on a macOS without
+    // `sandbox_init` the worker reports it unavailable, never enforced on faith.
+    let seatbelt_missing =
+        cfg!(target_os = "macos") && json["clauses"]["filesystem"]["reason"] == "seatbelt_missing";
+    assert_eq!(
+        json["clauses"]["termination"]["state"],
+        if seatbelt_missing {
+            "unavailable"
+        } else {
+            "enforced"
+        },
+        "{}",
+        json["clauses"]
+    );
     assert!(json["clauses"]["network"]["state"].is_string());
     assert_eq!(json["interpreters"][0]["language"], "javascript");
     let out = run_bounded(
