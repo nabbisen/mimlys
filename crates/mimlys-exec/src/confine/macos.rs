@@ -690,7 +690,7 @@ fn xcrun_path() -> PathBuf {
 /// The cache file this Mac's `xcrun` needs, if any ([`xcrun::cache_file`]):
 /// the active developer directory is read from the `xcode_select` link.
 #[cfg(target_os = "macos")]
-fn xcrun_cache_file() -> Option<PathBuf> {
+pub fn xcrun_cache_file() -> Option<PathBuf> {
     xcrun::cache_file(
         std::fs::read_link(XCODE_SELECT_LINK).ok().as_deref(),
         sys::user_temp_dir().as_deref(),
