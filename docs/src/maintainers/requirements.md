@@ -390,7 +390,7 @@ The Linux seccomp filter shall always deny `io_uring_setup`, `io_uring_enter`, `
 ## 12. Workspace
 
 ### REQ-WS-001 Location and permissions — M1 · T
-Workspaces shall live under `<data_dir>/workspaces/<task_id>/`, the data directory created with mode 0700 or an owner-only DACL, never under a temporary directory. (M-17, THR-31)
+Workspaces shall live under `<data_dir>/workspaces/<task_id>/`, the data directory created with mode 0700 or an owner-only DACL. The default data directory is never under a temporary directory; a configured one inside it is named by `check` and `status` with the risk (a cleaner of temporary files can delete tasks). (M-17, THR-31; amended 2026-11-07)
 
 ### REQ-WS-002 Materialization — M1 · T
 A workspace shall be a copy of the project scope (reflink where available; never a hard link into a writable tree). Symbolic links whose target stays inside the scope are recreated; others are omitted with a notice. A scope above LIM-W1 or LIM-W2 shall be refused at creation with the measured size. (D-09, THR-27)
