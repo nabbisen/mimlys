@@ -14,6 +14,17 @@
 //! string and reads it), `hold` (prints the address of that string and
 //! sleeps), `read-proc <ENVVAR> <file>` (reads `/proc/<pid in ENVVAR>/<file>`).
 //! Each prints one line and exits non-zero when the thing could not be done.
+//!
+//! Also, for the macOS clause suite (RFC 011 Amendment 2; REQ-CONF-002,
+//! REQ-CONF-011, REQ-CONF-012): `getaddrinfo <name>` (a name lookup, which
+//! on macOS goes through a mach service and a Unix socket, an egress
+//! channel), `unix-connect <path>` (connect to an existing Unix socket), `unix-socket <path>` (bind, listen and connect a Unix socket
+//! there), `id` (`/usr/bin/id -u`: an ordinary `exec`), `sudo-id`
+//! (`/usr/bin/sudo -n /usr/bin/id -u`: an `exec` of a setuid binary), and on
+//! macOS only, from `mimlys_exec::confine::macos::probe`: `procargs
+//! <PIDVAR> <needle>` (`sysctl KERN_PROCARGS2` of the pid in `PIDVAR`, and
+//! whether `needle` is in its arguments and environment), `procinfo
+//! <PIDVAR>` (`proc_pidinfo`) and `signal0 <PIDVAR>` (signal 0).
 
 use std::io::Write;
 
@@ -61,6 +72,35 @@ fn vm_read(args: &[String]) -> i32 {
                 "vm-read failed: errno={errno} ({})",
                 std::io::Error::from_raw_os_error(errno)
             );
+            3
+        }
+    }
+}
+
+/// The pid held by the environment variable `args[1]`, else the exit code to give.
+#[cfg(target_os = "macos")]
+fn pid_from_env(args: &[String]) -> Result<i32, i32> {
+    let var = args.get(1).map(String::as_str).unwrap_or("");
+    match std::env::var(var).ok().and_then(|v| v.parse::<i32>().ok()) {
+        Some(pid) => Ok(pid),
+        None => {
+            println!("{var} unset or not a pid");
+            Err(2)
+        }
+    }
+}
+
+/// Runs a program and prints its first line of output, or what refused it.
+#[cfg(unix)]
+fn run_and_print(name: &str, program: &str, args: &[&str]) -> i32 {
+    match std::process::Command::new(program).args(args).output() {
+        Ok(out) => {
+            let line = String::from_utf8_lossy(&out.stdout);
+            println!("{name} ran: {}", line.trim());
+            if out.status.success() { 0 } else { 4 }
+        }
+        Err(e) => {
+            println!("{name} failed: {}", e.kind());
             3
         }
     }
@@ -120,6 +160,120 @@ fn main() {
                 }
             }
         }
+        Some("getaddrinfo") => {
+            use std::net::ToSocketAddrs;
+            let name = args.get(1).map(String::as_str).unwrap_or("localhost");
+            match (name, 443).to_socket_addrs() {
+                Ok(addrs) => {
+                    println!("getaddrinfo resolved {} addresses", addrs.count());
+                    0
+                }
+                Err(e) => {
+                    println!("getaddrinfo failed: {}", e.kind());
+                    3
+                }
+            }
+        }
+        #[cfg(unix)]
+        Some("unix-socket") => {
+            let path = args.get(1).map(String::as_str).unwrap_or("");
+            let _ = std::fs::remove_file(path);
+            match std::os::unix::net::UnixListener::bind(path) {
+                Err(e) => {
+                    println!("unix-socket bind failed: {}", e.kind());
+                    3
+                }
+                Ok(_listener) => match std::os::unix::net::UnixStream::connect(path) {
+                    Ok(_) => {
+                        println!("unix-socket bound and connected");
+                        let _ = std::fs::remove_file(path);
+                        0
+                    }
+                    Err(e) => {
+                        println!("unix-socket connect failed: {}", e.kind());
+                        3
+                    }
+                },
+            }
+        }
+        #[cfg(unix)]
+        Some("unix-connect") => {
+            let path = args.get(1).map(String::as_str).unwrap_or("");
+            match std::os::unix::net::UnixStream::connect(path) {
+                Ok(_) => {
+                    println!("unix-connect connected");
+                    0
+                }
+                Err(e) => {
+                    println!("unix-connect failed: {}", e.kind());
+                    3
+                }
+            }
+        }
+        #[cfg(unix)]
+        Some("id") => run_and_print("id", "/usr/bin/id", &["-u"]),
+        #[cfg(unix)]
+        Some("sudo-id") => run_and_print("sudo-id", "/usr/bin/sudo", &["-n", "/usr/bin/id", "-u"]),
+        #[cfg(target_os = "macos")]
+        Some("procargs") => {
+            use mimlys_exec::confine::macos::probe::procargs_contains;
+            match pid_from_env(&args) {
+                Err(code) => code,
+                Ok(pid) => {
+                    let needle = args.get(2).map(String::as_str).unwrap_or("");
+                    match procargs_contains(pid, needle) {
+                        Ok(seen) => {
+                            println!(
+                                "procargs read; the needle is visible: {}",
+                                if seen { "yes" } else { "no" }
+                            );
+                            0
+                        }
+                        Err(errno) => {
+                            println!(
+                                "procargs failed: errno={errno} ({})",
+                                std::io::Error::from_raw_os_error(errno)
+                            );
+                            3
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        Some("procinfo") => match pid_from_env(&args) {
+            Err(code) => code,
+            Ok(pid) => match mimlys_exec::confine::macos::probe::process_info(pid) {
+                Ok(()) => {
+                    println!("procinfo answered");
+                    0
+                }
+                Err(errno) => {
+                    println!(
+                        "procinfo failed: errno={errno} ({})",
+                        std::io::Error::from_raw_os_error(errno)
+                    );
+                    3
+                }
+            },
+        },
+        #[cfg(target_os = "macos")]
+        Some("signal0") => match pid_from_env(&args) {
+            Err(code) => code,
+            Ok(pid) => match mimlys_exec::confine::macos::probe::signal_zero(pid) {
+                Ok(()) => {
+                    println!("signal0 allowed");
+                    0
+                }
+                Err(errno) => {
+                    println!(
+                        "signal0 failed: errno={errno} ({})",
+                        std::io::Error::from_raw_os_error(errno)
+                    );
+                    3
+                }
+            },
+        },
         Some("env") => {
             let name = args.get(1).map(String::as_str).unwrap_or("");
             match std::env::var(name) {
@@ -261,7 +415,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|env|sleep|setsid-sleep|fork|alloc|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }
