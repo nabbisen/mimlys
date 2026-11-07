@@ -5,11 +5,28 @@
 //! inheritable to what lies beneath. Nothing else in the directory's
 //! security descriptor is touched: the entries the directory inherits stay
 //! inherited and its protection flag stays as it was; and `has_entry` reads
-//! the descriptor back rather than trusting any record. A write is a merge
-//! into the DACL read a moment earlier, so one writer at a time per
-//! directory holds a named mutex across the runtimes of this machine (two
-//! installations granting their containers one directory at once would
-//! otherwise lose one another's entry).
+//! the descriptor back rather than trusting any record.
+//!
+//! A write is a merge into the DACL read a moment earlier, so one writer at
+//! a time per directory holds a named mutex across the runtimes of this
+//! machine, for the whole write (two installations granting their
+//! containers one directory at once would otherwise lose one another's
+//! entry; THR-36). The system propagates a write to every file beneath the
+//! directory, so a write takes from 0.1 s to several seconds (D1), and a
+//! second writer that read during the first one's call would read the base
+//! as it was before it. A writer that finds the mutex held says so once in
+//! the log, waits up to LIM-O7 and then **refuses** the write with
+//! `acl_not_applied` and the reason (`the permissions of <dir> are being
+//! written by another runtime`); it never writes on a base read while
+//! another write was landing. The callers report the refusal as they report
+//! any `acl_not_applied`: `toolchain grant` and `revoke` fail with it, and
+//! the start of mimlys fails with it when its own directories cannot be
+//! written (the next start applies them). An abandoned mutex (its holder
+//! ended without releasing it) is acquired and the write proceeds: the
+//! holder's write either landed or did not, and the writer reads the base
+//! again under the lock, so it merges into whichever it was. A mutex the
+//! system refuses to create or to wait on leaves no holder to wait for; the
+//! write goes ahead and the log says so (`dacl_wait::Decision`).
 //! The merge starts from the directory's explicit entries alone, and the
 //! system recomputes the inherited ones from the parent on the write.
 //! The write marks the descriptor auto-inherited, as every write through
@@ -19,13 +36,13 @@
 //!
 //! Every `unsafe` block is justified (REQ-CONF-010).
 
-use mimlys_core::limits::LIM_O2_CANCEL_MS;
+use crate::confine::dacl_wait::{Attempt, Decision, decide_with_limit, refusal_reason};
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, HANDLE, LocalFree,
-    WAIT_ABANDONED, WAIT_OBJECT_0,
+    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetExplicitEntriesFromAclW, GetNamedSecurityInfoW,
@@ -120,10 +137,12 @@ struct DaclLock {
 }
 
 impl DaclLock {
-    /// Takes the lock within LIM-O2; `None` when the system refuses the
-    /// mutex or the wait runs out (the write goes ahead, noted in the log:
-    /// a DACL write takes milliseconds and a holder that died abandons it).
-    fn acquire(path: &Path) -> Option<Self> {
+    /// Takes the lock, waiting up to LIM-O7 when another writer holds it
+    /// (one `info` line per wait). `Ok(None)` when the system gives no mutex
+    /// to wait on (the write goes ahead, noted in the log); `Err` with the
+    /// `acl_not_applied` reason when the wait runs out: never a write on a
+    /// stale base.
+    fn acquire(path: &Path) -> Result<Option<Self>, String> {
         let mut key: u64 = 0xcbf2_9ce4_8422_2325;
         for b in path.to_string_lossy().to_lowercase().bytes() {
             key ^= u64::from(b);
@@ -135,24 +154,55 @@ impl DaclLock {
         if handle.is_null() {
             tracing::debug!(
                 target: "mimlys_worker",
-                "no mutex for the permissions of {}: {}",
+                "no mutex for the permissions of {}: {}; writing without it",
                 path.display(),
                 std::io::Error::last_os_error()
             );
-            return None;
+            return Ok(None);
         }
-        // SAFETY: the handle was just created and is valid.
-        match unsafe { WaitForSingleObject(handle, LIM_O2_CANCEL_MS as u32) } {
-            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(Self { handle }),
-            _ => {
+        let decision = decide_with_limit(
+            |timeout_ms| {
+                // SAFETY: the handle was just created and is valid.
+                match unsafe { WaitForSingleObject(handle, timeout_ms) } {
+                    WAIT_OBJECT_0 => Attempt::Acquired,
+                    WAIT_ABANDONED => Attempt::Abandoned,
+                    WAIT_TIMEOUT => Attempt::Held,
+                    _ => Attempt::Failed,
+                }
+            },
+            || {
+                tracing::info!(
+                    target: "mimlys_worker",
+                    "waiting for another runtime's write of the permissions of {}",
+                    path.display()
+                );
+            },
+        );
+        match decision {
+            Decision::Write => Ok(Some(Self { handle })),
+            Decision::WriteAfterAbandoned => {
+                tracing::info!(
+                    target: "mimlys_worker",
+                    "the previous writer of the permissions of {} ended without releasing the lock; reading them again",
+                    path.display()
+                );
+                Ok(Some(Self { handle }))
+            }
+            Decision::WriteUnlocked => {
                 tracing::warn!(
                     target: "mimlys_worker",
-                    "the permissions of {} are being written by another runtime past LIM-O2; writing anyway",
-                    path.display()
+                    "the wait for the permissions of {} failed: {}; writing without the lock",
+                    path.display(),
+                    std::io::Error::last_os_error()
                 );
                 // SAFETY: the handle is valid and closed exactly once.
                 unsafe { CloseHandle(handle) };
-                None
+                Ok(None)
+            }
+            Decision::Refuse => {
+                // SAFETY: the handle is valid and closed exactly once.
+                unsafe { CloseHandle(handle) };
+                Err(refusal_reason(&path.display().to_string()))
             }
         }
     }
@@ -252,7 +302,7 @@ fn explicit_entries(acl: *const ACL) -> Result<Option<Vec<u8>>, String> {
 }
 
 fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
-    let _lock = DaclLock::acquire(path);
+    let _lock = DaclLock::acquire(path)?;
     let old = read_dacl(path)?;
     let mut explicit = explicit_entries(old.acl)?;
     let base: *mut ACL = explicit
@@ -457,7 +507,7 @@ fn is_private_to(path: &Path, sid: &[u8]) -> Result<bool, String> {
 /// the DACL already is this one nothing is written.
 pub fn protect_to_current_user(path: &Path) -> Result<(), String> {
     let sid = current_user_sid()?;
-    let _lock = DaclLock::acquire(path);
+    let _lock = DaclLock::acquire(path)?;
     if is_private_to(path, &sid)? {
         return Ok(());
     }
