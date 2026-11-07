@@ -49,11 +49,27 @@ mod with_a_stand_in {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A script playing `xcrun`.
+    /// The one executable script, written once: a test that wrote its own
+    /// while another thread forked would meet `ETXTBSY` (the forked child
+    /// holds the write handle until it execs). It runs the file `body` beside
+    /// the path it was called by.
+    fn shared_script() -> &'static (tempfile::TempDir, PathBuf) {
+        static SCRIPT: std::sync::OnceLock<(tempfile::TempDir, PathBuf)> =
+            std::sync::OnceLock::new();
+        SCRIPT.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("runner");
+            std::fs::write(&path, "#!/bin/sh\nexec sh \"$(dirname \"$0\")/body\" \"$@\"\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (dir, path)
+        })
+    }
+
+    /// A script playing `xcrun`: a symlink to the shared runner, and a `body` beside it.
     fn stand_in(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("xcrun");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&shared_script().1, &path).unwrap();
+        std::fs::write(dir.join("body"), format!("{body}\n")).unwrap();
         path
     }
 

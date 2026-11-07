@@ -904,3 +904,45 @@ fn rfc_011_a2_watchdog_verdicts() {
     assert_eq!(verdict(&[], 2 * gib, 64), None);
     assert_eq!(verdict(&many, 0, 0), None);
 }
+
+/// RFC 011 Amendment 2, implementation decisions, point 8: never a write rule
+/// for `xcrun`'s cache. The user's own unconfined `xcrun` trusts the file
+/// later, so a tool that could write it could choose what that `xcrun` runs.
+/// The profile admits the cache by name to read (and run), and no rule that
+/// writes names it or the per-user temporary directory it lives in.
+#[test]
+fn rfc_011_a2_xcrun_cache_is_never_writable() {
+    let temp = "/private/var/folders/h5/abc/T";
+    let mut s = spec(&["/usr"], &["/data/workspaces", "/data/tmp"]);
+    s.read_paths = system_read_paths_from(
+        Some(PathBuf::from(
+            "/Applications/Xcode_26.6.app/Contents/Developer",
+        )),
+        false,
+        false,
+        Some(PathBuf::from(format!("{temp}/"))),
+    );
+    let p = generate(&s).unwrap();
+    let cache = format!("{temp}/xcrun_db");
+    assert!(
+        p.lines()
+            .any(|l| l.starts_with("(allow file-read*") && l.contains(&cache)),
+        "the cache is admitted to read: {p}"
+    );
+    for line in p.lines().filter(|l| l.contains("file-write")) {
+        assert!(
+            !line.contains("xcrun_db"),
+            "a write rule names the cache: {line}"
+        );
+        assert!(
+            !line.contains(temp),
+            "a write rule names its directory: {line}"
+        );
+    }
+    // The directory itself is not readable either: it holds other programs' files.
+    assert!(
+        !p.lines()
+            .any(|l| l.contains(&format!("(subpath \"{temp}\")"))),
+        "{p}"
+    );
+}
