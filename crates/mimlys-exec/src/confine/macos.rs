@@ -709,9 +709,11 @@ pub fn xcrun_cache_state() -> xcrun::CacheState {
 /// point 8; external design §13.3).
 #[cfg(target_os = "macos")]
 pub fn ensure_xcrun_cache() -> xcrun::CacheState {
+    let (program, args) = xcrun::warming_command(&xcrun_path(), sys::translated_by_rosetta());
     xcrun::ensure(
         xcrun_cache_file(),
-        &xcrun_path(),
+        &program,
+        &args,
         std::time::Duration::from_millis(mimlys_core::limits::LIM_O8_XCRUN_CACHE_MS),
     )
 }

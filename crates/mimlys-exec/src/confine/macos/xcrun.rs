@@ -77,15 +77,34 @@ pub fn state_of(file: Option<PathBuf>) -> CacheState {
     }
 }
 
-/// Runs `xcrun --find clang` (outside any sandbox: the caller is the runtime)
+/// What to run to make the cache: `xcrun --find clang`. A translated (Intel)
+/// runtime on Apple silicon runs it through `arch -arm64`: the cache does not
+/// depend on the architecture of the asker (measured), and the first launch of
+/// an Intel `xcrun` is translated by Rosetta, which took longer than LIM-O8
+/// (about a minute on the runner) and left a half-written cache behind.
+pub fn warming_command(xcrun: &Path, translated: bool) -> (PathBuf, Vec<String>) {
+    let find = ["--find".to_owned(), "clang".to_owned()];
+    if translated {
+        let mut args = vec!["-arm64".to_owned(), xcrun.to_string_lossy().into_owned()];
+        args.extend(find);
+        (PathBuf::from("/usr/bin/arch"), args)
+    } else {
+        (xcrun.to_path_buf(), find.to_vec())
+    }
+}
+
+/// Runs the warming command (outside any sandbox: the caller is the runtime)
 /// and waits at most `wait`; a child still running then is killed and
-/// reaped. Returns whether `file` exists afterwards. The environment is not
-/// inherited (the runtime's holds `env:`-referenced secrets and `xcrun` needs
-/// none of it).
-pub fn warm(file: &Path, xcrun: &Path, wait: Duration) -> bool {
+/// reaped. The cache counts as made only if the command ended successfully
+/// and the file exists: anything else (a timeout, a failure) removes what
+/// the command left, since `xcrun` leaves a partial file when it is killed
+/// and a partial file would be taken for the cache. The environment is not
+/// inherited (the runtime's holds `env:`-referenced secrets and `xcrun`
+/// needs none of it). Returns whether the cache was made.
+pub fn warm(file: &Path, program: &Path, args: &[String], wait: Duration) -> bool {
     let started = Instant::now();
-    let spawned = std::process::Command::new(xcrun)
-        .args(["--find", "clang"])
+    let spawned = std::process::Command::new(program)
+        .args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .stdin(std::process::Stdio::null())
@@ -93,31 +112,40 @@ pub fn warm(file: &Path, xcrun: &Path, wait: Duration) -> bool {
         .stderr(std::process::Stdio::null())
         .spawn();
     let Ok(mut child) = spawned else {
-        return file.exists();
+        return false;
     };
-    loop {
+    let ended_well = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status.success(),
             Ok(None) if started.elapsed() < wait => {
                 std::thread::sleep(Duration::from_millis(20));
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break;
+                break false;
             }
         }
+    };
+    if ended_well && file.exists() {
+        return true;
     }
-    file.exists()
+    let _ = std::fs::remove_file(file);
+    false
 }
 
 /// Makes the cache if it is needed and absent, and says what is true
-/// afterwards. `xcrun` and `wait` are the caller's (the macOS wrapper gives
-/// the system's and LIM-O8).
-pub fn ensure(file: Option<PathBuf>, xcrun: &Path, wait: Duration) -> CacheState {
+/// afterwards. The command and `wait` are the caller's (the macOS wrapper
+/// gives the system's and LIM-O8).
+pub fn ensure(
+    file: Option<PathBuf>,
+    program: &Path,
+    args: &[String],
+    wait: Duration,
+) -> CacheState {
     match state_of(file) {
         CacheState::Missing { file } => {
-            warm(&file, xcrun, wait);
+            warm(&file, program, args, wait);
             state_of(Some(file))
         }
         other => other,
