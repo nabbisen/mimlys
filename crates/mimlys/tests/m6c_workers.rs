@@ -301,6 +301,7 @@ fn req_conf_009_a_killed_worker_leaves_no_member() {
         matching(&sleeper).is_empty() && matching(&tool).is_empty()
     });
     let took = killed_at.elapsed();
+    eprintln!("MEASURE members gone {took:?} after SIGKILL of the worker");
     let outcome = run.join().unwrap();
     assert!(
         gone,
