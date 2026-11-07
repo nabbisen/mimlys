@@ -74,6 +74,15 @@ impl Env {
         let config = data.path().join("config.toml");
         let script_path = data.path().join("script.json");
         std::fs::write(&script_path, serde_json::to_string(script).unwrap()).unwrap();
+        // MEASUREMENT (C9 section 3, throwaway branch): the probe tool lives in
+        // the runtime's own `interpreters` directory (a read entry of the
+        // container), because the worker's directory carries no entry here.
+        let data_dir = data.path().join("data");
+        mimlys_exec::confine::create_private_dir(&data_dir).unwrap();
+        let tools = data_dir.join("interpreters");
+        std::fs::create_dir_all(&tools).unwrap();
+        let tool_copy = tools.join("mimlys-probe-tool.exe");
+        std::fs::copy(probe_tool(), &tool_copy).unwrap();
         let text = format!(
             r#"config_version = 1
 [runtime]
@@ -113,7 +122,7 @@ network = true
             data = data.path().join("data").to_string_lossy(),
             script = script_path.to_string_lossy(),
             builtin = BUILTIN,
-            tool = probe_tool().to_string_lossy(),
+            tool = plain(&tool_copy),
         );
         std::fs::write(&config, text).unwrap();
         Self {
@@ -984,6 +993,51 @@ fn req_conf_008_revoke_all_asks_and_reports() {
             Some("record" | "scan")
         ));
     }
+}
+
+/// MEASUREMENT (C9 section 3): with an entry on the worker binary file and
+/// none on its directory, the container starts the worker (the probe in
+/// `status`) and the worker runs a tool.
+#[test]
+fn c9_file_entry_measurement() {
+    let env = Env::new(&[probe(&["ok"]), probe(&["cwd"]), complete()], "");
+    let (tier, table) = clauses(&env);
+    eprintln!("MEASURE tier {tier}; clauses {table:?}");
+    let (_, listed) = env.json(&["toolchain", "list"]);
+    let sid = listed["container"]["sid"].as_str().unwrap().to_owned();
+    let worker = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"));
+    let on_file = icacls(worker);
+    let on_dir = icacls(worker.parent().unwrap());
+    eprintln!("MEASURE icacls of the worker file:\n{on_file}");
+    eprintln!("MEASURE icacls of the worker directory:\n{on_dir}");
+    eprintln!(
+        "MEASURE file carries the container: {}; directory carries it: {}",
+        on_file.contains(&sid),
+        on_dir.contains(&sid)
+    );
+    assert!(on_file.contains(&sid), "the file carries the container");
+    assert!(
+        !on_dir.contains(&sid),
+        "the directory carries no entry of this container"
+    );
+    assert_eq!(tier, "full", "{table:?}");
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "file entry",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    eprintln!("MEASURE observations:\n{}", account(&obs));
+    assert_eq!(obs.len(), 2, "{}", account(&obs));
+    assert_eq!(exit_code_of(&obs[0]), 0, "{}", account(&obs));
+    assert_eq!(stdout_of(&obs[0]).trim(), "ok");
 }
 
 // ---------------------------------------------------------------------

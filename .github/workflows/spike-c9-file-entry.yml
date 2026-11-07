@@ -1,0 +1,42 @@
+# C9 section 3 MEASUREMENT (throwaway branch, never merged): is an entry on the
+# worker binary FILE (instead of its directory) enough for the AppContainer to
+# start the worker and for the worker to run tools?
+name: spike-c9-file-entry
+on:
+  push:
+    branches: [c9-file-entry]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: c9-file-entry
+      - name: build
+        shell: bash
+        run: cargo test -p mimlys --features test-bins --test m6b_host_tools --no-run
+      - name: the measurement test
+        shell: bash
+        run: |
+          set +e
+          cargo test -p mimlys --features test-bins --test m6b_host_tools c9_file_entry_measurement -- --nocapture --exact > measure.log 2>&1
+          echo "measurement exit: $?" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -aE 'MEASURE|^test |test result|panicked|assert' measure.log | cut -c1-600
+          echo "::group::full log"; cat measure.log | cut -c1-600; echo "::endgroup::"
+          exit 0
+      - name: the rest of the suite (tests that name the worker's directory or the probe tool in the build directory are skipped)
+        shell: bash
+        run: |
+          set +e
+          cargo test -p mimlys --features test-bins --test m6b_host_tools -- --skip c9_file_entry --skip req_conf_008 --skip m6b_toolchain_permissions > rest.log 2>&1
+          echo "rest exit: $?" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -aE '^test |test result' rest.log | cut -c1-300
+          echo "::group::full log"; cat rest.log | cut -c1-600; echo "::endgroup::"
+          exit 0

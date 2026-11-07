@@ -284,9 +284,9 @@ impl App {
                 .iter()
                 .filter_map(|i| i.module.parent().map(Path::to_path_buf)),
         );
-        if let Some(dir) = worker_binary().parent() {
-            runtime_read.push(dir.to_path_buf());
-        }
+        // MEASUREMENT (C9 section 3, throwaway branch): the entry is on the
+        // worker binary file, not on its directory.
+        runtime_read.push(worker_binary());
         let container = crate::toolchain::prepare(
             &data_dir,
             &crate::toolchain::RuntimePaths {
