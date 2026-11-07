@@ -221,21 +221,33 @@ def read_log(start):
     return text
 
 
+LOG_STATS = ""
+
+
 def denials(start, lo, hi):
-    """Our denials from the unified log, waiting for its lag until the count is stable."""
+    """Our denials from the unified log, waiting for its lag until the count is stable.
+    Run 1 saw the log return nothing late in the run, so the statistics of what the log did
+    contain are kept in LOG_STATS and printed when a failing run yields no denial."""
+    global LOG_STATS
     best, prev = [], -1
-    for i in range(5):
-        time.sleep(3)
-        out = []
-        for line in read_log(start).splitlines():
+    for i, w in enumerate((3, 3, 3, 5, 5, 5)):
+        time.sleep(w)
+        text = read_log(start)
+        lines = text.splitlines()
+        out, kernel, deny = [], 0, 0
+        for line in lines:
+            if "Sandbox:" in line:
+                kernel += 1
             m = DENY.search(line)
             if not m:
                 continue
+            deny += 1
             proc, pid, op, arg = m.group(1), int(m.group(2)), m.group(3), m.group(4).strip()
             if OURS.match(proc) or (hi >= lo and lo <= pid <= hi):
                 out.append((proc, pid, op, arg))
+        LOG_STATS = f"poll {i + 1}: log lines {len(lines)}, with 'Sandbox:' {kernel}, parsed deny {deny}, ours {len(out)} (pid window {lo}..{hi})"
         best = out
-        if len(out) == prev and (out or i >= 2):
+        if len(out) == prev and (out or i >= 3):
             break
         prev = len(out)
     return best
@@ -253,7 +265,10 @@ def tail(out, n=500):
 
 
 # ---- the iterative loop --------------------------------------------------------------
-def loop(items, kind, variant, tag, shape=True, max_rounds=40, show_all=False):
+def loop(items, kind, variant, tag, shape=True, max_rounds=40, show_all=False, fallbacks=None):
+    """fallbacks: groups of guessed Items added one group at a time when a failing round yields
+    no denial at all (the log gave nothing); the necessity pass then prunes the guesses."""
+    fallbacks = list(fallbacks or [])
     seen = {(i.op, i.arg) for i in items}
     unhandled = collections.OrderedDict()
     for rnd in range(1, max_rounds + 1):
@@ -263,9 +278,11 @@ def loop(items, kind, variant, tag, shape=True, max_rounds=40, show_all=False):
         ok, rc, out, dt, dens = attempt(items, kind, variant, shape)
         say(f"{tag} round {rnd}: exit={rc} {dt:.0f}s; denials(ours) {len(dens)}; items {len(items)}")
         if ok:
-            fin = [l.strip() for l in out.splitlines() if re.search(r"Finished|test result|running \d+ test|test t::", l)]
+            fin = [l.strip() for l in out.splitlines() if re.search(r"Finished|test result|running \d+ test|test t::|Downloaded|Updating", l)]
             say(f"{tag} RESULT: passed in round {rnd}: " + " | ".join(fin[:6]))
             return True, items, unhandled
+        if not dens:
+            say(f"{tag} round {rnd}: no denial read; {LOG_STATS}")
         if rnd == 1 or rnd % 4 == 0 or show_all:
             say(f"{tag} raw denials: " + " ;; ".join(sorted({f'{p} {o} {a}' for p, _, o, a in dens}))[:3000])
         new = 0
@@ -287,6 +304,23 @@ def loop(items, kind, variant, tag, shape=True, max_rounds=40, show_all=False):
             new += 1
         say(f"{tag} round {rnd}: output tail: " + tail(out, 400 if new else 1500))
         if new == 0:
+            if not dens and fallbacks:
+                grp = fallbacks.pop(0)
+                added = 0
+                for g in grp:
+                    if g.kind in ("net", "other") and not parses(g.rule):
+                        alt = g.rule.replace('(remote ip ', '(remote tcp ')
+                        if alt != g.rule and parses(alt):
+                            g.rule = alt
+                        else:
+                            say(f"{tag}: guessed rule does not parse, skipped: {g.rule}")
+                            continue
+                    if (g.op, g.arg) not in seen:
+                        seen.add((g.op, g.arg))
+                        items.append(g)
+                        added += 1
+                say(f"{tag}: the log named nothing; adding a fallback group of {added} guessed rules (pruned afterwards)")
+                continue
             say(f"{tag}: no new rule; stopping (unhandled denials: {len(unhandled)})")
             break
     return False, items, unhandled
@@ -391,7 +425,7 @@ def load(path):
 
 
 # ---- B3 -----------------------------------------------------------------------------
-def b3_variant(variant, full):
+def b3_loop(variant):
     tag = f"b3.{variant}"
     say(f"{tag} ===== iterative loop, shape=Amendment 2, developer directory in the seed: {DEV} =====")
     ok, items, unhandled = loop(seeds(variant), "test", variant, tag)
@@ -405,69 +439,114 @@ def b3_variant(variant, full):
         say(f"{tag}.plain result: {ok2}")
         return None
     save(variant, "loop", items)
-    if full:
-        # candidate: the read set of Amendment 2 point 8 plus whatever the loop found beyond it
-        sysdirs = ["/usr", "/bin", "/sbin", "/System", "/private/etc"]
-        cand = seeds(variant)
-        for d in ["/bin", "/sbin", "/System", "/private/etc"]:
-            cand.append(Item("seed", f'(allow file-read* (subpath "{d}"))', "seed", d, "amendment-2", f"amendment-2 subpath {d}"))
-        extra = [i for i in items if i.kind != "seed" and not (i.kind == "file" and any(i.arg == d or i.arg.startswith(d + "/") for d in sysdirs + ([DEV] if DEV else [])))]
-        cand += extra
-        say(f"{tag} ===== candidate A: Amendment 2's system part (/usr /bin /sbin /System /private/etc, developer dir) + the loop's other items ({len(extra)}) =====")
-        okc, rc, out, dt, dens = attempt(cand, "test", variant)
-        say(f"{tag} candidate A passes: {okc}")
-        if not okc:
-            okc, cand, unh = loop(cand, "test", variant, tag + ".candA", max_rounds=8)
-            say(f"{tag} candidate A after continuing: {okc}; additions beyond the Amendment's part: " + " ;; ".join(i.rule for i in cand if i.who not in ("seed", "amendment-2")))
-        # the narrow developer directory experiment
-        if DEV:
-            narrow = []
-            for sub in ("Toolchains/XcodeDefault.xctoolchain", "Platforms/MacOSX.platform", "usr", "SDKs", "Library"):
-                p = os.path.realpath(f"{DEV}/{sub}")
-                if os.path.exists(p):
-                    narrow.append(p)
-            trial = [i for i in items if not (i.kind == "seed" and i.arg == DEV)]
-            trial += [Item("seed", f'(allow file-read* (subpath "{esc(p)}"))', "seed", p, "narrow-dev", f"narrow dev subpath {p}") for p in narrow]
-            trial.append(Item("seed", f'(allow file-read* (literal "{esc(DEV)}"))', "seed", DEV + "(literal)", "narrow-dev"))
-            oknd, rc, out, dt, dens = attempt(trial, "test", variant, want_log=True)
-            say(f"{tag} narrow developer directory ({', '.join(narrow)}) passes: {oknd}; denials: " + " ;; ".join(sorted({f'{p} {o} {a}' for p, _, o, a in dens}))[:1500])
+    return items
+
+
+def exp(tag, label, items, variant):
+    ok, rc, out, dt, dens = attempt(items, "test", variant, want_log=True)
+    say(f"{tag} experiment | {'PASSES' if ok else 'FAILS'} | {label}" + ("" if ok else " | denials: " + " ;; ".join(sorted({f'{p} {o} {a}' for p, _, o, a in dens}))[:600]))
+    return ok
+
+
+def b3_rest(variant, items):
+    tag = f"b3.{variant}"
+    # candidate: the read set of Amendment 2 point 8 plus whatever the loop found beyond it
+    sysdirs = ["/usr", "/bin", "/sbin", "/System", "/private/etc"]
+    cand = seeds(variant)
+    for d in ["/bin", "/sbin", "/System", "/private/etc"]:
+        cand.append(Item("seed", f'(allow file-read* (subpath "{d}"))', "seed", d, "amendment-2", f"amendment-2 subpath {d}"))
+    extra = [i for i in items if i.kind != "seed" and not (i.kind == "file" and any(i.arg == d or i.arg.startswith(d + "/") for d in sysdirs + ([DEV] if DEV else [])))]
+    cand += extra
+    say(f"{tag} ===== candidate A: Amendment 2's system part (/usr /bin /sbin /System /private/etc, developer dir) + the loop's other items ({len(extra)}) =====")
+    okc = exp(tag, "candidate A", cand, variant)
+    if not okc:
+        okc, cand, unh = loop(cand, "test", variant, tag + ".candA", max_rounds=8)
+        say(f"{tag} candidate A after continuing: {okc}; additions beyond the Amendment's part: " + " ;; ".join(i.rule for i in cand if i.who not in ("seed", "amendment-2")))
+    if DEV:
+        narrow = []
+        for sub in ("Toolchains/XcodeDefault.xctoolchain", "Platforms/MacOSX.platform", "usr", "Library"):
+            pth = os.path.realpath(f"{DEV}/{sub}")
+            if os.path.exists(pth):
+                narrow.append(pth)
+        trial = [i for i in items if not (i.kind == "seed" and i.arg == DEV)]
+        trial += [Item("seed", f'(allow file-read* (subpath "{esc(q)}"))', "seed", q, "narrow-dev", f"narrow dev subpath {q}") for q in narrow]
+        trial.append(Item("seed", f'(allow file-read* (literal "{esc(DEV)}"))', "seed", DEV + "(literal)", "narrow-dev"))
+        exp(tag, "developer directory replaced by " + ", ".join(narrow), trial, variant)
     say(f"{tag} ===== necessity =====")
-    cur = necessity(items, "test", variant, tag, passes=("A", "B") if full else ("B",))
+    cur = necessity(items, "test", variant, tag, passes=("A", "B"))
     save(variant, "minimal", cur)
     print_profile(tag + ".minimal", cur)
+    # experiments on the minimal set: alternatives and how to write the per-user paths
+    say(f"{tag} ===== experiments on the minimal set =====")
+    say(f"{tag} getconf DARWIN_USER_TEMP_DIR (outside): " + sh("getconf DARWIN_USER_TEMP_DIR").stdout.strip() + " ; DARWIN_USER_CACHE_DIR: " + sh("getconf DARWIN_USER_CACHE_DIR").stdout.strip())
+    dirh = [i for i in cur if "bsd.dirhelper" in i.rule]
+    if dirh:
+        no_dirh = [i for i in cur if i not in dirh]
+        exp(tag, "minimal without com.apple.bsd.dirhelper", no_dirh, variant)
+        for alt in ("com.apple.system.opendirectoryd.membership", "com.apple.system.opendirectoryd.libinfo"):
+            exp(tag, f"minimal without dirhelper, with {alt}", no_dirh + [Item("mach", f'(allow mach-lookup (global-name "{alt}"))', "mach-lookup", alt, "exp")], variant)
+    xdb = [i for i in cur if i.kind == "file" and "xcrun_db" in i.arg]
+    if xdb:
+        par = os.path.dirname(xdb[0].arg)
+        rest = [i for i in cur if i not in xdb]
+        exp(tag, f"xcrun_db literal replaced by (subpath {par})", rest + [Item("file", f'(allow file-read* (subpath "{esc(par)}"))', "file-read*", par, "exp")], variant)
+        exp(tag, "minimal without the xcrun_db literal", rest, variant)
+    dvt = [i for i in cur if i.kind == "file" and "DVTSystemPrerequisites" in i.arg]
+    if dvt:
+        exp(tag, "minimal without the DVTSystemPrerequisites literal", [i for i in cur if i not in dvt], variant)
+        shared = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(dvt[0].arg))))
+        exp(tag, f"DVT literal replaced by (subpath {shared})", [i for i in cur if i not in dvt] + [Item("file", f'(allow file-read* (subpath "{esc(shared)}"))', "file-read*", shared, "exp")], variant)
     return cur
 
 
+def b3_direct():
+    variant = "direct"
+    if variant not in VARIANTS:
+        return
+    items = b3_loop(variant)
+    if items is None:
+        return
+    tag = f"b3.{variant}"
+    cur = necessity(items, "test", variant, tag, passes=("B",))
+    save(variant, "minimal", cur)
+    print_profile(tag + ".minimal", cur)
+
+
 # ---- B5 -----------------------------------------------------------------------------
-def b5():
+def guess_groups():
+    """What a name lookup and an HTTPS fetch could plausibly ask for. Used only when the log names
+    nothing; every guess is pruned by the necessity pass, and a nonexistent name is harmless."""
+    def m(n):
+        return Item("mach", f'(allow mach-lookup (global-name "{n}"))', "mach-lookup", n, "guess")
+
+    def f(path):
+        return Item("file", f'(allow file-read* (subpath "{path}"))', "file-read*", path, "guess")
+
+    def b(rule):
+        return Item("other", rule, "guess", rule, "guess")
+    g1 = [m("com.apple.dnssd.service"), m("com.apple.mDNSResponder"),
+          Item("net", '(allow network-outbound (remote unix-socket (literal "/private/var/run/mDNSResponder")))', "network-outbound", "/private/var/run/mDNSResponder", "guess"),
+          Item("net", '(allow network-outbound (remote ip "*:443"))', "network-outbound", "*:443", "guess"),
+          m("com.apple.trustd"), m("com.apple.trustd.agent"), m("com.apple.SecurityServer"), m("com.apple.ocspd"), m("com.apple.cfprefsd.daemon"), m("com.apple.system.notification_center"),
+          f("/Library/Keychains"), f("/System/Library/Keychains"), f("/private/var/db/mds"), f("/System/Library/Security"), f("/private/etc/ssl"), f("/private/var/protected/trustd")]
+    return [g1, [b('(allow network*)')], [b('(allow mach-lookup)')], [b('(allow file-read*)')], [b('(allow ipc-posix*)'), b('(allow user-preference-read)'), b('(allow iokit-open)')]]
+
+
+def b5(base_path):
     tag = "b5"
-    src = None
-    for v in ("direct", "shim"):
-        if os.path.exists(f"{S}/minimal-{v}.json"):
-            src = f"{S}/minimal-{v}.json"
-            break
-    if src is None:
-        for v in ("direct", "shim"):
-            if os.path.exists(f"{S}/loop-{v}.json"):
-                src = f"{S}/loop-{v}.json"
-                break
-    if src is None:
-        say(f"{tag}: no base profile from B3 in this run (B3 did not converge); using the seed only")
-        variant, base = ("shim" if "shim" in VARIANTS else "direct"), seeds("shim" if "shim" in VARIANTS else "direct")
-    else:
-        variant, base = load(src)
-        say(f"{tag}: base profile = {os.path.basename(src)} ({len(base)} rules), variant {variant}")
+    variant, base = load(base_path)
+    say(f"{tag}: base profile = {os.path.basename(base_path)} ({len(base)} rules), variant {variant}")
     sibling = list(base)
     say(f"{tag} ===== the sibling (base profile, no network addition): cargo fetch =====")
     ok, rc, out, dt, dens = attempt(sibling, "fetch", variant)
     say(f"{tag}.sibling cargo fetch passes: {ok} (exit {rc}); output: " + tail(out, 1200))
-    say(f"{tag}.sibling denials(ours): " + " ;; ".join(sorted({f'{p} {o} {a}' for p, _, o, a in dens}))[:2500])
+    say(f"{tag}.sibling denials(ours): " + " ;; ".join(sorted({f'{p} {o} {a}' for p, _, o, a in dens}))[:2500] + (" | " + LOG_STATS if not dens else ""))
     open(f"{S}/prof/b5-sibling.sb", "w").write(profile_text(sibling))
     r = subprocess.run(["perl", "-e", "alarm shift; exec @ARGV", "30", PROBEB, "resolve", f"{S}/prof/b5-sibling.sb", "index.crates.io"], capture_output=True, text=True)
     say(f"{tag}.sibling resolve: " + (r.stdout + r.stderr).replace("\n", " | "))
     say(f"{tag} ===== iterative loop for the additions (cargo fetch) =====")
     nbase = len(base)
-    ok, items, unhandled = loop(list(base), "fetch", variant, tag, show_all=True, max_rounds=30)
+    ok, items, unhandled = loop(list(base), "fetch", variant, tag, show_all=True, max_rounds=30, fallbacks=guess_groups())
     adds = items[nbase:]
     for (op, arg), proc in list(unhandled.items())[:60]:
         say(f"{tag} unhandled denial {op} {arg} ({proc})")
@@ -475,8 +554,7 @@ def b5():
     for i in adds:
         say(f"{tag} added [{i.kind}] {i.rule}  (first denied for: {i.who})")
     if not ok:
-        return
-    # necessity of the additions: one at a time, then greedy
+        return None
     for n in (1, 2):
         okb, rc, out, dt, _ = attempt(items, "fetch", variant, want_log=False)
         say(f"{tag} baseline run {n} with all additions: {okb}")
@@ -492,37 +570,66 @@ def b5():
         if okt:
             cur = trial
     conf = [attempt(cur, "fetch", variant, want_log=False)[0] for _ in (1, 2)]
-    say(f"{tag} smallest addition confirmed twice: {conf}; additions kept: {len(cur) - nbase}")
-    for i in cur[nbase:]:
+    kept = cur[nbase:]
+    say(f"{tag} smallest addition confirmed twice: {conf}; additions kept: {len(kept)}")
+    for i in kept:
         say(f"{tag} smallest addition| {i.rule}")
+    save("shim", "b5-additions", kept)
     open(f"{S}/prof/b5-final.sb", "w").write(profile_text(cur))
     r = subprocess.run(["perl", "-e", "alarm shift; exec @ARGV", "30", PROBEB, "resolve", f"{S}/prof/b5-final.sb", "index.crates.io"], capture_output=True, text=True)
     say(f"{tag}.final resolve: " + (r.stdout + r.stderr).replace("\n", " | "))
-    print_profile(tag + ".final", cur)
+    return kept
+
+
+def b5_confirm(variant, minimal_items, kept):
+    tag = "b5"
+    say(f"{tag} ===== confirm: the B3 minimal profile + the smallest addition =====")
+    have = {(i.op, i.arg) for i in minimal_items}
+    prof = list(minimal_items) + [k for k in kept if (k.op, k.arg) not in have]
+    ok, rc, out, dt, dens = attempt(prof, "fetch", variant)
+    say(f"{tag}.confirm cargo fetch passes: {ok} (exit {rc}); output tail: " + tail(out, 600))
+    print_profile(tag + ".confirm", prof)
+    ok2, rc, out, dt, _ = attempt(minimal_items, "fetch", variant, want_log=False)
+    say(f"{tag}.confirm sibling (B3 minimal alone) cargo fetch passes: {ok2}")
 
 
 def main():
     diag()
     todo = WHAT.split(",")
-    both = "b3" in todo and "b5" in todo
-    if "b3" in todo:
-        for variant in [v for v in ("shim", "direct") if v in VARIANTS]:
-            phase_until((2400 if variant == "shim" else 3300) if both else 4300)
-            if left() < 600:
-                say(f"b3.{variant}: skipped, time budget")
-                continue
-            try:
-                cur = b3_variant(variant, full=(variant == "shim"))
-                if cur is not None:
-                    save(variant, "minimal", cur)
-            except Exception:
-                say(f"b3.{variant} EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
+    phase_until(4400)
+    items = None
+    minimal = None
+    kept = None
+    try:
+        if "b3" in todo:
+            items = b3_loop("shim")
+    except Exception:
+        say("b3.shim EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
     if "b5" in todo:
-        phase_until(4500)
         try:
-            b5()
+            src = f"{S}/loop-shim.json" if items is not None else None
+            if src is None:
+                say("b5: no passing B3 loop in this run; using the seeds only as the base")
+                json.dump(dict(variant="shim", items=[i.to_json() for i in seeds("shim")]), open(f"{S}/seedonly-shim.json", "w"))
+                src = f"{S}/seedonly-shim.json"
+            kept = b5(src)
         except Exception:
             say("b5 EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
+    if "b3" in todo and items is not None:
+        try:
+            minimal = b3_rest("shim", items)
+        except Exception:
+            say("b3.shim EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
+    if "b5" in todo and kept and minimal:
+        try:
+            b5_confirm("shim", minimal, kept)
+        except Exception:
+            say("b5.confirm EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
+    if "b3" in todo:
+        try:
+            b3_direct()
+        except Exception:
+            say("b3.direct EXCEPTION: " + traceback.format_exc().replace("\n", " | "))
     say(f"done in {time.time() - T0:.0f}s")
 
 

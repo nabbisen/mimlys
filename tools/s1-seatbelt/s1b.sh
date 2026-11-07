@@ -45,6 +45,7 @@ if has "$1" b1 && [ -x "$PB" ]; then
 hr B1 kill-1 inside the profile
 mk b1p1 "$SIG"
 mk b1p2 "$SIG" "$PDENY" "$PALLOW" "$PRC"
+mk b1p3 "$SIG" "$PDENY" "$PALLOW" "$PRC" '(allow process-info-listpids)' '(deny sysctl-read (sysctl-name-prefix "kern.proc."))'
 tmo 600 sleep 600 & BY=$!
 sleep 1
 G="1:launchd,$BY:bystander"
@@ -57,24 +58,31 @@ done
 for p in $(pgrep -x Runner.Listener) $(pgrep -x Runner.Worker); do G="$G,$p:runner_agent"; done
 echo "S1b b1.guards: $G"
 echo "S1b b1.job_shell: pid $$; runner processes: $(pgrep -lx 'Runner.Listener|Runner.Worker' | tr '\n' ' ')"
-for v in p1 p2; do
-  echo "S1b b1: ---- profile $v ($( [ $v = p1 ] && echo 'base + signal same-sandbox' || echo 'base + signal same-sandbox + process-info members only + kern.procargs deny'))"
-  tmo 120 "$PB" b1 "$S/prof/b1$v.sb" "$S/ws" "$G" "$v" > "$S/b1-$v.txt" 2>&1
-  cat "$S/b1-$v.txt"
+for vf in p3:oracle p2:helper; do
+  v=${vf%%:*}; fl=${vf#*:}
+  case $v in
+    p2) d="base + signal same-sandbox + process-info members only + kern.procargs deny";;
+    p3) d="p2 + (allow process-info-listpids) + (deny sysctl-read kern.proc.) (the listing-oracle shape)";;
+  esac
+  echo "S1b b1: ---- profile $v ($d), flavor $fl"
+  tmo 180 "$PB" b1 "$S/prof/b1$v.sb" "$S/ws" "$G" "$v-$fl" "$fl" > "$S/b1-$v-$fl.txt" 2>&1
+  cat "$S/b1-$v-$fl.txt"
   sleep 1
-  echo "S1b b1.post[$v]: the job shell (pid $$) is alive: it is running this line"
+  echo "S1b b1.post[$v-$fl]: the job shell (pid $$) is alive: it is running this line"
   for tok in ${G//,/ }; do
     gp=${tok%%:*}
     if ps -p "$gp" -o pid= >/dev/null 2>&1; then st=alive; else st="GONE"; fi
-    echo "S1b b1.post[$v] guard $tok: $st"
+    echo "S1b b1.post[$v-$fl] guard $tok: $st"
   done
-  echo "S1b b1.post[$v]: runner processes now: $(pgrep -lx 'Runner.Listener|Runner.Worker' | tr '\n' ' ')"
-  pids=$(sed -n 's/.*tree built=yes pids: T=\([0-9]*\) C=\([0-9]*\) G1=\([0-9]*\) G2=\([0-9]*\).*/\1 \2 \3 \4/p' "$S/b1-$v.txt" | head -1)
+  echo "S1b b1.post[$v-$fl]: runner processes now: $(pgrep -lx 'Runner.Listener|Runner.Worker' | tr '\n' ' ')"
+  pids=$(sed -n 's/.*tree built=yes pids: T=\([0-9]*\) C=\([0-9]*\) G1=\([0-9]*\) G2=\([0-9]*\).*/\1 \2 \3 \4/p' "$S/b1-$v-$fl.txt" | head -1)
   if [ -n "$pids" ]; then
-    echo "S1b b1.post[$v]: tool tree pids (T C G1 G2) = $pids; ps from outside: $(for q in $pids; do ps -p $q -o pid=,ppid=,stat=,comm= 2>/dev/null; done | tr '\n' ';') (empty = all gone)"
+    echo "S1b b1.post[$v-$fl]: tool tree pids (T C G1 G2) = $pids; ps from outside: $(for q in $pids; do ps -p $q -o pid=,ppid=,stat=,comm= 2>/dev/null; done | tr '\n' ';') (empty = all gone)"
   else
-    echo "S1b b1.post[$v]: no tree pids were logged (the pre-check failed or the tree was not built)"
+    echo "S1b b1.post[$v-$fl]: no tree pids were logged (the pre-check failed or the tree was not built)"
   fi
+  echo "S1b b1.post[$v-$fl]: probeb processes left on the machine: $(pgrep -lf 'probeb b1' | tr '\n' ';') (empty = none)"
+  pkill -f 'probeb b1' 2>/dev/null
 done
 kill $BY 2>/dev/null
 end

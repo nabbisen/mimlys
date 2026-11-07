@@ -173,17 +173,14 @@ static void describe(const char *key, const char *name, pid_t pid) {
 }
 
 // ---- B1 ---------------------------------------------------------------------
-// The worker stand-in. Sends kill(-1, SIGKILL) only when the profile is effective AND signalling
-// every guard (launchd, the parent outside the sandbox, a bystander, the ancestors of the job
-// shell and the runner agent) fails EPERM.
-static int b1_worker(const char *prof, const char *guards, const char *label) {
-    char key[64];
-    snprintf(key, sizeof key, "b1.%s", label);
-    if (apply_file(prof, key) != 0) return 77;
-    if (!selfcheck(key)) {
-        say(key, "ABORT: nothing was sent");
-        return 78;
-    }
+// Run 1 found: kill(-1, SIGKILL) from a member also kills the CALLER (the stand-in died with
+// signal 9). Run 2 adds: flavor "helper" (a helper member sends it: does the worker die too?)
+// and flavor "oracle" (the worker lists every pid, keeps those proc_pidinfo can read, and kills
+// them one by one, never touching itself or anything outside the sandbox).
+enum { FLAVOR_DIRECT = 0, FLAVOR_HELPER = 1, FLAVOR_ORACLE = 2 };
+
+// 1 when signalling every guard fails EPERM (the restriction is verified); else 0
+static int precheck(const char *key, const char *guards) {
     int ok = 1;
     char *copy = strdup(guards);
     char *save = NULL;
@@ -223,7 +220,47 @@ static int b1_worker(const char *prof, const char *guards, const char *label) {
     e = errno;
     say(key, "precheck kill(1,0) [launchd] -> %s", r == 0 ? "0 (NOT REFUSED)" : strerror(e));
     if (r == 0 || e != EPERM) ok = 0;
+    return ok;
+}
 
+// the members other than `self`, found without a sandbox-restricted listing: every pid from
+// proc_listallpids (needs `(allow process-info-listpids)`), kept when proc_pidinfo can read it
+// (the profile allows that for members only) and it is not a zombie. Returns the count (-1: no listing).
+static int list_members(pid_t self, pid_t *out, int max) {
+    int n = proc_listallpids(NULL, 0);
+    if (n <= 0) return -1;
+    pid_t *pids = calloc(n + 512, sizeof(pid_t));
+    int m = proc_listallpids(pids, (n + 512) * (int)sizeof(pid_t));
+    int c = 0;
+    for (int i = 0; i < m; i++) {
+        pid_t p = pids[i];
+        if (p <= 1 || p == self) continue;
+        struct proc_bsdinfo bi;
+        memset(&bi, 0, sizeof bi);
+        if (proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &bi, sizeof bi) > 0 && bi.pbi_status != 5 /* SZOMB */) {
+            if (c < max) out[c] = p;
+            c++;
+        }
+    }
+    free(pids);
+    return c;
+}
+
+static double now_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+static int b1_worker(const char *prof, const char *guards, const char *label, int flavor) {
+    char key[64];
+    snprintf(key, sizeof key, "b1.%s", label);
+    if (apply_file(prof, key) != 0) return 77;
+    if (!selfcheck(key)) {
+        say(key, "ABORT: nothing was sent");
+        return 78;
+    }
+    int ok = precheck(key, guards);
     tree_t tr;
     int tb = build_tree(&tr);
     say(key, "tree built=%s pids: T=%d C=%d G1=%d G2=%d", tb == 0 ? "yes" : "NO", tr.t, tr.c, tr.g1, tr.g2);
@@ -233,18 +270,92 @@ static int b1_worker(const char *prof, const char *guards, const char *label) {
     describe(key, "before: orphan G2 (tool exited)", tr.g2);
 
     if (!ok || tb != 0) {
-        say(key, "PRECHECK_FAILED or tree missing: kill(-1,SIGKILL) NOT SENT");
+        say(key, "PRECHECK_FAILED or tree missing: nothing that could reach outside was sent");
         if (tr.t > 0) kill(tr.t, SIGKILL);
         if (tr.c > 0) kill(tr.c, SIGKILL);
         if (tr.g1 > 0) kill(tr.g1, SIGKILL);
         if (tr.g2 > 0) kill(tr.g2, SIGKILL);
         return 0;
     }
-    say(key, "precheck passed: sending kill(-1,SIGKILL) from the stand-in (pid %d)", getpid());
-    errno = 0;
-    r = kill(-1, SIGKILL);
-    e = errno;
-    say(key, "kill(-1,SIGKILL) -> %s", r == 0 ? "0" : strerror(e));
+    pid_t pids[3] = {tr.c, tr.g1, tr.g2};
+    const char *names[3] = {"child C", "orphan G1", "orphan G2"};
+    if (flavor == FLAVOR_ORACLE) {
+        // a fork storm in the tool, to see that the kill loop converges
+        pid_t storm = fork();
+        if (storm == 0) {
+            setsid();
+            double end = now_s() + 3.0;
+            int n = 0;
+            while (now_s() < end && n < 300) {
+                pid_t c = fork();
+                if (c == 0) {
+                    sleep(60);
+                    _exit(0);
+                }
+                if (c > 0) n++;
+                usleep(5000);
+            }
+            say("b1.storm", "tool forked %d children", n);
+            pause_forever();
+        }
+        usleep(500000);
+        pid_t mem[4096];
+        int before = list_members(getpid(), mem, 4096);
+        say(key, "oracle: members other than the stand-in, while the storm runs: %d", before);
+        double t0 = now_s();
+        int iters = 0, zero = 0, killed = 0, failed = 0;
+        while (iters < 400 && zero < 3) {
+            iters++;
+            int c = list_members(getpid(), mem, 4096);
+            if (c < 0) {
+                say(key, "oracle: no listing (%s)", strerror(errno));
+                break;
+            }
+            if (c == 0) {
+                zero++;
+            } else {
+                zero = 0;
+                for (int i = 0; i < c && i < 4096; i++) {
+                    if (kill(mem[i], SIGKILL) == 0) killed++;
+                    else failed++;
+                }
+            }
+            while (waitpid(-1, NULL, WNOHANG) > 0) {
+            }
+            usleep(20000);
+        }
+        int rest = list_members(getpid(), mem, 4096);
+        say(key, "oracle: kill loop: %d iterations, %.2f s, %d kill(pid,SIGKILL) succeeded, %d refused; members left: %d", iters, now_s() - t0, killed, failed, rest);
+        for (int i = 0; i < 3; i++) {
+            int gone = 0;
+            for (int k = 0; k < 40 && !gone; k++) {
+                errno = 0;
+                if (kill(pids[i], 0) != 0 && errno == ESRCH) gone = 1;
+                else usleep(100000);
+            }
+            say(key, "after: %s pid %d: %s", names[i], pids[i], gone ? "GONE" : "STILL THERE");
+        }
+        say(key, "after: the stand-in (pid %d) is alive (this line is printed by it)", getpid());
+        return 0;
+    }
+    say(key, "precheck passed: sending kill(-1,SIGKILL) from %s (stand-in pid %d)", flavor == FLAVOR_HELPER ? "a helper member forked by the stand-in" : "the stand-in itself", getpid());
+    int r, e;
+    if (flavor == FLAVOR_HELPER) {
+        pid_t h = fork();
+        if (h == 0) {
+            errno = 0;
+            r = kill(-1, SIGKILL);
+            _exit(r == 0 ? 0 : 1);
+        }
+        int hs = 0;
+        waitpid(h, &hs, 0);  // if the stand-in survives, it gets here
+        say(key, "helper pid %d ended (exit=%d signal=%d); the stand-in is alive (this line is printed by it)", h, WIFEXITED(hs) ? WEXITSTATUS(hs) : -1, WIFSIGNALED(hs) ? WTERMSIG(hs) : 0);
+    } else {
+        errno = 0;
+        r = kill(-1, SIGKILL);
+        e = errno;
+        say(key, "kill(-1,SIGKILL) -> %s", r == 0 ? "0" : strerror(e));
+    }
     // reap T (our child) and wait for the others to go
     int st = 0, reaped = 0;
     for (int i = 0; i < 60 && !reaped; i++) {
@@ -252,8 +363,6 @@ static int b1_worker(const char *prof, const char *guards, const char *label) {
         else usleep(100000);
     }
     say(key, "tool T reaped=%s signal=%d", reaped ? "yes" : "NO", reaped && WIFSIGNALED(st) ? WTERMSIG(st) : 0);
-    pid_t pids[3] = {tr.c, tr.g1, tr.g2};
-    const char *names[3] = {"child C", "orphan G1", "orphan G2"};
     for (int i = 0; i < 3; i++) {
         int gone = 0;
         for (int k = 0; k < 40 && !gone; k++) {
@@ -266,14 +375,16 @@ static int b1_worker(const char *prof, const char *guards, const char *label) {
         say(key, "after: %s pid %d: %s (kill(pid,0) -> %s)", names[i], pids[i], gone ? "GONE" : "STILL THERE", kk == 0 ? "ok" : strerror(errno));
     }
     say(key, "after: the stand-in (pid %d) is alive (this line is printed by it)", getpid());
-    // cleanup of anything left
     kill(tr.t, SIGKILL);
     for (int i = 0; i < 3; i++) kill(pids[i], SIGKILL);
     return 0;
 }
 
-static int mode_b1(char **a) {  // b1 <profile> <ws> <guards> <label>
+static int mode_b1(char **a, int argc) {  // b1 <profile> <ws> <guards> <label> [direct|helper|oracle]
     const char *prof = a[0], *guards = a[2], *label = a[3];
+    int flavor = FLAVOR_DIRECT;
+    if (argc >= 7 && !strcmp(a[4], "helper")) flavor = FLAVOR_HELPER;
+    if (argc >= 7 && !strcmp(a[4], "oracle")) flavor = FLAVOR_ORACLE;
     // a second worker in a different sandbox (the same profile text applied independently)
     int p2[2];
     if (pipe(p2) != 0) return 2;
@@ -287,9 +398,9 @@ static int mode_b1(char **a) {  // b1 <profile> <ws> <guards> <label>
     }
     rec_t r;
     pid_t w2g = read_recs(p2[0], &r, 1, 10) == 1 ? r.pid : -1;
-    say("b1.main", "label=%s main pid %d; second worker (own sandbox) pid %d with child %d", label, getpid(), w2, w2g);
+    say("b1.main", "label=%s flavor=%d main pid %d; second worker (own sandbox) pid %d with child %d", label, flavor, getpid(), w2, w2g);
     pid_t w = fork();
-    if (w == 0) _exit(b1_worker(prof, guards, label));
+    if (w == 0) _exit(b1_worker(prof, guards, label, flavor));
     int st = 0;
     waitpid(w, &st, 0);
     say("b1.main", "stand-in pid %d exit=%d signal=%d", w, WIFEXITED(st) ? WEXITSTATUS(st) : -1, WIFSIGNALED(st) ? WTERMSIG(st) : 0);
@@ -327,6 +438,7 @@ static int mode_b2(char **a) {  // b2 <profile> <label>
     say(key, "proc_listallpids size query -> %d (%s)", n, n <= 0 ? strerror(errno) : "ok");
     if (n > 0) {
         pid_t *pids = calloc(n + 512, sizeof(pid_t));
+        double lt0 = now_s();
         int m = proc_listallpids(pids, (n + 512) * (int)sizeof(pid_t));
         int present = 0, ok0 = 0, oki = 0, okboth_nonmember = 0;
         unsigned long long rss = 0;
@@ -342,8 +454,12 @@ static int mode_b2(char **a) {  // b2 <profile> <label>
                 memset(&ti, 0, sizeof ti);
                 if (proc_pidinfo(pids[i], PROC_PIDTASKINFO, 0, &ti, sizeof ti) > 0) rss += ti.pti_resident_size;
             }
-            if ((k || pi) && !is_member(&tr, self, pids[i])) okboth_nonmember++;
+            if ((k || pi) && !is_member(&tr, self, pids[i])) {
+                okboth_nonmember++;
+                say(key, "non-member that passes: pid %d kill(pid,0)=%d proc_pidinfo=%d bsd status=%u ppid=%u", pids[i], k, pi, pi ? bi.pbi_status : 0, pi ? bi.pbi_ppid : 0);
+            }
         }
+        say(key, "list + oracle over %d pids took %.1f ms", m, (now_s() - lt0) * 1000.0);
         say(key, "proc_listallpids returned %d pids; members among them: %d of 5", m, present);
         say(key, "membership oracle over the list: kill(pid,0)==0 for %d pids; proc_pidinfo(BSDINFO) ok for %d pids; non-members that pass either: %d", ok0, oki, okboth_nonmember);
         say(key, "resident size summed over the pids proc_pidinfo can read: %llu KiB", rss >> 10);
@@ -487,7 +603,7 @@ int main(int argc, char **argv) {
     if (argc < 2) return 2;
     const char *m = argv[1];
     char **a = argv + 2;
-    if (!strcmp(m, "b1") && argc >= 6) return mode_b1(a);
+    if (!strcmp(m, "b1") && argc >= 6) return mode_b1(a, argc);
     if (!strcmp(m, "b2") && argc >= 4) return mode_b2(a);
     if (!strcmp(m, "b4") && argc >= 5) return mode_b4(a);
     if (!strcmp(m, "resolve") && argc >= 4) return mode_resolve(a);
