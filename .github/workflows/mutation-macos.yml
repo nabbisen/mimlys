@@ -1,0 +1,28 @@
+# THROWAWAY (branch 011c-1-mutations only; never merged): the mutation checks
+# of the macOS clause suite, run on macos-latest (handoff 011c-1, REQ-TEST-013).
+name: mutation-macos
+on:
+  push:
+    branches: [011c-1-mutations]
+permissions:
+  contents: read
+jobs:
+  mutate:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: debug
+      - run: cargo build --workspace --all-targets --all-features
+      - name: control, unmutated
+        run: cargo test -p mimlys --all-features --test m6c_host_tools --no-fail-fast 2>&1 | grep -E "^test |test result"
+      - name: mutations
+        run: python3 -I tools-mutate/mutate.py 2>&1 | tee mutations.log
+      - name: summary
+        if: always()
+        run: grep "^MUT " mutations.log | grep -v "^MUT     |" | tee -a "$GITHUB_STEP_SUMMARY"
