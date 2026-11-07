@@ -331,7 +331,7 @@ fn main() {
             // As `setsid-sleep`, but the tool itself ends at once: what it
             // leaves behind is an orphan of the sandbox with no parent to wait for.
             let secs = args.get(1).map(String::as_str).unwrap_or("30");
-            let script = format!("/bin/sleep {secs} &");
+            let script = format!("/bin/sleep {secs} >/dev/null 2>&1 &");
             match mimlys_exec::confine::macos::probe::spawn_in_new_session(
                 "/bin/sh",
                 &["-c", &script],
