@@ -23,9 +23,6 @@ jobs:
     timeout-minutes: 60
     env:
       ITERATIONS: "10"
-      D1_DIAG: ${{ runner.temp }}\d1-acl.log
-      D1_WATCH: ${{ runner.temp }}\d1-watch.log
-      D1_STOP: ${{ runner.temp }}\d1-stop
       D1_LOCK_MS: ${{ matrix.lockms }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -35,7 +32,16 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: d1-${{ matrix.os }}
+      - name: diagnostic paths
+        shell: bash
+        run: |
+          {
+            echo "D1_DIAG=$RUNNER_TEMP\\d1-acl.log"
+            echo "D1_WATCH=$RUNNER_TEMP\\d1-watch.log"
+            echo "D1_STOP=$RUNNER_TEMP\\d1-stop"
+          } >> "$GITHUB_ENV"
       - name: the machine
+        continue-on-error: true
         shell: pwsh
         run: |
           [Environment]::OSVersion.VersionString
