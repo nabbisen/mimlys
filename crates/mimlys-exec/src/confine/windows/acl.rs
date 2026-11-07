@@ -25,8 +25,9 @@
 //! ended without releasing it) is acquired and the write proceeds: the
 //! holder's write either landed or did not, and the writer reads the base
 //! again under the lock, so it merges into whichever it was. A mutex the
-//! system refuses to create or to wait on leaves no holder to wait for; the
-//! write goes ahead and the log says so (`dacl_wait::Decision`).
+//! system will not create or wait on is refused too, with a reason of its
+//! own (`acl_not_applied: the permissions lock of <dir> cannot be taken:
+//! <system error>`): there is no write without the lock (THR-36).
 //! The merge starts from the directory's explicit entries alone, and the
 //! system recomputes the inherited ones from the parent on the write.
 //! The write marks the descriptor auto-inherited, as every write through
@@ -36,7 +37,7 @@
 //!
 //! Every `unsafe` block is justified (REQ-CONF-010).
 
-use crate::confine::dacl_wait::{Attempt, Decision, decide_with_limit, refusal_reason};
+use crate::confine::dacl_wait::{Attempt, Cause, Decision, Refusal, decide_with_limit};
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -138,11 +139,11 @@ struct DaclLock {
 
 impl DaclLock {
     /// Takes the lock, waiting up to LIM-O7 when another writer holds it
-    /// (one `info` line per wait). `Ok(None)` when the system gives no mutex
-    /// to wait on (the write goes ahead, noted in the log); `Err` with the
-    /// `acl_not_applied` reason when the wait runs out: never a write on a
-    /// stale base.
-    fn acquire(path: &Path) -> Result<Option<Self>, String> {
+    /// (one `info` line per wait). `Err` with the refusal when the wait runs
+    /// out, or when the system will not create the mutex or wait on it:
+    /// never a write on a stale base, never a write without the lock.
+    fn acquire(path: &Path) -> Result<Self, Refusal> {
+        let dir = path.display().to_string();
         let mut key: u64 = 0xcbf2_9ce4_8422_2325;
         for b in path.to_string_lossy().to_lowercase().bytes() {
             key ^= u64::from(b);
@@ -152,14 +153,14 @@ impl DaclLock {
         // SAFETY: default security, not initially owned, a null-terminated name.
         let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
         if handle.is_null() {
-            tracing::debug!(
+            let error = std::io::Error::last_os_error().to_string();
+            tracing::warn!(
                 target: "mimlys_worker",
-                "no mutex for the permissions of {}: {}; writing without it",
-                path.display(),
-                std::io::Error::last_os_error()
+                "no mutex for the permissions of {dir}: {error}; the write is refused"
             );
-            return Ok(None);
+            return Err(Refusal::new(Cause::LockUnavailable, &dir, &error));
         }
+        let failure = std::cell::RefCell::new(String::new());
         let decision = decide_with_limit(
             |timeout_ms| {
                 // SAFETY: the handle was just created and is valid.
@@ -167,42 +168,32 @@ impl DaclLock {
                     WAIT_OBJECT_0 => Attempt::Acquired,
                     WAIT_ABANDONED => Attempt::Abandoned,
                     WAIT_TIMEOUT => Attempt::Held,
-                    _ => Attempt::Failed,
+                    _ => {
+                        *failure.borrow_mut() = std::io::Error::last_os_error().to_string();
+                        Attempt::Failed
+                    }
                 }
             },
             || {
                 tracing::info!(
                     target: "mimlys_worker",
-                    "waiting for another runtime's write of the permissions of {}",
-                    path.display()
+                    "waiting for another runtime's write of the permissions of {dir}"
                 );
             },
         );
         match decision {
-            Decision::Write => Ok(Some(Self { handle })),
+            Decision::Write => Ok(Self { handle }),
             Decision::WriteAfterAbandoned => {
                 tracing::info!(
                     target: "mimlys_worker",
-                    "the previous writer of the permissions of {} ended without releasing the lock; reading them again",
-                    path.display()
+                    "the previous writer of the permissions of {dir} ended without releasing the lock; reading them again"
                 );
-                Ok(Some(Self { handle }))
+                Ok(Self { handle })
             }
-            Decision::WriteUnlocked => {
-                tracing::warn!(
-                    target: "mimlys_worker",
-                    "the wait for the permissions of {} failed: {}; writing without the lock",
-                    path.display(),
-                    std::io::Error::last_os_error()
-                );
+            Decision::Refuse(cause) => {
                 // SAFETY: the handle is valid and closed exactly once.
                 unsafe { CloseHandle(handle) };
-                Ok(None)
-            }
-            Decision::Refuse => {
-                // SAFETY: the handle is valid and closed exactly once.
-                unsafe { CloseHandle(handle) };
-                Err(refusal_reason(&path.display().to_string()))
+                Err(Refusal::new(cause, &dir, &failure.borrow()))
             }
         }
     }
@@ -302,7 +293,7 @@ fn explicit_entries(acl: *const ACL) -> Result<Option<Vec<u8>>, String> {
 }
 
 fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
-    let _lock = DaclLock::acquire(path)?;
+    let _lock = DaclLock::acquire(path).map_err(|r| r.to_string())?;
     let old = read_dacl(path)?;
     let mut explicit = explicit_entries(old.acl)?;
     let base: *mut ACL = explicit
@@ -507,7 +498,7 @@ fn is_private_to(path: &Path, sid: &[u8]) -> Result<bool, String> {
 /// the DACL already is this one nothing is written.
 pub fn protect_to_current_user(path: &Path) -> Result<(), String> {
     let sid = current_user_sid()?;
-    let _lock = DaclLock::acquire(path)?;
+    let _lock = DaclLock::acquire(path).map_err(|r| r.to_string())?;
     if is_private_to(path, &sid)? {
         return Ok(());
     }
