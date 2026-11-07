@@ -228,6 +228,26 @@ entry the tool is unavailable: `status` and `toolchain list` say
 for it is refused with the same reason, so nothing is granted that changes
 nothing.
 
+Another reason with the same name can appear when two runtimes (two
+installations, or two commands of one) write the permissions of the same
+directory at once, for example the directory your worker is installed in:
+
+```text
+acl_not_applied: the permissions of <dir> are being written by another runtime
+```
+
+The writes are taken one at a time per directory. A runtime that finds the
+directory busy writes one line to its log (`waiting for another runtime's
+write of the permissions of <dir>`) and waits up to a minute (LIM-O7), for
+a write that has to reach every file below the directory can take several
+seconds; if the other runtime has not finished by then, nothing is written
+(never on a stale copy, which would remove the other runtime's entry) and
+the command fails with the reason above. `toolchain grant` and `revoke` print
+it and exit with an error; at startup it stops the start, and the next start
+applies mimlys's own directories. What to do: wait for the other runtime's
+command or start to finish (it is usually another `mimlys` running), then run
+the command again. Nothing was changed by the one that failed.
+
 ```text
 tier            full
 clause F filesystem   enforced (appcontainer)
