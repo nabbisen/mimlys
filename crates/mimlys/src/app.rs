@@ -36,6 +36,12 @@ pub enum AppError {
         /// What failed.
         detail: String,
     },
+    /// The permissions of a directory could not be written because their
+    /// lock was held by another runtime past LIM-O7 or could not be taken
+    /// (Windows; REQ-CONF-008, external design §13.5). Expected, and
+    /// retrying is the remedy: the kind is `unavailable`, not `internal`.
+    #[error("{0}")]
+    Permissions(#[from] mimlys_exec::confine::dacl_wait::Refusal),
     /// A command finished only in part: the message names what did not
     /// happen and the report (the command's own JSON shape) says what did.
     #[error("{message}")]
@@ -61,6 +67,7 @@ impl AppError {
         match self {
             AppError::Config(_) => "invalid_request",
             AppError::Runtime(e) => e.kind(),
+            AppError::Permissions(_) => "unavailable",
             AppError::Persistence(_) | AppError::Io { .. } | AppError::Partial { .. } => "internal",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { .. }) => "conflict",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::NotFound { .. }) => "not_found",
@@ -80,6 +87,7 @@ impl AppError {
         }
         let detail = match self {
             AppError::Config(e) => serde_json::json!({ "parameter": e.key }),
+            AppError::Permissions(_) => serde_json::json!({ "component": "permissions" }),
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { paths })
             | AppError::Runtime(RuntimeError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { paths },
@@ -246,6 +254,26 @@ pub fn worker_binary() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+/// The error of a failed `create_private_dir`. A refused permission lock
+/// (another runtime is writing the directory's permissions past LIM-O7, or
+/// the lock cannot be taken) is recognized by its type, never by its text:
+/// the start fails `unavailable` and the next applies them (external design
+/// §13.5, §18). Any other failure carries its text.
+fn data_dir_error(data_dir: &Path, e: std::io::Error) -> AppError {
+    match e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<mimlys_exec::confine::dacl_wait::Refusal>())
+    {
+        Some(refusal) => AppError::Permissions(refusal.clone()),
+        None => AppError::Io {
+            detail: format!(
+                "cannot create the data directory {}: {e}",
+                data_dir.display()
+            ),
+        },
+    }
+}
+
 impl App {
     /// Opens the data directory, recovers, checks consistency and builds
     /// the runtime (REQ-PERS-006, REQ-PERS-007).
@@ -264,13 +292,8 @@ impl App {
         // REQ-WS-001: owner-only from the start (Unix mode 0700; Windows a
         // protected DACL for the current user), before anything is placed
         // in it and before the container's entries go on the subdirectories.
-        mimlys_exec::confine::create_private_dir(&data_dir).map_err(|e| AppError::Io {
-            detail: format!(
-                "cannot create the data directory {}: {}",
-                data_dir.display(),
-                e.kind()
-            ),
-        })?;
+        mimlys_exec::confine::create_private_dir(&data_dir)
+            .map_err(|e| data_dir_error(&data_dir, e))?;
         let policy = config.resolve_policy()?;
         let store = mimlys_persist::sqlite::open(&data_dir)?;
         let ids = SystemIds;
@@ -670,3 +693,6 @@ pub fn os_user() -> String {
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
         .unwrap_or_else(|| "unknown".into())
 }
+
+#[cfg(test)]
+mod tests;

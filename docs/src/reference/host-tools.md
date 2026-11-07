@@ -305,6 +305,34 @@ entry the tool is unavailable: `status` and `toolchain list` say
 for it is refused with the same reason, so nothing is granted that changes
 nothing.
 
+Two more reasons carry the same name. They appear when mimlys cannot take
+the lock that orders the writers of one directory's permissions (two
+runtimes, two installations or two commands of one, would otherwise lose one
+another's entry), for example on the directory your worker is installed in:
+
+```text
+acl_not_applied: the permissions of <dir> are being written by another runtime
+acl_not_applied: the permissions lock of <dir> cannot be taken: <system error>
+```
+
+The first: another runtime is writing the directory's permissions. A
+runtime that finds the directory busy writes one line to its log (`waiting
+for another runtime's write of the permissions of <dir>`) and waits up to a
+minute (LIM-O7), for a write that has to reach every file below the
+directory can take several seconds; if the other runtime has not finished by
+then, nothing is written. The second: the system would not create the lock
+or wait on it, and nothing is written either, since a write without the lock
+could remove the other runtime's entry. The command fails with the error
+kind `unavailable` and `detail.component` `"permissions"` (`{"error":
+{"kind": "unavailable", "message": "acl_not_applied: ...", "detail":
+{"component": "permissions"}}}` with `--json`). `toolchain grant` and
+`revoke` print it and exit with an error, and nothing was changed; at startup
+it stops the start, and the next start applies mimlys's own directories.
+What to do: retry. Wait for the other runtime's command or start to finish
+(it is usually another `mimlys` running) and run the command again, or start
+mimlys again. If the second reason repeats, the system error in it says why
+the lock is refused.
+
 ```text
 tier            full
 clause F filesystem   enforced (appcontainer)

@@ -5,11 +5,29 @@
 //! inheritable to what lies beneath. Nothing else in the directory's
 //! security descriptor is touched: the entries the directory inherits stay
 //! inherited and its protection flag stays as it was; and `has_entry` reads
-//! the descriptor back rather than trusting any record. A write is a merge
-//! into the DACL read a moment earlier, so one writer at a time per
-//! directory holds a named mutex across the runtimes of this machine (two
-//! installations granting their containers one directory at once would
-//! otherwise lose one another's entry).
+//! the descriptor back rather than trusting any record.
+//!
+//! A write is a merge into the DACL read a moment earlier, so one writer at
+//! a time per directory holds a named mutex across the runtimes of this
+//! machine, for the whole write (two installations granting their
+//! containers one directory at once would otherwise lose one another's
+//! entry; THR-36). The system propagates a write to every file beneath the
+//! directory, so a write takes from 0.1 s to several seconds (D1), and a
+//! second writer that read during the first one's call would read the base
+//! as it was before it. A writer that finds the mutex held says so once in
+//! the log, waits up to LIM-O7 and then **refuses** the write with
+//! `acl_not_applied` and the reason (`the permissions of <dir> are being
+//! written by another runtime`); it never writes on a base read while
+//! another write was landing. The callers report the refusal as they report
+//! any `acl_not_applied`: `toolchain grant` and `revoke` fail with it, and
+//! the start of mimlys fails with it when its own directories cannot be
+//! written (the next start applies them). An abandoned mutex (its holder
+//! ended without releasing it) is acquired and the write proceeds: the
+//! holder's write either landed or did not, and the writer reads the base
+//! again under the lock, so it merges into whichever it was. A mutex the
+//! system will not create or wait on is refused too, with a reason of its
+//! own (`acl_not_applied: the permissions lock of <dir> cannot be taken:
+//! <system error>`): there is no write without the lock (THR-36).
 //! The merge starts from the directory's explicit entries alone, and the
 //! system recomputes the inherited ones from the parent on the write.
 //! The write marks the descriptor auto-inherited, as every write through
@@ -19,13 +37,14 @@
 //!
 //! Every `unsafe` block is justified (REQ-CONF-010).
 
-use mimlys_core::limits::LIM_O2_CANCEL_MS;
+use crate::confine::dacl_wait::{Attempt, Cause, Decision, Refusal, decide};
+use mimlys_core::limits::LIM_O7_PERMISSION_WRITE_WAIT_MS;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, HANDLE, LocalFree,
-    WAIT_ABANDONED, WAIT_OBJECT_0,
+    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetExplicitEntriesFromAclW, GetNamedSecurityInfoW,
@@ -64,6 +83,40 @@ impl Access {
             Access::Read => GENERIC_READ | GENERIC_EXECUTE,
             Access::Write => GENERIC_ALL,
         }
+    }
+}
+
+/// Why a write of a directory's permissions did not happen.
+#[derive(Debug)]
+pub enum AclError {
+    /// The directory's lock was not obtained: held past LIM-O7, or not
+    /// available from the system (REQ-CONF-008, THR-36). The commands turn
+    /// it into the error kind `unavailable` (external design §18).
+    Refused(Refusal),
+    /// The system refused or failed the read or the write.
+    Failed(String),
+}
+
+impl std::fmt::Display for AclError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AclError::Refused(r) => r.fmt(f),
+            AclError::Failed(text) => f.write_str(text),
+        }
+    }
+}
+
+impl std::error::Error for AclError {}
+
+impl From<Refusal> for AclError {
+    fn from(r: Refusal) -> Self {
+        AclError::Refused(r)
+    }
+}
+
+impl From<String> for AclError {
+    fn from(text: String) -> Self {
+        AclError::Failed(text)
     }
 }
 
@@ -120,10 +173,17 @@ struct DaclLock {
 }
 
 impl DaclLock {
-    /// Takes the lock within LIM-O2; `None` when the system refuses the
-    /// mutex or the wait runs out (the write goes ahead, noted in the log:
-    /// a DACL write takes milliseconds and a holder that died abandons it).
-    fn acquire(path: &Path) -> Option<Self> {
+    /// Takes the lock, waiting up to LIM-O7 when another writer holds it
+    /// (one `info` line per wait). `Err` with the refusal when the wait runs
+    /// out, or when the system will not create the mutex or wait on it:
+    /// never a write on a stale base, never a write without the lock.
+    fn acquire(path: &Path) -> Result<Self, Refusal> {
+        Self::acquire_within(path, LIM_O7_PERMISSION_WRITE_WAIT_MS)
+    }
+
+    /// [`acquire`](Self::acquire) with the wait given (LIM-O7 in production).
+    fn acquire_within(path: &Path, limit_ms: u64) -> Result<Self, Refusal> {
+        let dir = path.display().to_string();
         let mut key: u64 = 0xcbf2_9ce4_8422_2325;
         for b in path.to_string_lossy().to_lowercase().bytes() {
             key ^= u64::from(b);
@@ -133,26 +193,48 @@ impl DaclLock {
         // SAFETY: default security, not initially owned, a null-terminated name.
         let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
         if handle.is_null() {
-            tracing::debug!(
+            let error = std::io::Error::last_os_error().to_string();
+            tracing::warn!(
                 target: "mimlys_worker",
-                "no mutex for the permissions of {}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
+                "no mutex for the permissions of {dir}: {error}; the write is refused"
             );
-            return None;
+            return Err(Refusal::new(Cause::LockUnavailable, &dir, &error));
         }
-        // SAFETY: the handle was just created and is valid.
-        match unsafe { WaitForSingleObject(handle, LIM_O2_CANCEL_MS as u32) } {
-            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(Self { handle }),
-            _ => {
-                tracing::warn!(
+        let failure = std::cell::RefCell::new(String::new());
+        let decision = decide(
+            |timeout_ms| {
+                // SAFETY: the handle was just created and is valid.
+                match unsafe { WaitForSingleObject(handle, timeout_ms) } {
+                    WAIT_OBJECT_0 => Attempt::Acquired,
+                    WAIT_ABANDONED => Attempt::Abandoned,
+                    WAIT_TIMEOUT => Attempt::Held,
+                    _ => {
+                        *failure.borrow_mut() = std::io::Error::last_os_error().to_string();
+                        Attempt::Failed
+                    }
+                }
+            },
+            || {
+                tracing::info!(
                     target: "mimlys_worker",
-                    "the permissions of {} are being written by another runtime past LIM-O2; writing anyway",
-                    path.display()
+                    "waiting for another runtime's write of the permissions of {dir}"
                 );
+            },
+            limit_ms,
+        );
+        match decision {
+            Decision::Write => Ok(Self { handle }),
+            Decision::WriteAfterAbandoned => {
+                tracing::info!(
+                    target: "mimlys_worker",
+                    "the previous writer of the permissions of {dir} ended without releasing the lock; reading them again"
+                );
+                Ok(Self { handle })
+            }
+            Decision::Refuse(cause) => {
                 // SAFETY: the handle is valid and closed exactly once.
                 unsafe { CloseHandle(handle) };
-                None
+                Err(Refusal::new(cause, &dir, &failure.borrow()))
             }
         }
     }
@@ -251,8 +333,13 @@ fn explicit_entries(acl: *const ACL) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(buffer))
 }
 
-fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
-    let _lock = DaclLock::acquire(path);
+fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), AclError> {
+    let _lock = DaclLock::acquire(path)?;
+    merge_entry(path, sid, access, mode).map_err(AclError::Failed)
+}
+
+/// The merge itself, under the directory's lock (held by [`set_entry`]).
+fn merge_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
     let old = read_dacl(path)?;
     let mut explicit = explicit_entries(old.acl)?;
     let base: *mut ACL = explicit
@@ -323,12 +410,12 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
 }
 
 /// Adds the container's entry to the directory's DACL.
-pub fn grant(path: &Path, sid: &[u8], access: Access) -> Result<(), String> {
+pub fn grant(path: &Path, sid: &[u8], access: Access) -> Result<(), AclError> {
     set_entry(path, sid, access, GRANT_ACCESS)
 }
 
 /// Removes every entry of the container SID from the directory's DACL.
-pub fn revoke(path: &Path, sid: &[u8]) -> Result<(), String> {
+pub fn revoke(path: &Path, sid: &[u8]) -> Result<(), AclError> {
     set_entry(path, sid, Access::Read, REVOKE_ACCESS)
 }
 
@@ -455,10 +542,15 @@ fn is_private_to(path: &Path, sid: &[u8]) -> Result<bool, String> {
 /// Called at every open, before the runtime adds the container's entries on
 /// the subdirectories, so that the entries it adds are the only others; when
 /// the DACL already is this one nothing is written.
-pub fn protect_to_current_user(path: &Path) -> Result<(), String> {
+pub fn protect_to_current_user(path: &Path) -> Result<(), AclError> {
     let sid = current_user_sid()?;
-    let _lock = DaclLock::acquire(path);
-    if is_private_to(path, &sid)? {
+    let _lock = DaclLock::acquire(path)?;
+    protect_locked(path, &sid).map_err(AclError::Failed)
+}
+
+/// The write of [`protect_to_current_user`], under the directory's lock.
+fn protect_locked(path: &Path, sid: &[u8]) -> Result<(), String> {
+    if is_private_to(path, sid)? {
         return Ok(());
     }
     // A specific mask, not GENERIC_ALL: the system turns an inheritable
@@ -509,3 +601,6 @@ pub fn protect_to_current_user(path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
