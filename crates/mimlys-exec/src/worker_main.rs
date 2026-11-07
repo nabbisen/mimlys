@@ -37,6 +37,8 @@ struct State {
     host_memory: Option<u64>,
     /// The `tool` sub-cgroup every host tool's tree is attached to (clause K).
     tool_cgroup: Option<std::path::PathBuf>,
+    /// The watchdogs' ceilings for the sandbox's members (macOS; empty elsewhere).
+    tree_limits: crate::host_tool::TreeLimits,
 }
 
 /// What the worker's self-confinement produced (RFC 011 §1), set once at start.
@@ -180,7 +182,8 @@ pub fn main() {
         .and_then(|json| serde_json::from_str::<crate::confine::ConfinementSpec>(json).ok())
         .filter(|_| applied.rlimit_memory)
         .map(|s| s.memory_bytes);
-    let state = match build_state(configured, limits, host_tools, host_memory) {
+    let tree_limits = tree_limits(&applied, spec_of(&args).as_ref());
+    let state = match build_state(configured, limits, host_tools, host_memory, tree_limits) {
         Ok(s) => s,
         Err(detail) => {
             eprintln!("worker: cannot start the sandbox: {detail}");
@@ -188,6 +191,36 @@ pub fn main() {
         }
     };
     serve(state);
+}
+
+/// The confinement specification the runtime passed (`--confine <json>`).
+fn spec_of(args: &[String]) -> Option<crate::confine::ConfinementSpec> {
+    args.iter()
+        .position(|a| a == "--confine")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|json| serde_json::from_str(json).ok())
+}
+
+/// The ceilings the macOS watchdogs hold the members to: a ceiling only for
+/// a clause the worker itself reported `best_effort` (RFC 011 Amendment 2,
+/// settled, point 7), so that a mechanism that was not verified watches nothing.
+fn tree_limits(
+    applied: &crate::confine::Applied,
+    spec: Option<&crate::confine::ConfinementSpec>,
+) -> crate::host_tool::TreeLimits {
+    let best_effort = |letter: &str| {
+        matches!(
+            applied.report.get(letter),
+            Some(ClauseState::BestEffort { .. })
+        )
+    };
+    match spec {
+        Some(spec) if cfg!(target_os = "macos") => crate::host_tool::TreeLimits {
+            memory_bytes: best_effort("M").then_some(spec.memory_bytes),
+            max_processes: best_effort("C").then_some(spec.max_processes),
+        },
+        _ => crate::host_tool::TreeLimits::default(),
+    }
 }
 
 fn own_clauses() -> BTreeMap<String, ClauseState> {
@@ -318,6 +351,7 @@ fn build_state(
     limits: Limits,
     host_tools: BTreeMap<String, mimlys_core::host_tool::HostToolDeclaration>,
     host_memory: Option<u64>,
+    tree_limits: crate::host_tool::TreeLimits,
 ) -> Result<State, String> {
     let sandbox = Sandbox::new().map_err(|e| e.to_string())?;
     let mut interpreters = BTreeMap::new();
@@ -350,6 +384,7 @@ fn build_state(
         host_tools,
         host_memory,
         tool_cgroup: APPLIED.get().and_then(|a| a.tool_cgroup.clone()),
+        tree_limits,
     })
 }
 
@@ -562,6 +597,7 @@ fn execute(
             interrupt,
             rlimit_memory: state.host_memory,
             tool_cgroup: state.tool_cgroup.as_deref(),
+            tree_limits: state.tree_limits,
         });
         return (
             outcome.termination,

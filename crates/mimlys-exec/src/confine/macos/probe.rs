@@ -56,3 +56,49 @@ pub fn signal_zero(pid: i32) -> Result<(), i32> {
         Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
     }
 }
+
+/// Starts `program` in a session of its own (`setsid` between fork and
+/// exec; macOS has no `setsid` command), so that it leaves the caller's
+/// process group and session. A child that then exits or is killed leaves
+/// its own children re-parented to `launchd`.
+pub fn spawn_in_new_session(program: &str, args: &[&str]) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    // SAFETY: the closure runs between fork and exec and calls only `setsid`,
+    // which is async-signal-safe; it allocates nothing and takes no lock.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    command.spawn()
+}
+
+/// The size in bytes of the process list with names (`sysctl
+/// KERN_PROC_ALL`), or the `errno` that refused it: the profile denies the
+/// `kern.proc.` prefix, so the answer inside is a refusal.
+pub fn process_list_size() -> Result<usize, i32> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL];
+    let mut size: libc::size_t = 0;
+    // SAFETY: `mib` has three elements as `namelen` says; a null buffer asks for the size.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 {
+        Ok(size)
+    } else {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
+    }
+}

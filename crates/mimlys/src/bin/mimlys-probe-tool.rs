@@ -3,7 +3,9 @@
 //! output. Built only with the `test-bins` feature; never part of a release.
 //!
 //! `read <path>`, `write <path>`, `connect <addr>`, `env <name>`,
-//! `sleep <secs>`, `setsid-sleep <secs>`, `fork <n>`, `alloc <mib>`, `cwd`, `ok`.
+//! `sleep <secs>`, `setsid-sleep <secs>`, `fork <n> [hold_ms]`, `alloc <mib>`,
+//! `alloc-touch <mib>` (resident memory: every page written), `connect-name
+//! <host:port>` (resolve and connect), `cwd`, `ok`.
 //!
 //! Linux only (REQ-CONF-012, REQ-CONF-011; the syscalls are in
 //! `mimlys_exec::confine::linux::probe`, the one place the tests may reach
@@ -292,7 +294,7 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_secs(secs));
             0
         }
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "macos")))]
         Some("setsid-sleep") => {
             // A child that leaves the process group, then everyone sleeps.
             let secs = args.get(1).map(String::as_str).unwrap_or("30");
@@ -302,6 +304,62 @@ fn main() {
                 .and_then(|mut c| c.wait());
             0
         }
+        #[cfg(target_os = "macos")]
+        Some("setsid-sleep") => {
+            // macOS has no `setsid` command: a shell in a session of its own
+            // starts a sleeper in the background and exits at once, so the
+            // sleeper is an orphan re-parented to launchd, outside the tool's
+            // process group and session (it is still a member of the sandbox).
+            // Then the tool sleeps too.
+            let secs = args.get(1).map(String::as_str).unwrap_or("30");
+            let script = format!("/bin/sleep {secs} &");
+            match mimlys_exec::confine::macos::probe::spawn_in_new_session(
+                "/bin/sh",
+                &["-c", &script],
+            ) {
+                Ok(mut shell) => {
+                    let _ = shell.wait();
+                }
+                Err(e) => println!("spawn failed: {}", e.kind()),
+            }
+            let _ = std::io::stdout().flush();
+            std::thread::sleep(std::time::Duration::from_secs(secs.parse().unwrap_or(30)));
+            0
+        }
+        #[cfg(target_os = "macos")]
+        Some("orphan") => {
+            // As `setsid-sleep`, but the tool itself ends at once: what it
+            // leaves behind is an orphan of the sandbox with no parent to wait for.
+            let secs = args.get(1).map(String::as_str).unwrap_or("30");
+            let script = format!("/bin/sleep {secs} >/dev/null 2>&1 &");
+            match mimlys_exec::confine::macos::probe::spawn_in_new_session(
+                "/bin/sh",
+                &["-c", &script],
+            ) {
+                Ok(mut shell) => {
+                    let _ = shell.wait();
+                    0
+                }
+                Err(e) => {
+                    println!("spawn failed: {}", e.kind());
+                    3
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        Some("proclist") => match mimlys_exec::confine::macos::probe::process_list_size() {
+            Ok(bytes) => {
+                println!("proclist read: {bytes} bytes");
+                0
+            }
+            Err(errno) => {
+                println!(
+                    "proclist failed: errno={errno} ({})",
+                    std::io::Error::from_raw_os_error(errno)
+                );
+                3
+            }
+        },
         #[cfg(windows)]
         Some("setsid-sleep") => {
             // A detached child in a new process group (the closest thing to
@@ -339,6 +397,12 @@ fn main() {
                 }
             }
             println!("spawned {spawned}");
+            let _ = std::io::stdout().flush();
+            // Optionally hold the children (milliseconds), so that a watchdog
+            // polling the tree has time to see them.
+            if let Some(ms) = args.get(2).and_then(|s| s.parse::<u64>().ok()) {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
             for mut c in children {
                 let _ = c.kill();
                 let _ = c.wait();
@@ -402,6 +466,50 @@ fn main() {
                 },
             }
         }
+        Some("alloc-touch") => {
+            // Resident memory, not virtual: every page of every block is
+            // written (a zeroed allocation is mapped lazily and costs nothing
+            // until it is touched). Holds the blocks a few seconds so that a
+            // watchdog polling the tree can see them.
+            let mib: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
+            let mut blocks: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..mib {
+                let mut b = vec![0u8; 1024 * 1024];
+                for page in (0..b.len()).step_by(4096) {
+                    b[page] = 1;
+                }
+                std::hint::black_box(&mut b);
+                blocks.push(b);
+            }
+            std::hint::black_box(&blocks);
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            println!("touched {} MiB", blocks.len());
+            0
+        }
+        Some("connect-name") => {
+            // A name resolved and connected to: `host:port`.
+            use std::net::ToSocketAddrs;
+            let target = args.get(1).map(String::as_str).unwrap_or("localhost:443");
+            match target.to_socket_addrs() {
+                Err(e) => {
+                    println!("resolve failed: {}", e.kind());
+                    3
+                }
+                Ok(addrs) => {
+                    let connected = addrs.into_iter().any(|a| {
+                        std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_secs(5))
+                            .is_ok()
+                    });
+                    if connected {
+                        println!("connected");
+                        0
+                    } else {
+                        println!("connect failed");
+                        3
+                    }
+                }
+            }
+        }
         Some("alloc") => {
             let mib: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
             let mut blocks: Vec<Vec<u8>> = Vec::new();
@@ -415,7 +523,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }

@@ -5,18 +5,34 @@
 //! interrupt honoured by terminating the whole tree, and, where no cgroup
 //! bounds memory, `RLIMIT_AS` set for the child around the spawn. On
 //! Windows the tool starts suspended inside a job of its own, nested in the
-//! worker's, so that its tree is killed as one (clause K).
+//! worker's, so that its tree is killed as one (clause K). On macOS the tree
+//! is the sandbox's members: killed by the membership loop after a cancel, a
+//! deadline and the tool's end, and watched for memory and count every LIM-H6.
 
 use crate::sandbox::{Interrupt, InterruptReason};
 use mimlys_core::action::{ExecutionMetrics, HostFaultDetail, Termination};
 use mimlys_core::host_tool::HostToolDeclaration;
 use mimlys_core::limits::LIM_H4_HOST_OUTPUT_BYTES;
+#[cfg(target_os = "macos")]
+use mimlys_core::limits::LIM_H6_TRACK_INTERVAL_MS;
 use mimlys_core::limits::LIM_O2_CANCEL_MS;
 use mimlys_core::observation::{Notice, Stream};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// The ceilings the macOS watchdogs hold the tool's tree to (clauses M and C,
+/// RFC 011 Amendment 2, settled, point 7), polled every LIM-H6. A field is
+/// `Some` only for a clause the worker reported `best_effort`; always `None`
+/// elsewhere, where the kernel holds the limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeLimits {
+    /// LIM-H2: the members' summed resident size.
+    pub memory_bytes: Option<u64>,
+    /// LIM-H3: the members' count.
+    pub max_processes: Option<u32>,
+}
 
 /// One host tool run.
 pub struct HostRun<'a> {
@@ -36,6 +52,8 @@ pub struct HostRun<'a> {
     pub rlimit_memory: Option<u64>,
     /// The `tool` sub-cgroup the child joins before it runs, when clause K holds through `cgroup.kill`.
     pub tool_cgroup: Option<&'a Path>,
+    /// The watchdogs' ceilings (macOS; empty elsewhere).
+    pub tree_limits: TreeLimits,
 }
 
 /// What a run produced.
@@ -232,6 +250,8 @@ impl ToolProc {
                     std::process::id(),
                     Duration::from_millis(LIM_O2_CANCEL_MS),
                 );
+                #[cfg(target_os = "macos")]
+                sweep_members();
             }
             #[cfg(windows)]
             ToolProc::Win(child, job) => {
@@ -240,6 +260,27 @@ impl ToolProc {
                 let _ = child.wait();
             }
         }
+    }
+}
+
+/// Clause K on macOS (RFC 011 Amendment 2, settled, point 6): the sandbox's
+/// members other than the worker, found and killed until none is left or
+/// LIM-O2 passes; re-parented orphans are members like any other. Does
+/// nothing unless the worker verified the mechanism after applying its profile.
+#[cfg(target_os = "macos")]
+fn sweep_members() {
+    let report = crate::confine::macos::sweep(Duration::from_millis(LIM_O2_CANCEL_MS));
+    crate::trace::line(|| {
+        format!(
+            "membership sweep: {} signals in {} rounds, complete: {}",
+            report.killed, report.rounds, report.complete
+        )
+    });
+    if !report.complete {
+        tracing::warn!(
+            target: "mimlys_worker",
+            "tree_kill_incomplete: members of the sandbox remained after {LIM_O2_CANCEL_MS} ms"
+        );
     }
 }
 
@@ -341,9 +382,16 @@ pub fn run(r: HostRun<'_>) -> HostOutcome {
     let stdout = capture(child.take_stdout(), Stream::Stdout);
     let stderr = capture(child.take_stderr(), Stream::Stderr);
     let deadline = Duration::from_millis(r.deadline_ms.max(1) as u64);
+    // Clauses M and C on macOS: the watchdogs over the members, every LIM-H6.
+    #[cfg(target_os = "macos")]
+    let mut next_watch = Instant::now();
     let termination = loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                // Clause K: what the tool left behind (a daemon, an orphan) is
+                // a member of the sandbox and ends with it.
+                #[cfg(target_os = "macos")]
+                sweep_members();
                 break Termination::Exited {
                     exit_code: exit_code(status),
                 };
@@ -366,6 +414,26 @@ pub fn run(r: HostRun<'_>) -> HostOutcome {
             r.interrupt.fire(InterruptReason::Deadline);
             child.kill_tree(r.tool_cgroup);
             break Termination::Deadline;
+        }
+        #[cfg(target_os = "macos")]
+        if Instant::now() >= next_watch
+            && (r.tree_limits.memory_bytes.is_some() || r.tree_limits.max_processes.is_some())
+        {
+            next_watch = Instant::now() + Duration::from_millis(LIM_H6_TRACK_INTERVAL_MS);
+            if let Some(verdict) = crate::confine::macos::watch(
+                r.tree_limits.memory_bytes.unwrap_or(0),
+                r.tree_limits.max_processes.unwrap_or(0),
+            ) {
+                crate::trace::line(|| format!("host tool {name}: watchdog verdict {verdict:?}"));
+                child.kill_tree(r.tool_cgroup);
+                break match verdict {
+                    crate::confine::macos::Verdict::Memory { .. } => Termination::MemoryLimit,
+                    // No termination names the count; the tool ended by SIGKILL.
+                    crate::confine::macos::Verdict::Count { .. } => {
+                        Termination::Exited { exit_code: 128 + 9 }
+                    }
+                };
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     };
