@@ -273,6 +273,9 @@ fn main() -> ExitCode {
         eprintln!("mimlys: cannot mark the process non-dumpable: {e}");
         return ExitCode::from(1);
     }
+    // REQ-SEC-011: replaces the default hook, whose message goes to standard
+    // error unredacted. The secrets are added once the configuration loaded.
+    mimlys_exec::panic_hook::install("mimlys");
     let cli = Cli::parse();
     let out = Output::new(cli.json);
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -298,6 +301,13 @@ fn main() -> ExitCode {
 
 async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     let loaded = Config::load(Config::locate(cli.config.as_deref()).as_deref())?;
+    mimlys_exec::panic_hook::set_secrets(&loaded.secrets);
+    // Debug builds only (REQ-SEC-011's test): a panic after the configuration
+    // loaded, whose message is the variable's text.
+    #[cfg(debug_assertions)]
+    if let Ok(text) = std::env::var("MIMLYS_DEBUG_PANIC_AFTER_CONFIG") {
+        panic!("{text}");
+    }
     if let Some(warning) = logging::init(&loaded.config.logging, &loaded.secrets) {
         eprintln!("{warning}");
     }

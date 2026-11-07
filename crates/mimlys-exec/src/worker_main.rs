@@ -129,7 +129,16 @@ pub fn main() {
         eprintln!("mimlys-worker: cannot mark the process non-dumpable: {e}");
         std::process::exit(1);
     }
+    // REQ-SEC-011: replaces the default hook, whose message goes to standard
+    // error unredacted. The worker has no configured secrets to redact.
+    crate::panic_hook::install("mimlys-worker");
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Debug builds only (REQ-SEC-011's test): a panic with the next argument
+    // as its message.
+    #[cfg(debug_assertions)]
+    if let Some(i) = args.iter().position(|a| a == "--debug-panic") {
+        panic!("{}", args.get(i + 1).map(String::as_str).unwrap_or(""));
+    }
     if args.iter().any(|a| a == "--print-env-names") {
         for (k, _) in std::env::vars_os() {
             println!("{}", k.to_string_lossy());

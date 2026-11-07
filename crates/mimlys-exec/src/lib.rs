@@ -9,6 +9,7 @@ pub mod builtin;
 pub mod confine;
 pub mod host_tool;
 pub mod interpreters;
+pub mod panic_hook;
 pub mod protocol;
 pub mod sandbox;
 pub mod tools;
