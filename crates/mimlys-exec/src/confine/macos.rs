@@ -22,10 +22,22 @@
 //! Rule order matters: the last matching rule wins in SBPL, so every `deny`
 //! that narrows an earlier `allow` comes after it.
 //!
-//! Not here (they wait for spike S1b, handoff 011c): K by sandbox
-//! membership, M and C over the members, the measured part of the read set
-//! and the dependency step's profile (Amendment 2 points 6 to 9). K, M and C
-//! are reported `unavailable` and say which point they wait for.
+//! Clauses K, M and C (RFC 011 Amendment 2, settled, points 6 and 7): the
+//! worker is a member of its sandbox together with every host tool's tree.
+//! No listing restricted to the sandbox exists, so the members are found by
+//! listing every pid (`proc_listallpids`, which the profile allows without a
+//! target) and keeping the ones `proc_pidinfo` can read, which the profile
+//! lets the worker read for members only. K is the **membership kill loop**
+//! ([`sweep`]): `SIGKILL` every member but the worker, repeat until a listing
+//! finds none or LIM-O2 passes. M and C are watchdogs over the same members
+//! ([`verdict`]), polled every LIM-H6. The decisions are pure and tested on
+//! every platform; the calls are in `macos/sys.rs`.
+//!
+//! The kill loop is guarded: it does nothing unless this process verified,
+//! after applying the profile, that the listing works and that processes
+//! outside the sandbox can be neither inspected nor signalled
+//! ([`membership_check`]). Without the profile the same loop would find and
+//! kill every process of the user.
 
 #[cfg(target_os = "macos")]
 use super::Applied;
@@ -40,12 +52,10 @@ mod sys;
 #[cfg(all(target_os = "macos", feature = "probe-syscalls"))]
 pub mod probe;
 
-/// Why K reports `unavailable` for now (Amendment 2 point 6).
-pub const K_LATER: &str = "arrives with point 6 of RFC 011 Amendment 2 (M6c)";
-/// Why M and C report `unavailable` for now (Amendment 2 point 7).
-pub const MC_LATER: &str = "arrives with point 7 of RFC 011 Amendment 2 (M6c)";
-/// Why N reports `unavailable` for the dependency step's worker (point 9).
-pub const FETCH_LATER: &str = "network allowed for the dependency step: its profile arrives with point 9 of RFC 011 Amendment 2 (M6c)";
+/// Why N reports `unavailable` for the dependency step's worker (as on Linux).
+pub const FETCH_NETWORK: &str = "network allowed for the dependency step";
+/// The system's certificate file the dependency step reads (settled point 9).
+pub const CERT_FILE: &str = "/private/etc/ssl/cert.pem";
 
 /// The link `xcode-select` keeps to the active developer directory; read
 /// without running a command (Amendment 2 point 8).
@@ -234,15 +244,18 @@ fn subpaths(literals: &[String]) -> String {
 ///    it), the root directory itself (the loader reads it), the read set
 ///    readable, the write set readable and writable;
 /// 4. `sysctl-read` allowed, then `kern.procargs*` denied (the environment of
-///    another process);
+///    another process) and `kern.proc.` denied (the process list with names);
 /// 5. other processes: `signal` and `process-info*` only for the sandbox's
-///    members (the tool's own tree);
+///    members (the tool's own tree), and the pid listing, which has no
+///    restricted form (the numbers of every pid are visible; the members are
+///    the ones `proc_pidinfo` can read);
 /// 6. network: denied, then Unix sockets under the write set only, then the
 ///    `mDNSResponder` socket denied explicitly (after the allows, so that no
 ///    write path can reopen it). No `mach-lookup` anywhere: DNS is an
 ///    egress channel (measured). The dependency step's worker
-///    (`deny_network` false) gets no network rule either until its profile
-///    (Amendment 2, settled, point 9) is implemented.
+///    (`deny_network` false) adds exactly three rules (settled point 9):
+///    outbound TCP to port 443, a connect to the `mDNSResponder` socket and
+///    the system's certificate file readable; the explicit denial is omitted.
 pub fn generate(spec: &ConfinementSpec) -> Result<String, ProfileError> {
     let reads = literals(&spec.read_paths)?;
     let writes = literals(&spec.write_paths)?;
@@ -273,19 +286,28 @@ pub fn generate(spec: &ConfinementSpec) -> Result<String, ProfileError> {
     p.push_str(
         "\n;; kernel information, except the arguments and environment of other processes\n\
          (allow sysctl-read)\n\
-         (deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n",
+         (deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n\
+         (deny sysctl-read (sysctl-name-prefix \"kern.proc.\"))\n",
     );
     p.push_str(
         "\n;; other processes: the sandbox's members only\n\
          (allow signal (target same-sandbox))\n\
          (deny process-info*)\n\
-         (allow process-info* (target same-sandbox))\n",
+         (allow process-info* (target same-sandbox))\n\
+         (allow process-info-listpids)\n",
     );
     p.push_str("\n;; network\n");
     if spec.deny_network {
         p.push_str("(deny network*)\n");
     } else {
-        p.push_str(";; the dependency step's network rules: Amendment 2 point 9\n");
+        // The dependency step (settled point 9): registries over HTTPS, name
+        // lookup through the one socket, the system's certificates; no mach service.
+        p.push_str(&format!(
+            ";; the dependency step: HTTPS, one name-lookup socket, the system's certificates\n\
+             (allow network-outbound (remote tcp \"*:443\"))\n\
+             (allow network-outbound (remote unix-socket (literal \"{MDNSRESPONDER_SOCKET}\")))\n\
+             (allow file-read-data (literal \"{CERT_FILE}\"))\n"
+        ));
     }
     for w in &writes {
         p.push_str(&format!(
@@ -335,6 +357,162 @@ pub fn denied_candidates(spec: &ConfinementSpec) -> Vec<PathBuf> {
         .collect()
 }
 
+/// What the kernel lets the worker see of one pid (the profile allows
+/// `proc_pidinfo` for the sandbox's members only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seen {
+    /// The call is refused or the process is gone: not a member.
+    Hidden,
+    /// A member that has ended and waits to be reaped; nothing to kill or count.
+    Zombie,
+    /// A live member and its resident size in bytes.
+    Alive {
+        /// `pti_resident_size`; 0 when the task information is refused.
+        resident: u64,
+    },
+}
+
+/// A live member of the sandbox other than the worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Member {
+    /// Its process id.
+    pub pid: i32,
+    /// Its resident size in bytes.
+    pub resident: u64,
+}
+
+/// The members among a pid listing (Amendment 2, settled, point 6): the
+/// pids `see` can read, live, other than the worker itself and `launchd`
+/// (pid 1 and below are never members).
+pub fn members_of(listing: &[i32], own: i32, mut see: impl FnMut(i32) -> Seen) -> Vec<Member> {
+    listing
+        .iter()
+        .copied()
+        .filter(|&pid| pid > 1 && pid != own)
+        .filter_map(|pid| match see(pid) {
+            Seen::Alive { resident } => Some(Member { pid, resident }),
+            Seen::Hidden | Seen::Zombie => None,
+        })
+        .collect()
+}
+
+/// How a membership kill loop ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Signals sent.
+    pub killed: usize,
+    /// Listings that found members.
+    pub rounds: usize,
+    /// Whether the last listing succeeded and found no member. `false` is
+    /// `tree_kill_incomplete`: LIM-O2 passed, or the listing failed.
+    pub complete: bool,
+}
+
+/// The membership kill loop (Amendment 2, settled, point 6): list the
+/// members, `SIGKILL` each, repeat until a listing finds none or `grace`
+/// passes (LIM-O2). `list` is `None` when the listing itself fails. A fork
+/// storm converged in 0.16 s when measured; re-parenting cannot escape
+/// membership, and a reused pid of an outsider cannot be hit (the kernel
+/// refuses to signal it).
+pub fn sweep_with(
+    grace: std::time::Duration,
+    mut list: impl FnMut() -> Option<Vec<Member>>,
+    mut kill: impl FnMut(i32),
+) -> SweepReport {
+    let started = std::time::Instant::now();
+    let mut report = SweepReport {
+        killed: 0,
+        rounds: 0,
+        complete: false,
+    };
+    loop {
+        match list() {
+            None => return report,
+            Some(members) if members.is_empty() => {
+                report.complete = true;
+                return report;
+            }
+            Some(members) => {
+                report.rounds += 1;
+                for m in &members {
+                    kill(m.pid);
+                    report.killed += 1;
+                }
+            }
+        }
+        if started.elapsed() >= grace {
+            // One last look: the final signals may have landed.
+            report.complete = matches!(list(), Some(m) if m.is_empty());
+            return report;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// What a watchdog found over the members.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Their summed resident size is above the ceiling (M; LIM-H2).
+    Memory {
+        /// The sum.
+        resident: u64,
+    },
+    /// Their number is above the ceiling (C; LIM-H3).
+    Count {
+        /// The number.
+        count: usize,
+    },
+}
+
+/// The watchdogs' decision (Amendment 2, settled, point 7): memory first,
+/// then count; strictly above a ceiling. A ceiling of 0 means none was
+/// given and nothing is watched for it.
+pub fn verdict(members: &[Member], memory_bytes: u64, max_processes: u32) -> Option<Verdict> {
+    let resident: u64 = members.iter().map(|m| m.resident).sum();
+    if memory_bytes > 0 && resident > memory_bytes {
+        return Some(Verdict::Memory { resident });
+    }
+    if max_processes > 0 && members.len() > max_processes as usize {
+        return Some(Verdict::Count {
+            count: members.len(),
+        });
+    }
+    None
+}
+
+/// What the worker observed about the membership mechanism after applying
+/// the profile (all of it from inside).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MembershipFacts {
+    /// `proc_listallpids` answered with at least one pid.
+    pub listing_works: bool,
+    /// The worker is in the listing and can inspect itself.
+    pub sees_itself: bool,
+    /// Some process outside the sandbox could be inspected or signalled.
+    pub outsider_reachable: bool,
+    /// A process outside the sandbox could be inspected and signalled
+    /// before the profile (the control: a denial of the impossible proves nothing).
+    pub outsider_control: bool,
+}
+
+/// Why the membership mechanism cannot be relied on, or `None` when it can
+/// (Amendment 2 point 6: the worker verifies the restriction before relying on it).
+pub fn membership_check(facts: &MembershipFacts) -> Option<String> {
+    if !facts.listing_works {
+        return Some("the pid listing is refused".to_owned());
+    }
+    if !facts.sees_itself {
+        return Some("the worker cannot inspect itself".to_owned());
+    }
+    if !facts.outsider_control {
+        return Some("no process outside the sandbox to check against".to_owned());
+    }
+    if facts.outsider_reachable {
+        return Some("a process outside the sandbox can be inspected or signalled".to_owned());
+    }
+    None
+}
+
 /// What applying the profile produced, as the worker observed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -351,32 +529,37 @@ pub enum Outcome {
         filesystem: Option<String>,
         /// The self-check of the network rule failed.
         network: Option<String>,
+        /// The membership mechanism cannot be relied on ([`membership_check`]).
+        membership: Option<String>,
     },
 }
 
-/// What an outcome means for each clause (Amendment 2 points 2 to 5). F and
+/// What an outcome means for each clause (Amendment 2 points 2 to 7). F and
 /// N are `enforced (seatbelt)` only when the profile was applied and the
 /// self-check saw it hold; P is `enforced (seatbelt)` under the same
 /// condition as F (the kernel refuses a setuid `execve` from a sandboxed
-/// process; no rule is needed, and a clause test asserts it); K, M and C
-/// wait for points 6 and 7.
+/// process; no rule is needed, and a clause test asserts it). K is
+/// `enforced (seatbelt_membership)` when the worker verified the mechanism;
+/// M and C are `best_effort` watchdogs over the same members (a poll can
+/// miss a short excursion) and unavailable with K.
 pub fn report(deny_network: bool, outcome: &Outcome) -> BTreeMap<String, ClauseState> {
-    let (f, n, p) = match outcome {
+    let (f, n, p, k, m, c) = match outcome {
         Outcome::Missing => {
             let s = ClauseState::unavailable("seatbelt_missing");
-            (s.clone(), s.clone(), s)
+            (s.clone(), s.clone(), s.clone(), s.clone(), s.clone(), s)
         }
         Outcome::BadProfile(why) => {
             let s = ClauseState::unavailable(&format!("seatbelt_profile: {why}"));
-            (s.clone(), s.clone(), s)
+            (s.clone(), s.clone(), s.clone(), s.clone(), s.clone(), s)
         }
         Outcome::Rejected(why) => {
             let s = ClauseState::unavailable(&format!("seatbelt_rejected: {why}"));
-            (s.clone(), s.clone(), s)
+            (s.clone(), s.clone(), s.clone(), s.clone(), s.clone(), s)
         }
         Outcome::Applied {
             filesystem,
             network,
+            membership,
         } => {
             let seatbelt = ClauseState::enforced("seatbelt");
             let f = match filesystem {
@@ -384,7 +567,7 @@ pub fn report(deny_network: bool, outcome: &Outcome) -> BTreeMap<String, ClauseS
                 Some(why) => ClauseState::unavailable(&format!("seatbelt_ineffective: {why}")),
             };
             let n = match (deny_network, network) {
-                (false, _) => ClauseState::unavailable(FETCH_LATER),
+                (false, _) => ClauseState::unavailable(FETCH_NETWORK),
                 (true, None) => seatbelt.clone(),
                 (true, Some(why)) => {
                     ClauseState::unavailable(&format!("seatbelt_ineffective: {why}"))
@@ -394,18 +577,37 @@ pub fn report(deny_network: bool, outcome: &Outcome) -> BTreeMap<String, ClauseS
                 None => seatbelt,
                 Some(why) => ClauseState::unavailable(&format!("seatbelt_ineffective: {why}")),
             };
-            (f, n, p)
+            let (k, m, c) = match membership {
+                None => (
+                    ClauseState::enforced("seatbelt_membership"),
+                    ClauseState::best_effort("rss_watchdog"),
+                    ClauseState::best_effort("process_count_watchdog"),
+                ),
+                Some(why) => {
+                    let s = ClauseState::unavailable(&format!("membership_unverified: {why}"));
+                    (s.clone(), s.clone(), s)
+                }
+            };
+            (f, n, p, k, m, c)
         }
     };
     BTreeMap::from([
         ("F".to_owned(), f),
         ("N".to_owned(), n),
         ("P".to_owned(), p),
-        ("K".to_owned(), ClauseState::unavailable(K_LATER)),
-        ("M".to_owned(), ClauseState::unavailable(MC_LATER)),
-        ("C".to_owned(), ClauseState::unavailable(MC_LATER)),
+        ("K".to_owned(), k),
+        ("M".to_owned(), m),
+        ("C".to_owned(), c),
     ])
 }
+
+/// Set once, by [`apply`], when the membership mechanism was verified from
+/// inside the applied profile. The kill loop and the watchdogs refuse to act
+/// without it: outside the profile "every pid `proc_pidinfo` can read" is
+/// every process of the user.
+#[cfg(target_os = "macos")]
+static MEMBERSHIP_VERIFIED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Applies the backend to the calling process and reports what held
 /// (Amendment 2 point 2). Called by the worker at start, before any thread
@@ -440,6 +642,9 @@ fn apply_outcome(spec: &ConfinementSpec) -> Outcome {
         .collect();
     let parent = std::os::unix::process::parent_id() as i32;
     let procargs_control = sys::procargs2(parent).is_ok();
+    let proc_list_control = sys::kern_proc_all_readable();
+    let outsider_control =
+        parent > 1 && sys::see(parent) != Seen::Hidden && sys::can_signal(parent);
 
     if let Err(message) = sys::apply(init, &profile) {
         return Outcome::Rejected(message);
@@ -458,10 +663,26 @@ fn apply_outcome(spec: &ConfinementSpec) -> Outcome {
     if filesystem.is_none() && procargs_control && sys::procargs2(parent).is_ok() {
         filesystem = Some("another process's kern.procargs is readable".to_owned());
     }
+    if filesystem.is_none() && proc_list_control && sys::kern_proc_all_readable() {
+        filesystem = Some("the process list with names (kern.proc.all) is readable".to_owned());
+    }
     let network = spec.deny_network.then(loopback_connect_check).flatten();
+
+    let own = std::process::id() as i32;
+    let facts = MembershipFacts {
+        listing_works: sys::list_pids().is_ok_and(|l| !l.is_empty()),
+        sees_itself: sys::see(own) != Seen::Hidden,
+        outsider_reachable: [1, parent]
+            .into_iter()
+            .any(|pid| sys::see(pid) != Seen::Hidden || sys::can_signal(pid)),
+        outsider_control,
+    };
+    let membership = membership_check(&facts);
+    MEMBERSHIP_VERIFIED.store(membership.is_none(), std::sync::atomic::Ordering::SeqCst);
     Outcome::Applied {
         filesystem,
         network,
+        membership,
     }
 }
 
@@ -478,6 +699,31 @@ fn loopback_connect_check() -> Option<String> {
         )),
         Ok(_) => Some("a loopback connection succeeded".to_owned()),
     }
+}
+
+/// The live members of this sandbox other than the worker, or `None` when
+/// the mechanism was not verified (see [`MEMBERSHIP_VERIFIED`]) or the listing fails.
+#[cfg(target_os = "macos")]
+pub fn members() -> Option<Vec<Member>> {
+    if !MEMBERSHIP_VERIFIED.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    let listing = sys::list_pids().ok()?;
+    Some(members_of(&listing, std::process::id() as i32, sys::see))
+}
+
+/// The membership kill loop over this sandbox ([`sweep_with`]); kills
+/// nothing and reports incomplete when the mechanism was not verified.
+#[cfg(target_os = "macos")]
+pub fn sweep(grace: std::time::Duration) -> SweepReport {
+    sweep_with(grace, members, sys::kill_pid)
+}
+
+/// The watchdogs over this sandbox's members ([`verdict`]); `None` when
+/// nothing is above a ceiling or the members cannot be listed.
+#[cfg(target_os = "macos")]
+pub fn watch(memory_bytes: u64, max_processes: u32) -> Option<Verdict> {
+    verdict(&members()?, memory_bytes, max_processes)
 }
 
 #[cfg(test)]

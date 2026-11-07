@@ -103,3 +103,105 @@ pub fn procargs2(pid: i32) -> Result<Vec<u8>, i32> {
     buffer.truncate(size);
     Ok(buffer)
 }
+
+/// Every pid on the machine (`proc_listallpids`), or the `errno`. The
+/// profile allows the listing without a target; no listing restricted to the
+/// sandbox exists (measured), so the members are the ones [`see`] can read.
+pub fn list_pids() -> Result<Vec<i32>, i32> {
+    // SAFETY: a null buffer with size 0 asks for the number of pids.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    // Processes start between the two calls: leave room.
+    let mut pids = vec![0i32; count as usize + 512];
+    let bytes = (pids.len() * std::mem::size_of::<i32>()) as libc::c_int;
+    // SAFETY: `pids` is `bytes` bytes long and `bytes` says so.
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    if listed <= 0 {
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    pids.truncate(listed as usize);
+    Ok(pids)
+}
+
+/// What the profile lets this process see of `pid` (`proc_pidinfo`): a
+/// member answers, anything else is refused (Amendment 2 point 4).
+pub fn see(pid: i32) -> super::Seen {
+    /// `SZOMB` of `<sys/proc.h>`: the process has ended and waits to be reaped.
+    const SZOMB: u32 = 5;
+    // SAFETY: an all-zero `proc_bsdinfo` is a valid value of a plain C struct of integers.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is `size` bytes long and `size` says so.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::addr_of_mut!(info).cast(),
+            size,
+        )
+    };
+    if written != size {
+        return super::Seen::Hidden;
+    }
+    if info.pbi_status == SZOMB {
+        return super::Seen::Zombie;
+    }
+    // SAFETY: an all-zero `proc_taskinfo` is a valid value of a plain C struct of integers.
+    let mut task: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let task_size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // SAFETY: `task` is `task_size` bytes long and `task_size` says so.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            std::ptr::addr_of_mut!(task).cast(),
+            task_size,
+        )
+    };
+    super::Seen::Alive {
+        resident: if written == task_size {
+            task.pti_resident_size
+        } else {
+            0
+        },
+    }
+}
+
+/// Whether signal 0 (existence and permission, nothing delivered) to `pid` is allowed.
+pub fn can_signal(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks permission; it delivers nothing.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// `SIGKILL` to `pid`. The profile lets it reach members only; the kernel
+/// refuses anything else (a reused pid of an outsider included).
+pub fn kill_pid(pid: i32) {
+    // SAFETY: `kill` takes two integers; the result (a refusal, or a process
+    // that ended already) is ignored on purpose: the next listing shows what is left.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+/// Whether `sysctl kern.proc.all` (`KERN_PROC_ALL`, the process list with
+/// names) answers: the profile denies the `kern.proc.` prefix (measured).
+pub fn kern_proc_all_readable() -> bool {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL];
+    let mut size: libc::size_t = 0;
+    // SAFETY: `mib` has three elements as `namelen` says; a null buffer asks for the size.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    rc == 0
+}

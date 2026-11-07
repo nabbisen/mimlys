@@ -44,6 +44,8 @@ fn rfc_011_a2_profile_denies_by_default() {
             "(allow process-fork)",
             "(allow file-read-metadata)",
             "(allow sysctl-read)",
+            // The pid listing has no restricted form (settled point 6).
+            "(allow process-info-listpids)",
         ];
         if unqualified_ok.contains(&line) {
             continue;
@@ -276,19 +278,55 @@ fn rfc_011_a2_offline_profile_denies_the_mdnsresponder_socket_last() {
     assert!(at(&under_run, deny) > under_run.rfind("(allow network").unwrap());
 }
 
-/// Amendment 2 point 9 is not decided: the dependency step's profile grants
-/// no network rule beyond the same Unix sockets, and says where it waits.
+/// Amendment 2, settled, point 9: the dependency step's profile adds exactly
+/// three rules to the offline one: outbound TCP to port 443, a connect to the
+/// `mDNSResponder` socket and the system's certificate file readable; no mach
+/// service, no other network rule, no `(deny network*)`... and no
+/// denial of the socket it needs.
 #[test]
-fn rfc_011_a2_dependency_step_profile_waits_for_point_9() {
+fn rfc_011_a2_dependency_step_profile_adds_three_rules() {
     let mut s = spec(&["/usr"], &["/data/workspaces"]);
     s.deny_network = false;
-    let p = generate(&s).unwrap();
-    assert!(!p.contains("(deny network*)"));
-    assert!(p.contains("point 9"));
-    for line in p.lines().filter(|l| l.starts_with("(allow network")) {
-        assert!(line.contains("unix-socket"), "{line}");
+    let fetch = generate(&s).unwrap();
+    s.deny_network = true;
+    let offline = generate(&s).unwrap();
+    assert!(!fetch.contains("(deny network"), "{fetch}");
+    assert!(!fetch.contains("mach"), "{fetch}");
+    let added: Vec<&str> = fetch
+        .lines()
+        .filter(|l| !l.starts_with(";;") && !offline.lines().any(|o| o == *l))
+        .collect();
+    assert_eq!(
+        added,
+        vec![
+            "(allow network-outbound (remote tcp \"*:443\"))",
+            "(allow network-outbound (remote unix-socket (literal \"/private/var/run/mDNSResponder\")))",
+            "(allow file-read-data (literal \"/private/etc/ssl/cert.pem\"))",
+        ],
+        "{fetch}"
+    );
+    // What the offline profile has and the dependency step lacks: the two denials.
+    let removed: Vec<&str> = offline
+        .lines()
+        .filter(|l| !fetch.lines().any(|f| f == *l))
+        .collect();
+    assert_eq!(
+        removed,
+        vec![
+            "(deny network*)",
+            "(deny network-outbound (remote unix-socket (literal \"/private/var/run/mDNSResponder\")))",
+        ]
+    );
+}
+
+/// The offline profile has none of the dependency step's rules.
+#[test]
+fn rfc_011_a2_offline_profile_has_no_dependency_rules() {
+    let p = text(&["/usr"], &["/data/workspaces"]);
+    for forbidden in [":443", "cert.pem", "(allow network-outbound (remote tcp"] {
+        assert!(!p.contains(forbidden), "`{forbidden}` in\n{p}");
     }
-    assert!(!p.contains("mach") && !p.contains("mDNSResponder"));
+    assert!(!p.contains("(allow network-outbound (remote unix-socket (literal"));
 }
 
 /// Amendment 2 point 4: other processes are invisible, and the order is
@@ -296,6 +334,16 @@ fn rfc_011_a2_dependency_step_profile_waits_for_point_9() {
 #[test]
 fn rfc_011_a2_other_processes_are_invisible() {
     let p = text(&["/usr"], &["/data/workspaces"]);
+    // The listing has no restricted form (measured): it is allowed without a
+    // target, after the narrowing, and the members are told apart by
+    // `proc_pidinfo`. The process list WITH NAMES stays refused (point 4,
+    // settled): `kern.proc.` after the broad `sysctl-read` allow.
+    assert!(at(&p, "(allow process-info-listpids)") > at(&p, "(deny process-info*)"));
+    assert!(!p.contains("(allow process-info-listpids (target"));
+    assert!(
+        at(&p, "(deny sysctl-read (sysctl-name-prefix \"kern.proc.\"))")
+            > at(&p, "(allow sysctl-read)")
+    );
     assert!(p.contains("(allow signal (target same-sandbox))"));
     assert!(!p.contains("(allow signal)"));
     assert!(at(&p, "(allow process-info* (target same-sandbox))") > at(&p, "(deny process-info*)"));
@@ -303,7 +351,6 @@ fn rfc_011_a2_other_processes_are_invisible() {
         !p.contains("(allow process-info*)"),
         "no listing of every process"
     );
-    assert!(!p.contains("process-info-listpids"));
     // `kern.procargs*` is the one form that refuses another process's environment (S1).
     let deny = "(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))";
     assert!(at(&p, deny) > at(&p, "(allow sysctl-read)"));
@@ -423,33 +470,44 @@ fn applied(filesystem: Option<&str>, network: Option<&str>) -> Outcome {
     Outcome::Applied {
         filesystem: filesystem.map(str::to_owned),
         network: network.map(str::to_owned),
+        membership: None,
     }
 }
 
-/// Amendment 2 points 2, 3 and 5: F, N and P are `enforced (seatbelt)` when
-/// the profile was applied and the self-check held; K, M and C wait for
-/// points 6 and 7 and are never reported enforced by this slice.
+fn applied_without_membership(why: &str) -> Outcome {
+    Outcome::Applied {
+        filesystem: None,
+        network: None,
+        membership: Some(why.to_owned()),
+    }
+}
+
+/// Amendment 2 points 2 to 7: F, N and P are `enforced (seatbelt)` when the
+/// profile was applied and the self-check held; K is `enforced
+/// (seatbelt_membership)` and M and C are the `best_effort` watchdogs when the
+/// worker verified the membership mechanism.
 #[test]
 fn rfc_011_a2_report_when_the_profile_holds() {
     let r = report(true, &applied(None, None));
     for letter in ["F", "N", "P"] {
         assert_eq!(r[letter], ClauseState::enforced("seatbelt"), "{letter}");
     }
-    assert!(matches!(&r["K"], ClauseState::Unavailable { reason } if reason.contains("point 6")));
-    for letter in ["M", "C"] {
-        assert!(
-            matches!(&r[letter], ClauseState::Unavailable { reason } if reason.contains("point 7")),
-            "{letter}"
-        );
-    }
+    assert_eq!(r["K"], ClauseState::enforced("seatbelt_membership"));
+    assert_eq!(r["M"], ClauseState::best_effort("rss_watchdog"));
+    assert_eq!(r["C"], ClauseState::best_effort("process_count_watchdog"));
     assert_eq!(r.len(), 6, "E is the worker's own to report");
-    // No outcome makes K, M or C better than unavailable.
+}
+
+/// K, M and C are never better than unavailable unless the profile was
+/// applied and the membership mechanism verified: no outcome reports them on
+/// faith.
+#[test]
+fn rfc_011_a2_k_m_c_need_a_verified_membership() {
     for outcome in [
         Outcome::Missing,
         Outcome::BadProfile("x".into()),
         Outcome::Rejected("x".into()),
-        applied(None, None),
-        applied(Some("x"), Some("y")),
+        applied_without_membership("the pid listing is refused"),
     ] {
         for deny in [true, false] {
             let r = report(deny, &outcome);
@@ -461,6 +519,65 @@ fn rfc_011_a2_report_when_the_profile_holds() {
             }
         }
     }
+    let r = report(
+        true,
+        &applied_without_membership("the pid listing is refused"),
+    );
+    assert!(matches!(&r["K"], ClauseState::Unavailable { reason }
+            if reason == "membership_unverified: the pid listing is refused"));
+    // F, N and P are the profile's own and stay.
+    assert!(r["F"].is_enforced() && r["N"].is_enforced() && r["P"].is_enforced());
+    // A profile whose file check failed still reports K from its own check.
+    let r = report(true, &applied(Some("/Users is readable"), None));
+    assert!(r["K"].is_enforced());
+}
+
+/// Amendment 2 point 6: the worker verifies the restriction before relying
+/// on it; each fact that fails names itself.
+#[test]
+fn rfc_011_a2_membership_check() {
+    let good = MembershipFacts {
+        listing_works: true,
+        sees_itself: true,
+        outsider_reachable: false,
+        outsider_control: true,
+    };
+    assert_eq!(membership_check(&good), None);
+    let cases = [
+        (
+            MembershipFacts {
+                listing_works: false,
+                ..good
+            },
+            "listing",
+        ),
+        (
+            MembershipFacts {
+                sees_itself: false,
+                ..good
+            },
+            "itself",
+        ),
+        (
+            MembershipFacts {
+                outsider_control: false,
+                ..good
+            },
+            "to check against",
+        ),
+        (
+            MembershipFacts {
+                outsider_reachable: true,
+                ..good
+            },
+            "outside the sandbox",
+        ),
+    ];
+    for (facts, word) in cases {
+        let why = membership_check(&facts).unwrap_or_else(|| panic!("{facts:?} must fail"));
+        assert!(why.contains(word), "{why}");
+    }
+    assert!(membership_check(&MembershipFacts::default()).is_some());
 }
 
 /// Amendment 2 point 2: a removed `sandbox_init` is a reported state, and so
@@ -514,11 +631,190 @@ fn rfc_011_a2_report_when_the_profile_does_not_hold() {
     assert!(r["F"].is_enforced() && r["P"].is_enforced());
 }
 
-/// The dependency step's worker holds F and P and reports N honestly
-/// (Amendment 2 point 9 is not settled).
+/// The dependency step's worker holds F, P and K and reports N honestly
+/// (as on Linux): the network is allowed for it.
 #[test]
 fn rfc_011_a2_dependency_step_reports_n_unavailable() {
     let r = report(false, &applied(None, None));
-    assert!(r["F"].is_enforced() && r["P"].is_enforced());
-    assert!(matches!(&r["N"], ClauseState::Unavailable { reason } if reason.contains("point 9")));
+    assert!(r["F"].is_enforced() && r["P"].is_enforced() && r["K"].is_enforced());
+    assert_eq!(
+        r["N"],
+        ClauseState::unavailable("network allowed for the dependency step")
+    );
+}
+
+fn member(pid: i32, resident: u64) -> Member {
+    Member { pid, resident }
+}
+
+/// Amendment 2, settled, point 6: the members are the pids the profile lets
+/// the worker inspect, live, other than the worker and `launchd`.
+#[test]
+fn rfc_011_a2_members_of_a_listing() {
+    let listing = [0, 1, 50, 51, 52, 53, 54];
+    let see = |pid: i32| match pid {
+        0 | 1 => Seen::Alive { resident: 1 },
+        50 => Seen::Alive { resident: 10 },
+        51 => Seen::Hidden,
+        52 => Seen::Zombie,
+        53 => Seen::Alive { resident: 30 },
+        _ => Seen::Hidden,
+    };
+    // 50 is the worker itself.
+    assert_eq!(members_of(&listing, 50, see), vec![member(53, 30)]);
+    // With the worker elsewhere, 50 is a member; pid 0 and 1 are never.
+    assert_eq!(
+        members_of(&listing, 99, see),
+        vec![member(50, 10), member(53, 30)]
+    );
+    assert!(members_of(&[], 99, see).is_empty());
+}
+
+/// A fake process table: pids killed disappear after `lag` further listings
+/// (a signal is not instant), and a storm adds a child to every member
+/// listed until `births` children have been born.
+struct Table {
+    alive: Vec<i32>,
+    dying: Vec<(i32, u32)>,
+    lag: u32,
+    births: u32,
+    next: i32,
+    killed: Vec<i32>,
+}
+
+impl Table {
+    fn new(alive: &[i32], lag: u32, births: u32) -> Self {
+        Self {
+            alive: alive.to_vec(),
+            dying: vec![],
+            lag,
+            births,
+            next: 1000,
+            killed: vec![],
+        }
+    }
+    fn list(&mut self) -> Option<Vec<Member>> {
+        self.dying
+            .iter_mut()
+            .for_each(|d| d.1 = d.1.saturating_sub(1));
+        let gone: Vec<i32> = self
+            .dying
+            .iter()
+            .filter(|d| d.1 == 0)
+            .map(|d| d.0)
+            .collect();
+        self.alive.retain(|p| !gone.contains(p));
+        self.dying.retain(|d| d.1 > 0);
+        let listed: Vec<Member> = self.alive.iter().map(|&p| member(p, 1)).collect();
+        if self.births > 0 && !listed.is_empty() {
+            self.births -= 1;
+            self.alive.push(self.next);
+            self.next += 1;
+        }
+        Some(listed)
+    }
+    fn kill(&mut self, pid: i32) {
+        self.killed.push(pid);
+        if self.alive.contains(&pid) && !self.dying.iter().any(|d| d.0 == pid) {
+            self.dying.push((pid, self.lag));
+        }
+    }
+}
+
+/// Amendment 2, settled, point 6: the kill loop repeats until a listing finds
+/// no member: a signal that takes a moment and a storm that keeps forking
+/// both end with an empty listing, and the report says so.
+#[test]
+fn rfc_011_a2_sweep_repeats_until_no_member_is_left() {
+    use std::cell::RefCell;
+    let table = RefCell::new(Table::new(&[10, 11, 12], 2, 5));
+    let report = sweep_with(
+        std::time::Duration::from_secs(5),
+        || table.borrow_mut().list(),
+        |pid| table.borrow_mut().kill(pid),
+    );
+    assert!(report.complete, "{report:?}");
+    assert!(
+        report.rounds >= 2,
+        "a lagging signal needs another round: {report:?}"
+    );
+    assert!(table.borrow().alive.is_empty());
+    for original in [10, 11, 12] {
+        assert!(table.borrow().killed.contains(&original));
+    }
+    // The children born during the loop were found and killed too.
+    assert!(table.borrow().killed.iter().any(|p| *p >= 1000));
+    // Nothing to do: no signal, complete at once.
+    let empty = RefCell::new(Table::new(&[], 0, 0));
+    let r = sweep_with(
+        std::time::Duration::from_secs(1),
+        || empty.borrow_mut().list(),
+        |pid| empty.borrow_mut().kill(pid),
+    );
+    assert_eq!(
+        r,
+        SweepReport {
+            killed: 0,
+            rounds: 0,
+            complete: true
+        }
+    );
+}
+
+/// Amendment 2, settled, point 6: a member that never dies is reported
+/// incomplete after LIM-O2 (`tree_kill_incomplete`), and a failing listing
+/// is incomplete at once: never "complete" on faith.
+#[test]
+fn rfc_011_a2_sweep_reports_what_it_could_not_do() {
+    let immortal = sweep_with(
+        std::time::Duration::from_millis(60),
+        || Some(vec![member(10, 1)]),
+        |_| {},
+    );
+    assert!(!immortal.complete && immortal.rounds >= 1, "{immortal:?}");
+    let blind = sweep_with(
+        std::time::Duration::from_secs(1),
+        || None,
+        |_| panic!("no kill"),
+    );
+    assert_eq!(
+        blind,
+        SweepReport {
+            killed: 0,
+            rounds: 0,
+            complete: false
+        }
+    );
+}
+
+/// Amendment 2, settled, point 7: M is the members' summed resident size
+/// strictly above the ceiling, C their number strictly above the ceiling.
+#[test]
+fn rfc_011_a2_watchdog_verdicts() {
+    let gib = 1024 * 1024 * 1024u64;
+    let two = [member(1, gib), member(2, gib)];
+    assert_eq!(
+        verdict(&two, 2 * gib, 64),
+        None,
+        "at the ceiling is not above"
+    );
+    assert_eq!(
+        verdict(&two, 2 * gib - 1, 64),
+        Some(Verdict::Memory { resident: 2 * gib })
+    );
+    let many: Vec<Member> = (0..65).map(|p| member(p + 2, 1)).collect();
+    assert_eq!(verdict(&many[..64], 2 * gib, 64), None);
+    assert_eq!(
+        verdict(&many, 2 * gib, 64),
+        Some(Verdict::Count { count: 65 })
+    );
+    // Memory is judged first.
+    let both: Vec<Member> = (0..65).map(|p| member(p + 2, gib)).collect();
+    assert!(matches!(
+        verdict(&both, 2 * gib, 64),
+        Some(Verdict::Memory { .. })
+    ));
+    // No members, no verdict; a ceiling of 0 watches nothing for it.
+    assert_eq!(verdict(&[], 2 * gib, 64), None);
+    assert_eq!(verdict(&many, 0, 0), None);
 }

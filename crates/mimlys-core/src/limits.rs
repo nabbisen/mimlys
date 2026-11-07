@@ -156,6 +156,10 @@ pub const LIM_H5_CREDENTIAL_NAMES: [&str; 6] = [
     ".pypirc",
     ".docker/",
 ];
+/// LIM-H6: interval of the macOS tree tracker's watchdogs (clauses M and C
+/// over the sandbox's members), in milliseconds. Provisional (RFC 011
+/// Amendment 2, settled): the shorter, the fewer short excursions are missed.
+pub const LIM_H6_TRACK_INTERVAL_MS: u64 = 100;
 /// LIM-O5: deadline of an external (MCP) tool invocation, in milliseconds.
 pub const LIM_O5_EXTERNAL_DEADLINE_MS: i64 = 60_000;
 /// LIM-O5: configurable range in milliseconds; never below a server's declared maximum.
