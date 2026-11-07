@@ -24,3 +24,19 @@ fn req_conf_009_end_of_file_is_every_write_end_closed() {
 fn req_conf_009_a_failed_read_is_not_end_of_file() {
     assert!(!end_of_file(-1));
 }
+
+/// REQ-CONF-009: bytes on the pipe are not end of file, and while a write
+/// end is open the sweeper keeps waiting (the worker is alive); only closing
+/// the last write end releases it.
+#[test]
+fn req_conf_009_data_and_an_open_write_end_are_not_end_of_file() {
+    let (reader, mut writer) = UnixStream::pair().unwrap();
+    writer.write_all(b"x").unwrap();
+    let fd = reader.as_raw_fd();
+    let waiter = std::thread::spawn(move || end_of_file(fd));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!waiter.is_finished(), "a write end is open: still waiting");
+    drop(writer);
+    assert!(waiter.join().unwrap(), "closed: end of file");
+    drop(reader);
+}
