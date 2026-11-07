@@ -12,6 +12,7 @@
 use mimlys_core::confine::{Clause, ClauseState, Probe};
 use serde::{Deserialize, Serialize};
 
+pub mod dacl_wait;
 #[cfg(target_os = "linux")]
 pub mod linux;
 

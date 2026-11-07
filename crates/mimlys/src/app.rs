@@ -231,12 +231,22 @@ impl App {
         // REQ-WS-001: owner-only from the start (Unix mode 0700; Windows a
         // protected DACL for the current user), before anything is placed
         // in it and before the container's entries go on the subdirectories.
-        mimlys_exec::confine::create_private_dir(&data_dir).map_err(|e| AppError::Io {
-            detail: format!(
-                "cannot create the data directory {}: {}",
-                data_dir.display(),
-                e.kind()
-            ),
+        mimlys_exec::confine::create_private_dir(&data_dir).map_err(|e| {
+            // Another runtime is writing the directory's permissions
+            // (LIM-O7): the start fails with that reason; the next applies
+            // them (external design §13.5).
+            let reason = e.to_string();
+            AppError::Io {
+                detail: if reason.starts_with("acl_not_applied:") {
+                    reason
+                } else {
+                    format!(
+                        "cannot create the data directory {}: {}",
+                        data_dir.display(),
+                        e.kind()
+                    )
+                },
+            }
         })?;
         let policy = config.resolve_policy()?;
         let store = mimlys_persist::sqlite::open(&data_dir)?;
