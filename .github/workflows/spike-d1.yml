@@ -16,15 +16,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: latest-base, os: windows-latest, lockms: "", threads: "", prefill: "0" }
-          - { name: w2022-base, os: windows-2022, lockms: "", threads: "", prefill: "0" }
-          - { name: latest-bigdacl, os: windows-latest, lockms: "", threads: "", prefill: "400" }
-          - { name: latest-lock60s, os: windows-latest, lockms: "60000", threads: "", prefill: "0" }
-          - { name: latest-threads1, os: windows-latest, lockms: "", threads: "1", prefill: "0" }
+          - { name: ci-like, os: windows-latest, lockms: "", threads: "", prefill: "0", prelude: "workspace", iters: "10" }
+          - { name: bigdacl-lock60s, os: windows-latest, lockms: "60000", threads: "", prefill: "400", prelude: "", iters: "6" }
+          - { name: bigdacl-threads1, os: windows-latest, lockms: "", threads: "1", prefill: "400", prelude: "", iters: "6" }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
-      ITERATIONS: "10"
+      ITERATIONS: ${{ matrix.iters }}
       D1_LOCK_MS: ${{ matrix.lockms }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -42,6 +40,7 @@ jobs:
             echo "D1_WATCH=$RUNNER_TEMP\\d1-watch.log"
             echo "D1_STOP=$RUNNER_TEMP\\d1-stop"
           } >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/d1-acl.log" "$RUNNER_TEMP/d1-watch.log" "$RUNNER_TEMP/d1-stop"
       - name: the machine
         continue-on-error: true
         shell: pwsh
@@ -66,9 +65,17 @@ jobs:
           if [ -z "$D1_LOCK_MS" ]; then unset D1_LOCK_MS; fi
           args=""
           if [ -n "${{ matrix.threads }}" ]; then args="--test-threads=${{ matrix.threads }}"; fi
-          rm -f "$D1_DIAG" "$D1_WATCH" "$D1_STOP"
           pwsh -NoProfile -File .github/d1/watch.ps1 -Dir "$GITHUB_WORKSPACE\\target\\debug" -Exe "$GITHUB_WORKSPACE\\target\\debug\\mimlys-probe-tool.exe" -Out "$D1_WATCH" -Stop "$D1_STOP" &
           sleep 3
+          if [ "${{ matrix.prelude }}" = "workspace" ]; then
+            echo "D1-MARK prelude start $(date -u +%H:%M:%S.%3N)" >> "$D1_DIAG"
+            cargo test --workspace --all-features --no-fail-fast > "$RUNNER_TEMP/d1/workspace.log" 2>&1
+            echo "prelude (the CI command) exit $?" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "D1-MARK prelude end $(date -u +%H:%M:%S.%3N)" >> "$D1_DIAG"
+            echo "::group::prelude: failures and lock warnings"
+            grep -aE '\.\.\. FAILED|writing anyway|not started|test result: FAILED' "$RUNNER_TEMP/d1/workspace.log" | cut -c1-300
+            echo "::endgroup::"
+          fi
           echo "iteration,exit,failed_tests" > "$RUNNER_TEMP/d1/summary.csv"
           fails=0
           for i in $(seq 1 "$ITERATIONS"); do
