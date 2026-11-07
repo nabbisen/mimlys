@@ -317,6 +317,8 @@ async fn req_tool_003_delete_path() {
 /// through a link to a file or directory outside the workspace fails and the
 /// outside file is neither read nor created. (Unix only: the test creates
 /// links with `std::os::unix`.)
+/// REQ-TEST-005 (external design §6.3), symbolic links.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths: symbolic links.
 #[cfg(unix)]
 #[tokio::test]
 async fn req_tool_004_symlink_escape_is_refused() {

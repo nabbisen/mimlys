@@ -456,6 +456,7 @@ fn m5_pinning_breaks_visibly() {
 /// schema is `output_invalid` and never passed; a hostile description is
 /// truncated (recorded on the task); unsupported and wide schemas are
 /// unavailable with their reasons in `status`.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile description and bad output of an external server.
 #[test]
 fn m5_output_validation_and_import_reasons() {
     let env = Env::new(

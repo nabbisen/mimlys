@@ -27,6 +27,8 @@ fn req_dec_006_lexical_normalization() {
 /// REQ-SEC-005 (external design §6.3), traversal: `..` that leaves the root,
 /// absolute POSIX, UNC and drive-letter forms are refused, as are NUL and
 /// newline in a path.
+/// REQ-TEST-005 (external design §6.3), traversal and absolute forms.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths: traversal.
 #[test]
 fn req_dec_007_escapes_and_absolute_paths() {
     assert_eq!(posix("../x"), Err(PathError::Escapes));
@@ -45,6 +47,8 @@ fn req_dec_007_escapes_and_absolute_paths() {
 /// REQ-SEC-005 (external design §6.3), Windows path forms and reserved
 /// names: `NUL`, `COM1`, `lpt9.log`, forbidden characters, trailing dot or
 /// space and a drive-letter prefix are refused under the Windows rules.
+/// REQ-TEST-005 (external design §6.3), Windows path forms and reserved names.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths: Windows forms.
 #[test]
 fn req_ws_011_windows_name_rules() {
     for bad in [
@@ -88,6 +92,8 @@ fn req_ws_011_windows_name_rules() {
 /// `src/lib.rs` are the same path, and `SRC` an ancestor of it, under the
 /// case-insensitive mode and not under the sensitive one; NFD and NFC
 /// spellings of one name are equal.
+/// REQ-TEST-005 (external design §6.3), case folding.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths: case and normalization.
 #[test]
 fn req_dec_006_nfc_and_case_modes() {
     let nfd = posix("caf\u{0065}\u{0301}.txt").unwrap();

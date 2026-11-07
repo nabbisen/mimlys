@@ -213,6 +213,7 @@ fn req_sbx_004_filesystem_boundary() {
 /// results in no execution of its code, only a fault.
 /// REQ-SEC-011 (external design §21), module content: a hostile module ends
 /// in a named fault and never in a process failure of the runtime.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile modules.
 #[test]
 fn req_sbx_006_malformed_module() {
     let sb = sandbox();

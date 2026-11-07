@@ -245,6 +245,7 @@ fn m1_demonstration_verified() {
 /// REQ-SEC-005 (external design §6.3), the existence leak end to end: the
 /// feedback the model receives for the two paths is the same text, and
 /// nothing was proposed or run.
+/// REQ-TEST-005 (external design §6.3), the same `denied` whether or not the path exists (end to end).
 #[test]
 fn m1_existence_leak() {
     let scope = scope();

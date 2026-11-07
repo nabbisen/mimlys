@@ -115,6 +115,7 @@ fn req_mcp_003_rypsok_definition_imports() {
 
 /// THR-25 / REQ-MCP-003: a hostile description is sanitized and cut to
 /// LIM-I2 with the record saying so; marker lines cannot survive.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile tool descriptions.
 #[test]
 fn thr_25_hostile_description_is_bounded() {
     let hostile = format!(

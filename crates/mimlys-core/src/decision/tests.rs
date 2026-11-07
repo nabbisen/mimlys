@@ -34,6 +34,7 @@ fn req_dec_002_five_decision_kinds_parse() {
 }
 
 /// REQ-DEC-003 / REQ-SEC-009: malformed inputs are rejected with the matching problem and never repaired.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile decisions: malformed model output.
 #[test]
 fn req_dec_003_malformed_inputs() {
     let m = |input: &str| match reject(input).detail {
@@ -177,6 +178,7 @@ fn req_dec_012_decision_hash_is_canonical() {
 
 /// REQ-DEC-002: invisible characters inside the tool name survive parsing unchanged (the validator rejects them at stage 4),
 /// proving that nothing in the parser alters the model's text.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile decisions: invisible characters in a name.
 #[test]
 fn req_dec_003_parser_never_alters_text() {
     let d = parse_strict(

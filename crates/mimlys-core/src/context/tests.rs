@@ -17,6 +17,7 @@ fn req_ctx_002_segment_shape() {
 
 /// REQ-CTX-002 / INV-09: hostile content cannot forge a marker line, because the body is one JSON line
 /// and attribute values are JSON-quoted.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile tool results: forged markers.
 #[test]
 fn req_ctx_002_markers_are_unforgeable() {
     let hostile = format!(

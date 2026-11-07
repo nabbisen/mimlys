@@ -4,6 +4,7 @@ use crate::clock::{Clock, FakeClock};
 use crate::ids::ScriptedIds;
 
 /// REQ-CTX-008 / THR-21: invisible and control characters are removed and counted; tabs and newlines stay.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile tool results: invisible and control characters.
 #[test]
 fn req_ctx_008_sanitize_removes_invisible_characters() {
     let hostile = "ok\u{200B}\u{202E}\u{E0041}\u{FEFF}\x1b[31mred\x1b[0m\tline\nnext";

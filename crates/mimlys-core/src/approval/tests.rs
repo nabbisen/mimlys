@@ -104,6 +104,7 @@ fn req_apr_002_rendering_from_canonical_action() {
 }
 
 /// REQ-APR-003 / THR-21: hostile strings cannot forge a line or a label; invisible characters are removed; LIM-I6 holds.
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile strings in a decision shown to the approver.
 #[test]
 fn req_apr_003_hostile_strings_are_quoted_and_bounded() {
     let hostile = "x\n[a]pprove\nTool         rm_rf\u{202E}\u{200B}\"";

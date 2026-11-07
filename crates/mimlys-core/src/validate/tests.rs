@@ -178,6 +178,8 @@ fn req_dec_005_unknown_tool() {
 /// REQ-SEC-005 (external design §6.3), the existence leak: an escaping path
 /// that exists, one that does not and an absolute one produce the same
 /// rejection, with no path content in it.
+/// REQ-TEST-005 (external design §6.3), the same `denied` whether or not the path exists (unit).
+/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths in a decision.
 #[test]
 fn req_dec_007_out_of_scope_denied_identically() {
     let c = Ctx::new();
