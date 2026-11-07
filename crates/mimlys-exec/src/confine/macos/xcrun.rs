@@ -7,7 +7,14 @@
 //! sandboxed `xcrun` cannot create it and falls back to `xcodebuild`, which
 //! fails (measured by 011c-5): the build fails. So the runtime creates it
 //! itself, **outside the sandbox**, before it starts a worker: it runs
-//! `/usr/bin/xcrun --find cc` and waits at most LIM-O8.
+//! `/usr/bin/xcrun --find clang` with a cleared environment and waits at most
+//! LIM-O8. (`--find cc`, which the handoff named, is not enough: the `cc`
+//! shim asks for `clang`, and the cache is keyed by the tool asked for and by
+//! the environment of the asker, so a cache made for `cc`, or by a shell with
+//! its own environment, leaves the sandboxed `cc` to fail. Measured by 011c-6:
+//! the demonstration completes with `env -i … xcrun --find clang`, and halts
+//! with `--find cc`, and with a longer list of queries made under a runner's
+//! environment.)
 //!
 //! Never a write rule for the cache in the profile: the user's own unconfined
 //! `xcrun` trusts the file later, and a tool that could write it could choose
@@ -70,7 +77,7 @@ pub fn state_of(file: Option<PathBuf>) -> CacheState {
     }
 }
 
-/// Runs `xcrun --find cc` (outside any sandbox: the caller is the runtime)
+/// Runs `xcrun --find clang` (outside any sandbox: the caller is the runtime)
 /// and waits at most `wait`; a child still running then is killed and
 /// reaped. Returns whether `file` exists afterwards. The environment is not
 /// inherited (the runtime's holds `env:`-referenced secrets and `xcrun` needs
@@ -78,7 +85,7 @@ pub fn state_of(file: Option<PathBuf>) -> CacheState {
 pub fn warm(file: &Path, xcrun: &Path, wait: Duration) -> bool {
     let started = Instant::now();
     let spawned = std::process::Command::new(xcrun)
-        .args(["--find", "cc"])
+        .args(["--find", "clang"])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .stdin(std::process::Stdio::null())

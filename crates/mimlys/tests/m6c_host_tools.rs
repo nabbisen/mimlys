@@ -1579,7 +1579,7 @@ fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
         assert_eq!(lines.len(), 1, "one line: {stdout}");
         assert!(lines[0].contains(&shown), "names the file: {}", lines[0]);
         assert!(
-            lines[0].contains("run `xcrun --find cc` once"),
+            lines[0].contains("run `env -i PATH=/usr/bin:/bin /usr/bin/xcrun --find clang` once"),
             "and the remedy: {}",
             lines[0]
         );

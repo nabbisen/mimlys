@@ -23,7 +23,7 @@ pub fn data_dir_in_temp_warning(path: &str) -> String {
 /// exists (external design §13.3); one line naming the file and the remedy.
 pub fn xcrun_cache_missing_warning(file: &str) -> String {
     format!(
-        "warning: xcrun's cache {file} is missing and could not be made: host tools that build with Xcode will fail; run `xcrun --find cc` once"
+        "warning: xcrun's cache {file} is missing and could not be made: host tools that build with Xcode will fail; run `env -i PATH=/usr/bin:/bin /usr/bin/xcrun --find clang` once"
     )
 }
 /// The configuration file in use, or the defaults.
