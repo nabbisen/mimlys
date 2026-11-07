@@ -82,6 +82,10 @@ name = "m6b_host_tools"
 required-features = ["test-bins"]
 
 [[test]]
+name = "m6c_host_tools"
+required-features = ["test-bins"]
+
+[[test]]
 name = "m1_demo"
 required-features = ["test-bins"]
 

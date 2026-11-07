@@ -3,8 +3,9 @@
 //! family spawns the worker with an explicit environment inside a process
 //! tree it can terminate, and reports per clause what it enforces. The
 //! backends for the filesystem, network, memory and count clauses are the
-//! Linux one (M6a, `linux`) and the Windows one (M6b, `windows`); on macOS
-//! (M6c, not yet shipped) those clauses are `unavailable` and say so.
+//! Linux one (M6a, `linux`), the Windows one (M6b, `windows`) and the macOS
+//! one (M6c, `macos`: Seatbelt; K, M and C wait for RFC 011 Amendment 2
+//! points 6 and 7 and say so).
 //!
 //! Foreign-function code lives only in this module's platform files, each
 //! `unsafe` block justified (REQ-CONF-010).
@@ -14,6 +15,11 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+
+/// The macOS backend (M6c). Compiled on every platform: its profile
+/// generator is pure and its unit tests run in the Linux gate; the part that
+/// applies the profile is macOS only.
+pub mod macos;
 
 /// What the worker confines itself with (RFC 011 §1): the read and write
 /// sets, whether network is denied, and the tree's limits.

@@ -61,7 +61,11 @@ fn confine_self(args: &[String]) -> crate::confine::Applied {
             tool_cgroup: None,
             rlimit_memory: false,
         },
-        #[cfg(not(any(target_os = "linux", windows)))]
+        // macOS: one Seatbelt profile, applied here, checked from inside
+        // (RFC 011 Amendment 2 points 1 to 5).
+        #[cfg(target_os = "macos")]
+        Some(spec) => crate::confine::macos::apply(&spec),
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         Some(_) => {
             let mut report = BTreeMap::new();
             let milestone = "M6c";

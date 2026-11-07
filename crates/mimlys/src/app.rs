@@ -162,7 +162,17 @@ pub fn confinement_spec(
     }
     // The system's directories: on Windows they are readable by every
     // application package already, so the set names only what mimlys adds.
-    if cfg!(unix) {
+    // macOS has a list of its own (RFC 011 Amendment 2 point 8, measured by
+    // spike S1): the system directories (the dyld cache is under `/System`),
+    // `/private/etc`, the random and zero devices and the active developer
+    // directory; not `/opt`, which is Homebrew's. TODO(S1b, handoff 011c):
+    // the home-directory files and mach services that `cargo test --offline`
+    // needs, admitted one by one with their reasons; and the refusal at load
+    // of a `command` whose resolved target leaves the set (Homebrew's
+    // `rustup` links into `/opt/homebrew/Cellar`).
+    if cfg!(target_os = "macos") {
+        read_paths.extend(mimlys_exec::confine::macos::system_read_paths());
+    } else if cfg!(unix) {
         for p in [
             "/usr",
             "/lib",
