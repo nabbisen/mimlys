@@ -474,6 +474,13 @@ fn notice_code(notice: &crate::observation::Notice) -> String {
         .unwrap_or_default()
 }
 
+/// The workspace sentence of the capability text when a granted tool writes.
+const WORKSPACE_READ_WRITE: &str =
+    "you may read and write inside the workspace; nothing outside it";
+/// The workspace sentence when no granted tool writes inside the workspace.
+const WORKSPACE_READ_ONLY: &str =
+    "you may read inside the workspace and may not write; nothing outside it";
+
 fn capability_summary(
     tools: &[ToolDefinition],
     grants: &GrantSet,
@@ -485,12 +492,22 @@ fn capability_summary(
         .filter(|g| !matches!(g.kind(), crate::grant::GrantKind::Tool { .. }))
         .map(|g| serde_json::to_string(g.kind()).expect("serializes"))
         .collect();
+    // The workspace sentence follows the grants too (REQ-CAP-008): writing is
+    // offered only where a granted tool can write inside the workspace.
+    let writes = tools
+        .iter()
+        .any(|t| t.effect.kind == crate::action::EffectKind::WorkspaceWrite);
+    let workspace = if writes {
+        WORKSPACE_READ_WRITE
+    } else {
+        WORKSPACE_READ_ONLY
+    };
     write_segment(
         SegmentLabel::Feedback,
         &[("kind", "capabilities")],
         &json!({
             "tools": names,
-            "workspace": "you may read and write inside the workspace; nothing outside it",
+            "workspace": workspace,
             "grants": extra,
         }),
     )

@@ -2227,3 +2227,56 @@ fn req_cap_008_capability_text_is_generated_from_the_grant_set() {
     assert!(extra.is_empty());
     assert_eq!(described(3), (tools, extra));
 }
+
+/// REQ-CAP-008 (external design §9, §15.1): the workspace sentence of the
+/// capability text is generated from the grant set as well. A task whose
+/// granted tools include none with the `workspace_write` effect (the
+/// `read_only` profile) is told it may read inside the workspace and may not
+/// write; the `workspace` profile is told it may read and write; adding a
+/// writing tool changes the sentence, revoking it changes it back.
+#[test]
+fn req_cap_008_workspace_sentence_follows_the_grants() {
+    const READ_WRITE: &str = "you may read and write inside the workspace; nothing outside it";
+    const READ_ONLY: &str =
+        "you may read inside the workspace and may not write; nothing outside it";
+    let plans = || {
+        (0..3)
+            .map(|k| json!({"decision": "plan", "steps": [format!("step {k}")]}))
+            .collect::<Vec<_>>()
+    };
+    let sentence = |h: &Harness, k: usize| {
+        capabilities_of(&h.backend.requests()[k])["workspace"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // The `workspace` profile.
+    let w = Harness::new(plans());
+    let task = w.create_with(|r| r.profile = Some("workspace".into()));
+    w.step(task);
+    assert_eq!(sentence(&w, 0), READ_WRITE);
+    // The `read_only` profile.
+    let h = Harness::new(plans());
+    let read_only = h.create_with(|r| r.profile = Some("read_only".into()));
+    h.step(read_only);
+    assert_eq!(sentence(&h, 0), READ_ONLY);
+    // A writing tool granted: the sentence changes.
+    let write = h
+        .runtime
+        .grant_capability(
+            &h.session,
+            read_only,
+            GrantKind::Tool {
+                name: "write_file".into(),
+            },
+        )
+        .unwrap();
+    h.step(read_only);
+    assert_eq!(sentence(&h, 1), READ_WRITE);
+    // Revoked: back to read only.
+    h.runtime
+        .revoke_capability(&h.session, read_only, write.grant_id)
+        .unwrap();
+    h.step(read_only);
+    assert_eq!(sentence(&h, 2), READ_ONLY);
+}

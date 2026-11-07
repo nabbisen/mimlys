@@ -17,6 +17,8 @@ announced here under "Changed".
 
 - `mimlys-mcp` (REQ-MCP-008): a server's `max_call_ms` is now a floor for the deadline of every one of its tools. Until now only a declared tool's deadline was raised to it; an undeclared tool kept the LIM-O5 default (60 000 ms) even when the server declared a longer maximum, so a server with `max_call_ms = 120000` had its undeclared tools cut off at 60 000 ms. The floor is applied at import, in one place.
 
+- `mimlys-core` (REQ-CAP-008): the workspace sentence of the capability text the model reads is generated from the grant set like the rest of it. It was a constant that said "you may read and write inside the workspace" to every task, a `read_only` one included. A task whose granted tools include none with the `workspace_write` effect is now told it may read inside the workspace and may not write; one with such a tool is told it may read and write, as before. This changes the system message, so the first request of a `read_only` task differs from the previous release's.
+
 ## [0.7.1] - 2026-11-04
 
 Release 0.7.1 is the hardening of the Linux backend that the intake review
