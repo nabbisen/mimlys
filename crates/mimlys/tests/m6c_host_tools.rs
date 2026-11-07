@@ -1,8 +1,8 @@
-//! M6c clause tests, first slice (handoff 011c-1; RFC 011 Amendment 2
-//! points 1 to 5; REQ-TEST-013, REQ-CONF-002, REQ-CONF-003, REQ-CONF-005,
-//! REQ-CONF-011) over the probe tool (`mimlys-probe-tool`) under the
-//! Seatbelt profile. macOS only: the Linux suite is `m6a_host_tools.rs`, the
-//! Windows one `m6b_host_tools.rs`.
+//! M6c clause tests (handoff 011c; RFC 011 Amendment 2 and "Amendment 2,
+//! settled"; REQ-TEST-013, REQ-CONF-001 … 003, REQ-CONF-005, REQ-CONF-007,
+//! REQ-CONF-009, REQ-CONF-011) over the probe tool (`mimlys-probe-tool`)
+//! under the Seatbelt profile. macOS only: the Linux suite is
+//! `m6a_host_tools.rs`, the Windows one `m6b_host_tools.rs`.
 //!
 //! Every test that claims a denial has a CONTROL: the same thing done by the
 //! probe tool outside any confinement, which shows that the thing is
@@ -11,14 +11,10 @@
 //! shown to fail without it (the mutation outputs are in the review
 //! request).
 //!
-//! Clause K is not enforced on macOS until RFC 011 Amendment 2 point 6 is
-//! implemented, so the tier is `core` and `run_host_tool` is not offered.
-//! The tests that run a host tool therefore start the worker with the
-//! test-only stand-in `MIMLYS_PROBE_BEST_EFFORT=K` and
-//! `policy.accept_best_effort = ["K"]` (the same hook `m6a` uses to test
-//! RFC 011 §5). It changes what the PROBE REPORTS about K and nothing the
-//! worker or the tool does: both still run under the real profile, which is
-//! the subject. When K arrives (011c-2) the stand-in goes.
+//! Clause K is `enforced (seatbelt_membership)` on macOS (the membership
+//! kill loop), so the tier is `full` with no `accept_best_effort`, and these
+//! tests run with none: the `MIMLYS_PROBE_BEST_EFFORT` stand-in of the first
+//! slice is gone.
 //!
 //! A machine without `sandbox_init` (F reports `seatbelt_missing`) skips
 //! through `common::skip`; any other state below `enforced` fails the test.
@@ -52,6 +48,8 @@ struct Env {
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
+    /// The dependency step is declared (`with_fetch`): runs grant it too.
+    fetch: bool,
 }
 
 impl Env {
@@ -76,7 +74,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
-allowed_args = ["ok", "cwd", "read", "write", "connect", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "env"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "env", "setsid-sleep", "orphan", "fork", "alloc-touch"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -94,16 +92,30 @@ env_allow = ["MIMLYS_TEST_RUNTIME_PID", "MIMLYS_TEST_OWNER_PID"]
             data,
             config,
             extra_env: vec![],
+            fetch: false,
         }
     }
 
-    /// The same, with the stand-in for clause K (see the module comment).
-    fn with_k_stand_in(script: &[Value], extra: &str) -> Self {
-        Self::new(
-            script,
-            &format!("[policy]\naccept_best_effort = [\"K\"]\n{extra}"),
-        )
-        .env("MIMLYS_PROBE_BEST_EFFORT", "K")
+    /// Declares the dependency step (REQ-CONF-007): the probe tool again,
+    /// as `fetch`, with `network = true`, so it runs in the dependency
+    /// step's own worker.
+    fn with_fetch(mut self) -> Self {
+        let mut text = std::fs::read_to_string(&self.config).unwrap();
+        text.push_str(&format!(
+            r#"[host_tools.fetch]
+command = {tool:?}
+allowed_args = ["connect", "connect-name", "getaddrinfo", "read"]
+arg_pattern = "[A-Za-z0-9_./:=-]+"
+max_args = 2
+effect = "external_read"
+timeout_ms = 30000
+network = true
+"#,
+            tool = probe_tool().to_string_lossy(),
+        ));
+        std::fs::write(&self.config, text).unwrap();
+        self.fetch = true;
+        self
     }
 
     /// Replaces the fake backend's script (for a test whose script names a
@@ -252,9 +264,12 @@ fn run_script(
             "{letter} must be enforced (seatbelt) on macOS: {table:?}"
         );
     }
-    assert!(tier.starts_with("full"), "tier {tier}: {table:?}");
+    assert_eq!(
+        tier, "full",
+        "K is enforced on macOS, so the tier is full with no accepted clause: {table:?}"
+    );
     let scope = env.scope();
-    let args = [
+    let mut args = vec![
         "--json",
         "run",
         "probe",
@@ -263,6 +278,9 @@ fn run_script(
         "--grant",
         "host_tool:probe",
     ];
+    if env.fetch {
+        args.extend(["--grant", "host_tool:fetch"]);
+    }
     let mut cmd = env.command(&args);
     if let Some(wrap) = wrapper {
         cmd = wrap(cmd);
@@ -338,11 +356,10 @@ impl Drop for Holder {
     }
 }
 
-/// REQ-CONF-003 / RFC 011 Amendment 2 points 2 to 5: `status` shows the
-/// macOS table as the worker observed it. F, N and P are `enforced
-/// (seatbelt)`, E is the explicit environment, K, M and C say which point of
-/// the Amendment they wait for, and the tier stays `core` while K is not
-/// enforced, so `run_host_tool` is not offered.
+/// REQ-CONF-003 / RFC 011 Amendment 2 (settled): `status` shows the macOS
+/// table as the worker observed it. F, N and P are `enforced (seatbelt)`, E
+/// is the explicit environment, K is `enforced (seatbelt_membership)`, M and
+/// C are the best-effort watchdogs; the tier is `full` with nothing accepted.
 #[test]
 fn req_conf_003_macos_status_table() {
     let test = "req_conf_003_macos_status_table";
@@ -352,32 +369,27 @@ fn req_conf_003_macos_status_table() {
     if !seatbelt_or_skip(test, &table) {
         return;
     }
-    for (name, state) in [
+    for (name, primitive) in [
         ("filesystem", "seatbelt"),
         ("network", "seatbelt"),
         ("privilege", "seatbelt"),
+        ("environment", "explicit_environment"),
+        ("termination", "seatbelt_membership"),
     ] {
         assert_eq!(table[name]["state"], "enforced", "{name}: {table:?}");
-        assert_eq!(table[name]["primitive"], state, "{name}: {table:?}");
+        assert_eq!(table[name]["primitive"], primitive, "{name}: {table:?}");
     }
-    assert_eq!(table["environment"]["state"], "enforced", "{table:?}");
-    assert_eq!(table["environment"]["primitive"], "explicit_environment");
-    assert_eq!(table["termination"]["state"], "unavailable", "{table:?}");
-    assert!(
-        table["termination"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("point 6"),
-        "{table:?}"
+    for (name, primitive) in [
+        ("memory", "rss_watchdog"),
+        ("count", "process_count_watchdog"),
+    ] {
+        assert_eq!(table[name]["state"], "best_effort", "{name}: {table:?}");
+        assert_eq!(table[name]["primitive"], primitive, "{name}: {table:?}");
+    }
+    assert_eq!(
+        tier, "full",
+        "every mandatory clause is enforced: no accepted clause is needed"
     );
-    for name in ["memory", "count"] {
-        assert_eq!(table[name]["state"], "unavailable", "{name}: {table:?}");
-        assert!(
-            table[name]["reason"].as_str().unwrap().contains("point 7"),
-            "{name}: {table:?}"
-        );
-    }
-    assert_eq!(tier, "core", "K is not enforced, so the tier is core");
     let (_, status) = env.json(&["status"]);
     let lines: Vec<&str> = status["unavailable_clauses"]
         .as_array()
@@ -385,33 +397,12 @@ fn req_conf_003_macos_status_table() {
         .iter()
         .map(|l| l.as_str().unwrap())
         .collect();
-    for letter in ["K:", "M:", "C:"] {
+    for letter in ["M:", "C:"] {
         assert!(lines.iter().any(|l| l.starts_with(letter)), "{lines:?}");
     }
-    for letter in ["F:", "N:", "P:", "E:"] {
+    for letter in ["F:", "N:", "P:", "E:", "K:"] {
         assert!(!lines.iter().any(|l| l.starts_with(letter)), "{lines:?}");
     }
-}
-
-/// REQ-CONF-003 / RFC 011 §5: the K stand-in the other tests use does what
-/// it says and no more: with it K is best-effort and the tier is `core`
-/// unless `accept_best_effort` names K; M and C stay unavailable.
-#[test]
-fn req_conf_003_k_stand_in_is_explicit() {
-    let env = Env::new(&[], "").env("MIMLYS_PROBE_BEST_EFFORT", "K");
-    let (tier, table) = clauses(&env);
-    assert_eq!(table["termination"]["state"], "best_effort");
-    assert_eq!(tier, "core");
-    let env = Env::with_k_stand_in(&[], "");
-    let (tier, table) = clauses(&env);
-    if !seatbelt_or_skip("req_conf_003_k_stand_in_is_explicit", &table) {
-        return;
-    }
-    assert_eq!(
-        tier,
-        "full (K best-effort, accepted by policy.accept_best_effort)"
-    );
-    assert_eq!(table["memory"]["state"], "unavailable");
 }
 
 /// REQ-CONF-003 / REQ-CONF-004: an injected failure of a mandatory clause
@@ -419,7 +410,7 @@ fn req_conf_003_k_stand_in_is_explicit() {
 /// listed nor accepted. (The probe is honest about what it cannot do.)
 #[test]
 fn req_conf_003_probe_is_honest_and_fails_closed() {
-    let env = Env::with_k_stand_in(&[probe(&["ok"]), complete()], "").env("MIMLYS_PROBE_FAIL", "F");
+    let env = Env::new(&[probe(&["ok"]), complete()], "").env("MIMLYS_PROBE_FAIL", "F");
     let (tier, table) = clauses(&env);
     assert_eq!(tier, "core", "{table:?}");
     assert_eq!(table["filesystem"]["state"], "unavailable");
@@ -465,7 +456,7 @@ fn req_conf_003_probe_is_honest_and_fails_closed() {
 #[test]
 fn req_conf_002_the_workspace_is_usable() {
     let test = "req_conf_002_the_workspace_is_usable";
-    let env = Env::with_k_stand_in(
+    let env = Env::new(
         &[
             probe(&["ok"]),
             probe(&["cwd"]),
@@ -506,7 +497,7 @@ fn req_conf_002_read_outside_the_set_is_denied() {
     let outside = outside().join("secret.txt");
     let (code, line) = control(&["read", outside.to_str().unwrap()]);
     assert_eq!(code, 0, "the control reads it: {line}");
-    let env = Env::with_k_stand_in(
+    let env = Env::new(
         &[
             probe(&["read", outside.to_str().unwrap()]),
             // From the workspace tree (`<data>/workspaces/<id>/tree`): the data directory itself.
@@ -546,7 +537,7 @@ fn req_conf_002_write_outside_the_workspace_is_denied() {
     assert_eq!(code, 0, "the control writes it: {line}");
     assert!(target.exists());
     std::fs::remove_file(&target).unwrap();
-    let env = Env::with_k_stand_in(
+    let env = Env::new(
         &[probe(&["write", target.to_str().unwrap()]), complete()],
         "",
     );
@@ -581,7 +572,7 @@ fn req_conf_005_tcp_to_loopback_is_denied() {
         listener.accept().is_ok(),
         "the control reached the listener"
     );
-    let env = Env::with_k_stand_in(&[probe(&["connect", &addr]), complete()], "");
+    let env = Env::new(&[probe(&["connect", &addr]), complete()], "");
     let Some(obs) = run_probe_script(test, &env) else {
         return;
     };
@@ -616,7 +607,7 @@ fn req_conf_005_name_lookup_is_denied() {
         return;
     }
     assert!(line.contains("getaddrinfo resolved"), "{line}");
-    let env = Env::with_k_stand_in(&[probe(&["getaddrinfo", "example.com"]), complete()], "");
+    let env = Env::new(&[probe(&["getaddrinfo", "example.com"]), complete()], "");
     let Some(obs) = run_probe_script(test, &env) else {
         return;
     };
@@ -646,7 +637,7 @@ fn req_conf_005_unix_sockets_only_under_the_write_set() {
     assert_eq!(code, 0, "the control connects: {line}");
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert!(listener.accept().is_ok(), "the control reached the socket");
-    let env = Env::with_k_stand_in(&[], "");
+    let env = Env::new(&[], "");
     let inside = env.short_dir().join("m6c.sock");
     assert!(inside.to_str().unwrap().len() < 100, "{inside:?}");
     env.set_script(&[
@@ -692,7 +683,7 @@ fn req_conf_002_the_operators_secret_is_not_in_the_tools_environment() {
         String::from_utf8_lossy(&out.stdout).contains(SECRET),
         "the control sees a variable it is given"
     );
-    let env = Env::with_k_stand_in(
+    let env = Env::new(
         &[
             probe(&["env", "MIMLYS_TEST_SECRET"]),
             probe(&["env", "PROBE_OK"]),
@@ -737,7 +728,7 @@ fn req_conf_011_procargs_of_the_runtime_is_refused() {
         String::from_utf8_lossy(&out.stdout)
     );
     let needle = format!("MIMLYS_TEST_SECRET={SECRET}");
-    let env = Env::with_k_stand_in(
+    let env = Env::new(
         &[
             probe(&["procargs", "MIMLYS_TEST_RUNTIME_PID", &needle]),
             complete(),
@@ -776,7 +767,7 @@ fn req_conf_011_other_processes_are_invisible() {
             String::from_utf8_lossy(&out.stdout)
         );
     }
-    let env = Env::with_k_stand_in(
+    let env = Env::new(
         &[
             probe(&["procinfo", "MIMLYS_TEST_RUNTIME_PID"]),
             probe(&["signal0", "MIMLYS_TEST_RUNTIME_PID"]),
@@ -813,7 +804,7 @@ fn req_conf_005_setuid_exec_is_refused() {
         common::skip(test, &format!("no passwordless sudo here: {line}"));
         return;
     }
-    let env = Env::with_k_stand_in(&[probe(&["sudo-id"]), probe(&["id"]), complete()], "");
+    let env = Env::new(&[probe(&["sudo-id"]), probe(&["id"]), complete()], "");
     let Some(obs) = run_probe_script(test, &env) else {
         return;
     };
@@ -833,13 +824,305 @@ fn req_conf_005_setuid_exec_is_refused() {
     );
 }
 
-/// RFC 011 Amendment 2 point 9 (the dependency step's profile) and the
-/// measured read set (point 8) wait for spike S1b: recorded as skipped so
-/// that the count says so.
+/// Live `/bin/sleep <secs>` processes of this user: the sleepers the probe
+/// tool starts (`setsid-sleep`, `orphan`).
+fn sleepers(secs: &str) -> Vec<u32> {
+    let out = Command::new("pgrep")
+        .args(["-f", &format!("^/bin/sleep {secs}$")])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect()
+}
+
+/// Live copies of the probe tool started as `<tool> sleep 5` (the children of `fork`).
+fn fork_children() -> usize {
+    let out = Command::new("pgrep")
+        .args(["-f", &format!("^{} sleep 5$", probe_tool().display())])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count()
+}
+
+/// The parent of a process, from `ps`.
+fn ppid_of(pid: u32) -> Option<u32> {
+    let out = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+fn wait_until(limit: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < limit {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    done()
+}
+
+/// REQ-CONF-009 / clause K (Amendment 2, settled, point 6): a tool that
+/// starts a sleeper in a session of its own, which its parent leaves
+/// re-parented to `launchd`, and sleeps itself, is gone with its whole tree
+/// when the task is cancelled, within LIM-O2, and the primitive in force is
+/// the membership kill loop with NO accepted clause (the config names none).
+/// The control inside the test: before the cancel the orphan exists and its
+/// parent is `launchd` (a process group walk could not find it).
 #[test]
-fn m6c_dependency_step_waits_for_s1b() {
-    common::skip(
-        "m6c_dependency_step_waits_for_s1b",
-        "the dependency step's profile is RFC 011 Amendment 2 point 9 (spike S1b)",
+fn req_conf_009_cancel_kills_the_whole_tree() {
+    let test = "req_conf_009_cancel_kills_the_whole_tree";
+    let secs = "2341";
+    let env = Env::new(&[probe(&["setsid-sleep", secs]), complete()], "");
+    let (tier, table) = clauses(&env);
+    if !seatbelt_or_skip(test, &table) {
+        return;
+    }
+    assert_eq!(table["termination"]["state"], "enforced", "{table:?}");
+    assert_eq!(
+        table["termination"]["primitive"], "seatbelt_membership",
+        "{table:?}"
+    );
+    assert_eq!(tier, "full", "{table:?}");
+    let scope = env.scope();
+    let run = env
+        .command(&[
+            "--json",
+            "run",
+            "sleep",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Wait until the orphan exists, then stop the run twice: the first
+    // signal asks for a pause at the next boundary, the second cancels the
+    // running step (external design §19.2).
+    assert!(
+        wait_until(std::time::Duration::from_secs(30), || !sleepers(secs)
+            .is_empty()),
+        "the tool's sleeper runs"
+    );
+    let orphan = sleepers(secs)[0];
+    assert_eq!(
+        ppid_of(orphan),
+        Some(1),
+        "the sleeper is re-parented to launchd: outside the tool's tree by parentage"
+    );
+    let cancel_at = std::time::Instant::now();
+    let pid = run.id().to_string();
+    for _ in 0..2 {
+        let _ = Command::new("kill").args(["-INT", &pid]).status();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    let out = run.wait_with_output().unwrap();
+    assert!(
+        wait_until(std::time::Duration::from_secs(5), || sleepers(secs)
+            .is_empty()),
+        "the re-parented sleeper is gone"
+    );
+    assert!(cancel_at.elapsed() < std::time::Duration::from_secs(10));
+    let value: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (_, task) = env.json(&["task", "show", &id]);
+    assert_eq!(task["task"]["state"], "cancelled");
+}
+
+/// REQ-CONF-009 / clause K: what a tool leaves behind when it ends by itself
+/// (an orphan re-parented to `launchd`, its parent gone, nobody to wait for
+/// it) is a member of the sandbox and ends with the tool. The control: the
+/// same tool outside the profile leaves its sleeper running.
+#[test]
+fn req_conf_009_the_tools_end_leaves_no_member() {
+    let test = "req_conf_009_the_tools_end_leaves_no_member";
+    let (code, line) = control(&["orphan", "2343"]);
+    assert_eq!(code, 0, "{line}");
+    assert!(
+        wait_until(std::time::Duration::from_secs(5), || !sleepers("2343")
+            .is_empty()),
+        "the control leaves a sleeper behind"
+    );
+    let _ = Command::new("pkill")
+        .args(["-f", "^/bin/sleep 2343$"])
+        .status();
+    let env = Env::new(&[probe(&["orphan", "2342"]), complete()], "");
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_eq!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
+    assert!(
+        wait_until(std::time::Duration::from_secs(5), || sleepers("2342")
+            .is_empty()),
+        "the orphan the tool left is gone"
+    );
+}
+
+/// REQ-CONF-001 / clause C (Amendment 2, settled, point 7): a tree of more
+/// than LIM-H3 processes is stopped by the watchdog and ends with the tool
+/// killed (exit 137: no termination names the count); below it nothing
+/// happens. The control: the same tool forks 20 children outside the profile.
+#[test]
+fn req_conf_001_count_watchdog_stops_a_fork_storm() {
+    let test = "req_conf_001_count_watchdog_stops_a_fork_storm";
+    let (code, line) = control(&["fork", "20", "50"]);
+    assert_eq!(code, 0, "the control forks: {line}");
+    let env = Env::new(
+        &[
+            probe(&["fork", "10", "200"]),
+            probe(&["fork", "100", "4000"]),
+            complete(),
+        ],
+        "",
+    );
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_eq!(
+        exit_code_of(&obs[0]),
+        0,
+        "ten children are below LIM-H3: {}",
+        stdout_of(&obs[0])
+    );
+    assert_eq!(
+        exit_code_of(&obs[1]),
+        137,
+        "a hundred children are stopped by the watchdog (SIGKILL): {}",
+        stdout_of(&obs[1])
+    );
+    assert!(
+        wait_until(std::time::Duration::from_secs(5), || fork_children() == 0),
+        "the children are gone with the tree"
+    );
+}
+
+/// REQ-CONF-001 / clause M (Amendment 2, settled, point 7): resident memory
+/// of the tree above LIM-H2 ends the execution `memory_limit`; 200 MiB,
+/// resident, is below it and passes. (Resident, not virtual: the tool writes
+/// every page.) The control: the tool touches memory outside the profile.
+#[test]
+fn req_conf_001_memory_watchdog_ends_memory_limit() {
+    let test = "req_conf_001_memory_watchdog_ends_memory_limit";
+    let (code, line) = control(&["alloc-touch", "8"]);
+    assert_eq!(code, 0, "the control touches memory: {line}");
+    assert!(line.contains("touched 8 MiB"), "{line}");
+    let env = Env::new(
+        &[
+            probe(&["alloc-touch", "200"]),
+            probe(&["alloc-touch", "3000"]),
+            complete(),
+        ],
+        "",
+    );
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_eq!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
+    assert!(stdout_of(&obs[0]).contains("touched 200 MiB"));
+    assert_eq!(
+        obs[1]["payload"]["termination"], "memory_limit",
+        "3000 MiB resident is above LIM-H2: {}",
+        obs[1]
+    );
+}
+
+/// REQ-CONF-011 / Amendment 2, settled, point 4: the process list with
+/// names (`sysctl kern.proc.all`) is refused to a host tool; the control
+/// reads it outside the profile.
+#[test]
+fn req_conf_011_the_process_list_is_refused() {
+    let test = "req_conf_011_the_process_list_is_refused";
+    let (code, line) = control(&["proclist"]);
+    assert_eq!(code, 0, "the control reads the process list: {line}");
+    let env = Env::new(&[probe(&["proclist"]), complete()], "");
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_ne!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
+    assert!(
+        stdout_of(&obs[0]).contains("proclist failed: errno="),
+        "{}",
+        stdout_of(&obs[0])
+    );
+}
+
+fn fetch(args: &[&str]) -> Value {
+    json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "fetch", "args": args}})
+}
+
+/// REQ-CONF-007 / Amendment 2, settled, point 9: the dependency step's worker
+/// resolves names and connects to port 443, and nothing else: a loopback
+/// port that is not 443 is refused. The offline tool of the same task
+/// resolves nothing and connects to nothing. The control: the machine
+/// resolves and connects outside the profile (skipped where it cannot: no
+/// network).
+#[test]
+fn req_conf_007_dependency_step_reaches_https_and_nothing_else() {
+    let test = "req_conf_007_dependency_step_reaches_https_and_nothing_else";
+    let (code, line) = control(&["connect-name", "example.com:443"]);
+    if code != 0 {
+        common::skip(
+            test,
+            &format!("this machine cannot reach example.com:443: {line}"),
+        );
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let (code, line) = control(&["connect", &addr]);
+    assert_eq!(
+        code, 0,
+        "the control connects to the loopback listener: {line}"
+    );
+    let env = Env::new(
+        &[
+            fetch(&["getaddrinfo", "example.com"]),
+            fetch(&["connect-name", "example.com:443"]),
+            fetch(&["connect", &addr]),
+            probe(&["getaddrinfo", "example.com"]),
+            probe(&["connect-name", "example.com:443"]),
+            complete(),
+        ],
+        "",
+    )
+    .with_fetch();
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert!(
+        stdout_of(&obs[0]).contains("getaddrinfo resolved"),
+        "the dependency step resolves names: {}",
+        stdout_of(&obs[0])
+    );
+    assert_eq!(
+        stdout_of(&obs[1]).trim(),
+        "connected",
+        "the dependency step reaches port 443"
+    );
+    assert!(
+        stdout_of(&obs[2]).contains("connect failed: permission denied"),
+        "only port 443: {}",
+        stdout_of(&obs[2])
+    );
+    assert!(
+        stdout_of(&obs[3]).contains("getaddrinfo failed"),
+        "the offline tool resolves nothing: {}",
+        stdout_of(&obs[3])
+    );
+    assert!(
+        stdout_of(&obs[4]).contains("resolve failed"),
+        "the offline tool connects to no name: {}",
+        stdout_of(&obs[4])
     );
 }
