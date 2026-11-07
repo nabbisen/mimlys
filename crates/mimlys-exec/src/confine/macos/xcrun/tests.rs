@@ -189,7 +189,12 @@ mod with_a_stand_in {
             "returned after {:?}",
             started.elapsed()
         );
-        let pid = std::fs::read_to_string(pid).unwrap().trim().to_owned();
+        // A stand-in that did not get as far as writing its pid was killed
+        // before it ran (a slow first launch of `sh` under Rosetta): nothing to look at.
+        let Ok(pid) = std::fs::read_to_string(pid) else {
+            return;
+        };
+        let pid = pid.trim().to_owned();
         let alive = std::process::Command::new("ps")
             .args(["-p", &pid])
             .output()
