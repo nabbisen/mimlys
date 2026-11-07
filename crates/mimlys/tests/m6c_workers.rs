@@ -262,8 +262,28 @@ fn req_conf_009_a_killed_worker_leaves_no_member() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&parent.stdout).trim(), "1");
+    // The worker is the tool's parent. `Worker::kill_for_test` would wait for
+    // the execution's lock, so the worker alone gets the signal, as a crash would.
+    let tool_pid = matching(&tool)[0];
+    let worker_pid = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &tool_pid.to_string()])
+        .output()
+        .unwrap();
+    let worker_pid = String::from_utf8_lossy(&worker_pid.stdout)
+        .trim()
+        .to_owned();
+    assert!(
+        worker_pid.parse::<u32>().is_ok_and(|p| p > 1),
+        "{worker_pid:?}"
+    );
     let killed_at = Instant::now();
-    side.worker.kill_for_test();
+    assert!(
+        Command::new("kill")
+            .args(["-KILL", &worker_pid])
+            .status()
+            .unwrap()
+            .success()
+    );
     let bound = Duration::from_millis(LIM_O2_CANCEL_MS + LIM_H6_TRACK_INTERVAL_MS + 250);
     let gone = wait_for(bound + Duration::from_secs(5), || {
         matching(&sleeper).is_empty() && matching(&tool).is_empty()
