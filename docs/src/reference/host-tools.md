@@ -141,7 +141,8 @@ because the sandbox itself tells the worker which processes are its own: after
 a cancel, a deadline or the end of a tool, the worker ends every one of them,
 a process that detached itself and was adopted by `launchd` included. M and C
 are watchdogs that look at the tool's processes every 100 ms and kill them
-above 2 GiB or 64 processes, so they are best effort (they may miss something
+above 2 GiB or 64 processes (the execution ends `memory_limit` or
+`process_limit`, and the model is told which), so they are best effort (they may miss something
 shorter than a poll), as on Linux without a delegated cgroup. If the worker
 cannot verify the mechanism on a given macOS, K, M and C read `unavailable:
 membership_unverified: …` and host tools are not offered.

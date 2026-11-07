@@ -20,7 +20,7 @@ before this report) and, for the spikes, the runs named in §3.
 | K | `seatbelt_membership` | the **membership kill loop**: the worker lists every pid (`proc_listallpids`), keeps those `proc_pidinfo` can read (which the profile allows for the sandbox's members only), skips itself, `SIGKILL`s each and repeats until a listing finds none or LIM-O2 passes. After a cancel, a deadline and the tool's end, so a re-parented orphan cannot outlive its tool. Enforced: the kernel decides who is a member |
 | P | `seatbelt` | the kernel refuses a setuid `execve` from a sandboxed process; no rule is needed, a clause test asserts it |
 | M | `rss_watchdog` (best effort) | the members' summed memory above LIM-H2 kills the tree and the execution ends `memory_limit`; polled every LIM-H6 |
-| C | `process_count_watchdog` (best effort) | the members' count above LIM-H3 kills the tree; polled every LIM-H6 |
+| C | `process_count_watchdog` (best effort) | the members' count above LIM-H3 kills the tree and the execution ends `process_limit` (`resource_exhausted{processes}`; never an exit of the tool's own); polled every LIM-H6 |
 
 Every check is the worker's own observation of itself. K, M and C are
 reported only if the worker verified, from inside the applied profile, that
@@ -29,6 +29,21 @@ nor its parent (processes outside the sandbox) can be inspected or signalled;
 otherwise all three read `unavailable: membership_unverified: …`. The kill
 loop and the watchdogs also refuse to act in a process that did not verify:
 outside the profile, "every pid I can inspect" is every process of the user.
+
+**The sweeper.** The runtime is outside the sandbox and cannot list its
+members, so a worker that is killed or crashes would leave its tools alive
+(confined, but able to write the workspace after their execution ended); Linux
+kills the worker's cgroup and Windows closes its job in that case. Right after
+the verification and before any thread exists, the worker therefore forks one
+**sweeper**: a member in a process group of its own, with its standard
+streams on `/dev/null`, holding the read end of a pipe whose write end only
+the worker holds (close-on-exec, so no tool inherits it). At end of file,
+however the worker ended, the sweeper runs the kill loop (itself excluded) and
+exits; the worker's own loop, its counts and its weights exclude the sweeper.
+It acts on end of file only, never on a failed read. A worker that cannot start
+it (it has threads, or the fork fails) reports K, M and C `unavailable`.
+The pipe's behaviour is generic Unix and is tested on Linux too
+(`tests/sweeper.rs`); the kill is tested on macOS.
 
 The profile, in the order that makes the last match the right one:
 `(deny default)`; `process-fork`; `process-exec*` of the read and write sets;
@@ -156,7 +171,11 @@ outputs are in the review records).
 | `sudo -n id -u` | `execve` refused; `id` works and prints a uid other than 0 |
 | a tool that starts a sleeper in a session of its own (re-parented to `launchd`), then a double interrupt | tool and sleeper gone within LIM-O2, task `cancelled` |
 | a tool that ends leaving such a sleeper | the sleeper is gone |
-| `fork 100` held open | killed by the watchdog (exit 137), children gone; `fork 10` passes |
+| the worker killed with `SIGKILL` while a tool and such a sleeper run (after an earlier tool has ended) | no member remains within LIM-O2 plus one poll; the execution is `host_fault{worker_died}` |
+| the runtime killed with `SIGKILL` while a tool runs | the same |
+| the main worker and the dependency step's worker, both with members | neither tool's listing holds a pid of the other's sandbox (nor a worker's), and each sees its own sleeper |
+| the sweeper's pipe (Linux and macOS) | acts at end of file only; not inherited by a child that outlives the owner; own process group and no stream of the owner's |
+| `fork 100` held open | killed by the watchdog, the execution ends `process_limit` (`resource_exhausted{processes}`, no exit code), children gone; `fork 10` passes |
 | 3 000 MiB touched | `memory_limit`; 200 MiB passes |
 | `MIMLYS_PROBE_FAIL=F` | tier `core`, `run_host_tool` unlisted |
 | the dependency step: a name, port 443, a loopback port that is not 443, the certificates | resolves, connects, `permission denied`, readable; the offline tool does none |
@@ -181,12 +200,18 @@ outputs are in the review records).
   of its resident size and its physical footprint: the resident size alone
   under-reports when the system compresses a process's pages (a 3 GiB tool
   showed under 2 GiB resident on a loaded runner and escaped the first
-  version of the watchdog). A tree killed for its count ends `exited` with
-  code 137, as no termination names LIM-H3.
-- **A worker that dies leaves its tools running.** On Linux the next runtime
-  reaps them from the worker's record; on macOS the tools are members of a
-  sandbox the runtime is not in and cannot list. An orderly end (a cancel,
-  a deadline, the end of a tool, the end of the worker's input) sweeps them.
+  version of the watchdog). A tree killed for its count ends `process_limit`
+  (external design §7.4), mapped to `resource_exhausted{processes}`; where the
+  kernel refuses the extra process instead (Linux, Windows) the tool sees a
+  failed `fork` and its own ending is reported.
+- **The sweeper's residual.** A tool can kill the sweeper (members of one
+  sandbox may signal one another); the worker then no longer has a safety net
+  and a worker that dies without an orderly end leaves the tool's processes
+  alive, still confined. An orderly end (a cancel, a deadline, the end of a
+  tool, the end of the worker's input) sweeps without the sweeper. Recorded in
+  the threat register. The two workers' sandboxes (the main one and the
+  dependency step's) are apart: neither's listing holds the other's pids, so
+  neither's kill loop can reach the other's tools.
 - The broad refusal of `process-info*` is `(with no-report)`: the loop and
   the watchdogs ask about every pid at every poll, and each refusal was one
   record in the system log (about 90 000 lines in one suite run; about 9 000
@@ -203,3 +228,39 @@ outputs are in the review records).
   (REQ-PLAT-002): the Rosetta job runs the suite as Intel code on the same
   kernel, which exercises the Intel build, not an Intel Mac, and its results
   are informative.
+
+## 7. Measurements (handoff 011c-5; reported, nothing changed by them)
+
+On `macos-latest` (macOS 26.7.2, arm64, 3 CPUs, 7 GiB, about 570 processes),
+runs `42374250330` and `42374899386` (the second repeats the first; the throwaway workflow that ran them is not in the repository).
+
+- **The cost of a poll** (LIM-H6). One poll is what the watchdogs do: list
+  every pid, read the ones the profile lets the worker read. Measured from
+  inside the sandbox, 200 polls each: minimum 0.24 and 0.20 ms, **mean 0.80
+  and 0.75 ms**, maximum 3.03 and 23.91 ms (one outlier in 200). The worker's
+  CPU time while a tool slept for ten seconds under the watchdogs: **0.05 s and
+  0.06 s in 10.1 s of wall (0.5 % and 0.6 %)**, and 0.00 and 0.01 s in 5 s
+  idle (`ps` resolves 10 ms). A poll costs under 1 % of the 100 ms interval on
+  average; the figures are for the architect to set LIM-H6 from.
+- **The sweeper's latency.** After `SIGKILL` of the worker, the tool and its
+  re-parented sleeper were gone within **42, 58 and 59 ms** in three runs (the bound is LIM-O2 plus
+  one poll, 2.35 s).
+- **A Mac where `xcrun` never ran (no `xcrun_db`): the demonstration fails.**
+  With the cache file deleted first (in both runs), `cargo test --offline` ends `halted`
+  (the build fails, exit 101): `xcrun` cannot create its cache in the per-user
+  temporary directory (`couldn't create cache file …/xcrun_db-<random>
+  (errno=Operation not permitted)`; the profile admits the file by name, read
+  only), falls back to `xcodebuild`, which fails loading
+  `/Applications/Xcode_26.6.app/Contents/Frameworks/libxcodebuildLoader.dylib`
+  (`file system sandbox blocked open()`; the profile admits the developer
+  directory and `Contents/SharedFrameworks`, not `Contents/Frameworks`). The
+  first `xcrun` run outside the profile creates the file (any shell that runs
+  `cc` or `xcrun` once, which every Mac that builds has done). No read-set
+  addition was made; the options are the architect's (a create rule for
+  `xcrun_db-*` in the per-user temporary directory, or the Xcode's
+  `Contents/Frameworks`, or documenting that `xcrun` must have run once).
+- **Command Line Tools selected** (`xcode-select -s
+  /Library/Developer/CommandLineTools`; informative): the demonstration
+  **passes** (`completed{verified}` in 2.4 s) with the same read set, and with
+  `xcrun_db` still absent, so the detour through `xcodebuild` that fails above
+  is specific to the Xcode layout.
