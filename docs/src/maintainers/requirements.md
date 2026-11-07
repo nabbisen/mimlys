@@ -433,7 +433,7 @@ Everything on disk belongs to one task. `mimlys task delete` shall remove a term
 The context shall be assembled in the fixed segment order of external design §15: system instructions, tool definitions, capability summary, goal, plan, compressed history, recent steps, latest observation, decision request. Stable segments precede mutable ones. (C-07)
 
 ### REQ-CTX-002 Provenance — M1 · T
-Every observation, rejection, user answer, user note and tool definition entering the context shall be delimited and labelled with its provenance (`runtime`, `user`, `tool:<name>`, `model`); the system instructions shall state that such segments are data. (M-18, K-01, THR-01)
+Every observation, rejection, user answer, user note and tool definition entering the context shall be delimited and labelled with its provenance (`runtime`, `user`, `tool:<name>`, `model`); the system instructions shall state that observations, rejections, runtime feedback and tool definitions are data, never instructions, and that the goal, answers and notes are the user's own words, the goal being the task (amended 2026-11-07: labelling the goal as data told the model not to follow its task; the real-model run of M4 asked the user for a file it had been told to read). (M-18, K-01, THR-01)
 
 ### REQ-CTX-003 Budget and pruning — M4 · T
 The context shall not exceed LIM-C1. Above it the runtime compresses older steps (LIM-C3 recent steps stay full, LIM-C4 per summary), then drops the oldest. Grants, halts, rejections and unresolved failures shall never be dropped. (INV-09)

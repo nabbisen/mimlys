@@ -1,6 +1,6 @@
 # Limits and Defaults
 
-**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-03. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). **Still provisional: LIM-C1**, which waits for the M4 run against a real local model (the report's run B has not been made). The other values are design choices, not measurements, and change only here.
+**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-07. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). Fixed by measurement on 2026-11-07: LIM-O7 (investigation D1) and LIM-H6 (011c-5). **Still provisional: LIM-C1**, which waits for a completed M4 run against a real local model (the first run, 2026-11-07, ended at its first step; handoff 007b), and LIM-O8, which 011c-6 measures. The other values are design choices, not measurements, and change only here.
 **Governs:** every number that the [requirements](./requirements.md) and the [external design](./external-design.md) cite by a `LIM-` identifier. The documents never repeat a value; a value changes here only.
 
 "Range" is what an administrator may configure. "fixed" means no configuration changes it. Budgets a user may set per task are bounded by the administrator's ceiling, which is itself within the range.
@@ -113,6 +113,7 @@
 | LIM-O5 | Deadline of an external (MCP) tool invocation | 60000 ms | 1000 – 600000; never below the server's declared maximum | rypsok expectation 5 |
 | LIM-O6 | Startup of an MCP server | 15000 ms | 1000 – 120000 | Child process |
 | LIM-O7 | Wait for another runtime's write of the same directory's permissions (Windows) | 60000 ms | fixed | Measured (D1, 2026-11-07): one write takes 0.1 s on a near-empty DACL and up to 9 s with hundreds of entries; at the end of the wait the write is refused, never made on a stale base |
+| LIM-O8 | Wait for `xcrun --find cc` to create its cache before the worker starts (macOS, an Xcode selected, the cache absent) | 10000 ms | fixed | Provisional until 011c-6 measures a first `xcrun`; past the wait the start goes on and `check` and `status` say the cache is missing (external design §13.3) |
 
 ## Model backend
 
@@ -132,4 +133,4 @@
 | LIM-H3 | Processes in a host tool tree | 64 | 1–1024 | Fork-bomb bound |
 | LIM-H4 | Captured output of a host tool, each stream | 4 MiB | 64 KiB – 64 MiB | Build logs |
 | LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | fixed | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |
-| LIM-H6 | Interval of the macOS tree tracker and its memory and process-count watchdogs (M6c) | 100 ms | fixed | Provisional until spike S1 and RFC 011 Amendment 2; the shorter, the fewer short-lived escapes and the more CPU |
+| LIM-H6 | Interval of the macOS tree tracker and its memory and process-count watchdogs (M6c) | 100 ms | fixed | Measured (011c-5, 2026-11-07, `macos-latest`, about 570 processes): one poll 0.8 ms on average, the worker 0.5 to 0.6 % of a CPU while a tool runs; the shorter, the fewer short-lived excursions missed and the more CPU |

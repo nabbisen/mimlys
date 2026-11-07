@@ -3,6 +3,16 @@
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 and Amendment 1 (the read-set rules) · **Specification.** REQ-CONF-001 … 012 (macOS), REQ-TEST-013; external design §13.2 … §13.5, §23 (M6c); limits LIM-H1 … H5, LIM-O2; threats THR-11, THR-17, THR-23, THR-24, THR-32 · **Milestone.** M6c (release 0.8). Depends on 011a, 011d (done).
 **Rewritten 2026-11-07** (the first version was a three-line stub written before any backend existed). It carries what 011a, 011b and 011d taught, in §2.
 
+## Status, fifth update (2026-11-07): 011c-5 merged; 011c-6
+
+011c-5 is on `main` (`ebb4ab9`). Its two questions are decided (RFC 011 "Amendment 2, implementation decisions", point 8 on `xcrun`'s cache, and LIM-H6 fixed at 100 ms; external design §13.3). **011c-6**, one branch on `main`, request `011c-6-macos`:
+
+1. **`xcrun`'s cache made by the runtime:** where the active developer directory is an Xcode (`…/Contents/Developer`) and `xcrun_db` is absent in the per-user temporary directory, the runtime runs `/usr/bin/xcrun --find cc` itself, outside the sandbox, before it starts the worker (and the dependency step's worker), waiting at most LIM-O8 (new constant). If the cache is still absent afterwards, `check` and `status` show one line naming the file and the remedy (`run xcrun --find cc once`), and the run goes on (the tool's own error then names the cause). Never a write rule for the cache in the profile.
+2. **Tests on `macos-latest`:** the cache deleted, then the demonstration completes and the cache exists afterwards; the Command Line Tools case unchanged. Mutation: the warming removed (the demonstration halts, as 011c-5 measured). The `check`/`status` line: a test with the warming made to fail (an injected `xcrun` path for tests only, the way the probe tool's hooks are done).
+3. **Documents:** the M6c report (§5b's finding and the decision), the book's macOS section (nothing for the user to do; the line `status` may show), CHANGELOG.
+
+Binding for every later mutation run on macOS: **never disable the membership guard** in a mutation (011c-5 §7: with the guard off, the loop treats every process of the runner as a member).
+
 ## Status, fourth update (2026-11-07): 011c-1 to 011c-4 merged; 011c-5
 
 PRs #9, #16, #17 and #18 are on `main` (`e7a9a4a`). The answers to their questions are RFC 011 "Amendment 2, implementation decisions" and external design §7.4; read them first. **011c-5**, one branch on `main`, one review request `011c-5-macos`, one commit per item, each with a test naming its requirement and a mutation check:

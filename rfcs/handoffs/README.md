@@ -34,6 +34,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 |---|---|---|---|
 | 1 | [007 Context assembly, compression, redaction, measurement](./007-context-assembly-and-observation-pipeline/implementation-handoff.md) | [RFC 007](../done/007-context-assembly-and-observation-pipeline.md) | 001–006, 010 |
 | 2 | [008 The OpenAI-compatible backend adapter](./008-model-backend-adapter/implementation-handoff.md) | [RFC 008](../done/008-model-backend-adapter.md) | 007 |
+| 3 | [007b The fixed instructions: the goal is the task (0.8)](./007b-instructions-the-goal-is-the-task/implementation-handoff.md) | RFC 007; finding of L1 | 007, 008 |
 
 ## Milestone M5
 
