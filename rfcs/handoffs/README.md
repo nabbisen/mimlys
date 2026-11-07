@@ -52,6 +52,17 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 5 | [011e Windows: removing every trace before an uninstall (0.8)](./011e-windows-cleanup/implementation-handoff.md) | RFC 011 §7 | 011b, 011d |
 | 6 | [011f Windows: the permission lock fails closed (0.8)](./011f-windows-permission-lock/implementation-handoff.md) | RFC 011 §7; D1 | 011b, 011e |
 
+## Release 0.8 — work order (the dev team's entry point)
+
+This table is the one place that says what comes next; the architect updates it at every review, and each review package (`.git-exclude/reviewed/…`) points here. Nothing for the dev team is written in `.git-exclude/tasks/`.
+
+| Order | Work | Where | Request | State |
+|---|---|---|---|---|
+| 1 | The Windows permission lock fails closed | [011f](./011f-windows-permission-lock/implementation-handoff.md) | `C9-windows-lock` | ready |
+| 2 | 011c-1 rebased on `main` (then merged by the architect) | [011c](./011c-confinement-macos/implementation-handoff.md), "Status, third update" | `011c-1-macos` (update at the top) | ready |
+| 3 | 011c-2, 011c-3, 011c-4 | same | `011c-macos` | after 2 is merged |
+| 4 | The M4 demonstration against a real local model | [M4 report](../../docs/src/maintainers/m4-report.md) §1; `L1-m4-real-model` | `L1-m4-real-model` | waits for the owner |
+
 Common rules for every handoff:
 
 - The specifications are the source of truth: `docs/src/maintainers/requirements.md` (REQ ids), `external-design.md` (ED §), `limits-and-defaults.md` (LIM ids), `glossary.md`. Tests validate the specification, not the code; every test that verifies a `T` requirement names it in its name or doc comment (REQ-TEST-001), for example `req_task_002_illegal_transition_is_refused`.
