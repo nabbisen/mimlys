@@ -104,12 +104,19 @@ pub fn system_read_paths_from(
     tools_present: bool,
 ) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = SYSTEM_READ.iter().map(PathBuf::from).collect();
-    match developer_link.filter(|p| p.is_absolute()) {
+    match developer_link.filter(|p| is_posix_absolute(p)) {
         Some(dir) => paths.push(dir),
         None if tools_present => paths.push(PathBuf::from(COMMAND_LINE_TOOLS)),
         None => {}
     }
     paths
+}
+
+/// Whether a path is absolute as macOS spells it. Text, not the host's rule:
+/// the generator is compiled everywhere and its tests run on every platform,
+/// where `/usr` is not an absolute path to Windows.
+fn is_posix_absolute(path: &Path) -> bool {
+    path.to_str().is_some_and(|s| s.starts_with('/'))
 }
 
 /// A path with one spelling: symbolic links resolved, as Seatbelt matches
@@ -179,7 +186,7 @@ fn literals(paths: &[PathBuf]) -> Result<Vec<String>, ProfileError> {
         let text = path
             .to_str()
             .ok_or_else(|| ProfileError::NotUtf8(shown.clone()))?;
-        if !path.is_absolute() {
+        if !is_posix_absolute(path) {
             return Err(ProfileError::NotAbsolute(shown));
         }
         if text.chars().any(char::is_control) {
