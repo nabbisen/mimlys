@@ -928,5 +928,10 @@ fn own_job_limits() -> Option<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
 /// at every call, as Unix brings the mode to 0700.
 pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
-    acl::protect_to_current_user(path).map_err(std::io::Error::other)
+    // A refused lock travels as its typed `Refusal` (the commands recognize
+    // it by type, `io::Error::get_ref`), any other failure as its text.
+    acl::protect_to_current_user(path).map_err(|e| match e {
+        acl::AclError::Refused(refusal) => std::io::Error::other(refusal),
+        acl::AclError::Failed(text) => std::io::Error::other(text),
+    })
 }
