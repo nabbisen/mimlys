@@ -50,12 +50,30 @@ struct Env {
     extra_env: Vec<(String, String)>,
     /// The dependency step is declared (`with_fetch`): runs grant it too.
     fetch: bool,
+    /// Held for the test's life: every runtime these tests start makes `xcrun`'s
+    /// cache when it is absent, so the tests that delete it or look for it
+    /// (which hold the lock exclusively, [`cache_lock`]) must be alone.
+    _runtimes: Option<std::sync::RwLockReadGuard<'static, ()>>,
 }
 
 impl Env {
     /// The probe tool declared as `probe`; `run_host_tool` is visible through the tasks' `host_tool` grants.
     /// `extra` is appended to the configuration before the declarations.
     fn new(script: &[Value], extra: &str) -> Self {
+        let guard = CACHE.read().unwrap_or_else(|e| e.into_inner());
+        Self::build(script, extra, Some(guard))
+    }
+
+    /// As [`Env::new`], for a test that already holds [`cache_lock`].
+    fn new_exclusive(script: &[Value], extra: &str, _held: &CacheGuard) -> Self {
+        Self::build(script, extra, None)
+    }
+
+    fn build(
+        script: &[Value],
+        extra: &str,
+        guard: Option<std::sync::RwLockReadGuard<'static, ()>>,
+    ) -> Self {
         let data = tempfile::tempdir().unwrap();
         // The directory is in the write set (`<data>/tmp`) and short enough for a Unix socket path.
         std::fs::create_dir_all(data.path().join("data/tmp")).unwrap();
@@ -93,6 +111,7 @@ env_allow = ["MIMLYS_TEST_RUNTIME_PID", "MIMLYS_TEST_OWNER_PID"]
             config,
             extra_env: vec![],
             fetch: false,
+            _runtimes: guard,
         }
     }
 
@@ -1312,11 +1331,16 @@ fn m6c_demonstration_cargo_test_offline() {
     demonstration("m6c_demonstration_cargo_test_offline");
 }
 
-/// The tests that delete `xcrun`'s cache, and the ones that build with it, take
-/// turns: the cache is one file in the per-user temporary directory.
-fn cache_lock() -> std::sync::MutexGuard<'static, ()> {
-    static CACHE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    CACHE.lock().unwrap_or_else(|e| e.into_inner())
+/// The tests that delete `xcrun`'s cache or look for it take turns with all
+/// the others: the cache is one file in the per-user temporary directory, and
+/// every runtime started makes it when it is absent.
+static CACHE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+type CacheGuard = std::sync::RwLockWriteGuard<'static, ()>;
+
+/// Exclusive: no other test runs a runtime meanwhile.
+fn cache_lock() -> CacheGuard {
+    CACHE.write().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The demonstration: `cargo test --offline` of a native project, the model
@@ -1568,7 +1592,7 @@ fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
     };
     let shown = file.to_string_lossy().into_owned();
     let _ = std::fs::remove_file(&file);
-    let failing = Env::new(&[], "").env("MIMLYS_TEST_XCRUN", "/usr/bin/false");
+    let failing = Env::new_exclusive(&[], "", &_serial).env("MIMLYS_TEST_XCRUN", "/usr/bin/false");
     for command in ["status", "check"] {
         let (code, stdout, stderr) = failing.run(&[command]);
         assert_eq!(code, 0, "the run goes on: {stdout}\n{stderr}");
@@ -1587,7 +1611,7 @@ fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
         assert_eq!(json["xcrun_cache_missing"], shown.as_str(), "{json}");
         assert!(!file.exists(), "it could not be made");
     }
-    let healthy = Env::new(&[], "");
+    let healthy = Env::new_exclusive(&[], "", &_serial);
     for command in ["status", "check"] {
         let (code, stdout, _) = healthy.run(&[command]);
         assert_eq!(code, 0);
