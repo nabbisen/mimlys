@@ -207,7 +207,7 @@ impl DaclLock {
                 match unsafe { WaitForSingleObject(handle, timeout_ms) } {
                     WAIT_OBJECT_0 => Attempt::Acquired,
                     WAIT_ABANDONED => Attempt::Abandoned,
-                    WAIT_TIMEOUT => Attempt::Held,
+                    WAIT_TIMEOUT => Attempt::Acquired,
                     _ => {
                         *failure.borrow_mut() = std::io::Error::last_os_error().to_string();
                         Attempt::Failed
