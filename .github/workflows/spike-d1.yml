@@ -19,6 +19,8 @@ jobs:
           - { name: latest-base, os: windows-latest, lockms: "", threads: "", prefill: "0" }
           - { name: w2022-base, os: windows-2022, lockms: "", threads: "", prefill: "0" }
           - { name: latest-bigdacl, os: windows-latest, lockms: "", threads: "", prefill: "400" }
+          - { name: latest-lock60s, os: windows-latest, lockms: "60000", threads: "", prefill: "0" }
+          - { name: latest-threads1, os: windows-latest, lockms: "", threads: "1", prefill: "0" }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -58,6 +60,7 @@ jobs:
       - name: the suite, repeated at the default thread count
         shell: bash
         run: |
+          set +e
           mkdir -p "$RUNNER_TEMP/d1"
           # a D1_LOCK_MS that is empty must not reach the product as an override
           if [ -z "$D1_LOCK_MS" ]; then unset D1_LOCK_MS; fi
