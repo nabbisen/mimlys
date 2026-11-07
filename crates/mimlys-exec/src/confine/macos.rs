@@ -248,7 +248,10 @@ fn subpaths(literals: &[String]) -> String {
 /// 5. other processes: `signal` and `process-info*` only for the sandbox's
 ///    members (the tool's own tree), and the pid listing, which has no
 ///    restricted form (the numbers of every pid are visible; the members are
-///    the ones `proc_pidinfo` can read);
+///    the ones `proc_pidinfo` can read). The broad denial is `(with
+///    no-report)`: the membership loop and the watchdogs inspect every pid at
+///    every poll, and each refusal would otherwise be one record in the
+///    system log (measured: thousands per test run);
 /// 6. network: denied, then Unix sockets under the write set only, then the
 ///    `mDNSResponder` socket denied explicitly (after the allows, so that no
 ///    write path can reopen it). No `mach-lookup` anywhere: DNS is an
@@ -292,7 +295,7 @@ pub fn generate(spec: &ConfinementSpec) -> Result<String, ProfileError> {
     p.push_str(
         "\n;; other processes: the sandbox's members only\n\
          (allow signal (target same-sandbox))\n\
-         (deny process-info*)\n\
+         (deny process-info* (with no-report))\n\
          (allow process-info* (target same-sandbox))\n\
          (allow process-info-listpids)\n",
     );

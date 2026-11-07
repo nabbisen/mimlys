@@ -338,15 +338,23 @@ fn rfc_011_a2_other_processes_are_invisible() {
     // target, after the narrowing, and the members are told apart by
     // `proc_pidinfo`. The process list WITH NAMES stays refused (point 4,
     // settled): `kern.proc.` after the broad `sysctl-read` allow.
-    assert!(at(&p, "(allow process-info-listpids)") > at(&p, "(deny process-info*)"));
+    assert!(
+        at(&p, "(allow process-info-listpids)") > at(&p, "(deny process-info* (with no-report))")
+    );
     assert!(!p.contains("(allow process-info-listpids (target"));
     assert!(
         at(&p, "(deny sysctl-read (sysctl-name-prefix \"kern.proc.\"))")
             > at(&p, "(allow sysctl-read)")
     );
+    // The refusals of the membership loop's probing are not logged: it asks
+    // about every pid of the machine at every poll.
+    assert!(p.contains("(deny process-info* (with no-report))"));
     assert!(p.contains("(allow signal (target same-sandbox))"));
     assert!(!p.contains("(allow signal)"));
-    assert!(at(&p, "(allow process-info* (target same-sandbox))") > at(&p, "(deny process-info*)"));
+    assert!(
+        at(&p, "(allow process-info* (target same-sandbox))")
+            > at(&p, "(deny process-info* (with no-report))")
+    );
     assert!(
         !p.contains("(allow process-info*)"),
         "no listing of every process"
