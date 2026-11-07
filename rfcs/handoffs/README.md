@@ -50,6 +50,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 3 | [011d Linux hardening and read-set hygiene (0.7.1)](./011d-linux-hardening/implementation-handoff.md) | RFC 011 Amendment 1 | 011a, 011b |
 | 4 | [011c The macOS backend](./011c-confinement-macos/implementation-handoff.md) | RFC 011 §4, §5 | 011a, 011d |
 | 5 | [011e Windows: removing every trace before an uninstall (0.8)](./011e-windows-cleanup/implementation-handoff.md) | RFC 011 §7 | 011b, 011d |
+| 6 | [011f Windows: the permission lock fails closed (0.8)](./011f-windows-permission-lock/implementation-handoff.md) | RFC 011 §7; D1 | 011b, 011e |
 
 Common rules for every handoff:
 

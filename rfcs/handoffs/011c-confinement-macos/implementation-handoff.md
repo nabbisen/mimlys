@@ -3,6 +3,13 @@
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 and Amendment 1 (the read-set rules) · **Specification.** REQ-CONF-001 … 012 (macOS), REQ-TEST-013; external design §13.2 … §13.5, §23 (M6c); limits LIM-H1 … H5, LIM-O2; threats THR-11, THR-17, THR-23, THR-24, THR-32 · **Milestone.** M6c (release 0.8). Depends on 011a, 011d (done).
 **Rewritten 2026-11-07** (the first version was a three-line stub written before any backend existed). It carries what 011a, 011b and 011d taught, in §2.
 
+## Status, third update (2026-11-07): what each remaining slice carries
+
+- **011c-1 rebase** (then the architect merges PR #9), folding in the answers to its questions: Q1 `/Library/Apple/usr/libexec/oah` in the read set where it exists (the Rosetta job's skips become runs); Q4 the offline profile denies the `mDNSResponder` socket explicitly, after the Unix-socket allows (settled point 9); Q3 the dependency step's three rules wait for 011c-2; Q2, Q5, Q6 accepted as built.
+- **011c-2:** the membership kill loop (settled point 6), the two watchdogs (point 7), `(deny sysctl-read (sysctl-name-prefix "kern.proc."))` (point 4), the dependency step's three rules (point 9).
+- **011c-3:** the read set of settled point 8 in `app.rs`, the per-user temporary directory found by `confstr(_CS_DARWIN_USER_TEMP_DIR)` in `confine/macos/sys.rs` (the one place for its `unsafe`); the refusal at load of a command whose canonical target leaves the read paths (external design §13.5; the rule is platform-neutral, so the check is in the shared loader with a test on Linux too); the clause suite; the demonstration without `accept_best_effort`. Any read-set addition the full suite asks for is made one at a time, each with the failure that asked for it, in the request.
+- **011c-4:** the M6c report, the book's macOS section (no accepted clause needed), the CHANGELOG.
+
 ## Status, second update (2026-11-07)
 
 S1b and 011c-1 are reviewed. **RFC 011 Amendment 2 is settled** (its section "Amendment 2, settled"): points 6 to 9 are decided and may be implemented. 011c-2 and 011c-3 may start once 011c-1 is rebased on `main` and merged. Binding changes against §4 below: K is the membership kill loop and is **`enforced (seatbelt_membership)`**, so the demonstration runs **without** `accept_best_effort` and the test hook `MIMLYS_PROBE_BEST_EFFORT=K` leaves the m6c suite; the read set is the measured minimum of the settled point 8; the dependency step's profile is point 9's three rules. The book's macOS section (011c-4) says host tools need no accepted clause on macOS.
