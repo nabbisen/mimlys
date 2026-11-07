@@ -6,6 +6,37 @@ use super::*;
 
 const XCODE: &str = "/Applications/Xcode_26.6.app/Contents/Developer";
 
+/// [`ensure`] with the command the runtime gives on a native Mac.
+fn run(file: Option<PathBuf>, xcrun: &Path, wait: Duration) -> CacheState {
+    let (program, args) = warming_command(xcrun, false);
+    ensure(file, &program, &args, wait)
+}
+
+/// REQ-CONF-005: a translated runtime asks through `arch -arm64`; a native one directly.
+#[test]
+fn req_conf_005_a_translated_runtime_warms_through_arch_arm64() {
+    let xcrun = Path::new("/usr/bin/xcrun");
+    assert_eq!(
+        warming_command(xcrun, false),
+        (
+            PathBuf::from("/usr/bin/xcrun"),
+            vec!["--find".to_owned(), "clang".to_owned()]
+        )
+    );
+    assert_eq!(
+        warming_command(xcrun, true),
+        (
+            PathBuf::from("/usr/bin/arch"),
+            vec![
+                "-arm64".to_owned(),
+                "/usr/bin/xcrun".to_owned(),
+                "--find".to_owned(),
+                "clang".to_owned()
+            ]
+        )
+    );
+}
+
 #[test]
 fn rfc_011_a2_cache_file_is_needed_by_an_xcode_only() {
     let temp = Path::new("/var/folders/h5/abc/T/");
@@ -88,7 +119,7 @@ mod with_a_stand_in {
             dir.path(),
             &format!("echo \"$@\" > {}\ntouch {}", args.display(), file.display()),
         );
-        let state = ensure(Some(file.clone()), &xcrun, Duration::from_secs(10));
+        let state = run(Some(file.clone()), &xcrun, Duration::from_secs(10));
         assert_eq!(state, CacheState::Present);
         assert!(file.exists());
         assert_eq!(
@@ -106,11 +137,11 @@ mod with_a_stand_in {
         let file = dir.path().join("xcrun_db");
         std::fs::write(&file, "x").unwrap();
         assert_eq!(
-            ensure(Some(file), &xcrun, Duration::from_secs(10)),
+            run(Some(file), &xcrun, Duration::from_secs(10)),
             CacheState::Present
         );
         assert_eq!(
-            ensure(None, &xcrun, Duration::from_secs(10)),
+            run(None, &xcrun, Duration::from_secs(10)),
             CacheState::NotNeeded
         );
         assert!(!marker.exists(), "xcrun was not run");
@@ -125,11 +156,11 @@ mod with_a_stand_in {
         let file = dir.path().join("xcrun_db");
         let failing = stand_in(dir.path(), "exit 1");
         assert_eq!(
-            ensure(Some(file.clone()), &failing, Duration::from_secs(10)),
+            run(Some(file.clone()), &failing, Duration::from_secs(10)),
             CacheState::Missing { file: file.clone() }
         );
         assert_eq!(
-            ensure(
+            run(
                 Some(file.clone()),
                 &dir.path().join("no-such-xcrun"),
                 Duration::from_secs(10)
@@ -150,7 +181,7 @@ mod with_a_stand_in {
             &format!("echo $$ > {}\nexec sleep 30", pid.display()),
         );
         let started = Instant::now();
-        let state = ensure(Some(file.clone()), &xcrun, Duration::from_millis(400));
+        let state = run(Some(file.clone()), &xcrun, Duration::from_millis(400));
         assert_eq!(state, CacheState::Missing { file });
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -165,6 +196,36 @@ mod with_a_stand_in {
             .status
             .success();
         assert!(!alive, "the hanging xcrun {pid} was killed and reaped");
+    }
+
+    /// REQ-CONF-005: a partial cache is not a cache. A hanging `xcrun` that
+    /// wrote part of the file before it was killed, and one that wrote it and
+    /// failed, leave nothing behind: the file would be taken for the cache and
+    /// the sandboxed `xcrun` cannot repair it (measured under Rosetta, where
+    /// the first launch of an Intel `xcrun` outlasted LIM-O8).
+    #[test]
+    fn req_conf_005_a_partial_cache_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("xcrun_db");
+        let hanging = stand_in(
+            dir.path(),
+            &format!("echo partial > {}\nexec sleep 30", file.display()),
+        );
+        assert_eq!(
+            run(Some(file.clone()), &hanging, Duration::from_millis(400)),
+            CacheState::Missing { file: file.clone() }
+        );
+        assert!(!file.exists(), "the partial file was removed");
+        let other = tempfile::tempdir().unwrap();
+        let failing = stand_in(
+            other.path(),
+            &format!("echo partial > {}\nexit 1", file.display()),
+        );
+        assert_eq!(
+            run(Some(file.clone()), &failing, Duration::from_secs(10)),
+            CacheState::Missing { file: file.clone() }
+        );
+        assert!(!file.exists(), "and so was the file of a failed xcrun");
     }
 
     /// REQ-CONF-002 / clause E: the runtime's environment holds
@@ -185,7 +246,7 @@ mod with_a_stand_in {
         );
         // The test process has a HOME; the stand-in must not.
         assert!(std::env::var_os("HOME").is_some());
-        ensure(Some(file), &xcrun, Duration::from_secs(10));
+        run(Some(file), &xcrun, Duration::from_secs(10));
         assert_eq!(
             std::fs::read_to_string(seen).unwrap().trim(),
             "unset /usr/bin:/bin"
