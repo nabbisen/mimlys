@@ -166,7 +166,8 @@ pub fn system_read_paths_from(
     paths.extend(
         user_temp
             .filter(|t| is_posix_absolute(t))
-            .map(|t| t.join(XCRUN_CACHE)),
+            .and_then(|t| t.to_str().map(str::to_owned))
+            .map(|t| PathBuf::from(format!("{}/{XCRUN_CACHE}", t.trim_end_matches('/')))),
     );
     paths
 }
@@ -175,9 +176,11 @@ pub fn system_read_paths_from(
 /// (`xcodebuild`, which the `cc` shim starts, reads one framework there:
 /// measured). `None` for any other shape of developer directory.
 fn shared_frameworks(developer: &Path) -> Option<PathBuf> {
-    let contents = developer.parent()?;
-    (developer.file_name()? == "Developer" && contents.file_name()? == "Contents")
-        .then(|| contents.join("SharedFrameworks"))
+    // Text, not the host's rules: the tests of this function run on every platform.
+    let text = developer.to_str()?.trim_end_matches('/');
+    text.strip_suffix("/Contents/Developer")
+        .filter(|app| !app.is_empty())
+        .map(|app| PathBuf::from(format!("{app}/Contents/SharedFrameworks")))
 }
 
 /// Whether a path is absolute as macOS spells it. Text, not the host's rule:
