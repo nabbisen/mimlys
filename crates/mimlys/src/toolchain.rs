@@ -124,6 +124,18 @@ pub struct RuntimePaths<'a> {
     pub read: Vec<PathBuf>,
 }
 
+/// A failed write of a directory's permissions as the command's error: a
+/// refused lock is the typed `AppError::Permissions` (kind `unavailable`,
+/// retrying is the remedy), any other failure keeps its text.
+#[cfg(windows)]
+fn acl_error(e: mimlys_exec::confine::windows::acl::AclError) -> AppError {
+    use mimlys_exec::confine::windows::acl::AclError;
+    match e {
+        AclError::Refused(refusal) => AppError::Permissions(refusal),
+        AclError::Failed(detail) => AppError::Io { detail },
+    }
+}
+
 /// Prepares the container on Windows: the profile exists, mimlys's own
 /// directories carry their entries (recorded as `runtime`), and the record
 /// is loaded. Returns `None` on other platforms.
@@ -153,7 +165,7 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
                 Access::Read => acl::Access::Read,
                 Access::Write => acl::Access::Write,
             };
-            acl::grant(&path, &sid, mode).map_err(|e| AppError::Io { detail: e })?;
+            acl::grant(&path, &sid, mode).map_err(acl_error)?;
         }
         let text = normalized(&path);
         if !record.entries.iter().any(|e| same_path(&e.path, &text)) {
@@ -200,7 +212,7 @@ pub fn applied(_container: &Container, _path: &Path) -> Option<bool> {
 #[cfg(windows)]
 pub fn grant(container: &mut Container, data_dir: &Path, path: &Path) -> Result<(), AppError> {
     use mimlys_exec::confine::windows::acl;
-    acl::grant(path, &container.sid, acl::Access::Read).map_err(|e| AppError::Io { detail: e })?;
+    acl::grant(path, &container.sid, acl::Access::Read).map_err(acl_error)?;
     let text = normalized(path);
     if !container
         .record
@@ -222,7 +234,7 @@ pub fn grant(container: &mut Container, data_dir: &Path, path: &Path) -> Result<
 #[cfg(windows)]
 pub fn revoke(container: &mut Container, data_dir: &Path, path: &Path) -> Result<(), AppError> {
     use mimlys_exec::confine::windows::acl;
-    acl::revoke(path, &container.sid).map_err(|e| AppError::Io { detail: e })?;
+    acl::revoke(path, &container.sid).map_err(acl_error)?;
     let text = normalized(path);
     container
         .record
@@ -391,7 +403,7 @@ pub fn revoke_all(container: &Container, data_dir: &Path, plan: &[Planned]) -> O
         }
         match acl::revoke(path, &container.sid) {
             Ok(()) => outcome.removed.push(planned.clone()),
-            Err(reason) => outcome.failed.push((planned.clone(), reason)),
+            Err(reason) => outcome.failed.push((planned.clone(), reason.to_string())),
         }
     }
     match record_after(&container.record, &outcome) {

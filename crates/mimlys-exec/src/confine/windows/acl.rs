@@ -37,7 +37,8 @@
 //!
 //! Every `unsafe` block is justified (REQ-CONF-010).
 
-use crate::confine::dacl_wait::{Attempt, Cause, Decision, Refusal, decide_with_limit};
+use crate::confine::dacl_wait::{Attempt, Cause, Decision, Refusal, decide};
+use mimlys_core::limits::LIM_O7_PERMISSION_WRITE_WAIT_MS;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -82,6 +83,40 @@ impl Access {
             Access::Read => GENERIC_READ | GENERIC_EXECUTE,
             Access::Write => GENERIC_ALL,
         }
+    }
+}
+
+/// Why a write of a directory's permissions did not happen.
+#[derive(Debug)]
+pub enum AclError {
+    /// The directory's lock was not obtained: held past LIM-O7, or not
+    /// available from the system (REQ-CONF-008, THR-36). The commands turn
+    /// it into the error kind `unavailable` (external design §18).
+    Refused(Refusal),
+    /// The system refused or failed the read or the write.
+    Failed(String),
+}
+
+impl std::fmt::Display for AclError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AclError::Refused(r) => r.fmt(f),
+            AclError::Failed(text) => f.write_str(text),
+        }
+    }
+}
+
+impl std::error::Error for AclError {}
+
+impl From<Refusal> for AclError {
+    fn from(r: Refusal) -> Self {
+        AclError::Refused(r)
+    }
+}
+
+impl From<String> for AclError {
+    fn from(text: String) -> Self {
+        AclError::Failed(text)
     }
 }
 
@@ -143,6 +178,11 @@ impl DaclLock {
     /// out, or when the system will not create the mutex or wait on it:
     /// never a write on a stale base, never a write without the lock.
     fn acquire(path: &Path) -> Result<Self, Refusal> {
+        Self::acquire_within(path, LIM_O7_PERMISSION_WRITE_WAIT_MS)
+    }
+
+    /// [`acquire`](Self::acquire) with the wait given (LIM-O7 in production).
+    fn acquire_within(path: &Path, limit_ms: u64) -> Result<Self, Refusal> {
         let dir = path.display().to_string();
         let mut key: u64 = 0xcbf2_9ce4_8422_2325;
         for b in path.to_string_lossy().to_lowercase().bytes() {
@@ -161,7 +201,7 @@ impl DaclLock {
             return Err(Refusal::new(Cause::LockUnavailable, &dir, &error));
         }
         let failure = std::cell::RefCell::new(String::new());
-        let decision = decide_with_limit(
+        let decision = decide(
             |timeout_ms| {
                 // SAFETY: the handle was just created and is valid.
                 match unsafe { WaitForSingleObject(handle, timeout_ms) } {
@@ -180,6 +220,7 @@ impl DaclLock {
                     "waiting for another runtime's write of the permissions of {dir}"
                 );
             },
+            limit_ms,
         );
         match decision {
             Decision::Write => Ok(Self { handle }),
@@ -292,8 +333,13 @@ fn explicit_entries(acl: *const ACL) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(buffer))
 }
 
-fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
-    let _lock = DaclLock::acquire(path).map_err(|r| r.to_string())?;
+fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), AclError> {
+    let _lock = DaclLock::acquire(path)?;
+    merge_entry(path, sid, access, mode).map_err(AclError::Failed)
+}
+
+/// The merge itself, under the directory's lock (held by [`set_entry`]).
+fn merge_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), String> {
     let old = read_dacl(path)?;
     let mut explicit = explicit_entries(old.acl)?;
     let base: *mut ACL = explicit
@@ -364,12 +410,12 @@ fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), S
 }
 
 /// Adds the container's entry to the directory's DACL.
-pub fn grant(path: &Path, sid: &[u8], access: Access) -> Result<(), String> {
+pub fn grant(path: &Path, sid: &[u8], access: Access) -> Result<(), AclError> {
     set_entry(path, sid, access, GRANT_ACCESS)
 }
 
 /// Removes every entry of the container SID from the directory's DACL.
-pub fn revoke(path: &Path, sid: &[u8]) -> Result<(), String> {
+pub fn revoke(path: &Path, sid: &[u8]) -> Result<(), AclError> {
     set_entry(path, sid, Access::Read, REVOKE_ACCESS)
 }
 
@@ -496,10 +542,15 @@ fn is_private_to(path: &Path, sid: &[u8]) -> Result<bool, String> {
 /// Called at every open, before the runtime adds the container's entries on
 /// the subdirectories, so that the entries it adds are the only others; when
 /// the DACL already is this one nothing is written.
-pub fn protect_to_current_user(path: &Path) -> Result<(), String> {
+pub fn protect_to_current_user(path: &Path) -> Result<(), AclError> {
     let sid = current_user_sid()?;
-    let _lock = DaclLock::acquire(path).map_err(|r| r.to_string())?;
-    if is_private_to(path, &sid)? {
+    let _lock = DaclLock::acquire(path)?;
+    protect_locked(path, &sid).map_err(AclError::Failed)
+}
+
+/// The write of [`protect_to_current_user`], under the directory's lock.
+fn protect_locked(path: &Path, sid: &[u8]) -> Result<(), String> {
+    if is_private_to(path, sid)? {
         return Ok(());
     }
     // A specific mask, not GENERIC_ALL: the system turns an inheritable
@@ -550,3 +601,6 @@ pub fn protect_to_current_user(path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
