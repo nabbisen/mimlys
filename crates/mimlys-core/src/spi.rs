@@ -612,12 +612,46 @@ pub mod fake {
         Call,
         /// When the returned future is first polled.
         Poll,
+        /// Never: the future stays pending, and panics when it is dropped
+        /// (a call given up while it is still running).
+        Drop,
+    }
+
+    /// A future that never completes and panics when dropped.
+    struct PanicsWhenDropped(String);
+
+    impl std::future::Future for PanicsWhenDropped {
+        type Output = std::convert::Infallible;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for PanicsWhenDropped {
+        fn drop(&mut self) {
+            panic!("{}", self.0);
+        }
+    }
+
+    /// Methods of a fake adapter that panic, by name, with their messages.
+    type PanickingMethods = Mutex<std::collections::HashMap<&'static str, String>>;
+
+    fn panic_if_set(methods: &PanickingMethods, method: &'static str) {
+        let message = methods.lock().expect("fake lock").get(method).cloned();
+        if let Some(message) = message {
+            panic!("{message}");
+        }
     }
 
     /// Returns scripted outcomes per tool and records every call.
     #[derive(Debug, Default)]
     pub struct FakeToolProvider {
         panic: Mutex<Option<(PanicAt, String)>>,
+        panicking_methods: PanickingMethods,
         definitions: Vec<ToolDefinition>,
         outcomes: Mutex<std::collections::HashMap<String, VecDeque<ExecutionOutcome>>>,
         calls: Mutex<Vec<(String, Value)>>,
@@ -637,9 +671,19 @@ pub mod fake {
             *self.panic.lock().expect("fake lock") = Some((at, message.to_owned()));
         }
 
-        /// `execute` stops panicking.
+        /// From now on, the named method (`definitions`, `imports`,
+        /// `refresh_pins` or `drain_events`) panics with `message`.
+        pub fn panic_in(&self, method: &'static str, message: &str) {
+            self.panicking_methods
+                .lock()
+                .expect("fake lock")
+                .insert(method, message.to_owned());
+        }
+
+        /// No method panics any more.
         pub fn stop_panicking(&self) {
             *self.panic.lock().expect("fake lock") = None;
+            self.panicking_methods.lock().expect("fake lock").clear();
         }
 
         /// Queues an outcome for `tool`.
@@ -660,7 +704,26 @@ pub mod fake {
 
     impl ToolProvider for FakeToolProvider {
         fn definitions(&self) -> Vec<ToolDefinition> {
+            panic_if_set(&self.panicking_methods, "definitions");
             self.definitions.clone()
+        }
+
+        fn imports(&self) -> std::collections::BTreeMap<String, crate::tool::ImportRecord> {
+            panic_if_set(&self.panicking_methods, "imports");
+            Default::default()
+        }
+
+        fn refresh_pins(
+            &self,
+            _pinned: &std::collections::BTreeMap<String, crate::tool::ImportRecord>,
+        ) -> Vec<String> {
+            panic_if_set(&self.panicking_methods, "refresh_pins");
+            Vec::new()
+        }
+
+        fn drain_events(&self) -> Vec<crate::event::Event> {
+            panic_if_set(&self.panicking_methods, "drain_events");
+            Vec::new()
         }
 
         fn execute<'a>(
@@ -671,6 +734,10 @@ pub mod fake {
             let panic = self.panic.lock().expect("fake lock").clone();
             if let Some((PanicAt::Call, message)) = &panic {
                 panic!("{message}");
+            }
+            if let Some((PanicAt::Drop, message)) = &panic {
+                let pending = PanicsWhenDropped(message.clone());
+                return Box::pin(async move { match pending.await {} });
             }
             Box::pin(async move {
                 if let Some((PanicAt::Poll, message)) = panic {
@@ -694,6 +761,7 @@ pub mod fake {
     #[derive(Debug, Default)]
     pub struct ScriptedBackend {
         panic: Mutex<Option<(PanicAt, String)>>,
+        panicking_methods: PanickingMethods,
         responses: Mutex<VecDeque<Result<Vec<u8>, BackendError>>>,
         requests: Mutex<Vec<GenerateRequest>>,
         remote: bool,
@@ -704,6 +772,7 @@ pub mod fake {
         pub fn with_decisions(decisions: Vec<Value>) -> Self {
             Self {
                 panic: Mutex::new(None),
+                panicking_methods: Mutex::default(),
                 responses: Mutex::new(
                     decisions
                         .into_iter()
@@ -726,9 +795,19 @@ pub mod fake {
             *self.panic.lock().expect("fake lock") = Some((at, message.to_owned()));
         }
 
-        /// `generate` stops panicking.
+        /// From now on, the named method (`describe`, `locality` or
+        /// `last_usage`) panics with `message`.
+        pub fn panic_in(&self, method: &'static str, message: &str) {
+            self.panicking_methods
+                .lock()
+                .expect("fake lock")
+                .insert(method, message.to_owned());
+        }
+
+        /// No method panics any more.
         pub fn stop_panicking(&self) {
             *self.panic.lock().expect("fake lock") = None;
+            self.panicking_methods.lock().expect("fake lock").clear();
         }
 
         /// Queues raw bytes or a failure.
@@ -755,6 +834,10 @@ pub mod fake {
             if let Some((PanicAt::Call, message)) = &panic {
                 panic!("{message}");
             }
+            if let Some((PanicAt::Drop, message)) = &panic {
+                let pending = PanicsWhenDropped(message.clone());
+                return Box::pin(async move { match pending.await {} });
+            }
             Box::pin(async move {
                 if let Some((PanicAt::Poll, message)) = panic {
                     panic!("{message}");
@@ -768,7 +851,22 @@ pub mod fake {
             })
         }
 
+        fn locality(&self) -> Locality {
+            panic_if_set(&self.panicking_methods, "locality");
+            if self.remote {
+                Locality::Remote
+            } else {
+                Locality::Local
+            }
+        }
+
+        fn last_usage(&self) -> Option<Usage> {
+            panic_if_set(&self.panicking_methods, "last_usage");
+            None
+        }
+
         fn describe(&self) -> BackendDescriptor {
+            panic_if_set(&self.panicking_methods, "describe");
             BackendDescriptor {
                 kind: "scripted".into(),
                 model: None,

@@ -2454,3 +2454,133 @@ fn req_sec_011_a_contained_panic_is_logged_bounded_and_redacted() {
     assert!(!log.contains(secret), "the secret never reaches the log");
     assert!(!log.contains("backtrace"), "no stack trace in the log line");
 }
+
+fn create_request() -> CreateTask {
+    CreateTask {
+        goal: "fix the failing test".into(),
+        scope: ScopeSpec {
+            root: "/home/u/project".into(),
+            include: vec![],
+        },
+        profile: None,
+        grants: vec![],
+        budgets: None,
+        deadline_ms: None,
+        completion_check: None,
+        hold: false,
+        from_task: None,
+        from_snapshot: None,
+    }
+}
+
+/// REQ-SEC-011 (as amended 2026-11-07): the containment covers every call
+/// the runtime makes into a model backend or a tool provider, not only
+/// `generate`, `last_usage` and `execute`. The calls are: backend
+/// `describe` (runtime start, task creation, status), `locality` (task
+/// creation), `generate`, `last_usage`; provider `definitions` (task
+/// creation, every step), `imports` (task creation), `refresh_pins` (every
+/// step), `drain_events` (task creation and every step), `execute`. A panic
+/// in a call that decides something is `unavailable` for that component and
+/// the process goes on; a panic in `last_usage` loses the usage figure and
+/// one in `drain_events` the events it held, and the step goes on.
+#[test]
+fn req_sec_011_every_call_into_an_adapter_is_contained() {
+    let unavailable = |err: RuntimeError, component: &str| {
+        assert!(
+            matches!(&err, RuntimeError::Unavailable { component: c } if c == component),
+            "{err:?}"
+        );
+    };
+
+    // Backend methods that decide something.
+    for method in ["describe", "locality"] {
+        let h = Harness::new(vec![act("read_file", "a")]);
+        h.backend.panic_in(method, "backend exploded");
+        let err = h
+            .runtime
+            .create_task(&h.session, create_request())
+            .expect_err(method);
+        unavailable(err, "model_backend");
+        if method == "describe" {
+            unavailable(h.runtime.record_started().unwrap_err(), "model_backend");
+            unavailable(
+                h.runtime.get_runtime_status().map(|_| ()).unwrap_err(),
+                "model_backend",
+            );
+        }
+        // The process goes on, and works again once the adapter does.
+        h.backend.stop_panicking();
+        let id = h.create();
+        assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{method}");
+    }
+
+    // Provider methods that decide something, at task creation.
+    for method in ["definitions", "imports"] {
+        let h = Harness::new(vec![act("read_file", "a")]);
+        h.tools.panic_in(method, "provider exploded");
+        let err = h
+            .runtime
+            .create_task(&h.session, create_request())
+            .expect_err(method);
+        unavailable(err, "tool_provider");
+        h.tools.stop_panicking();
+        let id = h.create();
+        assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{method}");
+    }
+
+    // Provider methods that decide something, at a step: the step does not
+    // run, the task keeps its state, and it continues when the adapter works.
+    for method in ["definitions", "refresh_pins"] {
+        let h = Harness::new(vec![act("read_file", "a")]);
+        let id = h.create();
+        h.tools.panic_in(method, "provider exploded");
+        let err = futures_block(h.runtime.run_step(id)).expect_err(method);
+        unavailable(err, "tool_provider");
+        assert_eq!(h.state(id), TaskState::Running, "{method}");
+        assert!(h.persistence.load_actions(id).unwrap().is_empty());
+        h.tools.stop_panicking();
+        assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{method}");
+    }
+
+    // `last_usage` and `drain_events`: the step goes on without the figure
+    // or the events.
+    let h = Harness::new(vec![act("read_file", "a")]);
+    let id = h.create();
+    h.backend.panic_in("last_usage", "backend exploded");
+    h.tools.panic_in("drain_events", "provider exploded");
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    assert_eq!(h.persistence.load_actions(id).unwrap().len(), 1);
+}
+
+/// REQ-SEC-011 (as amended 2026-11-07): a call given up while it is still
+/// running (the task that awaits it is cancelled: the future is dropped
+/// before it finished) drops the adapter's future under containment too. A
+/// future whose destructor panics does not end the process, for the model
+/// backend and for the tool provider.
+#[test]
+fn req_sec_011_a_cancelled_call_whose_future_panics_on_drop_is_contained() {
+    use crate::spi::fake::PanicAt;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::task::{Context, Poll, Waker};
+    for adapter in ["model_backend", "tool_provider"] {
+        let h = Harness::new(vec![act("read_file", "a")]);
+        let id = h.create();
+        if adapter == "model_backend" {
+            h.backend.panic_on_generate(PanicAt::Drop, "dropped hard");
+        } else {
+            h.tools.panic_on_execute(PanicAt::Drop, "dropped hard");
+        }
+        let mut step = Box::pin(h.runtime.run_step(id));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(
+            matches!(step.as_mut().poll(&mut cx), Poll::Pending),
+            "{adapter}: the adapter's future is still running"
+        );
+        // The task is cancelled: its future is dropped, with the adapter's
+        // future inside it.
+        let dropped = catch_unwind(AssertUnwindSafe(move || drop(step)));
+        assert!(dropped.is_ok(), "{adapter}: the panic did not escape");
+        // The runtime answers afterwards.
+        assert!(h.runtime.get_task(id).is_ok());
+    }
+}

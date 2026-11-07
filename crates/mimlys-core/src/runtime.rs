@@ -256,6 +256,7 @@ impl Runtime {
 
     /// Records `runtime.started` with the tier (`core` in M1).
     pub fn record_started(&self) -> Result<(), RuntimeError> {
+        let backend = self.guard("model_backend", || self.deps.backend.describe())?;
         self.deps.persistence.append_event(
             &self.event(
                 Actor::Runtime,
@@ -268,7 +269,7 @@ impl Runtime {
                         .probe
                         .tier_with(&self.deps.policy.accept_best_effort)
                         .tier,
-                    backend: self.deps.backend.describe(),
+                    backend,
                 },
             ),
         )?;

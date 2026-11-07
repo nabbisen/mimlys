@@ -139,7 +139,8 @@ impl Runtime {
                     self.deps.policy.profiles.keys().collect::<Vec<_>>()
                 ),
             })?;
-        if self.deps.backend.locality() == crate::spi::Locality::Remote && !profile.external {
+        let locality = self.guard("model_backend", || self.deps.backend.locality())?;
+        if locality == crate::spi::Locality::Remote && !profile.external {
             return Err(RuntimeError::Denied {
                 detail: format!(
                     "profile {profile_name} forbids external communication (external = false); the backend is remote"
@@ -237,7 +238,7 @@ impl Runtime {
         };
         let tools = self.deps.workspaces.tools(task_id)?;
         let mut hashes = std::collections::BTreeMap::new();
-        for d in tools.definitions() {
+        for d in self.guard("tool_provider", || tools.definitions())? {
             hashes.insert(
                 d.name.clone(),
                 crate::hash::hash_canonical(&serde_json::to_value(&d).expect("serializes")),
@@ -248,8 +249,8 @@ impl Runtime {
             decision_schema_version: crate::decision::DECISION_SCHEMA_VERSION,
             tool_definition_hashes: hashes,
             runtime_version: self.deps.runtime_version.clone(),
-            backend: Some(self.deps.backend.describe()),
-            tool_imports: tools.imports(),
+            backend: Some(self.guard("model_backend", || self.deps.backend.describe())?),
+            tool_imports: self.guard("tool_provider", || tools.imports())?,
         };
         let mut task = Task::create(
             TaskSpec {
@@ -1240,7 +1241,7 @@ impl Runtime {
         }
         Ok(RuntimeStatus {
             version: self.deps.runtime_version.clone(),
-            backend: self.deps.backend.describe(),
+            backend: self.guard("model_backend", || self.deps.backend.describe())?,
             tier: self
                 .deps
                 .probe

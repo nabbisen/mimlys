@@ -33,6 +33,7 @@ pub mod host_tool;
 pub mod ids;
 pub mod limits;
 pub mod observation;
+pub mod panic_text;
 pub mod path;
 pub mod policy;
 pub mod question;
