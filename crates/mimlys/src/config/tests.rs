@@ -399,3 +399,80 @@ fn req_ws_001_data_dir_in_temp_dir() {
         "the default location is not configured, so it is not in question"
     );
 }
+
+/// REQ-CONF-011 / external design §13.5: a `command` whose canonical target,
+/// after its links, leaves the read paths is a configuration error at load,
+/// on every platform, naming the declaration, the resolved path and the
+/// directory to declare (Homebrew's `rustup` links into
+/// `/opt/homebrew/Cellar/…`). Declaring that directory loads; an absolute
+/// command outside every read path is refused the same way.
+#[cfg(unix)]
+#[test]
+fn req_conf_011_command_that_links_out_of_the_read_paths_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("cellar/bin");
+    let shim = root.path().join("shim/bin");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(&shim).unwrap();
+    std::fs::write(real.join("rustup"), "#!/bin/sh\n").unwrap();
+    std::os::unix::fs::symlink(real.join("rustup"), shim.join("cargo")).unwrap();
+    let canonical_real = real.canonicalize().unwrap();
+    let declare = |command: &str, read_paths: &[&Path]| {
+        let paths: Vec<String> = read_paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        Config::parse(&format!(
+            "config_version = 1\n[host_tools.tool]\ncommand = {command:?}\neffect = \"workspace_write\"\nread_paths = {paths:?}\n"
+        ))
+        .unwrap()
+        .validate()
+    };
+    // A name resolved against the shim directory: its target is elsewhere.
+    let err = declare("cargo", &[&shim]).unwrap_err();
+    assert_eq!(err.key, "host_tools.tool.command");
+    assert!(
+        err.reason
+            .contains(&canonical_real.join("rustup").to_string_lossy().into_owned()),
+        "names the resolved path: {err}"
+    );
+    assert!(
+        err.reason.contains(&format!(
+            "declare {} in read_paths",
+            canonical_real.to_string_lossy()
+        )),
+        "names the directory to declare: {err}"
+    );
+    // Declaring the directory the target lives in loads.
+    declare("cargo", &[&shim, &real]).unwrap();
+    // An absolute command is judged the same way.
+    let absolute = shim.join("cargo").to_string_lossy().into_owned();
+    declare(&absolute, &[&shim]).unwrap_err();
+    declare(&absolute, &[&real]).unwrap();
+    // A command that cannot be resolved here is not refused at load: the run says so.
+    declare("no-such-tool", &[&shim]).unwrap();
+}
+
+/// REQ-CONF-011: the decision itself (pure), on spellings of one platform:
+/// under a read path or equal to one is inside; a sibling with the same
+/// prefix, or the parent, is not.
+#[test]
+fn req_conf_011_command_decision_is_by_path_components() {
+    use crate::toolchain::command_leaves_read_paths;
+    let program = Path::new("/home/u/bin/cargo");
+    let allowed = vec!["/home/u/.rustup".to_owned(), "/usr".to_owned()];
+    assert!(
+        command_leaves_read_paths(program, Path::new("/home/u/.rustup/bin/cargo"), &allowed)
+            .is_none()
+    );
+    assert!(command_leaves_read_paths(program, Path::new("/usr"), &allowed).is_none());
+    for outside in [
+        "/home/u/.rustup-other/bin/cargo",
+        "/home/u",
+        "/usr2/bin/cargo",
+    ] {
+        let why = command_leaves_read_paths(program, Path::new(outside), &allowed)
+            .unwrap_or_else(|| panic!("{outside} is outside"));
+        assert!(why.contains(outside), "{why}");
+    }
+}

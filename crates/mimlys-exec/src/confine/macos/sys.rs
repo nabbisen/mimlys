@@ -227,3 +227,24 @@ pub fn kern_proc_all_readable() -> bool {
     };
     rc == 0
 }
+
+/// The per-user temporary directory, `confstr(_CS_DARWIN_USER_TEMP_DIR)`
+/// (`/var/folders/xx/yyyy/T/`): not `$TMPDIR`, and what `xcrun` caches its
+/// database under. `None` when the system does not say.
+pub fn user_temp_dir() -> Option<std::path::PathBuf> {
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: `buffer` is `buffer.len()` bytes long and `confstr` writes at most that many,
+    // NUL included; it returns the length it needs, NUL included, or 0 on failure.
+    let needed = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    if needed == 0 || needed > buffer.len() {
+        return None;
+    }
+    buffer.truncate(needed - 1);
+    String::from_utf8(buffer).ok().map(std::path::PathBuf::from)
+}

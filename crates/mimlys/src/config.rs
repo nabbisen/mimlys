@@ -1236,6 +1236,20 @@ impl Config {
                 }
             }
         }
+        // REQ-CONF-011, external design §13.5: a command whose canonical
+        // target leaves the read paths is refused at load, on every platform,
+        // naming the resolved path to declare.
+        if let Ok(data_dir) = self.data_dir() {
+            let fixed = crate::app::fixed_read_paths(&data_dir);
+            for d in self.host_tools() {
+                if let Some(reason) = crate::toolchain::command_refusal(&d, &fixed) {
+                    return Err(ConfigError::new(
+                        &format!("host_tools.{}.command", d.name),
+                        reason,
+                    ));
+                }
+            }
+        }
         self.resolve_policy()?;
         let s = &self.sandbox;
         range("sandbox.fuel", s.fuel, LIM_S1_FUEL_RANGE)?;

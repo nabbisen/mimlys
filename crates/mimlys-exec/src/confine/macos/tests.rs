@@ -53,7 +53,8 @@ fn rfc_011_a2_profile_denies_by_default() {
         assert!(
             line.contains("(subpath ")
                 || line.contains("(literal ")
-                || line.contains("(target same-sandbox)"),
+                || line.contains("(target same-sandbox)")
+                || line.contains("(global-name "),
             "a rule without a filter would allow everything: {line}"
         );
     }
@@ -231,7 +232,8 @@ fn rfc_011_a2_profile_is_deterministic() {
 }
 
 /// Amendment 2 point 3: network is denied; Unix sockets only under the write
-/// set, three rules each; no DNS: no mach service, no `mDNSResponder` socket.
+/// set, three rules each; no DNS: no DNS mach service, no `mDNSResponder` socket
+/// (the one mach service is `xcrun`'s, see `rfc_011_a2_one_mach_service`).
 #[test]
 fn rfc_011_a2_network_is_denied_without_dns() {
     let p = text(&["/usr"], &["/data/workspaces", "/data/tmp"]);
@@ -254,7 +256,7 @@ fn rfc_011_a2_network_is_denied_without_dns() {
     }
     assert_eq!(p.matches("(allow network").count(), 6);
     // DNS is a mach service and a Unix socket (measured): neither is named.
-    for forbidden in ["mach", "dnssd", "(remote ip", "(remote tcp", "(remote udp"] {
+    for forbidden in ["dnssd", "(remote ip", "(remote tcp", "(remote udp"] {
         assert!(!p.contains(forbidden), "`{forbidden}` in\n{p}");
     }
     // The socket rules come after the denial: the last match wins.
@@ -291,7 +293,7 @@ fn rfc_011_a2_dependency_step_profile_adds_three_rules() {
     s.deny_network = true;
     let offline = generate(&s).unwrap();
     assert!(!fetch.contains("(deny network"), "{fetch}");
-    assert!(!fetch.contains("mach"), "{fetch}");
+    assert!(!fetch.contains("dnssd"), "{fetch}");
     let added: Vec<&str> = fetch
         .lines()
         .filter(|l| !l.starts_with(";;") && !offline.lines().any(|o| o == *l))
@@ -383,9 +385,12 @@ fn rfc_011_a2_only_the_root_directory_is_read_outside_the_sets() {
     }
 }
 
-/// Amendment 2 point 8: the system part of the read set. `/opt` (Homebrew)
-/// and the home directory are not in it; the developer directory is the
-/// `xcode_select` link's target, else the Command Line Tools when present.
+/// Amendment 2, settled, point 8: the system part of the read set is the
+/// measured minimum. Not `/System` or `/private/etc` as a whole, not `/opt`
+/// (Homebrew's), not the home directory; the developer directory is the
+/// `xcode_select` link's target (and, for an Xcode, its `SharedFrameworks`),
+/// else the Command Line Tools when present; `xcrun`'s cache file by name in
+/// the per-user temporary directory; Rosetta's runtime where installed.
 #[test]
 fn rfc_011_a2_system_read_set() {
     let names = |paths: Vec<PathBuf>| -> Vec<String> {
@@ -394,19 +399,21 @@ fn rfc_011_a2_system_read_set() {
             .map(|p| p.to_string_lossy().into_owned())
             .collect()
     };
+    let temp = || Some(PathBuf::from("/var/folders/h5/abc/T/"));
     let with_xcode = names(system_read_paths_from(
         Some(PathBuf::from(
             "/Applications/Xcode_26.6.app/Contents/Developer",
         )),
         true,
         false,
+        temp(),
     ));
     for fixed in [
         "/usr",
         "/bin",
         "/sbin",
-        "/System",
-        "/private/etc",
+        "/private/etc/ssl/openssl.cnf",
+        "/System/Library/CoreServices/SystemVersion.plist",
         "/dev/urandom",
         "/dev/random",
         "/dev/zero",
@@ -415,26 +422,57 @@ fn rfc_011_a2_system_read_set() {
     }
     assert!(with_xcode.contains(&"/Applications/Xcode_26.6.app/Contents/Developer".to_owned()));
     assert!(
+        with_xcode.contains(&"/Applications/Xcode_26.6.app/Contents/SharedFrameworks".to_owned()),
+        "an Xcode's SharedFrameworks: {with_xcode:?}"
+    );
+    assert!(
         !with_xcode.contains(&COMMAND_LINE_TOOLS.to_owned()),
         "an Xcode is selected: the Command Line Tools are not added"
     );
-    let tools = names(system_read_paths_from(None, true, false));
+    assert!(
+        with_xcode.contains(&"/var/folders/h5/abc/T/xcrun_db".to_owned()),
+        "xcrun's cache file, by name: {with_xcode:?}"
+    );
+    assert!(
+        !with_xcode.contains(&"/var/folders/h5/abc/T".to_owned())
+            && !with_xcode.contains(&"/var/folders/h5/abc/T/".to_owned()),
+        "the temporary directory as a whole holds other programs' files"
+    );
+    let tools = names(system_read_paths_from(None, true, false, None));
     assert!(tools.contains(&COMMAND_LINE_TOOLS.to_owned()));
+    assert!(
+        !tools.iter().any(|p| p.ends_with("SharedFrameworks")),
+        "only an Xcode has them"
+    );
+    let other_shape = names(system_read_paths_from(
+        Some(PathBuf::from("/Library/Developer/Custom")),
+        false,
+        false,
+        None,
+    ));
+    assert!(!other_shape.iter().any(|p| p.ends_with("SharedFrameworks")));
     let relative = names(system_read_paths_from(
         Some(PathBuf::from("Developer")),
         false,
         false,
+        None,
     ));
     assert!(
         !relative.iter().any(|p| p == "Developer"),
         "a relative link target is ignored"
     );
-    let none = names(system_read_paths_from(None, false, false));
+    let relative_temp = names(system_read_paths_from(
+        None,
+        false,
+        false,
+        Some(PathBuf::from("T")),
+    ));
+    assert!(!relative_temp.iter().any(|p| p.ends_with("xcrun_db")));
+    let none = names(system_read_paths_from(None, false, false, None));
     assert_eq!(none.len(), 8);
-    // Rosetta's runtime only where it is installed (settled point 8): a
-    // translated tool aborts without it.
+    // Rosetta's runtime only where it is installed: a translated tool aborts without it.
     assert!(!with_xcode.iter().any(|p| p == ROSETTA_RUNTIME));
-    let rosetta = names(system_read_paths_from(None, false, true));
+    let rosetta = names(system_read_paths_from(None, false, true, None));
     assert_eq!(rosetta.len(), 9);
     assert!(rosetta.contains(&ROSETTA_RUNTIME.to_owned()));
     for never in [
@@ -442,11 +480,46 @@ fn rfc_011_a2_system_read_set() {
         "/Users",
         "/",
         "/private",
+        "/private/etc",
         "/private/var",
+        "/System",
         "/Library",
     ] {
         assert!(!with_xcode.iter().any(|p| p == never), "{never}");
     }
+}
+
+/// Amendment 2, settled, point 8: exactly one mach service is allowed, the
+/// one `xcrun` asks for; the other interchangeable one, which can consult a
+/// network directory, and every service that reaches the network or the
+/// user's secrets, is not.
+#[test]
+fn rfc_011_a2_one_mach_service() {
+    for deny_network in [true, false] {
+        let mut s = spec(&["/usr"], &["/data/workspaces"]);
+        s.deny_network = deny_network;
+        let p = generate(&s).unwrap();
+        let rules: Vec<&str> = p.lines().filter(|l| l.contains("mach-lookup")).collect();
+        assert_eq!(
+            rules,
+            vec!["(allow mach-lookup (global-name \"com.apple.bsd.dirhelper\"))"],
+            "{p}"
+        );
+        for refused in [
+            "opendirectoryd",
+            "trustd",
+            "nsurlsessiond",
+            "securityd",
+            "dnssd",
+            "mDNSResponder\"))",
+        ] {
+            assert!(
+                !rules.iter().any(|r| r.contains(refused)),
+                "`{refused}` in {rules:?}"
+            );
+        }
+    }
+    assert_eq!(MACH_SERVICES, ["com.apple.bsd.dirhelper"]);
 }
 
 /// The self-check looks only at directories the sets do not cover.

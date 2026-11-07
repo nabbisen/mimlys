@@ -160,34 +160,7 @@ pub fn confinement_spec(
     if let Some(dir) = worker_binary().parent() {
         read_paths.push(dir.to_path_buf());
     }
-    // The system's directories: on Windows they are readable by every
-    // application package already, so the set names only what mimlys adds.
-    // macOS has a list of its own (RFC 011 Amendment 2 point 8, measured by
-    // spike S1): the system directories (the dyld cache is under `/System`),
-    // `/private/etc`, the random and zero devices and the active developer
-    // directory; not `/opt`, which is Homebrew's. TODO(S1b, handoff 011c):
-    // the home-directory files and mach services that `cargo test --offline`
-    // needs, admitted one by one with their reasons; and the refusal at load
-    // of a `command` whose resolved target leaves the set (Homebrew's
-    // `rustup` links into `/opt/homebrew/Cellar`).
-    if cfg!(target_os = "macos") {
-        read_paths.extend(mimlys_exec::confine::macos::system_read_paths());
-    } else if cfg!(unix) {
-        for p in [
-            "/usr",
-            "/lib",
-            "/lib64",
-            "/bin",
-            "/sbin",
-            "/etc",
-            "/dev/urandom",
-            "/dev/random",
-            "/dev/zero",
-            "/opt",
-        ] {
-            read_paths.push(PathBuf::from(p));
-        }
-    }
+    read_paths.extend(system_read_paths());
     for d in host_tools {
         read_paths.extend(d.read_paths.iter().map(PathBuf::from));
     }
@@ -205,6 +178,56 @@ pub fn confinement_spec(
         max_processes: mimlys_core::limits::LIM_H3_HOST_PROCESSES,
         data_dir: data_dir.to_path_buf(),
     }
+}
+
+/// The system's directories the worker and its tools read (RFC 011 §1,
+/// external design §13.3). On Windows they are readable by every application
+/// package already, so the set names only what mimlys adds (none). macOS has
+/// a list of its own, the measured minimum of RFC 011 Amendment 2 (settled),
+/// point 8; not `/opt`, which is Homebrew's.
+fn system_read_paths() -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        mimlys_exec::confine::macos::system_read_paths()
+    } else if cfg!(unix) {
+        [
+            "/usr",
+            "/lib",
+            "/lib64",
+            "/bin",
+            "/sbin",
+            "/etc",
+            "/dev/urandom",
+            "/dev/random",
+            "/dev/zero",
+            "/opt",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// The read paths that hold whatever the declarations say: the data
+/// directory's `interpreters` and `tmp`, the worker's own directory and the
+/// system's. A `command` must lie under these or under its tool's declared
+/// `read_paths` (external design §13.5). On Windows the system's directories
+/// are named here too, as the container reads them already.
+pub fn fixed_read_paths(data_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![data_dir.join("interpreters"), data_dir.join("tmp")];
+    if let Some(dir) = worker_binary().parent() {
+        paths.push(dir.to_path_buf());
+    }
+    paths.extend(system_read_paths());
+    if cfg!(windows) {
+        for var in ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(dir) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+                paths.push(PathBuf::from(dir));
+            }
+        }
+    }
+    paths
 }
 
 /// The worker binary: `MIMLYS_WORKER_BIN`, else `mimlys-worker` beside this executable.

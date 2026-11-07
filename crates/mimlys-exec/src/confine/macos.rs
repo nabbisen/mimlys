@@ -71,19 +71,38 @@ pub const ROSETTA_RUNTIME: &str = "/Library/Apple/usr/libexec/oah";
 /// name resolution, an egress channel, silently.
 pub const MDNSRESPONDER_SOCKET: &str = "/private/var/run/mDNSResponder";
 
-/// The system part of the read set that is the same on every Mac
-/// (Amendment 2 point 8): the dyld cache lives under `/System`
-/// (`/System/Volumes/Preboot/Cryptexes`), `/etc` is `/private/etc`.
+/// The system part of the read set that is the same on every Mac: the
+/// measured minimum of RFC 011 Amendment 2, settled, point 8 (spike S1b: the
+/// necessity of each entry was measured by removing it from a working set).
+/// `/usr`; `/bin` and `/sbin` (shells and tools that builds `exec`); the one
+/// file of OpenSSL's configuration and the one file of the system version
+/// that tools read; the random and zero devices. Not `/System` as a whole
+/// (the dyld cache is mapped by the kernel), not `/private/etc` as a whole,
+/// no file of the home directory. The root directory itself, as a literal,
+/// is written by [`generate`].
 const SYSTEM_READ: [&str; 8] = [
     "/usr",
     "/bin",
     "/sbin",
-    "/System",
-    "/private/etc",
+    "/private/etc/ssl/openssl.cnf",
+    "/System/Library/CoreServices/SystemVersion.plist",
     "/dev/urandom",
     "/dev/random",
     "/dev/zero",
 ];
+
+/// `xcrun`'s cache file, in the per-user temporary directory
+/// (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, not `$TMPDIR`): read as a literal
+/// file, as the directory holds other programs' files (settled point 8).
+pub const XCRUN_CACHE: &str = "xcrun_db";
+
+/// The one mach service the profile admits (settled point 8): what `xcrun`
+/// asks for to find the per-user directories. One of two interchangeable
+/// ones; the other, `com.apple.system.opendirectoryd.membership`, can
+/// consult a network directory on a managed Mac and is refused. A service
+/// that can reach the network or the user's secrets on the caller's behalf
+/// (`trustd`, `nsurlsessiond`, `securityd` and the like) is never admitted.
+pub const MACH_SERVICES: [&str; 1] = ["com.apple.bsd.dirhelper"];
 
 /// Why a profile cannot be generated from a specification. Every variant
 /// refuses to guess: a profile that is not exactly what was asked for is
@@ -104,36 +123,64 @@ pub enum ProfileError {
     Root,
 }
 
-/// The system part of the read set (Amendment 2 point 8): the fixed
-/// directories and devices, and the active developer directory, read from
-/// the `xcode_select` link, else the Command Line Tools when they exist.
+/// The system part of the read set (settled point 8): the fixed entries,
+/// the active developer directory (read from the `xcode_select` link, else
+/// the Command Line Tools when they exist) and, for an Xcode, its
+/// `Contents/SharedFrameworks`, `xcrun`'s cache file in the per-user
+/// temporary directory, and Rosetta's runtime where it is installed.
 pub fn system_read_paths() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let user_temp = sys::user_temp_dir();
+    #[cfg(not(target_os = "macos"))]
+    let user_temp = None;
     system_read_paths_from(
         std::fs::read_link(XCODE_SELECT_LINK).ok(),
         Path::new(COMMAND_LINE_TOOLS).is_dir(),
         Path::new(ROSETTA_RUNTIME).is_dir(),
+        user_temp,
     )
 }
 
 /// [`system_read_paths`] from what it depends on (tested on every platform):
 /// the target of the `xcode_select` link, when it is an absolute path, else
 /// the Command Line Tools directory when it exists; Rosetta's runtime when
-/// it is installed.
+/// it is installed; the per-user temporary directory, when known.
 pub fn system_read_paths_from(
     developer_link: Option<PathBuf>,
     tools_present: bool,
     rosetta_present: bool,
+    user_temp: Option<PathBuf>,
 ) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = SYSTEM_READ.iter().map(PathBuf::from).collect();
     match developer_link.filter(|p| is_posix_absolute(p)) {
-        Some(dir) => paths.push(dir),
+        Some(dir) => {
+            paths.extend(shared_frameworks(&dir));
+            paths.push(dir);
+        }
         None if tools_present => paths.push(PathBuf::from(COMMAND_LINE_TOOLS)),
         None => {}
     }
     if rosetta_present {
         paths.push(PathBuf::from(ROSETTA_RUNTIME));
     }
+    paths.extend(
+        user_temp
+            .filter(|t| is_posix_absolute(t))
+            .and_then(|t| t.to_str().map(str::to_owned))
+            .map(|t| PathBuf::from(format!("{}/{XCRUN_CACHE}", t.trim_end_matches('/')))),
+    );
     paths
+}
+
+/// An Xcode's `Contents/SharedFrameworks`, beside its `Contents/Developer`
+/// (`xcodebuild`, which the `cc` shim starts, reads one framework there:
+/// measured). `None` for any other shape of developer directory.
+fn shared_frameworks(developer: &Path) -> Option<PathBuf> {
+    // Text, not the host's rules: the tests of this function run on every platform.
+    let text = developer.to_str()?.trim_end_matches('/');
+    text.strip_suffix("/Contents/Developer")
+        .filter(|app| !app.is_empty())
+        .map(|app| PathBuf::from(format!("{app}/Contents/SharedFrameworks")))
 }
 
 /// Whether a path is absolute as macOS spells it. Text, not the host's rule:
@@ -245,7 +292,8 @@ fn subpaths(literals: &[String]) -> String {
 ///    readable, the write set readable and writable;
 /// 4. `sysctl-read` allowed, then `kern.procargs*` denied (the environment of
 ///    another process) and `kern.proc.` denied (the process list with names);
-/// 5. other processes: `signal` and `process-info*` only for the sandbox's
+/// 5. the one mach service ([`MACH_SERVICES`]); other processes: `signal` and
+///    `process-info*` only for the sandbox's
 ///    members (the tool's own tree), and the pid listing, which has no
 ///    restricted form (the numbers of every pid are visible; the members are
 ///    the ones `proc_pidinfo` can read). The broad denial is `(with
@@ -254,7 +302,7 @@ fn subpaths(literals: &[String]) -> String {
 ///    system log (measured: thousands per test run);
 /// 6. network: denied, then Unix sockets under the write set only, then the
 ///    `mDNSResponder` socket denied explicitly (after the allows, so that no
-///    write path can reopen it). No `mach-lookup` anywhere: DNS is an
+///    write path can reopen it). No other mach service: DNS is an
 ///    egress channel (measured). The dependency step's worker
 ///    (`deny_network` false) adds exactly three rules (settled point 9):
 ///    outbound TCP to port 443, a connect to the `mDNSResponder` socket and
@@ -292,6 +340,12 @@ pub fn generate(spec: &ConfinementSpec) -> Result<String, ProfileError> {
          (deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n\
          (deny sysctl-read (sysctl-name-prefix \"kern.proc.\"))\n",
     );
+    p.push_str("\n;; mach services: the one `xcrun` asks for (settled point 8)\n");
+    for service in MACH_SERVICES {
+        p.push_str(&format!(
+            "(allow mach-lookup (global-name \"{service}\"))\n"
+        ));
+    }
     p.push_str(
         "\n;; other processes: the sandbox's members only\n\
          (allow signal (target same-sandbox))\n\

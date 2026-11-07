@@ -461,6 +461,60 @@ pub fn read_path_refusal_with(written: &str, home: Option<&Path>) -> Option<Stri
     .map(|refusal| refusal.reason(written))
 }
 
+/// Whether a host tool's `command` may join the read set (REQ-CONF-011,
+/// external design §13.5): `None` when its canonical target, after its
+/// links, lies under the fixed read paths or the tool's declared ones (or
+/// when the command cannot be resolved here: the run says so then), else the
+/// reason, naming the resolved path and the directory to declare. A
+/// confinement matches the resolved path (Seatbelt, Landlock): a command that
+/// links out of the read paths (Homebrew's `rustup` links into
+/// `/opt/homebrew/Cellar/…`) would fail later with a bare permission error.
+/// The same on every platform.
+pub fn command_refusal(
+    declaration: &mimlys_core::host_tool::HostToolDeclaration,
+    fixed: &[PathBuf],
+) -> Option<String> {
+    let program = mimlys_exec::host_tool::resolve_command(declaration).ok()?;
+    let target = std::fs::canonicalize(&program).ok()?;
+    let allowed: Vec<String> = fixed
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(declaration.read_paths.iter().map(Path::new))
+        .map(normalized)
+        .collect();
+    command_leaves_read_paths(&program, &target, &allowed)
+}
+
+/// The decision of [`command_refusal`] (pure): `target` is the command's
+/// canonical target and `allowed` the read paths, both normalized.
+pub fn command_leaves_read_paths(
+    program: &Path,
+    target: &Path,
+    allowed: &[String],
+) -> Option<String> {
+    let fold = |text: String| {
+        if cfg!(windows) {
+            text.to_ascii_lowercase()
+        } else {
+            text
+        }
+    };
+    let target_text = normalized(target);
+    let inside = allowed
+        .iter()
+        .any(|a| Path::new(&fold(target_text.clone())).starts_with(fold(a.clone())));
+    if inside {
+        return None;
+    }
+    let directory = target.parent().unwrap_or(target);
+    Some(format!(
+        "the command {} resolves to {}, which is outside the read paths; declare {} in read_paths",
+        program.display(),
+        target_text,
+        normalized(directory)
+    ))
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 fn now_text() -> String {
     mimlys_core::clock::Clock::now(&mimlys_core::clock::SystemClock).to_rfc3339()
