@@ -2,6 +2,16 @@
 
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §7 (the container's entries on the user's directories) · **Specification.** REQ-CONF-008, external design §13.5 (the writers' lock), limits LIM-O7; threat THR-36 · **Decision.** Investigation D1 (`.git-exclude/review-requests/D1-windows-flake/README.md`), decided by the architect on 2026-11-07 (`e034744`) · **Release.** 0.8 · **Depends on** 011b, 011e (done).
 
+## Corrections after the review of C9 (2026-11-07)
+
+C9 (`c9-windows-lock`, PR #14) is approved in substance; three corrections on the same branch, then the request is updated at the top. The rules are in external design §13.5 and §18 and THR-36.
+
+1. **No write without the lock.** A mutex the system will not create (`CreateMutexW` returns null) or wait on (`WaitForSingleObject` fails) refuses the write with its own reason: `acl_not_applied: the permissions lock of <dir> cannot be taken: <system error>`. `Decision::WriteUnlocked` goes; `Attempt::Failed` decides `Refuse` with that reason. Your question 1 is right that "being written by another runtime" would be a wrong reason; a write without the lock is the lost update THR-36 forbids. A second account's access to the lock is not added (the residual is in THR-36). Unit test and mutation check.
+2. **The error kind is `unavailable`**, `detail.component = "permissions"`, for both refusals (external design §18; your question 2): the condition is expected and retrying is the remedy, and `internal` says "a runtime defect", which would mislead. The refusal travels as a typed error from `acl` to the command's error, never recognized by its text (no `starts_with("acl_not_applied:")`). The data directory's message carries the error's text in every case, not only its kind. The JSON test asserts the kind and the component.
+3. **Book:** the `acl_not_applied` section names both reasons and says that retrying is the remedy.
+
+Accepted as built: questions 3 to 6; the constant's name; `dacl_wait` in `mimlys-exec`; the abandoned mutex; section 3's measurement (recorded in the M6b report §4 as the basis of the replanning candidate "entries without propagation"). The throwaway branches stay until the owner decides on them.
+
 ## 1. Why
 
 The writers of one directory's permissions hold a named mutex for the whole write. The mutex gave up after LIM-O2 and wrote anyway (fail-open), on the premise that a write takes milliseconds. D1 measured 0.1 s to 9 s, growing with the entries, because the system propagates the change to every file below. Each give-up wrote on a base read before the holder's write landed and removed another installation's entry; the user then saw `Access is denied` starting a tool, with no reason. The intermittent `m6b_host_tools` failure was this, and so would be two installations starting at once.

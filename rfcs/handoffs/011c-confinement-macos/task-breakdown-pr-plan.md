@@ -10,3 +10,4 @@
 | 011c-2 | The membership kill loop (K enforced), the RSS and count watchdogs (M, C), the `kern.proc.` deny, the dependency step's three rules | 011c-1 merged | M |
 | 011c-3 | The settled read set in `app.rs` (the per-user temporary directory by `confstr`); the load-time refusal of a command leaving the read paths (all platforms); the clause suite with mutation checks; the demonstration without `accept_best_effort` | 011c-2 | M |
 | 011c-4 | M6c report, book's macOS section, CHANGELOG; review request | 011c-3 | S |
+| 011c-5 | The sweeper; two sandboxes apart; `process_limit`; the LIM-H6, `xcrun_db` and Command Line Tools measurements; documents | 011c-4 merged | M |

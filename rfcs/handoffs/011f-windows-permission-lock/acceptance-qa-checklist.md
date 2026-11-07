@@ -8,3 +8,5 @@
 - [ ] Two installations granting one directory at once keep both entries (Windows CI); the reproduction shows 0 of 10 failures.
 - [ ] The worker-file measurement is reported, nothing changed by it.
 - [ ] REQ-CONF-010: any new `unsafe` justified; `check-unsafe.sh` green. Book, CHANGELOG; gate; CI per platform with skips.
+- [ ] (corrections) A lock that cannot be created or waited on refuses with its own reason; no write without the lock remains in the code.
+- [ ] (corrections) Both refusals are `unavailable` with `component: "permissions"`, carried as a typed error, asserted by a JSON test.

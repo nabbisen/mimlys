@@ -9,3 +9,7 @@
 - [ ] REQ-CONF-010: every `unsafe` block in `confine/macos.rs` with its `SAFETY:` line; `check-unsafe.sh` green.
 - [ ] REQ-TEST-013: the clause suite and the demonstration pass on `macos-latest`; mutation outputs attached; the Rosetta job reported apart as informative.
 - [ ] M6c report, book, CHANGELOG; the gate; CI per platform with skip counts.
+- [ ] (011c-5) A worker killed with `SIGKILL` leaves no member alive past LIM-O2 plus one poll; the sweeper's two mutations are caught.
+- [ ] (011c-5) Two workers' listings do not see each other's members, or the slice stopped and reported.
+- [ ] (011c-5) The count watchdog's tree ends `process_limit`, mapped to `resource_exhausted{processes}`; never `exited`.
+- [ ] (011c-5) The LIM-H6, `xcrun_db` and Command Line Tools measurements are reported; nothing was added to the read set without the architect.

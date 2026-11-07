@@ -106,6 +106,14 @@ the seven clause tests included, passes on all three platforms.
   on the inherited entries; a directory the shell created shows them without
   the marker although their inherited flag is set. The suite compares the
   entries without the marker.
+- An entry for the container on the worker's binary file alone, none on its
+  directory, is enough on `windows-latest` (handoff 011f §3, run 42357531873):
+  the container starts the worker, the tier is `full`, and tools and the
+  dependency step run. Not shown: a private directory under a user's profile,
+  a worker that loads a file beside it, and `has_entry`, the record and
+  `revoke --all` for a file entry. The product's entry is unchanged; it is the
+  measured basis of the replanning candidate "entries without propagation",
+  which would make mimlys's own write independent of the directory's contents.
 - The epoch ticker owes ticks after a stretched sleep and delivers them at
   once (a 100 ms deadline ended at 76 ms on `macos-latest`); a deadline is
   armed past the owed ticks, so an execution never ends before its deadline.

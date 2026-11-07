@@ -316,7 +316,7 @@ Generated code shall run only inside Wasmtime in the worker: `run_script` throug
 Fuel (LIM-S1), the epoch deadline (LIM-S2, tick LIM-S7) and the memory limiter (LIM-S3) shall each terminate an execution on its own. (REQ-TEST-008)
 
 ### REQ-SBX-003 Termination reporting — M2 · T
-Every execution shall end with one `termination` from `exited`, `trapped`, `fuel_exhausted`, `deadline`, `memory_limit`, `output_limit`, `cancelled`, `host_fault`, with `exit_code` present only for `exited`. Fuel exhaustion and deadline shall never be conflated. (C-12, X-07)
+Every execution shall end with one `termination` from `exited`, `trapped`, `fuel_exhausted`, `deadline`, `memory_limit`, `output_limit`, `process_limit`, `cancelled`, `host_fault`, with `exit_code` present only for `exited`. Fuel exhaustion and deadline shall never be conflated, and a tree ended by a watchdog is never reported as a tool that exited by itself. (`process_limit` added 2026-11-07.) (C-12, X-07)
 
 ### REQ-SBX-004 WASI configuration — M2 · T
 The sandbox shall receive exactly: a preopened `/workspace` (read-write or read-only per the tool's mode), a preopened ephemeral `/tmp` discarded after the execution, declared `args` and `stdin`, an empty environment, stdout and stderr to bounded buffers (LIM-S4), clocks of granularity LIM-S6, and no socket or other host function. (THR-11, THR-19)
