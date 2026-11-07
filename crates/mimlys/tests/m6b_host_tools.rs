@@ -985,3 +985,85 @@ fn req_conf_008_revoke_all_asks_and_reports() {
         ));
     }
 }
+
+// ---------------------------------------------------------------------
+// Handoff 011f (REQ-CONF-008, LIM-O7): the writers of one directory's
+// permissions wait for one another and never write on a stale base.
+// ---------------------------------------------------------------------
+
+/// REQ-CONF-008, THR-36: two installations (two data directories, two
+/// containers) start and grant the same directory at the same moment. Both
+/// start with their own entries on the worker's directory (shared by both,
+/// as it is by the whole suite), then both grant a directory holding many
+/// files, so that each write lasts. Afterwards both containers' entries are
+/// on both directories (`icacls`) and both containers run the probe tool: a
+/// writer waits for the other (LIM-O7) instead of replacing its entry with
+/// one built on a base read before the other's write landed.
+#[test]
+fn req_conf_008_concurrent_grants_keep_both_entries() {
+    let shared = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+        std::fs::write(shared.path().join(format!("f{i:03}.txt")), "x").unwrap();
+    }
+    let shared_text = plain(shared.path());
+    let envs = [
+        Env::new(&[probe(&["ok"]), complete()], ""),
+        Env::new(&[probe(&["ok"]), complete()], ""),
+    ];
+    let barrier = std::sync::Barrier::new(envs.len());
+    // Both runtimes' first start and their grant, at once.
+    let results: Vec<(i32, Value)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = envs
+            .iter()
+            .map(|env| {
+                let (barrier, shared_text) = (&barrier, &shared_text);
+                scope.spawn(move || {
+                    barrier.wait();
+                    env.json(&["toolchain", "grant", shared_text, "--yes"])
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for (code, v) in &results {
+        assert_eq!(*code, 0, "{v}");
+        assert_eq!(v["applied"], true, "{v}");
+    }
+    let worker_dir = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"))
+        .parent()
+        .unwrap();
+    let on_shared = icacls(Path::new(&shared_text));
+    let on_worker = icacls(worker_dir);
+    for env in &envs {
+        let (code, listed) = env.json(&["toolchain", "list"]);
+        assert_eq!(code, 0, "{listed}");
+        let sid = listed["container"]["sid"].as_str().unwrap().to_owned();
+        assert!(
+            on_shared.contains(&sid),
+            "{sid} is on the granted directory:\n{on_shared}"
+        );
+        assert!(
+            on_worker.contains(&sid),
+            "{sid} is on the worker's directory:\n{on_worker}"
+        );
+    }
+    // Each container still runs the probe tool: its entries are in force.
+    for env in &envs {
+        let scope = env.scope();
+        let (code, value) = env.json(&[
+            "run",
+            "probe",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ]);
+        assert_eq!(code, 0, "{value}");
+        assert_eq!(value["task"]["state"], "completed", "{value}");
+        let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+        let obs = env.observations(&id);
+        assert_eq!(obs.len(), 1, "{}", account(&obs));
+        assert_eq!(exit_code_of(&obs[0]), 0, "{}", account(&obs));
+        assert_eq!(stdout_of(&obs[0]).trim(), "ok");
+    }
+}
