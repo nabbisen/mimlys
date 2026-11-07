@@ -4,7 +4,7 @@
 
 ## Corrections after the review of C9 (2026-11-07)
 
-C9 (`c9-windows-lock`, PR #14) is approved in substance; three corrections on the same branch, then the request is updated at the top. The rules are in external design §13.5 and §18 and THR-36.
+C9 (`c9-windows-lock`, PR #14) is approved in substance; rebase the branch on `main` (the macOS slices are merged), make three corrections on it, then update the request at the top. The rules are in external design §13.5 and §18 and THR-36.
 
 1. **No write without the lock.** A mutex the system will not create (`CreateMutexW` returns null) or wait on (`WaitForSingleObject` fails) refuses the write with its own reason: `acl_not_applied: the permissions lock of <dir> cannot be taken: <system error>`. `Decision::WriteUnlocked` goes; `Attempt::Failed` decides `Refuse` with that reason. Your question 1 is right that "being written by another runtime" would be a wrong reason; a write without the lock is the lost update THR-36 forbids. A second account's access to the lock is not added (the residual is in THR-36). Unit test and mutation check.
 2. **The error kind is `unavailable`**, `detail.component = "permissions"`, for both refusals (external design §18; your question 2): the condition is expected and retrying is the remedy, and `internal` says "a runtime defect", which would mislead. The refusal travels as a typed error from `acl` to the command's error, never recognized by its text (no `starts_with("acl_not_applied:")`). The data directory's message carries the error's text in every case, not only its kind. The JSON test asserts the kind and the component.
