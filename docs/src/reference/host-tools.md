@@ -109,10 +109,11 @@ host.
 
 ## What you may accept
 
-On macOS the kernel cannot promise that every process of a tree is
-terminated (a re-parented orphan can outlive a cancel). mimlys reports
-clause K as best effort there and keeps host tools unavailable, unless you
-write `accept_best_effort = ["K"]` under `[policy]`. The tier line then
+Where this machine can enforce one of the mandatory clauses (F, N, E, K,
+P) only as best effort, mimlys says so and keeps host tools unavailable,
+unless you write that clause in `accept_best_effort` under `[policy]`, for
+example `accept_best_effort = ["K"]`. None of the backends of this release
+needs it on a supported platform; on macOS host tools arrive in 0.8. The tier line then
 reads `full (K best-effort, accepted by policy.accept_best_effort)`, and so
 does the `Tier` line of every approval of a host tool. Nothing is accepted
 by default, and a clause that is unavailable can never be accepted.

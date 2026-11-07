@@ -90,7 +90,14 @@ the seven clause tests included, passes on all three platforms.
   container the worker's directory at startup) lost one another's entry,
   and a tool's command then failed to resolve inside the loser's container
   with no reason recorded; the writers hold a named mutex per directory
-  since round 11, and a tool that does not start carries its reason. The
+  since round 11, and a tool that does not start carries its reason. **Corrected
+  2026-11-07 (investigation D1):** the mutex then gave up after LIM-O2 (2 s) on
+  the belief that a DACL write takes milliseconds; it takes 0.1 s on a near-empty
+  DACL and 0.5 to 9 s with the hundreds of entries a test run accumulates,
+  because the system propagates an inheritable entry to every file below the
+  directory. A writer that gave up wrote on a stale base and removed another
+  container's entry: the intermittent `Access is denied` of the host-tool suite.
+  The writers now wait up to LIM-O7 and then fail closed. The
   DACL merge starts from the explicit entries alone and the write names the
   directory's protection flag, so inherited entries stay inherited and
   `revoke` leaves the directory's entries as they were. One bit differs: the

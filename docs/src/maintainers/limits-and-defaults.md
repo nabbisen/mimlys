@@ -112,6 +112,7 @@
 | LIM-O4 | Deadline of a built-in tool invocation | 30000 ms | 1000 – 300000 | File operations |
 | LIM-O5 | Deadline of an external (MCP) tool invocation | 60000 ms | 1000 – 600000; never below the server's declared maximum | rypsok expectation 5 |
 | LIM-O6 | Startup of an MCP server | 15000 ms | 1000 – 120000 | Child process |
+| LIM-O7 | Wait for another runtime's write of the same directory's permissions (Windows) | 60000 ms | fixed | Measured (D1, 2026-11-07): one write takes 0.1 s on a near-empty DACL and up to 9 s with hundreds of entries; at the end of the wait the write is refused, never made on a stale base |
 
 ## Model backend
 

@@ -46,7 +46,7 @@ temperature = 0.0               # 0.0–2.0; 0 for the most repeatable decisions
 [policy]
 default_profile = "workspace"
 remote_backend_allowed = false
-# accept_best_effort = ["K"]    accept a best-effort mandatory clause (macOS's tree termination); shown in status and approvals
+# accept_best_effort = ["K"]    accept a mandatory clause this machine enforces only best-effort; shown in status and approvals
 
 [policy.ceiling]                # what any task may be granted at most
 tools = ["read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm"]
