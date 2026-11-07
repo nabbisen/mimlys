@@ -229,17 +229,6 @@ fn seatbelt_or_skip(test: &str, table: &std::collections::BTreeMap<String, Value
     true
 }
 
-/// Whether this binary is Intel code translated by Rosetta on Apple silicon
-/// (the `rosetta` CI job; REQ-PLAT-002): Intel hardware has no
-/// `hw.optional.arm64`, and a native arm64 binary is not x86_64.
-fn translated_by_rosetta() -> bool {
-    cfg!(target_arch = "x86_64")
-        && Command::new("/usr/sbin/sysctl")
-            .args(["-n", "hw.optional.arm64"])
-            .output()
-            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-}
-
 /// Runs the script's host-tool calls under the worker (the K stand-in
 /// makes the tier `full`) and returns the observations. F, N and P must be
 /// `enforced (seatbelt)` here: anything else fails the test, never skips it.
@@ -253,13 +242,6 @@ fn run_script(
     env: &Env,
     wrapper: Option<fn(Command) -> Command>,
 ) -> Option<Vec<Value>> {
-    if translated_by_rosetta() {
-        common::skip(
-            test,
-            "Intel code translated by Rosetta: a new translated process cannot start under the profile, which does not read the Rosetta runtime (/Library/Apple/usr/libexec/oah); a question for the architect in the review request",
-        );
-        return None;
-    }
     let (tier, table) = clauses(env);
     if !seatbelt_or_skip(test, &table) {
         return None;

@@ -65,7 +65,10 @@ fn rfc_011_a2_empty_sets_write_no_rule() {
     assert!(!p.contains("(allow file-read*)"));
     assert!(!p.contains("(allow file-write*"));
     assert!(!p.contains("(allow process-exec*"));
-    assert!(!p.contains("unix-socket"));
+    // The one Unix-socket rule left is the explicit denial of the name-lookup socket.
+    for line in p.lines().filter(|l| l.contains("unix-socket")) {
+        assert!(line.starts_with("(deny "), "{line}");
+    }
     assert!(!p.contains("(allow network"));
 }
 
@@ -249,18 +252,28 @@ fn rfc_011_a2_network_is_denied_without_dns() {
     }
     assert_eq!(p.matches("(allow network").count(), 6);
     // DNS is a mach service and a Unix socket (measured): neither is named.
-    for forbidden in [
-        "mach",
-        "dnssd",
-        "mDNSResponder",
-        "(remote ip",
-        "(remote tcp",
-        "(remote udp",
-    ] {
+    for forbidden in ["mach", "dnssd", "(remote ip", "(remote tcp", "(remote udp"] {
         assert!(!p.contains(forbidden), "`{forbidden}` in\n{p}");
     }
     // The socket rules come after the denial: the last match wins.
     assert!(at(&p, "(allow network-bind") > at(&p, "(deny network*)"));
+}
+
+/// Amendment 2, settled, point 9: the offline profile names the
+/// `mDNSResponder` socket in a `deny`, and that rule comes after every
+/// Unix-socket allow (the last match wins), so that no write path nor a later
+/// rule can reopen name resolution silently. It is never allowed.
+#[test]
+fn rfc_011_a2_offline_profile_denies_the_mdnsresponder_socket_last() {
+    let p = text(&["/usr"], &["/data/workspaces", "/data/tmp"]);
+    let deny =
+        "(deny network-outbound (remote unix-socket (literal \"/private/var/run/mDNSResponder\")))";
+    assert_eq!(p.matches(deny).count(), 1, "{p}");
+    assert!(at(&p, deny) > p.rfind("(allow network").unwrap(), "{p}");
+    assert!(!p.contains("(allow network-outbound (remote unix-socket (literal"));
+    // A write set that holds the socket's directory is exactly the case it guards.
+    let under_run = text(&["/usr"], &["/private/var/run"]);
+    assert!(at(&under_run, deny) > under_run.rfind("(allow network").unwrap());
 }
 
 /// Amendment 2 point 9 is not decided: the dependency step's profile grants
@@ -331,6 +344,7 @@ fn rfc_011_a2_system_read_set() {
             "/Applications/Xcode_26.6.app/Contents/Developer",
         )),
         true,
+        false,
     ));
     for fixed in [
         "/usr",
@@ -349,18 +363,25 @@ fn rfc_011_a2_system_read_set() {
         !with_xcode.contains(&COMMAND_LINE_TOOLS.to_owned()),
         "an Xcode is selected: the Command Line Tools are not added"
     );
-    let tools = names(system_read_paths_from(None, true));
+    let tools = names(system_read_paths_from(None, true, false));
     assert!(tools.contains(&COMMAND_LINE_TOOLS.to_owned()));
     let relative = names(system_read_paths_from(
         Some(PathBuf::from("Developer")),
+        false,
         false,
     ));
     assert!(
         !relative.iter().any(|p| p == "Developer"),
         "a relative link target is ignored"
     );
-    let none = names(system_read_paths_from(None, false));
+    let none = names(system_read_paths_from(None, false, false));
     assert_eq!(none.len(), 8);
+    // Rosetta's runtime only where it is installed (settled point 8): a
+    // translated tool aborts without it.
+    assert!(!with_xcode.iter().any(|p| p == ROSETTA_RUNTIME));
+    let rosetta = names(system_read_paths_from(None, false, true));
+    assert_eq!(rosetta.len(), 9);
+    assert!(rosetta.contains(&ROSETTA_RUNTIME.to_owned()));
     for never in [
         "/opt",
         "/Users",

@@ -52,6 +52,14 @@ pub const FETCH_LATER: &str = "network allowed for the dependency step: its prof
 pub const XCODE_SELECT_LINK: &str = "/private/var/db/xcode_select_link";
 /// Where the Command Line Tools live when no Xcode is selected.
 pub const COMMAND_LINE_TOOLS: &str = "/Library/Developer/CommandLineTools";
+/// Rosetta's runtime, where it is installed (Amendment 2, settled, point 8):
+/// a translated (Intel) process started under the profile aborts without
+/// it (measured by 011c-1 under the Rosetta job).
+pub const ROSETTA_RUNTIME: &str = "/Library/Apple/usr/libexec/oah";
+/// The socket of the name-lookup daemon. Denied explicitly by the offline
+/// profile (Amendment 2, settled, point 9), so that no later rule reopens
+/// name resolution, an egress channel, silently.
+pub const MDNSRESPONDER_SOCKET: &str = "/private/var/run/mDNSResponder";
 
 /// The system part of the read set that is the same on every Mac
 /// (Amendment 2 point 8): the dyld cache lives under `/System`
@@ -93,21 +101,27 @@ pub fn system_read_paths() -> Vec<PathBuf> {
     system_read_paths_from(
         std::fs::read_link(XCODE_SELECT_LINK).ok(),
         Path::new(COMMAND_LINE_TOOLS).is_dir(),
+        Path::new(ROSETTA_RUNTIME).is_dir(),
     )
 }
 
 /// [`system_read_paths`] from what it depends on (tested on every platform):
 /// the target of the `xcode_select` link, when it is an absolute path, else
-/// the Command Line Tools directory when it exists.
+/// the Command Line Tools directory when it exists; Rosetta's runtime when
+/// it is installed.
 pub fn system_read_paths_from(
     developer_link: Option<PathBuf>,
     tools_present: bool,
+    rosetta_present: bool,
 ) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = SYSTEM_READ.iter().map(PathBuf::from).collect();
     match developer_link.filter(|p| is_posix_absolute(p)) {
         Some(dir) => paths.push(dir),
         None if tools_present => paths.push(PathBuf::from(COMMAND_LINE_TOOLS)),
         None => {}
+    }
+    if rosetta_present {
+        paths.push(PathBuf::from(ROSETTA_RUNTIME));
     }
     paths
 }
@@ -223,11 +237,12 @@ fn subpaths(literals: &[String]) -> String {
 ///    another process);
 /// 5. other processes: `signal` and `process-info*` only for the sandbox's
 ///    members (the tool's own tree);
-/// 6. network: denied, then Unix sockets under the write set only. No
-///    `mach-lookup` and no `mDNSResponder` socket anywhere: DNS is an
+/// 6. network: denied, then Unix sockets under the write set only, then the
+///    `mDNSResponder` socket denied explicitly (after the allows, so that no
+///    write path can reopen it). No `mach-lookup` anywhere: DNS is an
 ///    egress channel (measured). The dependency step's worker
-///    (`deny_network` false) gets no network rule either until Amendment 2
-///    point 9 is settled.
+///    (`deny_network` false) gets no network rule either until its profile
+///    (Amendment 2, settled, point 9) is implemented.
 pub fn generate(spec: &ConfinementSpec) -> Result<String, ProfileError> {
     let reads = literals(&spec.read_paths)?;
     let writes = literals(&spec.write_paths)?;
@@ -277,6 +292,11 @@ pub fn generate(spec: &ConfinementSpec) -> Result<String, ProfileError> {
             "(allow network-bind (local unix-socket (subpath \"{w}\")))\n\
              (allow network-outbound (remote unix-socket (subpath \"{w}\")))\n\
              (allow network-inbound (local unix-socket (subpath \"{w}\")))\n"
+        ));
+    }
+    if spec.deny_network {
+        p.push_str(&format!(
+            "(deny network-outbound (remote unix-socket (literal \"{MDNSRESPONDER_SOCKET}\")))\n"
         ));
     }
     Ok(p)
