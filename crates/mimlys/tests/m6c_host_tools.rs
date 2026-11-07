@@ -1139,3 +1139,308 @@ fn req_conf_007_dependency_step_reaches_https_and_nothing_else() {
         stdout_of(&obs[4])
     );
 }
+
+/// REQ-CONF-011 / Amendment 2, settled, point 8: the read set is the measured
+/// minimum. `/private/etc` as a whole is not in it (the control reads
+/// `/etc/hosts`), nor is `/System` (the control reads a file of an
+/// application bundle there), nor the per-user temporary directory as a whole
+/// (the control reads a marker the test puts there); the files the toolchain
+/// needs are (`openssl.cnf`, `SystemVersion.plist`).
+#[test]
+fn req_conf_011_the_read_set_is_the_measured_minimum() {
+    let test = "req_conf_011_the_read_set_is_the_measured_minimum";
+    let user_temp = std::env::temp_dir().canonicalize().unwrap();
+    let marker = user_temp.join(format!("mimlys-m6c-marker-{}", std::process::id()));
+    std::fs::write(&marker, "m").unwrap();
+    let denied = [
+        "/etc/hosts",
+        "/System/Library/CoreServices/Finder.app/Contents/Info.plist",
+        marker.to_str().unwrap(),
+    ];
+    let allowed = [
+        "/private/etc/ssl/openssl.cnf",
+        "/System/Library/CoreServices/SystemVersion.plist",
+        "/usr/bin/true",
+    ];
+    for path in denied.iter().chain(allowed.iter()) {
+        let (code, line) = control(&["read", path]);
+        assert_eq!(code, 0, "the control reads {path}: {line}");
+    }
+    let mut script: Vec<Value> = denied.iter().map(|p| probe(&["read", p])).collect();
+    script.extend(allowed.iter().map(|p| probe(&["read", p])));
+    script.push(complete());
+    let env = Env::new(&script, "");
+    let obs = run_probe_script(test, &env);
+    let _ = std::fs::remove_file(&marker);
+    let Some(obs) = obs else {
+        return;
+    };
+    for (i, path) in denied.iter().enumerate() {
+        assert!(
+            stdout_of(&obs[i]).contains("read failed: permission denied"),
+            "{path} is outside the read set: {}",
+            stdout_of(&obs[i])
+        );
+    }
+    for (i, path) in allowed.iter().enumerate() {
+        assert_eq!(
+            exit_code_of(&obs[denied.len() + i]),
+            0,
+            "{path} is in the read set: {}",
+            stdout_of(&obs[denied.len() + i])
+        );
+    }
+}
+
+/// REQ-CONF-007 / Amendment 2, settled, point 9: the system's certificate
+/// file is readable to the dependency step's worker and to nobody else (it
+/// is not in the offline read set since `/private/etc` left it). The control
+/// reads it outside the profile.
+#[test]
+fn req_conf_007_the_certificates_are_the_dependency_steps() {
+    let test = "req_conf_007_the_certificates_are_the_dependency_steps";
+    let cert = "/private/etc/ssl/cert.pem";
+    let (code, line) = control(&["read", cert]);
+    if code != 0 {
+        common::skip(test, &format!("this machine has no {cert}: {line}"));
+        return;
+    }
+    let env = Env::new(
+        &[
+            json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "fetch", "args": ["read", cert]}}),
+            probe(&["read", cert]),
+            complete(),
+        ],
+        "",
+    )
+    .with_fetch();
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_eq!(
+        exit_code_of(&obs[0]),
+        0,
+        "the dependency step reads the certificates: {}",
+        stdout_of(&obs[0])
+    );
+    assert!(
+        stdout_of(&obs[1]).contains("read failed: permission denied"),
+        "the offline tool does not: {}",
+        stdout_of(&obs[1])
+    );
+}
+
+/// REQ-CONF-004 / external design §13.4: every host-tool approval carries the
+/// tier line, and on macOS it reads plain `full`: no clause is accepted
+/// (`accept_best_effort` is not in the configuration), since K is enforced.
+#[test]
+fn req_conf_004_host_tool_approval_shows_the_tier() {
+    let test = "req_conf_004_host_tool_approval_shows_the_tier";
+    let env = Env::new(
+        &[probe(&["ok"]), complete()],
+        "[policy.profiles.read_only]\nhost_tools = [\"probe\"]\napproval_tools = [\"run_host_tool\"]\n",
+    );
+    let (tier, table) = clauses(&env);
+    if !seatbelt_or_skip(test, &table) {
+        return;
+    }
+    assert_eq!(tier, "full", "{table:?}");
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "approve a host tool",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--profile",
+        "read_only",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "waiting_user", "{value}");
+    let lines = value["pending_approval"]["rendered"]["lines"]
+        .as_array()
+        .expect("rendered lines")
+        .clone();
+    let tier_line = lines
+        .iter()
+        .find(|l| l["label"] == "Tier")
+        .unwrap_or_else(|| panic!("no Tier line in {lines:?}"));
+    assert_eq!(tier_line["value"], "full");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["approve", &id]);
+    assert_eq!(code, 0, "{value}");
+    let obs = env.observations(&id);
+    assert_eq!(exit_code_of(&obs[0]), 0, "{obs:?}");
+    let (code, _) = env.json(&["task", "cancel", &id]);
+    assert_eq!(code, 0);
+}
+
+/// A rustup toolchain's `bin` directory under the home directory (the
+/// preferred one is `stable`), with the rustup home: the direct toolchain
+/// `cargo`, as Homebrew's `rustup` shim links into `/opt/homebrew/Cellar`.
+fn toolchain_bin() -> Option<(PathBuf, PathBuf)> {
+    let home = directories::BaseDirs::new()?.home_dir().to_path_buf();
+    let mut bins: Vec<PathBuf> = std::fs::read_dir(home.join(".rustup/toolchains"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("bin"))
+        .filter(|b| b.join("cargo").is_file() && b.join("rustc").is_file())
+        .collect();
+    bins.sort_by_key(|b| !b.to_string_lossy().contains("stable"));
+    bins.into_iter().next().map(|b| (home.join(".rustup"), b))
+}
+
+/// External design §23, M6c: `cargo test --offline` of a native project, with
+/// a path dependency, ends `completed{verified}` under every mandatory
+/// clause, and WITHOUT `accept_best_effort` (the configuration names none):
+/// the model fixes the failing test and the completion check verifies it.
+/// The read set is the measured one; every entry that the run needed beyond
+/// the minimum of point 8 is named in the review request with the failure
+/// that asked for it.
+#[test]
+fn m6c_demonstration_cargo_test_offline() {
+    let test = "m6c_demonstration_cargo_test_offline";
+    let Some((rustup_home, bin)) = toolchain_bin() else {
+        common::skip(test, "no rustup toolchain under ~/.rustup");
+        return;
+    };
+    let data = tempfile::tempdir().unwrap();
+    let scope = data.path().join("project");
+    std::fs::create_dir_all(scope.join("src")).unwrap();
+    std::fs::create_dir_all(scope.join("arith/src")).unwrap();
+    std::fs::write(scope.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\narith = { path = \"arith\" }\n\n[workspace]\nmembers = [\"arith\"]\n").unwrap();
+    std::fs::write(
+        scope.join("arith/Cargo.toml"),
+        "[package]\nname = \"arith\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scope.join("arith/src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+    )
+    .unwrap();
+    std::fs::write(scope.join("src/lib.rs"), "pub fn total(xs: &[i32]) -> i32 { xs.iter().fold(0, |acc, x| arith::add(acc, *x)) - 1 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn sums() { assert_eq!(super::total(&[1, 2, 3]), 6); }\n}\n").unwrap();
+    let script = data.path().join("script.json");
+    let act = |tool: &str, args: Value| json!({"decision": "act", "tool": tool, "arguments": args});
+    std::fs::write(&script, serde_json::to_string(&[
+        act("run_host_tool", json!({"tool": "cargo_test"})),
+        act("replace_in_file", json!({"path": "src/lib.rs", "find": ") - 1 }", "replace": ") }"})),
+        act("run_host_tool", json!({"tool": "cargo_test"})),
+        json!({"decision": "complete", "summary": "the off-by-one is gone and the test passes"}),
+    ]).unwrap()).unwrap();
+    let config = data.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            r#"config_version = 1
+[runtime]
+data_dir = {data:?}
+[backend]
+kind = "fake"
+script = {script:?}
+[policy.profiles.workspace]
+tools = [{builtin}]
+[host_tools.cargo_test]
+command = {cargo:?}
+args = ["test", "--offline"]
+allowed_args = ["--lib"]
+max_args = 1
+effect = "workspace_write"
+timeout_ms = 600000
+read_paths = [{bin:?}, {rustup:?}]
+env = {{ PATH = {path:?} }}
+"#,
+            data = data.path().join("data").to_string_lossy(),
+            script = script.to_string_lossy(),
+            builtin = BUILTIN,
+            cargo = bin.join("cargo").to_string_lossy(),
+            bin = bin.to_string_lossy(),
+            rustup = rustup_home.to_string_lossy(),
+            path = format!("{}:/usr/bin:/bin", bin.display()),
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| -> (i32, Value, String) {
+        let mut all = vec!["--config", config.to_str().unwrap(), "--json"];
+        all.extend_from_slice(args);
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        cmd.args(&all)
+            .env("MIMLYS_CONFIG", "")
+            .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
+        let out = run_bounded(&mut cmd, data.path());
+        (
+            out.code(),
+            serde_json::from_str(out.stdout.trim()).unwrap_or(Value::Null),
+            out.stderr,
+        )
+    };
+    let (_, status, stderr) = run(&["status"]);
+    eprintln!(
+        "m6c demonstration: tier {} clauses {}",
+        status["tier"], status["clauses"]
+    );
+    if status["clauses"]["filesystem"]["reason"] == "seatbelt_missing" {
+        common::skip(test, "sandbox_init is not on this macOS (seatbelt_missing)");
+        return;
+    }
+    assert_eq!(
+        status["tier"], "full",
+        "no accepted clause is in the configuration: {status}\n{stderr}"
+    );
+    let started = std::time::Instant::now();
+    let (code, value, stderr) = run(&[
+        "run",
+        "the test in src/lib.rs fails: fix total",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:cargo_test",
+        "--completion-check",
+        &json!({"tool": "run_host_tool", "arguments": {"tool": "cargo_test"}}).to_string(),
+    ]);
+    eprintln!(
+        "m6c demonstration: {:?} in {:?}",
+        value["task"]["state"],
+        started.elapsed()
+    );
+    if value["task"]["state"] != "completed" {
+        // Evidence first: what each action printed, so that a failure on a
+        // machine we cannot log into (a CI runner) explains itself.
+        let conn = rusqlite::Connection::open(data.path().join("data/mimlys.db")).unwrap();
+        let mut stmt = conn
+            .prepare("select o.record from observations o order by o.rowid")
+            .unwrap();
+        for record in stmt.query_map([], |r| r.get::<_, String>(0)).unwrap() {
+            let o: Value = serde_json::from_str(&record.unwrap()).unwrap();
+            eprintln!(
+                "observation: status {} cause {} payload {} stdout {:?} stderr {:?} notices {}",
+                o["status"], o["cause"], o["payload"], o["stdout"], o["stderr"], o["notices"]
+            );
+        }
+    }
+    assert_eq!(code, 0, "{value}\n{stderr}");
+    assert_eq!(value["task"]["state"], "completed", "{value}\n{stderr}");
+    assert_eq!(value["task"]["completion"], "verified", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (_, events, _) = run(&["events", &id]);
+    let finished: Vec<String> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| &e["record"])
+        .filter(|e| e["event"] == "action.finished")
+        .map(|e| e["status"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        finished,
+        ["failed", "succeeded", "succeeded", "succeeded"],
+        "{finished:?}"
+    );
+    assert!(
+        data.path()
+            .join("data/workspaces")
+            .join(&id)
+            .join("tree/target")
+            .is_dir(),
+        "the build happened inside the workspace"
+    );
+}
