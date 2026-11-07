@@ -18,6 +18,14 @@ pub fn data_dir_in_temp_warning(path: &str) -> String {
         "warning: runtime.data_dir ({path}) is inside the temporary directory: a cleaner of temporary files can delete tasks"
     )
 }
+/// `check` and `status` (macOS, an Xcode selected): the runtime could not make
+/// `xcrun`'s cache, so host tools that build with the Xcode fail until it
+/// exists (external design §13.3); one line naming the file and the remedy.
+pub fn xcrun_cache_missing_warning(file: &str) -> String {
+    format!(
+        "warning: xcrun's cache {file} is missing and could not be made: host tools that build with Xcode will fail; run `xcrun --find cc` once"
+    )
+}
 /// The configuration file in use, or the defaults.
 pub fn config_source(path: Option<&str>) -> String {
     match path {

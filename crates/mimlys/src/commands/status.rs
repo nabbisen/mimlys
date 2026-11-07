@@ -15,6 +15,9 @@ struct Status<'a> {
     data_dir: String,
     /// The configured data directory is inside the temporary directory (REQ-WS-001).
     data_dir_in_temporary_directory: bool,
+    /// macOS: `xcrun`'s cache file, when it is missing and could not be made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xcrun_cache_missing: Option<String>,
     config: Option<String>,
     recovered: Vec<RecoveredView>,
     engine_version: &'static str,
@@ -88,6 +91,13 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
             &app.data_dir.to_string_lossy(),
         ));
     }
+    let xcrun_missing = app
+        .xcrun_cache_missing
+        .as_ref()
+        .map(|f| f.to_string_lossy().into_owned());
+    if let Some(file) = &xcrun_missing {
+        out.line(messages::xcrun_cache_missing_warning(file));
+    }
     out.line(messages::config_source(
         app.loaded
             .path
@@ -152,6 +162,7 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
         backend,
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         data_dir_in_temporary_directory: data_dir_in_temp,
+        xcrun_cache_missing: xcrun_missing,
         config: app
             .loaded
             .path
