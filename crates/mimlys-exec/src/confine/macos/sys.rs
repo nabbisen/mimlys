@@ -162,13 +162,35 @@ pub fn see(pid: i32) -> super::Seen {
             task_size,
         )
     };
+    let resident = if written == task_size {
+        task.pti_resident_size
+    } else {
+        0
+    };
+    // The resident size alone under-reports when the system compresses the
+    // process's pages (measured on a loaded runner: 3 GiB touched, under
+    // 2 GiB resident). The physical footprint, which counts compressed pages
+    // (what Activity Monitor and jetsam use), does not; the larger of the two
+    // is the process's memory.
     super::Seen::Alive {
-        resident: if written == task_size {
-            task.pti_resident_size
-        } else {
-            0
-        },
+        resident: resident.max(physical_footprint(pid)),
     }
+}
+
+/// `ri_phys_footprint` of `proc_pid_rusage`, or 0 when the system does not say.
+fn physical_footprint(pid: i32) -> u64 {
+    // SAFETY: an all-zero `rusage_info_v0` is a valid value of a plain C struct of integers.
+    let mut usage: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
+    // SAFETY: for `RUSAGE_INFO_V0` the system fills a `rusage_info_v0`, which `usage` is (the
+    // C parameter is a pointer to the structure, typed `rusage_info_t *`).
+    let rc = unsafe {
+        libc::proc_pid_rusage(
+            pid,
+            libc::RUSAGE_INFO_V0,
+            std::ptr::addr_of_mut!(usage).cast(),
+        )
+    };
+    if rc == 0 { usage.ri_phys_footprint } else { 0 }
 }
 
 /// Whether signal 0 (existence and permission, nothing delivered) to `pid` is allowed.

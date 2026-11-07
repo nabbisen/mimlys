@@ -368,9 +368,10 @@ pub enum Seen {
     Hidden,
     /// A member that has ended and waits to be reaped; nothing to kill or count.
     Zombie,
-    /// A live member and its resident size in bytes.
+    /// A live member and its memory in bytes.
     Alive {
-        /// `pti_resident_size`; 0 when the task information is refused.
+        /// The larger of `pti_resident_size` and `ri_phys_footprint` (which
+        /// counts pages the system compressed); 0 when both are refused.
         resident: u64,
     },
 }
@@ -380,7 +381,7 @@ pub enum Seen {
 pub struct Member {
     /// Its process id.
     pub pid: i32,
-    /// Its resident size in bytes.
+    /// Its memory in bytes (see [`Seen::Alive`]).
     pub resident: u64,
 }
 
@@ -455,7 +456,7 @@ pub fn sweep_with(
 /// What a watchdog found over the members.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// Their summed resident size is above the ceiling (M; LIM-H2).
+    /// Their summed memory (resident, compressed pages included) is above the ceiling (M; LIM-H2).
     Memory {
         /// The sum.
         resident: u64,
