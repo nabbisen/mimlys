@@ -384,6 +384,40 @@ fn main() {
             }
         }
         #[cfg(target_os = "macos")]
+        Some("visible") => {
+            // The two-workers test: `visible <secs>`. Starts a sleeper in a
+            // session of its own, writes `mine.txt` (this tool's pid and the
+            // sleeper's) and, every 200 ms for `secs`, `seen.txt` (the pids
+            // this tool can inspect), in the working directory.
+            let secs: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
+            match mimlys_exec::confine::macos::probe::spawn_in_new_session(
+                "/bin/sleep",
+                &[&secs.to_string()],
+            ) {
+                Err(e) => {
+                    println!("spawn failed: {}", e.kind());
+                    3
+                }
+                Ok(sleeper) => {
+                    let _ = std::fs::write(
+                        "mine.txt",
+                        format!("{} {}", std::process::id(), sleeper.id()),
+                    );
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+                    while std::time::Instant::now() < until {
+                        let seen: Vec<String> = mimlys_exec::confine::macos::probe::visible_pids()
+                            .iter()
+                            .map(i32::to_string)
+                            .collect();
+                        let _ = std::fs::write("seen.tmp", seen.join(" "));
+                        let _ = std::fs::rename("seen.tmp", "seen.txt");
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                    0
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
         Some("proclist") => match mimlys_exec::confine::macos::probe::process_list_size() {
             Ok(bytes) => {
                 println!("proclist read: {bytes} bytes");
@@ -560,7 +594,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }

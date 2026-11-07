@@ -1,7 +1,8 @@
-//! The macOS worker against its own death (handoff 011c-5; RFC 011
-//! Amendment 2, implementation decisions, point 6; REQ-CONF-009): a worker
-//! started as the runtime starts it, with a real host tool, and the sweeper
-//! that cleans up after it when it is killed. macOS only.
+//! The macOS workers' sandboxes against each other and against their own
+//! death (handoff 011c-5; RFC 011 Amendment 2, implementation decisions,
+//! point 6; REQ-CONF-009): two workers started as the runtime starts them
+//! (the main one and the dependency step's), each with a real host tool, and
+//! the sweeper that cleans up after a worker that is killed. macOS only.
 //!
 //! The workers are driven through `mimlys_exec::worker::Worker`, in this
 //! process, so that the test can kill one and observe the other.
@@ -123,6 +124,15 @@ impl Side {
         let cancel = cancel.clone();
         std::thread::spawn(move || worker.execute(execution, cancel))
     }
+
+    fn numbers(&self, file: &str) -> Option<Vec<i32>> {
+        let text = std::fs::read_to_string(self.tree.join(file)).ok()?;
+        Some(
+            text.split_whitespace()
+                .filter_map(|t| t.parse().ok())
+                .collect(),
+        )
+    }
 }
 
 fn wait_for(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
@@ -158,6 +168,63 @@ fn skip_without_seatbelt(test: &str, side: &Side) -> bool {
         common::skip(test, "sandbox_init is not on this macOS (seatbelt_missing)");
     }
     missing
+}
+
+/// REQ-CONF-009 / RFC 011 Amendment 2, implementation decisions, point 6: two
+/// sandboxes stay apart. The main worker and the dependency step's worker,
+/// both alive and both with members (a tool and the sleeper it left in a
+/// session of its own), do not see each other's: neither tool's listing holds
+/// a pid of the other's, nor of the other's worker. If they did, the kill loop
+/// of one would end the other's tools. The control: each sees its own sleeper.
+#[test]
+fn req_conf_009_two_workers_do_not_see_each_others_members() {
+    let test = "req_conf_009_two_workers_do_not_see_each_others_members";
+    let main = side("main_tool", false);
+    let fetch = side("fetch_tool", true);
+    if skip_without_seatbelt(test, &main) {
+        return;
+    }
+    let cancel = Cancellation::new();
+    let a = main.run(&["visible", "20"], &cancel);
+    let b = fetch.run(&["visible", "20"], &cancel);
+    let ready = wait_for(Duration::from_secs(60), || {
+        main.numbers("seen.txt").is_some() && fetch.numbers("seen.txt").is_some()
+    });
+    assert!(ready, "both tools run and report what they see");
+    // Let each tool list a few more times, now that both sandboxes are populated.
+    std::thread::sleep(Duration::from_millis(1200));
+    let (mine_a, mine_b) = (
+        main.numbers("mine.txt").unwrap(),
+        fetch.numbers("mine.txt").unwrap(),
+    );
+    let (seen_a, seen_b) = (
+        main.numbers("seen.txt").unwrap(),
+        fetch.numbers("seen.txt").unwrap(),
+    );
+    cancel.cancel();
+    let _ = (a.join(), b.join());
+    // The control: the listing works, and each tool sees its own sleeper.
+    assert!(
+        seen_a.contains(&mine_a[1]),
+        "A sees its own sleeper: {seen_a:?} {mine_a:?}"
+    );
+    assert!(
+        seen_b.contains(&mine_b[1]),
+        "B sees its own sleeper: {seen_b:?} {mine_b:?}"
+    );
+    // The property: nothing of the other's, and nothing at all in common
+    // (the workers and their sweepers included).
+    for pid in &mine_b {
+        assert!(!seen_a.contains(pid), "A sees B's pid {pid}: {seen_a:?}");
+    }
+    for pid in &mine_a {
+        assert!(!seen_b.contains(pid), "B sees A's pid {pid}: {seen_b:?}");
+    }
+    let shared: Vec<&i32> = seen_a.iter().filter(|p| seen_b.contains(p)).collect();
+    assert!(
+        shared.is_empty(),
+        "the two sandboxes share pids: {shared:?}"
+    );
 }
 
 /// REQ-CONF-009 / RFC 011 Amendment 2, implementation decisions, point 6: a

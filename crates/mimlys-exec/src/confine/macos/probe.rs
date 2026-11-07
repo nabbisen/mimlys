@@ -102,3 +102,17 @@ pub fn process_list_size() -> Result<usize, i32> {
         Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
     }
 }
+
+/// The pids this process can inspect other than itself (the live members of
+/// its sandbox, as the profile lets it see them): what a tool can learn of
+/// the machine's processes. The two-workers test compares two sandboxes'
+/// answers.
+pub fn visible_pids() -> Vec<i32> {
+    let own = std::process::id() as i32;
+    super::sys::list_pids()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|&pid| pid > 1 && pid != own)
+        .filter(|&pid| matches!(super::sys::see(pid), super::Seen::Alive { .. }))
+        .collect()
+}
