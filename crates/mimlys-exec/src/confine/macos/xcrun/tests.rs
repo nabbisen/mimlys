@@ -78,9 +78,9 @@ mod with_a_stand_in {
     }
 
     /// REQ-CONF-005: where the cache is absent and an Xcode is selected, the
-    /// runtime runs `xcrun --find cc` and the file exists afterwards.
+    /// runtime runs `xcrun --find clang` and the file exists afterwards.
     #[test]
-    fn req_conf_005_a_missing_cache_is_made_by_running_xcrun_find_cc() {
+    fn req_conf_005_a_missing_cache_is_made_by_running_xcrun_find_clang() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("xcrun_db");
         let args = dir.path().join("args");
@@ -91,7 +91,10 @@ mod with_a_stand_in {
         let state = ensure(Some(file.clone()), &xcrun, Duration::from_secs(10));
         assert_eq!(state, CacheState::Present);
         assert!(file.exists());
-        assert_eq!(std::fs::read_to_string(args).unwrap().trim(), "--find cc");
+        assert_eq!(
+            std::fs::read_to_string(args).unwrap().trim(),
+            "--find clang"
+        );
     }
 
     /// REQ-CONF-005: nothing is run where the cache is there, or not needed.
