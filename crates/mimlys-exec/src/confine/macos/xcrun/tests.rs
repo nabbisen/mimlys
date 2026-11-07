@@ -7,6 +7,7 @@ use super::*;
 const XCODE: &str = "/Applications/Xcode_26.6.app/Contents/Developer";
 
 /// [`ensure`] with the command the runtime gives on a native Mac.
+#[cfg(unix)]
 fn run(file: Option<PathBuf>, xcrun: &Path, wait: Duration) -> CacheState {
     let (program, args) = warming_command(xcrun, false);
     ensure(file, &program, &args, wait)
