@@ -113,6 +113,31 @@ pub fn bin_dirs_with(read_paths: &[String], is_dir: impl Fn(&Path) -> bool) -> V
     dirs
 }
 
+/// D1 DIAGNOSTIC (throwaway branch only): after a start failure, retry reading the
+/// tool for up to 3 s and trace when (if ever) access returns.
+fn d1_retry(path: &Path) {
+    let t0 = Instant::now();
+    let mut last = String::new();
+    for i in 0..60 {
+        let open = std::fs::File::open(path).map(|_| "ok".to_string()).unwrap_or_else(|e| e.to_string());
+        let meta = std::fs::metadata(path).map(|_| "ok".to_string()).unwrap_or_else(|e| e.to_string());
+        let dir = path
+            .parent()
+            .map(|d| std::fs::read_dir(d).map(|_| "ok".to_string()).unwrap_or_else(|e| e.to_string()))
+            .unwrap_or_default();
+        let state = format!("open={open} metadata={meta} read_dir_parent={dir}");
+        if state != last || i == 59 {
+            let ms = t0.elapsed().as_millis();
+            crate::trace::line(|| format!("D1 retry {i} +{ms}ms {state}"));
+            last = state;
+        }
+        if open == "ok" && meta == "ok" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The notice of a tool that never started, also traced.
 fn not_started(tool: &str, reason: String) -> Notice {
     crate::trace::line(|| format!("host tool {tool}: not started: {reason}"));
@@ -316,6 +341,7 @@ pub fn run(r: HostRun<'_>) -> HostOutcome {
     let program = match resolve_command(r.declaration) {
         Ok(p) => p,
         Err(reason) => {
+            d1_retry(Path::new(&r.declaration.command));
             return fault(
                 HostFaultDetail::Unavailable,
                 vec![not_started(name, reason)],
@@ -332,6 +358,7 @@ pub fn run(r: HostRun<'_>) -> HostOutcome {
     let mut child = match spawn_tool(&program, &r) {
         Ok(c) => c,
         Err(reason) => {
+            d1_retry(&program);
             return fault(
                 HostFaultDetail::Unavailable,
                 vec![not_started(name, reason)],

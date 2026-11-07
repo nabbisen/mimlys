@@ -1,0 +1,94 @@
+# SPIKE D1: why the M6b host-tool suite fails intermittently on windows-latest
+# ("not started: ... Access is denied"). The suite is run several times in one
+# job at the default thread count, with diagnostics (a log of every DACL write
+# and of the lock, a watcher of the entries on the directory and on the probe
+# tool, a retry after a start failure). Exists on this branch only; never merged.
+name: spike-d1
+on:
+  push:
+    branches: [d1-windows-flake]
+permissions:
+  contents: read
+jobs:
+  d1:
+    name: d1 (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: latest-base, os: windows-latest, lockms: "", threads: "", prefill: "0" }
+          - { name: w2022-base, os: windows-2022, lockms: "", threads: "", prefill: "0" }
+          - { name: latest-bigdacl, os: windows-latest, lockms: "", threads: "", prefill: "400" }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      ITERATIONS: "10"
+      D1_DIAG: ${{ runner.temp }}\d1-acl.log
+      D1_WATCH: ${{ runner.temp }}\d1-watch.log
+      D1_STOP: ${{ runner.temp }}\d1-stop
+      D1_LOCK_MS: ${{ matrix.lockms }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: d1-${{ matrix.os }}
+      - name: the machine
+        shell: pwsh
+        run: |
+          [Environment]::OSVersion.VersionString
+          (Get-ComputerInfo | Select-Object WindowsProductName, OsVersion, OsBuildNumber | Format-List | Out-String)
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors | Format-List | Out-String
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-List | Out-String
+      - name: build the suite
+        shell: bash
+        run: cargo test -p mimlys --features test-bins --test m6b_host_tools --no-run
+      - name: prefill the directory's DACL (variant)
+        if: matrix.prefill != '0'
+        shell: pwsh
+        run: ./.github/d1/prefill.ps1 -Dir "$env:GITHUB_WORKSPACE\target\debug" -Count ${{ matrix.prefill }}
+      - name: the suite, repeated at the default thread count
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/d1"
+          # a D1_LOCK_MS that is empty must not reach the product as an override
+          if [ -z "$D1_LOCK_MS" ]; then unset D1_LOCK_MS; fi
+          args=""
+          if [ -n "${{ matrix.threads }}" ]; then args="--test-threads=${{ matrix.threads }}"; fi
+          rm -f "$D1_DIAG" "$D1_WATCH" "$D1_STOP"
+          pwsh -NoProfile -File .github/d1/watch.ps1 -Dir "$GITHUB_WORKSPACE\\target\\debug" -Exe "$GITHUB_WORKSPACE\\target\\debug\\mimlys-probe-tool.exe" -Out "$D1_WATCH" -Stop "$D1_STOP" &
+          sleep 3
+          echo "iteration,exit,failed_tests" > "$RUNNER_TEMP/d1/summary.csv"
+          fails=0
+          for i in $(seq 1 "$ITERATIONS"); do
+            echo "D1-MARK iteration $i start $(date -u +%H:%M:%S.%3N)" >> "$D1_DIAG"
+            cargo test -p mimlys --features test-bins --test m6b_host_tools -- --nocapture $args > "$RUNNER_TEMP/d1/iter-$i.log" 2>&1
+            rc=$?
+            echo "D1-MARK iteration $i end $(date -u +%H:%M:%S.%3N) rc=$rc" >> "$D1_DIAG"
+            failed=$(grep -E '^test .* \.\.\. FAILED' "$RUNNER_TEMP/d1/iter-$i.log" | sed -E 's/^test (.*) \.\.\. FAILED/\1/' | tr '\n' ' ')
+            echo "$i,$rc,$failed" | tee -a "$RUNNER_TEMP/d1/summary.csv"
+            if [ "$rc" != "0" ]; then fails=$((fails+1)); fi
+          done
+          touch "$D1_STOP"
+          sleep 2
+          echo "iterations: $ITERATIONS, failed iterations: $fails" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::group::summary"; cat "$RUNNER_TEMP/d1/summary.csv"; echo "::endgroup::"
+          echo "::group::interesting lines of every iteration"
+          for i in $(seq 1 "$ITERATIONS"); do
+            echo "=== iteration $i"
+            grep -aE 'writing anyway|no mutex|not started|D1 retry|\.\.\. FAILED|test result|panicked at' "$RUNNER_TEMP/d1/iter-$i.log" | cut -c1-400
+          done
+          echo "::endgroup::"
+          echo "::group::D1 ACL log (every DACL write and lock)"; cat "$D1_DIAG"; echo "::endgroup::"
+          echo "::group::watcher log"; cat "$D1_WATCH"; echo "::endgroup::"
+          for i in $(seq 1 "$ITERATIONS"); do
+            if ! grep -aq 'test result: ok' "$RUNNER_TEMP/d1/iter-$i.log"; then
+              echo "::group::full log of failing iteration $i (globset lines removed)"
+              grep -av globset "$RUNNER_TEMP/d1/iter-$i.log" | cut -c1-600
+              echo "::endgroup::"
+            fi
+          done
+          if [ "$fails" != "0" ]; then echo "(failures reproduced: $fails of $ITERATIONS)"; fi
+          exit 0
