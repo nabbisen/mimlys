@@ -57,7 +57,12 @@ fn side(name: &'static str, network: bool) -> Side {
         name: name.into(),
         command: probe_tool().to_string_lossy().into_owned(),
         args: vec![],
-        allowed_args: vec!["visible".into(), "setsid-sleep".into()],
+        allowed_args: vec![
+            "visible".into(),
+            "setsid-sleep".into(),
+            "sleep".into(),
+            "poll-time".into(),
+        ],
         arg_pattern: Some("[A-Za-z0-9_.-]+".into()),
         max_args: 2,
         effect: if network {
@@ -303,6 +308,111 @@ fn req_conf_009_a_killed_worker_leaves_no_member() {
         Termination::HostFault {
             detail: HostFaultDetail::WorkerDied
         }
+    );
+    side.worker.shutdown();
+}
+
+/// REQ-CONF-001 (clauses M and C, polled every LIM-H6): the cost of one poll,
+/// measured from inside the sandbox with the calls the worker's watchdogs
+/// make (list every pid, read the ones the profile lets it read). It is the
+/// figure the architect sets LIM-H6 from (handoff 011c-5 item 4a). The
+/// assertion is only that a poll is much cheaper than the interval, or the
+/// watchdogs could not keep their period.
+#[test]
+fn req_conf_001_one_poll_costs_far_less_than_the_interval() {
+    let test = "req_conf_001_one_poll_costs_far_less_than_the_interval";
+    let side = side("main_tool", false);
+    if skip_without_seatbelt(test, &side) {
+        return;
+    }
+    let outcome = side
+        .run(&["poll-time", "200"], &Cancellation::new())
+        .join()
+        .unwrap();
+    let line = String::from_utf8_lossy(&outcome.stdout).trim().to_owned();
+    eprintln!("MEASURE poll cost: {line}");
+    let field = |name: &str| -> f64 {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let at = words
+            .iter()
+            .position(|w| *w == name)
+            .unwrap_or_else(|| panic!("{name} in {line:?}"));
+        words[at + 1].parse().unwrap()
+    };
+    assert!(field("polls") >= 200.0, "{line}");
+    assert!(
+        field("members_read") >= 1.0,
+        "the control: the tool reads its own tree: {line}"
+    );
+    assert!(
+        field("mean_ms") < LIM_H6_TRACK_INTERVAL_MS as f64 / 4.0,
+        "a poll is a quarter of the interval at most: {line}"
+    );
+    side.worker.shutdown();
+}
+
+/// The CPU time of a process, in seconds, from `ps -o cputime=`.
+fn cpu_seconds(pid: u32) -> f64 {
+    let out = Command::new("ps")
+        .args(["-o", "cputime=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    text.split(':')
+        .try_fold(0.0, |acc, part| {
+            part.parse::<f64>().ok().map(|v| acc * 60.0 + v)
+        })
+        .unwrap_or_else(|| panic!("not a cpu time: {text:?}"))
+}
+
+/// REQ-CONF-001 (handoff 011c-5 item 4a): the worker's CPU time while a tool
+/// sleeps for ten seconds under the watchdogs, and while it is idle. Reported
+/// (`MEASURE` lines), the architect fixes LIM-H6 from it; the assertion is
+/// only that the worker does not burn a core.
+#[test]
+fn req_conf_001_the_worker_is_cheap_while_a_tool_sleeps() {
+    let test = "req_conf_001_the_worker_is_cheap_while_a_tool_sleeps";
+    let side = side("main_tool", false);
+    if skip_without_seatbelt(test, &side) {
+        return;
+    }
+    let tool = "mimlys-probe-tool sleep 14$";
+    for pid in matching(tool) {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+    let cancel = Cancellation::new();
+    let run = side.run(&["sleep", "14"], &cancel);
+    assert!(wait_for(Duration::from_secs(60), || !matching(tool).is_empty()));
+    let tool_pid = matching(tool)[0];
+    let parent = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &tool_pid.to_string()])
+        .output()
+        .unwrap();
+    let worker: u32 = String::from_utf8_lossy(&parent.stdout)
+        .trim()
+        .parse()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let (cpu0, wall0) = (cpu_seconds(worker), Instant::now());
+    std::thread::sleep(Duration::from_secs(10));
+    let (cpu1, wall1) = (cpu_seconds(worker), wall0.elapsed());
+    cancel.cancel();
+    let _ = run.join();
+    let idle0 = cpu_seconds(worker);
+    std::thread::sleep(Duration::from_secs(5));
+    let idle1 = cpu_seconds(worker);
+    eprintln!(
+        "MEASURE worker cpu while a tool sleeps: {:.2} s of cpu in {:.1} s of wall ({:.2} %), idle: {:.2} s in 5 s",
+        cpu1 - cpu0,
+        wall1.as_secs_f64(),
+        (cpu1 - cpu0) / wall1.as_secs_f64() * 100.0,
+        idle1 - idle0
+    );
+    assert!(
+        (cpu1 - cpu0) / wall1.as_secs_f64() < 0.25,
+        "the worker uses under a quarter of a core while it watches a tool"
     );
     side.worker.shutdown();
 }

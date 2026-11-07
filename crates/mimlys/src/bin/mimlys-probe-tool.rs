@@ -418,6 +418,31 @@ fn main() {
             }
         }
         #[cfg(target_os = "macos")]
+        Some("poll-time") => {
+            // The cost of one poll of the watchdogs, measured from inside the
+            // sandbox (the same calls as the worker's `members()`): `poll-time
+            // <n>` lists every pid and reads the ones the profile lets it read,
+            // n times, and prints the count of pids and the times in ms.
+            let n: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
+            let mut times: Vec<f64> = Vec::new();
+            let mut pids = 0;
+            for _ in 0..n {
+                let started = std::time::Instant::now();
+                let listed = mimlys_exec::confine::macos::probe::visible_pids();
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+                pids = listed.len();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let total: f64 = times.iter().sum();
+            let max = times.iter().cloned().fold(0.0, f64::max);
+            let min = times.iter().cloned().fold(f64::MAX, f64::min);
+            println!(
+                "polls {n} members_read {pids} min_ms {min:.2} mean_ms {:.2} max_ms {max:.2}",
+                total / n as f64
+            );
+            0
+        }
+        #[cfg(target_os = "macos")]
         Some("proclist") => match mimlys_exec::confine::macos::probe::process_list_size() {
             Ok(bytes) => {
                 println!("proclist read: {bytes} bytes");
@@ -594,7 +619,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }
