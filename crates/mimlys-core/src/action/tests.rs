@@ -233,7 +233,7 @@ fn req_tool_009_rearm_respects_the_execution_budget() {
     );
 }
 
-/// REQ-SBX-003: `exit_code` exists only for `exited`; eight termination values serialize with the tag.
+/// REQ-SBX-003: `exit_code` exists only for `exited`; nine termination values serialize with the tag.
 #[test]
 fn req_sbx_003_termination_vocabulary_and_exit_code() {
     let all = [
@@ -245,6 +245,7 @@ fn req_sbx_003_termination_vocabulary_and_exit_code() {
         Termination::Deadline,
         Termination::MemoryLimit,
         Termination::OutputLimit,
+        Termination::ProcessLimit,
         Termination::Cancelled,
         Termination::HostFault {
             detail: HostFaultDetail::WorkerDied,
@@ -268,6 +269,7 @@ fn req_sbx_003_termination_vocabulary_and_exit_code() {
             "deadline",
             "memory_limit",
             "output_limit",
+            "process_limit",
             "cancelled",
             "host_fault"
         ]
@@ -302,6 +304,21 @@ fn ed_7_5_failure_cause_from_termination() {
     assert_eq!(
         FailureCause::from_termination(&Termination::Deadline),
         Some(Timeout)
+    );
+    // REQ-SBX-003: a tree ended for its process count is a resource limit,
+    // never a tool error and never a clean exit.
+    assert_eq!(
+        FailureCause::from_termination(&Termination::ProcessLimit),
+        Some(ResourceExhausted {
+            limit: ResourceLimit::Processes
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(FailureCause::ResourceExhausted {
+            limit: ResourceLimit::Processes
+        })
+        .unwrap(),
+        serde_json::json!({"cause": "resource_exhausted", "limit": "processes"})
     );
     assert_ne!(
         FailureCause::from_termination(&Termination::FuelExhausted),

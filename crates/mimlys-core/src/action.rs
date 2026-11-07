@@ -404,6 +404,11 @@ pub enum Termination {
     MemoryLimit,
     /// LIM-S4 or LIM-H4 reached.
     OutputLimit,
+    /// LIM-H3 reached where the tree is ended for it (the macOS count
+    /// watchdog); where the kernel refuses the extra process instead (Linux,
+    /// Windows) the tool's own ending is reported. Never reported as a tool
+    /// that exited by itself (REQ-SBX-003).
+    ProcessLimit,
     /// Cancelled.
     Cancelled,
     /// The infrastructure failed.
@@ -483,6 +488,9 @@ impl FailureCause {
             }),
             Termination::OutputLimit => Some(FailureCause::ResourceExhausted {
                 limit: ResourceLimit::Output,
+            }),
+            Termination::ProcessLimit => Some(FailureCause::ResourceExhausted {
+                limit: ResourceLimit::Processes,
             }),
             Termination::Cancelled => None,
             Termination::HostFault { detail } => {

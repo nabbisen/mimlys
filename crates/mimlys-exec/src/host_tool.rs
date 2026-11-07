@@ -428,10 +428,9 @@ pub fn run(r: HostRun<'_>) -> HostOutcome {
                 child.kill_tree(r.tool_cgroup);
                 break match verdict {
                     crate::confine::macos::Verdict::Memory { .. } => Termination::MemoryLimit,
-                    // No termination names the count; the tool ended by SIGKILL.
-                    crate::confine::macos::Verdict::Count { .. } => {
-                        Termination::Exited { exit_code: 128 + 9 }
-                    }
+                    // REQ-SBX-003: a tree the watchdog ended for its count is
+                    // `process_limit`, never a tool that exited by itself.
+                    crate::confine::macos::Verdict::Count { .. } => Termination::ProcessLimit,
                 };
             }
         }

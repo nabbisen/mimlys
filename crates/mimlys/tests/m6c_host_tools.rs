@@ -983,8 +983,8 @@ fn req_conf_009_the_tools_end_leaves_no_member() {
 }
 
 /// REQ-CONF-001 / clause C (Amendment 2, settled, point 7): a tree of more
-/// than LIM-H3 processes is stopped by the watchdog and ends with the tool
-/// killed (exit 137: no termination names the count); below it nothing
+/// than LIM-H3 processes is stopped by the watchdog and ends `process_limit`
+/// (REQ-SBX-003; `resource_exhausted{processes}`, never an exit); below it nothing
 /// happens. The control: the same tool forks 20 children outside the profile.
 #[test]
 fn req_conf_001_count_watchdog_stops_a_fork_storm() {
@@ -1009,10 +1009,20 @@ fn req_conf_001_count_watchdog_stops_a_fork_storm() {
         stdout_of(&obs[0])
     );
     assert_eq!(
-        exit_code_of(&obs[1]),
-        137,
-        "a hundred children are stopped by the watchdog (SIGKILL): {}",
-        stdout_of(&obs[1])
+        obs[1]["payload"]["termination"], "process_limit",
+        "a hundred children are stopped by the watchdog, and the model is told why: {}",
+        obs[1]
+    );
+    assert!(
+        obs[1]["payload"].get("exit_code").is_none(),
+        "never an exit of the tool's own: {}",
+        obs[1]
+    );
+    assert_eq!(
+        obs[1]["cause"],
+        serde_json::json!({"cause": "resource_exhausted", "limit": "processes"}),
+        "{}",
+        obs[1]
     );
     assert!(
         wait_until(std::time::Duration::from_secs(5), || fork_children() == 0),
