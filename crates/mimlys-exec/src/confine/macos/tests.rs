@@ -173,13 +173,13 @@ fn rfc_011_a2_unwritable_paths_are_refused() {
 
 /// Amendment 2 point 3: paths have one spelling. A link is resolved, also
 /// when the path does not exist yet (a workspace is created after the
-/// profile is written); and the profile is the same however the sets are ordered.
+/// profile is written. (Unix hosts: links are resolved by the file system.)
+#[cfg(unix)]
 #[test]
 fn rfc_011_a2_paths_are_canonical() {
     let dir = tempfile::tempdir().unwrap();
     let real = dir.path().canonicalize().unwrap().join("real");
     std::fs::create_dir(&real).unwrap();
-    #[cfg(unix)]
     {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
@@ -212,7 +212,11 @@ fn rfc_011_a2_paths_are_canonical() {
         Path::new("/nonexistent-mimlys-dir/a")
     );
     assert_eq!(canonical(Path::new("relative")), Path::new("relative"));
+}
 
+/// The profile is the same however the sets are ordered or repeated.
+#[test]
+fn rfc_011_a2_profile_is_deterministic() {
     let forward = spec(&["/usr", "/bin", "/sbin"], &["/data/b", "/data/a"]);
     let mut backward = forward.clone();
     backward.read_paths.reverse();
