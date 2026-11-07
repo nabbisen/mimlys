@@ -316,6 +316,21 @@ the command that was measured to work (`env -i PATH=/usr/bin:/bin
 /usr/bin/xcrun --find clang`), not a bare `xcrun --find cc`, which would leave
 the user with the cache of the first row.
 
+**Under Rosetta** (an Intel runtime on Apple silicon; the informative job)
+the first version of the warming failed the demonstration for a second
+reason, found by the Rosetta job and reproduced in an evidence run: the first
+launch of an Intel `xcrun` is translated by Rosetta, which took about a minute
+on the runner, far past LIM-O8; the warming was killed, **left a half-written
+cache file of 114 bytes**, and that file was taken for the cache (it exists)
+while the sandboxed `xcrun` can neither read a key from it nor repair it. Two
+corrections: a warming that is killed or fails **removes** what it left (a
+partial cache is not a cache; the line of `status` then names the file, as for
+any missing cache), and a translated runtime asks through `arch -arm64` (the
+cache does not depend on the architecture of the asker: an Intel and a native
+asker made caches of the same size and the same entries, and each served the
+demonstration), so that there is nothing to translate and a first run takes
+the same two or three seconds.
+
 **Limitation.** The cache holds what has been asked. A build that asks the
 sandboxed `xcrun` for a tool the warming did not ask for (for `libtool`, `ar`,
 `strip` or `lipo` by name, rather than by the `cc` shim) finds it missing and
