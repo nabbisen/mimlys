@@ -52,7 +52,8 @@ Boundaries B1 to B9 are defined in requirements §3. Every threat names its cont
 | A deliberately misdeclared effect by an administrator | Administrators are trusted to the extent of their configuration | Administrator |
 | A WASM-hosted interpreter with its own defect | Bounded by the triple guard and WASI; pinned builds | Maintainers, through pinning |
 | The worker's own Landlock domain reads `/proc` (its descendant walk); a Wasmtime escape (THR-17) would see the command lines of the user's processes | The walk cannot work without it; host tools do not have it, the guest has no host filesystem, and the escape is the residual of THR-17 | Maintainers |
-| A world-readable `/etc` and `/opt` inside the Linux read set | Their contents are world-readable by design or root-only; narrowing them breaks toolchains for no secret gained | Administrator |
+| On macOS an unconfined program of the same user can read the runtime's environment, `env:`-referenced secrets included, through `sysctl KERN_PROCARGS2` | macOS offers no refusal of it to an unconfined reader; host tools are refused it by their profile (RFC 011 Amendment 2, point 4); the residual is the same user's own unconfined programs | User, operating system |
+| A world-readable `/etc` and `/opt` inside the Linux read set (`/private/etc` on macOS) | Their contents are world-readable by design or root-only; narrowing them breaks toolchains for no secret gained | Administrator |
 | A workspace size limit that is best-effort between step boundaries | No portable kernel quota; the worker's OS limits add a ceiling where available | Administrator |
 | Information in the model's `reason` that the user chooses to believe | Labelled untrusted and separated on the screen | User |
 

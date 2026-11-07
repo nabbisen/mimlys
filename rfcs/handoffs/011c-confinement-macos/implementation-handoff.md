@@ -3,6 +3,10 @@
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 and Amendment 1 (the read-set rules) · **Specification.** REQ-CONF-001 … 012 (macOS), REQ-TEST-013; external design §13.2 … §13.5, §23 (M6c); limits LIM-H1 … H5, LIM-O2; threats THR-11, THR-17, THR-23, THR-24, THR-32 · **Milestone.** M6c (release 0.8). Depends on 011a, 011d (done).
 **Rewritten 2026-11-07** (the first version was a three-line stub written before any backend existed). It carries what 011a, 011b and 011d taught, in §2.
 
+## Status (2026-11-07)
+
+S1 is done and reviewed. **RFC 011 Amendment 2 exists.** Its points 1 to 5 are decided: **011c-1 may start now** (the profile generator, the self-application through `dlsym`, the self-check, F, N, P, the process-information and `kern.procargs` rules, the runtime side of point 2). Points 6 to 9 (K by membership, M and C, the read set's measured part, the dependency step's minimum) wait for **spike S1b** (§3b); do not implement them before the architect has marked them settled here. Where §4 below differs from Amendment 2, Amendment 2 wins: notably §4.2's F/K/M/C rows are replaced by Amendment 2 points 3, 6 and 7, and the read set is Amendment 2 point 8.
+
 ## 0. How this handoff works
 
 It has two phases, and the second is not binding until the architect has amended RFC 011 from the first.
@@ -45,6 +49,20 @@ On a branch `s1-macos-seatbelt`: a scratch test binary (or probe-tool commands b
 | Q9 | Inside the profile: does `proc_pidinfo(PROC_PIDTASKINFO)` work on the worker's own descendants (resident size for M), and is `KERN_PROCARGS2` of the runtime refused to a tool? | M; REQ-CONF-011 on macOS |
 
 Return: `.git-exclude/review-requests/S1-macos-seatbelt/README.md` with the table, the raw logs' run ids, and for each question your reading of the answer, marked as measured or inferred.
+
+## 3b. Spike S1b — the four open points (report only)
+
+Same branch rules as S1; time-box **three CI runs**. Each answer measured, with the run id.
+
+| # | Question | Decides |
+|---|---|---|
+| B1 | Inside the base profile with `(allow signal (target same-sandbox))`: first verify that signalling `launchd` (pid 1) and the parent outside the sandbox both fail `EPERM`; only then send `kill(-1, SIGKILL)` from the worker stand-in, with a tool tree that holds a re-parented orphan. Afterwards: the tree and the orphan are gone, the stand-in is alive, the runner's own processes (the job's shell, the runner agent) are alive. If the pre-check fails, do not send it, and report | Amendment 2 point 6 (K `enforced`) |
+| B2 | Is there a listing restricted to the sandbox: `(allow process-info-listpids (target same-sandbox))` or the closest form the profile language accepts (report a parse error as an answer), and does `proc_listallpids` then return only members? | point 7 (M and C over the members) |
+| B3 | Q7 and Q8 completed: the iterative loop with the developer directory from `/private/var/db/xcode_select_link` in the seed, to `cargo test --offline` `Finished` and its test passing; then **necessity**: remove each mach service and each home-directory file of the result one at a time (in one job, a loop) and record whether the run still passes | point 8 (the read set and the mach list) |
+| B4 | UDP: under `(deny network*)`, does `sendto` of a UDP datagram to a loopback listener fail (the listener sees nothing)? | point 3 (N) |
+| B5 | The dependency step's minimum: the smallest addition to the base profile with which `cargo fetch` of the demonstration project (one registry dependency) succeeds; and that its sibling without it cannot resolve a name | point 9 |
+
+Return: `.git-exclude/review-requests/S1b-macos-seatbelt/README.md`.
 
 ## 4. Implementation (binding only after RFC 011 Amendment 2)
 

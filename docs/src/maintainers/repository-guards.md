@@ -32,6 +32,10 @@ It lists every requirement marked `T` that no test names, and every invariant `I
 - **What is searched.** The test files only: a `tests.rs` beside a module and everything under a crate's `tests/`. A mention in ordinary source (a doc comment on an implementation: `(REQ-ARCH-002)`) is documentation, not a test, and does not count.
 - The state on 2026-11-03: the intake review (N-05) found 8 of 14 invariants and 29 of 187 `T` requirements named by no test, searching every Rust file. Searching the test files only, as above, the script finds **8 of 14 invariants and 46 of 189 `T` requirements** (four more are mapped as structural): 21 requirements are named only in source comments. The invariants agree; the requirements differ by that 21, and the script's number is the one to track.
 
+## 3a. The hostile corpus (REQ-SEC-013, REQ-TEST-017)
+
+The corpus is the set of tests that feed hostile input to the runtime and whose doc comment names REQ-SEC-013: hostile decisions (`validate`, `decision`), paths (`path`, the built-in tools' symbolic-link tests), tool results and model output (the runtime tests of REQ-SEC-011), descriptions (`mimlys-mcp`, THR-25) and modules (the sandbox's malformed-module tests). It runs on every change because it is part of `cargo test --all-features`. A new hostile case joins it by naming REQ-SEC-013. A data-driven corpus (one fixture directory read by one harness) is a candidate for the replanning after M6c, not a requirement of 0.8.
+
 ## 4. Other scripts
 
 `check-core-deps.sh` (the core depends on no I/O or protocol crate), `check-unsafe.sh` (`unsafe` only under `crates/mimlys-exec/src/confine/`, each block with a `SAFETY:` line), `check-doc-refs.sh` (every `REQ-`, `LIM-` and `THR-` cited is defined; every requirement appears in the external design's coverage table).
