@@ -251,6 +251,13 @@ fn req_conf_009_a_killed_worker_leaves_no_member() {
             .args(["-KILL", &pid.to_string()])
             .status();
     }
+    // A tool that ends first: the worker's own sweep at its end must not
+    // take the sweeper with it (the worker's loop excludes the sweeper).
+    let first = side
+        .run(&["sleep", "1"], &Cancellation::new())
+        .join()
+        .unwrap();
+    assert_eq!(first.termination, Termination::Exited { exit_code: 0 });
     let cancel = Cancellation::new();
     let run = side.run(&["setsid-sleep", secs], &cancel);
     let sleeper = format!("^/bin/sleep {secs}$");
