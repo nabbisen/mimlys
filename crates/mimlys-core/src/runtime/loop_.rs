@@ -41,6 +41,9 @@ use crate::tool::{ToolDefinition, render_definitions};
 use crate::validate::{AuthorizedAction, ControlDecision, Outcome, ValidationContext, validate};
 use std::sync::Arc;
 
+/// The component name of a contained panic in a tool provider.
+pub(super) const PROVIDER: &str = "tool_provider";
+
 /// What a step did, for callers of the loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepResultView {
@@ -147,7 +150,22 @@ impl Runtime {
                 state: halted.state,
             });
         }
-        let env = self.step_env(&task, now)?;
+        // A panic in the provider's `definitions`, `refresh_pins` or
+        // `drain_events` (REQ-SEC-011) halts the task like a failed `execute`:
+        // every task ends in one stated outcome, with its state change
+        // recorded (CLR-4). `guard` is the only source of this component.
+        let env = match self.step_env(&task, now) {
+            Ok(env) => env,
+            Err(RuntimeError::Unavailable { component }) if component == PROVIDER => {
+                let halted = task.transition(TaskInput::Halt(HaltReason::ToolUnavailable), now)?;
+                self.persist_task(&task, &halted)?;
+                return Ok(StepResultView {
+                    outcome: StepOutcome::Halted,
+                    state: halted.state,
+                });
+            }
+            Err(e) => return Err(e),
+        };
         // An approved action continues its own step from line 4.
         if let Some(approval) = self.deps.persistence.load_pending_approval(task_id)?
             && approval.status == ApprovalStatus::Approved
@@ -187,7 +205,7 @@ impl Runtime {
         let unavailable = self.refresh_pins(task, tools.as_ref())?;
         let names = grants.visible_tools(now);
         let visible: Vec<ToolDefinition> = self
-            .guard("tool_provider", || tools.definitions())?
+            .guard(PROVIDER, || tools.definitions())?
             .into_iter()
             .filter(|d| names.contains(&d.name))
             .collect();
@@ -215,9 +233,7 @@ impl Runtime {
         task: &Task,
         tools: &dyn ToolProvider,
     ) -> Result<Vec<(String, String)>, RuntimeError> {
-        let changed = self.guard("tool_provider", || {
-            tools.refresh_pins(&task.versions.tool_imports)
-        })?;
+        let changed = self.guard(PROVIDER, || tools.refresh_pins(&task.versions.tool_imports))?;
         self.record_provider_events(tools)?;
         let mut unpinned = self.unpinned.lock().expect("unpinned lock");
         let set = unpinned.entry(task.task_id).or_default();
@@ -238,16 +254,19 @@ impl Runtime {
             .collect())
     }
 
-    /// Appends the server events a provider produced (RFC 009 §1).
+    /// Appends the server events a provider produced (RFC 009 §1). The
+    /// events are audit records (REQ-OBS-001): losing them is not a log
+    /// matter, so a panic in `drain_events` is an error like the other calls.
     pub(crate) fn record_provider_events(
         &self,
         tools: &dyn ToolProvider,
     ) -> Result<(), RuntimeError> {
-        // Events are a record, not a decision: a provider that panics here
-        // loses the events it had (logged), and the step goes on.
-        let events = self
-            .guard("tool_provider", || tools.drain_events())
-            .unwrap_or_default();
+        let events = self.guard(PROVIDER, || tools.drain_events())?;
+        self.append_provider_events(events)
+    }
+
+    /// Appends events a provider produced and the caller already drained.
+    pub(crate) fn append_provider_events(&self, events: Vec<Event>) -> Result<(), RuntimeError> {
         for event in events {
             self.deps.persistence.append_event(&self.event(
                 Actor::Runtime,
@@ -983,12 +1002,12 @@ impl Runtime {
                         },
                     )
                 },
-                |panicked| self.log_contained_panic("tool_provider", panicked),
+                |panicked| self.log_contained_panic(PROVIDER, panicked),
             );
             let outcome = match call.await {
                 Ok(outcome) => outcome,
                 Err(panicked) => {
-                    self.log_contained_panic("tool_provider", &panicked);
+                    self.log_contained_panic(PROVIDER, &panicked);
                     let wall_ms = started.millis_until(self.deps.clock.now()).max(0);
                     crate::spi::ExecutionOutcome::host_fault(
                         crate::action::HostFaultDetail::Unavailable,

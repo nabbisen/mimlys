@@ -2480,9 +2480,11 @@ fn create_request() -> CreateTask {
 /// creation), `generate`, `last_usage`; provider `definitions` (task
 /// creation, every step), `imports` (task creation), `refresh_pins` (every
 /// step), `drain_events` (task creation and every step), `execute`. A panic
-/// in a call that decides something is `unavailable` for that component and
-/// the process goes on; a panic in `last_usage` loses the usage figure and
-/// one in `drain_events` the events it held, and the step goes on.
+/// in a call at task creation or in the status is `unavailable` for that
+/// component (no task exists yet); at a step it halts the task
+/// `tool_unavailable` with its state change recorded; a panic in
+/// `last_usage` loses the usage figure and the step goes on. The process
+/// goes on in every case.
 #[test]
 fn req_sec_011_every_call_into_an_adapter_is_contained() {
     let unavailable = |err: RuntimeError, component: &str| {
@@ -2501,6 +2503,7 @@ fn req_sec_011_every_call_into_an_adapter_is_contained() {
             .create_task(&h.session, create_request())
             .expect_err(method);
         unavailable(err, "model_backend");
+        assert!(h.persistence.list_tasks().unwrap().is_empty(), "{method}");
         if method == "describe" {
             unavailable(h.runtime.record_started().unwrap_err(), "model_backend");
             unavailable(
@@ -2515,7 +2518,7 @@ fn req_sec_011_every_call_into_an_adapter_is_contained() {
     }
 
     // Provider methods that decide something, at task creation.
-    for method in ["definitions", "imports"] {
+    for method in ["definitions", "imports", "drain_events"] {
         let h = Harness::new(vec![act("read_file", "a")]);
         h.tools.panic_in(method, "provider exploded");
         let err = h
@@ -2523,31 +2526,44 @@ fn req_sec_011_every_call_into_an_adapter_is_contained() {
             .create_task(&h.session, create_request())
             .expect_err(method);
         unavailable(err, "tool_provider");
+        // No half-created task is left behind.
+        assert!(h.persistence.list_tasks().unwrap().is_empty(), "{method}");
         h.tools.stop_panicking();
         let id = h.create();
         assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{method}");
     }
 
-    // Provider methods that decide something, at a step: the step does not
-    // run, the task keeps its state, and it continues when the adapter works.
-    for method in ["definitions", "refresh_pins"] {
+    // Provider methods at a step: the task halts `tool_unavailable`, as for a
+    // failed `execute`, with its state change recorded (CLR-4); no action is
+    // made. It resumes once the adapter works.
+    for method in ["definitions", "refresh_pins", "drain_events"] {
         let h = Harness::new(vec![act("read_file", "a")]);
         let id = h.create();
         h.tools.panic_in(method, "provider exploded");
-        let err = futures_block(h.runtime.run_step(id)).expect_err(method);
-        unavailable(err, "tool_provider");
-        assert_eq!(h.state(id), TaskState::Running, "{method}");
+        let result = h.step(id);
+        assert_eq!(result.outcome, StepOutcome::Halted, "{method}");
+        let halted = TaskState::Halted {
+            halt_reason: HaltReason::ToolUnavailable,
+        };
+        assert_eq!(result.state, halted, "{method}");
+        assert_eq!(h.state(id), halted, "{method}");
+        assert!(
+            h.event_names(id)
+                .iter()
+                .any(|name| name == "task.state_changed"),
+            "{method}"
+        );
         assert!(h.persistence.load_actions(id).unwrap().is_empty());
+        assert!(h.runtime.get_task(id).is_ok());
         h.tools.stop_panicking();
+        h.runtime.resume_task(&h.session, id, None).unwrap();
         assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{method}");
     }
 
-    // `last_usage` and `drain_events`: the step goes on without the figure
-    // or the events.
+    // `last_usage`: the step goes on without the figure.
     let h = Harness::new(vec![act("read_file", "a")]);
     let id = h.create();
     h.backend.panic_in("last_usage", "backend exploded");
-    h.tools.panic_in("drain_events", "provider exploded");
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
     assert_eq!(h.persistence.load_actions(id).unwrap().len(), 1);
 }

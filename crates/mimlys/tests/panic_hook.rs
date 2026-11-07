@@ -26,6 +26,24 @@ fn assert_one_hook_line(stderr: &str) -> serde_json::Value {
     serde_json::from_str(lines[0]).unwrap_or_else(|e| panic!("one JSON line ({e}):\n{stderr}"))
 }
 
+/// The line's `location` is `src/…:<line>`: no home directory, no drive
+/// letter, no backslash.
+fn assert_crate_relative_location(line: &serde_json::Value, file: &str) {
+    let location = line["fields"]["location"].as_str().expect("a location");
+    let (path, number) = location.rsplit_once(':').expect("file:line");
+    assert_eq!(path, file, "{location}");
+    assert!(number.parse::<u32>().is_ok_and(|n| n > 0), "{location}");
+    assert!(
+        !location.contains("/home/") && !location.contains('\\'),
+        "{location}"
+    );
+    let bytes = location.as_bytes();
+    assert!(
+        !(bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'),
+        "no drive letter: {location}"
+    );
+}
+
 /// REQ-SEC-011: a panic after the configuration loaded: the secret is
 /// redacted, the control and bidirectional characters are gone, the text is
 /// one line of at most LIM-I5 characters, and the process ends (not 0).
@@ -61,6 +79,7 @@ fn req_sec_011_the_hook_redacts_and_bounds_a_panic_after_the_configuration_loade
     assert!(text.chars().count() <= LIM_I5_MESSAGE_CHARS, "{text}");
     assert!(!text.contains('\n') && !text.contains('\u{202e}'), "{text}");
     assert_eq!(line["fields"]["binary"], "mimlys");
+    assert_crate_relative_location(&line, "src/main.rs");
 }
 
 /// REQ-SEC-011: the worker's hook: it has no secrets to redact, and still
@@ -78,4 +97,5 @@ fn req_sec_011_the_worker_hook_bounds_and_strips_a_panic() {
     assert!(text.starts_with("worker boom second "), "{text}");
     assert!(text.chars().count() <= LIM_I5_MESSAGE_CHARS, "{text}");
     assert_eq!(line["fields"]["binary"], "mimlys-worker");
+    assert_crate_relative_location(&line, "src/worker_main.rs");
 }

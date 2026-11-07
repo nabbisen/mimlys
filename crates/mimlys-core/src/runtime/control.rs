@@ -3,7 +3,7 @@
 //! verb acts under a `Session`, writes one transition with its event, and
 //! never submits a decision, validates an action or executes anything.
 
-use super::loop_::state_changed;
+use super::loop_::{PROVIDER, state_changed};
 use super::{Runtime, RuntimeError, Session};
 use crate::action::{Action, ActionInput, ActionStatus};
 use crate::approval::{ApprovalRequest, ApprovalStatus, InvalidationReason, UserDecision};
@@ -238,7 +238,7 @@ impl Runtime {
         };
         let tools = self.deps.workspaces.tools(task_id)?;
         let mut hashes = std::collections::BTreeMap::new();
-        for d in self.guard("tool_provider", || tools.definitions())? {
+        for d in self.guard(PROVIDER, || tools.definitions())? {
             hashes.insert(
                 d.name.clone(),
                 crate::hash::hash_canonical(&serde_json::to_value(&d).expect("serializes")),
@@ -250,8 +250,12 @@ impl Runtime {
             tool_definition_hashes: hashes,
             runtime_version: self.deps.runtime_version.clone(),
             backend: Some(self.guard("model_backend", || self.deps.backend.describe())?),
-            tool_imports: self.guard("tool_provider", || tools.imports())?,
+            tool_imports: self.guard(PROVIDER, || tools.imports())?,
         };
+        // Drained before anything is persisted (REQ-SEC-011): a provider that
+        // panics here is an error to the caller while no task exists, not a
+        // half-created task. They are appended where they always were.
+        let provider_events = self.guard(PROVIDER, || tools.drain_events())?;
         let mut task = Task::create(
             TaskSpec {
                 task_id,
@@ -327,7 +331,7 @@ impl Runtime {
                 ))?;
             }
         }
-        self.record_provider_events(tools.as_ref())?;
+        self.append_provider_events(provider_events)?;
         self.deps
             .persistence
             .record_workspace_state(task_id, WorkspaceState::Active, None)?;
