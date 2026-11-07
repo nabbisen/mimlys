@@ -169,7 +169,7 @@ pub const LIM_O2_CANCEL_MS: u64 = 2_000;
 /// LIM-O7: wait for another runtime's write of the same directory's
 /// permissions (Windows), in milliseconds; at the end of it the write is
 /// refused (`acl_not_applied`), never made on a stale base.
-pub const LIM_O7_PERMISSION_WRITE_WAIT_MS: u64 = 60_000;
+pub const LIM_O7_PERMISSION_WRITE_WAIT_MS: u64 = 1;
 /// LIM-C5: steps of a forked task's history shown as context.
 pub const LIM_C5_FORK_HISTORY_STEPS: usize = 20;
 /// LIM-M3: transport retries of a model request.
