@@ -13,6 +13,10 @@ announced here under "Changed".
 
 - `mimlys`: `mimlys toolchain revoke --all [--yes]` (Windows; REQ-CONF-008, handoff 011e): removes every permission the AppContainer holds, on mimlys's own directories and on the toolchain directories (the record's entries and, from a scan bounded to mimlys's own directories and the declared `read_paths`, the entries the record lost), then deletes the container profile and the record file, so that deleting mimlys leaves the user's directories as they were. One confirmation (`--yes` skips it), a report per entry, `--json` with `{removed, failed, profile_deleted, record_deleted}`, exit 1 with the same object if anything could not be removed (the record then holds exactly what failed). Elsewhere the command says nothing was changed outside the data directory.
 
+### Fixed
+
+- `mimlys-mcp` (REQ-MCP-008): a server's `max_call_ms` is now a floor for the deadline of every one of its tools. Until now only a declared tool's deadline was raised to it; an undeclared tool kept the LIM-O5 default (60 000 ms) even when the server declared a longer maximum, so a server with `max_call_ms = 120000` had its undeclared tools cut off at 60 000 ms. The floor is applied at import, in one place.
+
 ## [0.7.1] - 2026-11-04
 
 Release 0.7.1 is the hardening of the Linux backend that the intake review

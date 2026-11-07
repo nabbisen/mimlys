@@ -50,7 +50,7 @@ fn declared() -> Declaration {
 /// declaration, not from `readOnlyHint`; annotations are recorded.
 #[test]
 fn req_mcp_003_rypsok_definition_imports() {
-    let imported = import("rypsok", &web_search(), Some(&declared()));
+    let imported = import("rypsok", &web_search(), Some(&declared()), None);
     assert_eq!(imported.record.unavailable, None);
     assert!(imported.record.declared);
     assert!(imported.record.annotations.is_some());
@@ -102,7 +102,7 @@ fn req_mcp_003_rypsok_definition_imports() {
     );
 
     // Undeclared: the restrictive defaults (external_write, not idempotent, LIM-O5).
-    let undeclared = import("rypsok", &web_search(), None);
+    let undeclared = import("rypsok", &web_search(), None, None);
     let d = undeclared.definition.unwrap();
     assert!(!undeclared.record.declared);
     assert_eq!(d.effect.kind, EffectKind::ExternalWrite);
@@ -124,7 +124,7 @@ fn thr_25_hostile_description_is_bounded() {
     );
     let mut tool = web_search();
     tool.description = Some(hostile);
-    let imported = import("rypsok", &tool, Some(&declared()));
+    let imported = import("rypsok", &tool, Some(&declared()), None);
     assert!(imported.record.description_truncated);
     let d = imported.definition.unwrap();
     assert!(d.description.chars().count() <= LIM_I2_TOOL_DESCRIPTION_CHARS);
@@ -132,10 +132,10 @@ fn thr_25_hostile_description_is_bounded() {
     assert!(!d.description.contains('\u{200B}'));
     assert!(!d.description.contains('\u{202E}'));
     // The hash is of the server's definition, so the pin notices the change.
-    let same = import("rypsok", &tool, Some(&declared()));
+    let same = import("rypsok", &tool, Some(&declared()), None);
     assert_eq!(same.record.hash, imported.record.hash);
     assert_ne!(
-        import("rypsok", &web_search(), Some(&declared()))
+        import("rypsok", &web_search(), Some(&declared()), None)
             .record
             .hash,
         imported.record.hash
@@ -154,7 +154,7 @@ fn req_mcp_003_unavailable_reasons() {
         None,
     );
     assert_eq!(
-        import("s", &odd, None).record.unavailable.as_deref(),
+        import("s", &odd, None, None).record.unavailable.as_deref(),
         Some("schema_unsupported:x:anyOf")
     );
     let mut props = serde_json::Map::new();
@@ -168,7 +168,7 @@ fn req_mcp_003_unavailable_reasons() {
         None,
     );
     assert!(
-        import("s", &wide, None)
+        import("s", &wide, None, None)
             .record
             .unavailable
             .as_deref()
@@ -182,7 +182,7 @@ fn req_mcp_003_unavailable_reasons() {
         None,
     );
     assert!(
-        import("s", &deep, None)
+        import("s", &deep, None, None)
             .record
             .unavailable
             .as_deref()
@@ -192,7 +192,7 @@ fn req_mcp_003_unavailable_reasons() {
     let mut decl = declared();
     decl.destination_arguments = vec!["url".into()];
     assert_eq!(
-        import("s", &web_search(), Some(&decl))
+        import("s", &web_search(), Some(&decl), None)
             .record
             .unavailable
             .as_deref(),
@@ -205,12 +205,15 @@ fn req_mcp_003_unavailable_reasons() {
         Some(json!({"type": "object", "patternProperties": {}})),
     );
     assert_eq!(
-        import("s", &bad_output, None).record.unavailable.as_deref(),
+        import("s", &bad_output, None, None)
+            .record
+            .unavailable
+            .as_deref(),
         Some("output_schema_unsupported::keyword patternProperties")
     );
     let bad_name = listed("Bad-Name", "d", json!({"type": "object"}), None);
     assert!(
-        import("s", &bad_name, None)
+        import("s", &bad_name, None, None)
             .record
             .unavailable
             .as_deref()
@@ -227,7 +230,7 @@ fn req_mcp_003_unavailable_reasons() {
         }}),
         None,
     );
-    let d = import("s", &nested, None).definition.unwrap();
+    let d = import("s", &nested, None, None).definition.unwrap();
     let opt = d.input.params.iter().find(|p| p.name == "opt").unwrap();
     assert!(matches!(opt.ty, ParamType::String { .. }));
     assert_eq!(
@@ -243,4 +246,26 @@ fn req_mcp_003_unavailable_reasons() {
         schema.params.iter().find(|p| p.name == "tags").unwrap().ty,
         ParamType::StringArray { max_items: 3, .. }
     ));
+}
+
+/// REQ-MCP-008 (external design §11): the deadline of an imported tool, declared
+/// or not, is never below the server's `max_call_ms`; without one the
+/// declaration's value, or LIM-O5 for an undeclared tool, stands.
+#[test]
+fn req_mcp_008_import_deadline_floor() {
+    let lim_o5 = mimlys_core::limits::LIM_O5_EXTERNAL_DEADLINE_MS;
+    let deadline = |declaration: Option<&Declaration>, floor: Option<i64>| {
+        import("rypsok", &web_search(), declaration, floor)
+            .definition
+            .unwrap()
+            .deadline_ms
+    };
+    let declared = declared();
+    assert_eq!(declared.timeout_ms, 10_000);
+    assert_eq!(deadline(Some(&declared), None), 10_000);
+    assert_eq!(deadline(None, None), lim_o5);
+    assert_eq!(deadline(Some(&declared), Some(120_000)), 120_000);
+    assert_eq!(deadline(None, Some(120_000)), 120_000);
+    assert_eq!(deadline(Some(&declared), Some(5_000)), 10_000);
+    assert_eq!(deadline(None, Some(5_000)), lim_o5);
 }

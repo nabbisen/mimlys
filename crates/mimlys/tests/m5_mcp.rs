@@ -845,10 +845,8 @@ fn deadlines(db: &std::path::Path, task_id: &str) -> std::collections::BTreeMap<
 /// K-03 (external design §11, limits LIM-O5): the deadline of an external
 /// tool is its declaration's `timeout_ms`, and LIM-O5 when none is given,
 /// for a declared tool without a `timeout_ms` and for an undeclared one.
-/// This test claims only the default. The rule that a deadline is never
-/// below a server's declared maximum (`max_call_ms`) does not hold for an
-/// undeclared tool (it keeps LIM-O5 whatever the maximum), so it is not
-/// claimed here.
+/// This test claims only the default (no `max_call_ms` is configured); the
+/// floor that `max_call_ms` sets is `req_mcp_008_deadline_is_never_below_max_call_ms`.
 #[test]
 fn k_03_external_deadline_defaults_to_lim_o5() {
     let env = Env::new(
@@ -883,5 +881,69 @@ fn k_03_external_deadline_defaults_to_lim_o5() {
         got["rypsok.engine_status"],
         mimlys_core::limits::LIM_O5_EXTERNAL_DEADLINE_MS,
         "undeclared"
+    );
+}
+
+/// REQ-MCP-008 (external design §11): a server's `max_call_ms` is a floor for
+/// every deadline of its tools, a declared tool's (`web_search`, declared at
+/// 10 000 ms; `echo_env`, declared without a `timeout_ms`) and an undeclared
+/// tool's (`engine_status`, LIM-O5 by default). A declaration above the floor
+/// keeps its own value (`web_fetch`, 15 000 ms, under a 12 000 ms floor
+/// in the second run).
+#[test]
+fn req_mcp_008_deadline_is_never_below_max_call_ms() {
+    let run = |max_call_ms: i64| {
+        let env = Env::new(
+            &[
+                act("rypsok.web_search", json!({"query": "rust"})),
+                act("rypsok.echo_env", json!({})),
+                act(
+                    "rypsok.web_fetch",
+                    json!({"url": "https://example.org/article"}),
+                ),
+                act("rypsok.engine_status", json!({})),
+                complete(),
+            ],
+            &format!("max_call_ms = {max_call_ms}"),
+            &["rypsok.engine_status"],
+        );
+        let scope = env.scope();
+        let (code, value) = env.json(&[
+            "run",
+            "floor",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "network:example.org",
+        ]);
+        assert_eq!(code, 0, "{value}");
+        let id = value["task"]["task_id"].as_str().unwrap();
+        deadlines(&env.data.path().join("data/mimlys.db"), id)
+    };
+    let high = run(120_000);
+    for tool in [
+        "rypsok.web_search",
+        "rypsok.echo_env",
+        "rypsok.engine_status",
+        "rypsok.web_fetch",
+    ] {
+        assert_eq!(
+            high.get(tool),
+            Some(&120_000),
+            "{tool}: raised to max_call_ms: {high:?}"
+        );
+    }
+    let low = run(12_000);
+    assert_eq!(low["rypsok.web_search"], 12_000, "declared 10 000, raised");
+    assert_eq!(low["rypsok.web_fetch"], 15_000, "declared above the floor");
+    assert_eq!(
+        low["rypsok.echo_env"],
+        mimlys_core::limits::LIM_O5_EXTERNAL_DEADLINE_MS,
+        "the default is above the floor"
+    );
+    assert_eq!(
+        low["rypsok.engine_status"],
+        mimlys_core::limits::LIM_O5_EXTERNAL_DEADLINE_MS,
+        "undeclared: the default is above the floor"
     );
 }

@@ -391,7 +391,6 @@ impl Config {
                     .tools
                     .iter()
                     .map(|(tool, d)| {
-                        let timeout = d.timeout_ms.unwrap_or(LIM_O5_EXTERNAL_DEADLINE_MS);
                         (
                             tool.clone(),
                             mimlys_mcp::Declaration {
@@ -405,7 +404,7 @@ impl Config {
                                 },
                                 idempotent: d.idempotent,
                                 destination_arguments: d.destination_arguments.clone(),
-                                timeout_ms: s.max_call_ms.map_or(timeout, |m| timeout.max(m)),
+                                timeout_ms: d.timeout_ms.unwrap_or(LIM_O5_EXTERNAL_DEADLINE_MS),
                             },
                         )
                     })

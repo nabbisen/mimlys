@@ -54,7 +54,14 @@ fn listed_hash(server: &str, t: &Listed) -> Hash {
 }
 
 /// Imports one listed tool under the declaration (or the undeclared defaults).
-pub fn import(server: &str, listed: &Listed, declaration: Option<&Declaration>) -> Imported {
+/// `max_call_ms` is the server's declared maximum call time: the tool's
+/// deadline, declared or defaulted, is never below it (REQ-MCP-008).
+pub fn import(
+    server: &str,
+    listed: &Listed,
+    declaration: Option<&Declaration>,
+    max_call_ms: Option<i64>,
+) -> Imported {
     let name = format!("{server}.{}", listed.name);
     let hash = listed_hash(server, listed);
     let declared = declaration.is_some();
@@ -139,7 +146,7 @@ pub fn import(server: &str, listed: &Listed, declaration: Option<&Declaration>) 
             reversible: false,
             idempotent: declaration.idempotent,
         },
-        deadline_ms: declaration.timeout_ms,
+        deadline_ms: max_call_ms.map_or(declaration.timeout_ms, |m| declaration.timeout_ms.max(m)),
         profile: ResourceProfile::External,
         destination_arguments: declaration.destination_arguments.clone(),
         provider: Provider::Mcp {

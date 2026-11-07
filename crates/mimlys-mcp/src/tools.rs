@@ -84,7 +84,12 @@ impl Servers {
                 Ok((_, tools, _)) => {
                     for listed in &tools {
                         let declaration = server.config().tools.get(&listed.name);
-                        out.push(import(server.name(), listed, declaration));
+                        out.push(import(
+                            server.name(),
+                            listed,
+                            declaration,
+                            server.config().max_call_ms,
+                        ));
                     }
                 }
                 Err(e) => {
@@ -115,7 +120,12 @@ impl Servers {
             let mut tools = Vec::new();
             let mut unavailable = Vec::new();
             for l in &listed {
-                let imported = import(server.name(), l, server.config().tools.get(&l.name));
+                let imported = import(
+                    server.name(),
+                    l,
+                    server.config().tools.get(&l.name),
+                    server.config().max_call_ms,
+                );
                 match imported.record.unavailable {
                     Some(reason) => unavailable.push((imported.name, reason)),
                     None => tools.push(imported.name),
