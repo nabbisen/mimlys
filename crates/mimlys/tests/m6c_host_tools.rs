@@ -598,22 +598,25 @@ fn req_conf_005_tcp_to_loopback_is_denied() {
     );
 }
 
-/// REQ-CONF-005 / clause N: a name cannot be resolved (it goes through a
-/// mach service and a Unix socket, an egress channel: measured by S1); the
-/// control resolves `localhost` outside the profile.
+/// REQ-CONF-005 / clause N: a name that is not in `/etc/hosts` cannot be
+/// resolved: resolution goes through a mach service and a Unix socket, an
+/// egress channel (measured by S1). The control resolves the same name
+/// outside the profile and skips where the machine cannot (no network).
+/// (`localhost` is not the subject: the read set holds `/private/etc`, so it
+/// resolves from the hosts file without any traffic.)
 #[test]
 fn req_conf_005_name_lookup_is_denied() {
     let test = "req_conf_005_name_lookup_is_denied";
-    let (code, line) = control(&["getaddrinfo", "localhost"]);
+    let (code, line) = control(&["getaddrinfo", "example.com"]);
     if code != 0 {
         common::skip(
             test,
-            &format!("this machine cannot resolve localhost: {line}"),
+            &format!("this machine cannot resolve example.com: {line}"),
         );
         return;
     }
     assert!(line.contains("getaddrinfo resolved"), "{line}");
-    let env = Env::with_k_stand_in(&[probe(&["getaddrinfo", "localhost"]), complete()], "");
+    let env = Env::with_k_stand_in(&[probe(&["getaddrinfo", "example.com"]), complete()], "");
     let Some(obs) = run_probe_script(test, &env) else {
         return;
     };

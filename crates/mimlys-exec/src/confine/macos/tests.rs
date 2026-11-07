@@ -102,7 +102,8 @@ fn rfc_011_a2_sets_become_rules() {
 }
 
 /// Amendment 2 point 3: SBPL string literals escape `\` and `"`, and a path
-/// cannot end its literal and add a rule of its own.
+/// cannot end its literal and add a rule of its own (a hostile path,
+/// REQ-SEC-013).
 #[test]
 fn rfc_011_a2_strings_are_escaped() {
     assert_eq!(escape(r#"a"b\c"#), r#"a\"b\\c"#);
