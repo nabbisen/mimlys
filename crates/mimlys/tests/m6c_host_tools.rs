@@ -50,12 +50,30 @@ struct Env {
     extra_env: Vec<(String, String)>,
     /// The dependency step is declared (`with_fetch`): runs grant it too.
     fetch: bool,
+    /// Held for the test's life: every runtime these tests start makes `xcrun`'s
+    /// cache when it is absent, so the tests that delete it or look for it
+    /// (which hold the lock exclusively, [`cache_lock`]) must be alone.
+    _runtimes: Option<std::sync::RwLockReadGuard<'static, ()>>,
 }
 
 impl Env {
     /// The probe tool declared as `probe`; `run_host_tool` is visible through the tasks' `host_tool` grants.
     /// `extra` is appended to the configuration before the declarations.
     fn new(script: &[Value], extra: &str) -> Self {
+        let guard = CACHE.read().unwrap_or_else(|e| e.into_inner());
+        Self::build(script, extra, Some(guard))
+    }
+
+    /// As [`Env::new`], for a test that already holds [`cache_lock`].
+    fn new_exclusive(script: &[Value], extra: &str, _held: &CacheGuard) -> Self {
+        Self::build(script, extra, None)
+    }
+
+    fn build(
+        script: &[Value],
+        extra: &str,
+        guard: Option<std::sync::RwLockReadGuard<'static, ()>>,
+    ) -> Self {
         let data = tempfile::tempdir().unwrap();
         // The directory is in the write set (`<data>/tmp`) and short enough for a Unix socket path.
         std::fs::create_dir_all(data.path().join("data/tmp")).unwrap();
@@ -93,6 +111,7 @@ env_allow = ["MIMLYS_TEST_RUNTIME_PID", "MIMLYS_TEST_OWNER_PID"]
             config,
             extra_env: vec![],
             fetch: false,
+            _runtimes: guard,
         }
     }
 
@@ -1308,7 +1327,25 @@ fn toolchain_bin() -> Option<(PathBuf, PathBuf)> {
 /// that asked for it.
 #[test]
 fn m6c_demonstration_cargo_test_offline() {
-    let test = "m6c_demonstration_cargo_test_offline";
+    let _serial = cache_lock();
+    demonstration("m6c_demonstration_cargo_test_offline");
+}
+
+/// The tests that delete `xcrun`'s cache or look for it take turns with all
+/// the others: the cache is one file in the per-user temporary directory, and
+/// every runtime started makes it when it is absent.
+static CACHE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+type CacheGuard = std::sync::RwLockWriteGuard<'static, ()>;
+
+/// Exclusive: no other test runs a runtime meanwhile.
+fn cache_lock() -> CacheGuard {
+    CACHE.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The demonstration: `cargo test --offline` of a native project, the model
+/// fixes the failing test and the completion check verifies it.
+fn demonstration(test: &str) {
     let Some((rustup_home, bin)) = toolchain_bin() else {
         common::skip(test, "no rustup toolchain under ~/.rustup");
         return;
@@ -1510,4 +1547,78 @@ fn req_conf_009_a_killed_runtime_leaves_no_member() {
         took <= bound,
         "swept in {took:?}, more than LIM-O2 plus one poll ({bound:?})"
     );
+}
+
+/// REQ-CONF-005 / RFC 011 Amendment 2, implementation decisions, point 8
+/// (external design §13.3, LIM-O8): on a Mac where `xcrun` never ran (here:
+/// its cache deleted) with an Xcode selected, the runtime makes the cache itself,
+/// outside the sandbox, before it starts the worker, and the demonstration
+/// completes (011c-5 measured that it halts without). The control: the cache
+/// is absent before and exists afterwards. With the Command Line Tools selected
+/// the cache is not needed and the test says so.
+#[test]
+fn req_conf_005_the_demonstration_completes_with_the_xcrun_cache_deleted() {
+    let test = "req_conf_005_the_demonstration_completes_with_the_xcrun_cache_deleted";
+    let _serial = cache_lock();
+    let Some(file) = mimlys_exec::confine::macos::xcrun_cache_file() else {
+        common::skip(
+            test,
+            "the Command Line Tools are selected: no cache is needed",
+        );
+        return;
+    };
+    let _ = std::fs::remove_file(&file);
+    assert!(!file.exists(), "the control: the cache is absent");
+    demonstration(test);
+    assert!(file.exists(), "the runtime made {}", file.display());
+}
+
+/// REQ-CONF-003 / external design §13.3: if the cache cannot be made (the
+/// test makes `xcrun` fail with the debug-only `MIMLYS_TEST_XCRUN`, which a
+/// release build does not read), `status` and `check` each show one line
+/// naming the file and the remedy, in the JSON as `xcrun_cache_missing`, and
+/// the command goes on (exit 0). Without the hook the same commands show no
+/// such line and the cache exists afterwards.
+#[test]
+fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
+    let test = "req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made";
+    let _serial = cache_lock();
+    let Some(file) = mimlys_exec::confine::macos::xcrun_cache_file() else {
+        common::skip(
+            test,
+            "the Command Line Tools are selected: no cache is needed",
+        );
+        return;
+    };
+    let shown = file.to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&file);
+    let failing = Env::new_exclusive(&[], "", &_serial).env("MIMLYS_TEST_XCRUN", "/usr/bin/false");
+    for command in ["status", "check"] {
+        let (code, stdout, stderr) = failing.run(&[command]);
+        assert_eq!(code, 0, "the run goes on: {stdout}\n{stderr}");
+        let lines: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.contains("xcrun's cache"))
+            .collect();
+        assert_eq!(lines.len(), 1, "one line: {stdout}");
+        assert!(lines[0].contains(&shown), "names the file: {}", lines[0]);
+        assert!(
+            lines[0].contains("run `env -i PATH=/usr/bin:/bin /usr/bin/xcrun --find clang` once"),
+            "and the remedy: {}",
+            lines[0]
+        );
+        let (_, json) = failing.json(&[command]);
+        assert_eq!(json["xcrun_cache_missing"], shown.as_str(), "{json}");
+        assert!(!file.exists(), "it could not be made");
+    }
+    let healthy = Env::new_exclusive(&[], "", &_serial);
+    for command in ["status", "check"] {
+        let (code, stdout, _) = healthy.run(&[command]);
+        assert_eq!(code, 0);
+        assert!(!stdout.contains("xcrun's cache"), "{stdout}");
+        let (_, json) = healthy.json(&[command]);
+        assert!(json.get("xcrun_cache_missing").is_none(), "{json}");
+        assert!(file.exists(), "the runtime made the cache");
+        let _ = std::fs::remove_file(&file);
+    }
 }

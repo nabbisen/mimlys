@@ -45,6 +45,21 @@ it (it has threads, or the fork fails) reports K, M and C `unavailable`.
 The pipe's behaviour is generic Unix and is tested on Linux too
 (`tests/sweeper.rs`); the kill is tested on macOS.
 
+**`xcrun`'s cache.** With an Xcode selected, `xcrun` resolves the developer
+tools through a cache file, `xcrun_db`, in the per-user temporary directory,
+which the profile admits read-only. Where it is absent (a Mac where `xcrun`
+never ran) a sandboxed `xcrun` cannot create it and the build fails (§7). The
+runtime therefore makes it itself, **outside the sandbox**, before it starts
+the first worker: it runs `/usr/bin/xcrun --find clang` with a cleared
+environment, waiting at most LIM-O8 (10 s; a first run took 1.9 to 2.9 s on
+the runner, one with the cache 0.07 s), and `check` and `status` show one line
+naming the file and the remedy if it still is not there (the run goes on; the
+tool's own error then names the cause). A Mac with the Command Line Tools
+selected needs nothing. Never a write rule for the cache in the profile: the
+user's own unconfined `xcrun` trusts the file later, and a tool that could
+write it could choose what that `xcrun` runs (a unit test asserts that no
+rule that writes names the file or its directory).
+
 The profile, in the order that makes the last match the right one:
 `(deny default)`; `process-fork`; `process-exec*` of the read and write sets;
 `file-read-metadata` anywhere; the root directory as a literal; the read set
@@ -180,6 +195,8 @@ outputs are in the review records).
 | `MIMLYS_PROBE_FAIL=F` | tier `core`, `run_host_tool` unlisted |
 | the dependency step: a name, port 443, a loopback port that is not 443, the certificates | resolves, connects, `permission denied`, readable; the offline tool does none |
 | the approval | its `Tier` line reads `full` |
+| the demonstration with `xcrun`'s cache deleted first (an Xcode selected) | completes; the cache exists afterwards (made by the runtime) |
+| `status` and `check` when the warming cannot succeed (the debug-only `MIMLYS_TEST_XCRUN` points at a program that fails) | one line each naming the file and the remedy, `xcrun_cache_missing` in the JSON, exit 0; without the hook no line |
 | the demonstration | `cargo test --offline` of a Cargo workspace with a path dependency, `completed{verified}`, no accepted clause |
 
 ## 6. Residuals and known platform facts
@@ -264,3 +281,66 @@ runs `42374250330` and `42374899386` (the second repeats the first; the throwawa
   **passes** (`completed{verified}` in 2.4 s) with the same read set, and with
   `xcrun_db` still absent, so the detour through `xcodebuild` that fails above
   is specific to the Xcode layout.
+
+## 8. `xcrun`'s cache, made by the runtime (handoff 011c-6; the decision on §7's finding)
+
+Decided (RFC 011 Amendment 2, implementation decisions, point 8; external
+design §13.3): the runtime creates the cache itself, outside the sandbox,
+before the first worker starts. Rejected: a write rule for the cache (a tool
+could write what the user's unconfined `xcrun` later trusts: an escape) and
+adding the Xcode's `Contents/Frameworks` to the read set (it repairs one
+fallback of unknown extent and leaves every `cc` call on the slow path).
+
+**What the measurement of §7 left out, found by implementing it** (CI runs
+`42382348791`, `42382685206`, `42382906017` and, for the final code, `42383168067`, in `macos-latest`, the runtime's own warming switched off to
+try variants): the handoff named `xcrun --find cc`, and the demonstration
+**still halted** with a cache made that way. The `cc` the build runs is a shim
+that asks `xcrun` for **`clang`**; the cache holds one entry per tool asked
+for (with the SDK and the developer directory), and a lookup that is not in it
+makes the sandboxed `xcrun` try to write a new cache file, which it cannot.
+
+| Warming (unsandboxed, environment cleared) | Cache | Demonstration |
+|---|---|---|
+| none | none | `halted` |
+| `xcrun --find cc` | 1333 bytes | `halted` |
+| `cc --version`, `xcrun --find clang`, `cc -x c -fsyntax-only -`, a compile of an empty program | 1342 bytes | `completed` |
+| `--find cc`, `--sdk macosx --show-sdk-path`, `--find clang`, `--find ld` and one more, made **with the runner's environment** | 3478 bytes | `halted` |
+
+So the warming is **`xcrun --find clang` with an empty environment** (the
+environment of a host tool is explicit and empty; the last row suggests that
+the cache is keyed by it too: the entries made under the runner's own
+environment, `clang` among them, did not serve the sandboxed asker, and what in
+that environment matters was not isolated). This is a deviation from the handoff's text
+(`--find cc`), argued by the table. The remedy line that `status` shows names
+the command that was measured to work (`env -i PATH=/usr/bin:/bin
+/usr/bin/xcrun --find clang`), not a bare `xcrun --find cc`, which would leave
+the user with the cache of the first row.
+
+**Under Rosetta** (an Intel runtime on Apple silicon; the informative job)
+the first version of the warming failed the demonstration for a second
+reason, found by the Rosetta job and reproduced in an evidence run: the first
+launch of an Intel `xcrun` is translated by Rosetta, which took about a minute
+on the runner, far past LIM-O8; the warming was killed, **left a half-written
+cache file of 114 bytes**, and that file was taken for the cache (it exists)
+while the sandboxed `xcrun` can neither read a key from it nor repair it. Two
+corrections: a warming that is killed or fails **removes** what it left (a
+partial cache is not a cache; the line of `status` then names the file, as for
+any missing cache), and a translated runtime asks through `arch -arm64` (the
+cache does not depend on the architecture of the asker: an Intel and a native
+asker made caches of the same size and the same entries, and each served the
+demonstration), so that there is nothing to translate and a first run takes
+the same two or three seconds.
+
+**Limitation.** The cache holds what has been asked. A build that asks the
+sandboxed `xcrun` for a tool the warming did not ask for (for `libtool`, `ar`,
+`strip` or `lipo` by name, rather than by the `cc` shim) finds it missing and
+fails as in §7, until an unconfined `xcrun` has been asked the same thing with
+the same (empty) environment. The demonstration needs only `clang`. The
+warming asks for what the demonstration and the `cc` shim need and for nothing
+more; extending it is a one-line change per tool, to be made when a toolchain
+is found that needs it.
+
+**Command Line Tools selected** (informative, `sudo xcode-select -s
+/Library/Developer/CommandLineTools` on the runner only): the demonstration
+completes in 3.6 s with no cache and the runtime makes none (the two cache
+tests record a skip with that reason).

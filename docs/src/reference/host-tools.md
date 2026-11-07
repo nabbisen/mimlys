@@ -188,6 +188,19 @@ name lookup through the system's one lookup socket, and the system's
 certificate file. Registries over HTTPS work; a git dependency over SSH is not
 reachable, and the offline tool cannot resolve a name at all.
 
+**Nothing to do for `xcrun`.** With an Xcode selected, `xcrun` keeps a cache
+file in the per-user temporary directory that the tools need and cannot
+create inside the confinement. mimlys makes it itself, outside the
+confinement, before its first worker starts (on a Mac where `xcrun` has never
+run it takes a few seconds, once). If it cannot, `check` and `status` say so
+in one line that names the file and the command to run once:
+
+```text
+warning: xcrun's cache /var/folders/…/T/xcrun_db is missing and could not be made: host tools that build with Xcode will fail; run `env -i PATH=/usr/bin:/bin /usr/bin/xcrun --find clang` once
+```
+
+With the Command Line Tools selected there is no such file and no such line.
+
 **One thing the system cannot give.** A program of yours that is *not*
 confined can read the runtime's environment, `env:`-referenced secrets
 included, with `sysctl KERN_PROCARGS2`; macOS has no refusal for an unconfined

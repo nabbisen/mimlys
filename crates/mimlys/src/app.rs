@@ -140,6 +140,29 @@ pub struct App {
     /// Declared host tools this machine cannot run yet, with the reason
     /// (`acl_not_applied: <path>` until `toolchain grant` is run).
     pub host_tools_unavailable: std::collections::BTreeMap<String, String>,
+    /// macOS, an Xcode selected: `xcrun`'s cache file when the runtime could
+    /// not make it before starting the worker (external design §13.3); `status`
+    /// says so with the remedy. `None` everywhere else and when it is there.
+    pub xcrun_cache_missing: Option<PathBuf>,
+}
+
+/// Makes `xcrun`'s cache (macOS, an Xcode selected, the cache absent) by
+/// running `xcrun --find clang` here, outside any sandbox, waiting at most
+/// LIM-O8 (RFC 011 Amendment 2, implementation decisions, point 8). Returns
+/// the cache file if it is still missing afterwards; the run goes on all the
+/// same (the tool's own error then names the cause). Nothing elsewhere.
+pub fn warm_xcrun_cache() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        match mimlys_exec::confine::macos::ensure_xcrun_cache() {
+            mimlys_exec::confine::macos::xcrun::CacheState::Missing { file } => Some(file),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 /// The read and write sets of the worker (RFC 011 §1, §6): the workspaces
@@ -366,6 +389,9 @@ impl App {
                 record: None,
             })
         });
+        // Before the first worker starts (the probe is one; the dependency
+        // step's starts later): `xcrun`'s cache, which a sandboxed tool cannot make.
+        let xcrun_cache_missing = warm_xcrun_cache();
         // RFC 011 §1: the probe is a real worker's report of its own confinement.
         let probe = worker.probe_confined();
         let tier = probe.tier_with(&policy.accept_best_effort);
@@ -484,6 +510,7 @@ impl App {
             fetch_worker,
             container: std::sync::Mutex::new(container),
             host_tools_unavailable,
+            xcrun_cache_missing,
         })
     }
 
