@@ -625,3 +625,59 @@ fn req_ws_001_a_data_directory_in_the_temporary_directory_is_warned_about_not_re
     assert!(warning_lines(&out.stdout).is_empty(), "{}", out.stdout);
     assert!(!outside.exists(), "check creates no directory");
 }
+
+/// REQ-SBX-001 (external design §12 and §18): `interpreters install` against a
+/// server that answers 404: not retried (one request), and the JSON error is
+/// `unavailable` with `component: "download"`, naming the URL, the status and
+/// the `--from FILE` remedy; the exit code is not 0. The address of the
+/// pinned artifact is replaced by the debug-only variable
+/// `MIMLYS_DEBUG_INTERPRETER_URL`, absent from release builds.
+#[cfg(debug_assertions)]
+#[test]
+fn req_sbx_001_a_failed_download_is_reported_as_unavailable_download() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/a.wasm", listener.local_addr().unwrap());
+    let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = std::sync::Arc::clone(&served);
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno",
+            );
+        }
+    });
+    let env = Env::new("");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    cmd.arg("--config")
+        .arg(&env.config)
+        .args(["--json", "interpreters", "install", "javascript"])
+        .env("MIMLYS_CONFIG", "")
+        .env("MIMLYS_DEBUG_INTERPRETER_URL", &url);
+    let out = run_bounded(&mut cmd, env.data.path());
+    assert_ne!(out.code(), 0, "{}", out.stderr);
+    let json_line = |text: &str| {
+        text.lines()
+            .rev()
+            .find(|l| l.starts_with('{'))
+            .map(str::to_owned)
+    };
+    let line = json_line(&out.stdout)
+        .or_else(|| json_line(&out.stderr))
+        .unwrap_or_else(|| panic!("no JSON: {}\n{}", out.stdout, out.stderr));
+    let value: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(value["error"]["kind"], "unavailable", "{value}");
+    assert_eq!(value["error"]["detail"]["component"], "download", "{value}");
+    assert_eq!(value["error"]["detail"]["last_status"], 404, "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(message.contains(&url), "{message}");
+    assert!(message.contains("--from FILE"), "{message}");
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a 404 is not retried"
+    );
+}

@@ -174,6 +174,14 @@ pub const LIM_O6_SERVER_STARTUP_MS_RANGE: (i64, i64) = (1000, 120_000);
 /// on and `check` and `status` say the cache is missing (external design
 /// §13.3).
 pub const LIM_O8_XCRUN_CACHE_MS: u64 = 10_000;
+/// LIM-O9: deadline of one download of an interpreter artifact
+/// (`interpreters install`), in milliseconds.
+pub const LIM_O9_DOWNLOAD_MS: u64 = 120_000;
+/// LIM-O10: retries of a transient download failure (no connection, a
+/// timeout, HTTP 429 or 5xx).
+pub const LIM_O10_DOWNLOAD_RETRIES: usize = 3;
+/// LIM-O10: the waits before those retries, in milliseconds.
+pub const LIM_O10_DOWNLOAD_WAITS_MS: [u64; LIM_O10_DOWNLOAD_RETRIES] = [1_000, 2_000, 4_000];
 /// LIM-O2: time until a cancelled execution's tree is terminated, in milliseconds.
 pub const LIM_O2_CANCEL_MS: u64 = 2_000;
 /// LIM-O7: wait for another runtime's write of the same directory's

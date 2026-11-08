@@ -42,6 +42,12 @@ pub enum AppError {
     /// retrying is the remedy: the kind is `unavailable`, not `internal`.
     #[error("{0}")]
     Permissions(#[from] mimlys_exec::confine::dacl_wait::Refusal),
+    /// An interpreter download that failed after its retries (REQ-SBX-001,
+    /// external design §12 and §18): expected on a flaky network, and the
+    /// remedy is in the message (`--from FILE`), so the kind is `unavailable`,
+    /// not `internal`.
+    #[error("{0}")]
+    Download(#[from] crate::download::DownloadError),
     /// A command finished only in part: the message names what did not
     /// happen and the report (the command's own JSON shape) says what did.
     #[error("{message}")]
@@ -67,7 +73,7 @@ impl AppError {
         match self {
             AppError::Config(_) => "invalid_request",
             AppError::Runtime(e) => e.kind(),
-            AppError::Permissions(_) => "unavailable",
+            AppError::Permissions(_) | AppError::Download(_) => "unavailable",
             AppError::Persistence(_) | AppError::Io { .. } | AppError::Partial { .. } => "internal",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { .. }) => "conflict",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::NotFound { .. }) => "not_found",
@@ -88,6 +94,11 @@ impl AppError {
         let detail = match self {
             AppError::Config(e) => serde_json::json!({ "parameter": e.key }),
             AppError::Permissions(_) => serde_json::json!({ "component": "permissions" }),
+            AppError::Download(e) => serde_json::json!({
+                "component": "download",
+                "url": e.url,
+                "last_status": e.last_status,
+            }),
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { paths })
             | AppError::Runtime(RuntimeError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { paths },
