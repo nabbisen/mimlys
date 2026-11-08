@@ -28,16 +28,16 @@ Model Context Protocol.
 
 ## Quick start
 
-mimlys is pre-release. Release 0.7.1, the first on crates.io (milestones M1 to M6b),
-is the deterministic core, the sandbox, the transactional workspace, a local model behind any
+mimlys is pre-release. Release 0.8.0 (milestones M1 to M6c) is the deterministic core, the sandbox, the transactional workspace, a local model behind any
 OpenAI-compatible server (llama-server, Ollama), external tools over the
 Model Context Protocol with [rypsok](https://github.com/nabbisen/rypsok) as
 the first server, and declared host tools under the platform's confinement:
 on Linux Landlock, seccomp and tree termination, with `cargo test` as the
 demonstration; on Windows an AppContainer and a Job Object, verified by the
 clause suite, where `cargo` itself cannot run yet (current Windows refuses
-an AppContainer the `NUL` device cargo's child processes open). macOS
-follows in 0.8.
+an AppContainer the `NUL` device cargo's child processes open); on macOS a Seatbelt profile the worker applies to itself, with every mandatory clause enforced and no clause to accept, and `cargo test` as the demonstration.
+
+**The model, plainly.** In 0.8 the local models measured (the [M4 report](docs/src/maintainers/m4-report.md), §6) did not complete a task under the decision format mimlys uses: asked for a decision, they asked the user a question or repeated their plan instead of acting. Release 0.9 changes how decisions are requested (RFC 012). Do not expect 0.8 to drive a local model through a task; the scripted fake backend, described in the book's Getting started, runs one end to end.
 
 ```sh
 cargo install mimlys --locked
@@ -47,7 +47,7 @@ config_version = 1
 [backend]
 kind = "openai_compatible"
 url = "http://127.0.0.1:8080/v1"       # a llama-server or Ollama endpoint on this machine
-model = "qwen2.5-coder:7b"
+model = "qwen2.5:7b-instruct"
 EOF
 mimlys run "fix the failing test in this project" --scope .
 ```

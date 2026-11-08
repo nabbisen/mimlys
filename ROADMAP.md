@@ -1,6 +1,6 @@
 # mimlys — Roadmap
 
-**Status:** Authorized by the owner on 2026-10-02 (startup review, decisions D-01 … D-24; D-06 and D-07 in their v2 form). Release 0.7.0 (M1 to M6b) is the first tagged release, 2026-11-03, and was not published; 0.7.1 (the same milestones plus the Linux hardening) is the first release on crates.io; 0.1 to 0.6 were accepted milestones without a published release.
+**Status:** Authorized by the owner on 2026-10-02 (startup review, decisions D-01 … D-24; D-06 and D-07 in their v2 form). Release 0.7.0 (M1 to M6b) is the first tagged release, 2026-11-03, and was not published; 0.7.1 (the same milestones plus the Linux hardening) is the first release on crates.io; 0.8.0 (M1 to M6c: the macOS backend completes RFC 011) is the release candidate prepared on 2026-11-08; 0.1 to 0.6 were accepted milestones without a published release.
 Milestones are the unit of planning, release and acceptance. Every requirement in `docs/src/maintainers/requirements.md` names the milestone in which it is verified.
 
 ## Principles

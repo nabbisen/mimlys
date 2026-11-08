@@ -1,8 +1,10 @@
 # Getting started
 
-mimlys 0.7.1, the first release on crates.io (milestones M1 to M6b), is the deterministic core with the sandbox,
+mimlys 0.8.0 (milestones M1 to M6c) is the deterministic core with the sandbox,
 the transactional workspace, a local model, external tools and confined host
-tools (on Linux with `cargo test` as the demonstration; on Windows the
+tools (on Linux with `cargo test` as the demonstration; on macOS a Seatbelt
+profile with every mandatory clause enforced and no clause to accept, and
+`cargo test` as the demonstration; on Windows the
 confinement is verified, but `cargo` itself cannot run yet): a task runs one validated step at a time
 against a private copy of your project, with the built-in file tools,
 `run_script` (JavaScript) and `run_wasm` in a Wasmtime sandbox inside a
@@ -11,7 +13,12 @@ Every write action is a transaction over the workspace: a snapshot before, a
 snapshot after, and a rollback when it fails. Nothing reaches your project
 until you promote it. The decisions come from a local model through any
 OpenAI-compatible server (llama-server, Ollama), or from the scripted fake
-backend that the examples below use. On Linux a declared toolchain command
+backend that the examples below use. **The model, plainly:** in 0.8 the local
+models measured (the [M4 report](./maintainers/m4-report.md), §6) did not
+complete a task under the decision format mimlys uses: asked for a decision,
+they asked the user a question or repeated their plan instead of acting. Release 0.9 changes how
+decisions are requested (RFC 012). Do not expect 0.8 to drive a local model
+through a task. On Linux a declared toolchain command
 such as `cargo test` runs under kernel confinement (see
 [Host tools](./reference/host-tools.md)).
 
@@ -38,7 +45,8 @@ directory (`~/.local/share/mimlys`, `%LOCALAPPDATA%\mimlys`,
 ## First run
 
 With a local model, point the configuration at it (see
-[Configuration](./reference/configuration.md#a-local-model)) and run:
+[Configuration](./reference/configuration.md#a-local-model); in 0.8 the models
+measured did not complete a task, see above) and run:
 
 ```sh
 mimlys run "fix the failing test in this project" --scope .

@@ -130,20 +130,26 @@ debug_prompts = false           # true logs prompts and model output, and warns 
 ## A local model
 
 `kind = "openai_compatible"` talks to any server with the chat-completions
-API. Two that run on your own machine:
+API. Two that run on your own machine.
+
+**In 0.8 the local models measured did not complete a task** under mimlys's
+decision format (the [M4 report](../maintainers/m4-report.md), §6): asked for a
+decision, they asked the user a question or repeated their plan instead of acting. The example below
+shows how a model is configured; it does not promise that 0.8 drives it
+through a task. Release 0.9 changes how decisions are requested (RFC 012).
 
 ```sh
 # llama.cpp
-llama-server -m Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf --port 8080 --jinja
+llama-server -m Qwen2.5-7B-Instruct-Q4_K_M.gguf --port 8080 --jinja
 # Ollama
-ollama serve   # then: ollama pull qwen2.5-coder:7b
+ollama serve   # then: ollama pull qwen2.5:7b-instruct
 ```
 
 ```toml
 [backend]
 kind = "openai_compatible"
 url = "http://127.0.0.1:8080/v1"      # Ollama: http://127.0.0.1:11434/v1
-model = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"   # Ollama: qwen2.5-coder:7b
+model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # Ollama: qwen2.5:7b-instruct
 ```
 
 Before a task runs, and for `mimlys status`, mimlys probes the server
