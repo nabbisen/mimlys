@@ -4,7 +4,7 @@
 
 ## Status (2026-11-08, second): merged
 
-007b is on `main` (`2e1384e`). The instructions are the envelope transport's text; spike S2 showed they do not make a model act (RFC 012, proposed).
+007b is on `main` (`2e1384e`). The instructions are the envelope transport's text; spike S2 showed they do not make a model act (RFC 012, accepted for 0.9).
 
 ## Status (2026-11-08)
 

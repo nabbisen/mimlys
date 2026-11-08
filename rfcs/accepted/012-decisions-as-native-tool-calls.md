@@ -1,9 +1,9 @@
 # RFC 012 — Decisions as native tool calls
 
-**Status.** Proposed (2026-11-08).
+**Status.** Accepted (2026-11-08, by the owner). For release 0.9.
 **Tracks.** The M4 report §6 (run B never got past its first step); spike S2 (handoff 008b, `.git-exclude/review-requests/S2-decision-format/README.md`).
 **Touches.** `mimlys-model` (the OpenAI-compatible adapter: the request and the reply), `mimlys-core` (context assembly per transport, the fixed instructions, the budget's count), `mimlys` (configuration, `status`, the book); requirements REQ-MDL-003, REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-002, REQ-CTX-003; external design §15, §19.1, §20; limits LIM-C1.
-**Release.** 0.9 (proposed).
+**Release.** 0.9.
 
 ## Summary
 

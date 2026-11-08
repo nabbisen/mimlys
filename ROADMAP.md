@@ -33,11 +33,22 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | | |
 |---|---|
 | Objective | Confined host tools on macOS (M6c), which completes the M6 confinement on the three platforms, and the release's open promises |
-| In | M6c, the macOS backend (handoff 011c: spike S1, then RFC 011 Amendment 2, then the implementation); removing every Windows trace before an uninstall (handoff 011e, RFC 011 §7's promise, THR-36); the Windows permission lock failing closed instead of losing an entry (handoff 011f, investigation D1, THR-36); the M4 demonstration against a real local model, which fixes LIM-C1 (owner's decision of 2026-11-03); the first slice of tests for requirements and invariants that no test names (REQ-TEST-001, REQ-SEC-004) |
-| Out | the independent code audit (after M6c, owner's decision); DR-001 … DR-017; narrowing `/etc` and `/opt`; one HTTP stack instead of two; any remedy for `cargo` on Windows (none exists) |
-| Done when | the M6c demonstration and clause suite pass on `macos-latest`; 011e's tests pass on Windows; the M4 report has run B and LIM-C1 is fixed; every CI job green with skips counted; the threat register's review for 0.8; the CHANGELOG |
+| In | M6c, the macOS backend (handoff 011c: spike S1, then RFC 011 Amendment 2, then the implementation); removing every Windows trace before an uninstall (handoff 011e, RFC 011 §7's promise, THR-36); the Windows permission lock failing closed instead of losing an entry (handoff 011f, investigation D1, THR-36); the interpreter download bounded and retried (handoff 005b); the fixed instructions saying the goal is the task (handoff 007b); the first slice of tests for requirements and invariants that no test names (REQ-TEST-001, REQ-SEC-004) |
+| Out | the M4 demonstration against a real local model and LIM-C1, **moved to 0.9** (owner's decision of 2026-11-08: under the decision envelope no measured model acted, spike S2; the remedy is RFC 012); the independent code audit (after M6c, owner's decision); DR-001 … DR-017; narrowing `/etc` and `/opt`; one HTTP stack instead of two; any remedy for `cargo` on Windows (none exists) |
+| Done when | the M6c demonstration and clause suite pass on `macos-latest`; 011e's tests pass on Windows; the book and the README say plainly that no measured local model completed a task under 0.8's decision format, and that 0.9 changes it; every CI job green with skips counted; the threat register's review for 0.8; the CHANGELOG |
 | Major risks | Seatbelt facts were unknown in advance: spikes S1 and S1b measured them (2026-11-07), and clause K is enforced on macOS by sandbox membership, so `accept_best_effort` is not needed there; what remains is the implementation's CI rounds and machines unlike the runner (Command Line Tools only, other macOS releases) |
-| Next | M6c is the last planned milestone: at its disposition the architect brings the owner the replanning report (roadmap governance) |
+| Next | M6c is the last milestone of the original plan: after 0.8 the architect brings the owner the replanning report (roadmap governance) and the independent audit follows (owner's decision) |
+
+## Release 0.9 (scoped 2026-11-08)
+
+| | |
+|---|---|
+| Objective | A capable local model finishes a task: decisions requested as native tool calls |
+| In | RFC 012 (accepted 2026-11-08): the decision transport, the functions, the strict reply, the context per transport, the budget counting the tools; the M4 demonstration against a real local model (run B, with Qwen2.5-7B-Instruct), which fixes LIM-C1; the book's model example |
+| Out | reading a call written into the model's text (RFC 012, rejected); models that do not return structured calls (the Coder variants measured) |
+| Done when | run B completes on llama.cpp and Ollama and the M4 report records it; LIM-C1 fixed; prefix stability measured for both transports; every CI job green with skips counted; the threat register's review for 0.9; the CHANGELOG |
+| Major risks | engines and chat templates change what a model returns (S2: the same file behaved differently under two templates); one task and three runs per cell are thin evidence, so run B repeats across both engines |
+| Next | the replanning report decides what follows |
 
 ## RFCs, in order
 

@@ -55,6 +55,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 5 | [011e Windows: removing every trace before an uninstall (0.8)](./011e-windows-cleanup/implementation-handoff.md) | RFC 011 §7 | 011b, 011d |
 | 6 | [011f Windows: the permission lock fails closed (0.8)](./011f-windows-permission-lock/implementation-handoff.md) | RFC 011 §7; D1 | 011b, 011e |
 | 7 | [011g The descendant-walk test must not walk the test process (0.8)](./011g-walk-test-isolation/implementation-handoff.md) | RFC 011; `main`'s CI after 011c-6 | 011c |
+| 8 | [011h Release candidate 0.8.0](./011h-release-0.8.0/implementation-handoff.md) | RFC 011 (complete with 0.8.0) | every 0.8 handoff |
 
 Common rules for every handoff:
 

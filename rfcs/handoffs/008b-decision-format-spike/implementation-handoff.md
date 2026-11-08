@@ -4,7 +4,7 @@
 
 ## Status (2026-11-08): done
 
-The report is accepted (`.git-exclude/review-requests/S2-decision-format/README.md`): its matrix is the basis of RFC 012 (proposed) and of the M4 report §6. Nothing is open in this handoff.
+The report is accepted (`.git-exclude/review-requests/S2-decision-format/README.md`): its matrix is the basis of RFC 012 (accepted 2026-11-08, for 0.9) and of the M4 report §6. Nothing is open in this handoff.
 
 ## 1. Why
 
