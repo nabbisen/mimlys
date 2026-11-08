@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) (clause K, Linux's walk rung) · **Specification.** REQ-CONF-009, REQ-TEST-013 · **Found.** `main`'s CI after 011c-6: run `42461069396` (`e25f75f`) and `42461134298` (`2e1384e`), job `check (ubuntu-24.04-arm)`, both failed in `confine::linux::tests::rfc_011_descendant_walk_kills_the_tree` (`assertion failed: descendants_of(me).is_empty()`, `tests.rs:19`); the other eight jobs passed. The PR's own CI of 011c-6 passed.
 
+## Status (2026-11-08, third)
+
+Attempt 6 of run `42465321601`: seven of nine green, both Linux jobs included with the walk test `ok`; the other two failed only on 504s (mdbook, the interpreter). No further re-run: the architect puts PR #24 on `main` after 005b, whose CI no longer depends on those downloads, and `main`'s own CI checks it. Nothing more to do here.
+
 ## Status (2026-11-08, second): follow-up approved, merge waits for a green run
 
 The grandchild follow-up (PR #24, `6436b28`) is approved: three descendants with the grandchild found only past one level, both mutations killed. Its CI (run `42465321601`) failed only on HTTP 504s from GitHub's downloads; the walk test passed on every Linux job that reached it. A test-only change is still merged on a green run: **re-run the failed jobs once the downloads answer** (the architect checked at the time of review: still 504) and update the run id at the top of the request. Handoff 005b removes the CI's dependence on those downloads.

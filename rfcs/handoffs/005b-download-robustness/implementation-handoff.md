@@ -2,6 +2,12 @@
 
 **RFC.** [RFC 005](../../done/005-execution-worker-and-sandbox-profile.md) (the sandbox profile and its interpreters) · **Specification.** REQ-SBX-001; external design §12 (the paragraph after the profile table) and §18 (`unavailable`, `component: "download"`); limits LIM-O9, LIM-O10 (new) · **Found.** 011g's follow-up CI, run `42465321601`: five attempts, every failure an HTTP 504 from GitHub's release downloads (the QuickJS artifact in nine tests, mdbook, the cargo-deny container) · **Release.** 0.8.
 
+## Status (2026-11-08): approved; one correction before the merge
+
+005b (PR #25, `2dc2932`) is approved: the product's download (bounded, transient failures retried, typed `unavailable`/`download` with the `--from FILE` remedy), the CI's cached and verified interpreter, mdbook from crates.io. Accepted as built: `MIMLYS_QJS_WASM` instead of a `--from` run; the guards document's note that this handoff changes existing jobs; every failure of the download being the typed error; no mirror for now (a cache miss during a long outage remains, stated in the guards document).
+
+**Correction, on the same branch:** the one job still exposed is `dependency audit and licenses`. Replace the cargo-deny Docker action with the binary installed the way mdbook now is: `cargo install cargo-deny --locked --version <the version the pinned action ships, read from its tag>`, cached by `actions/cache` keyed by that version and the OS, then the same command (`cargo deny check advisories licenses bans sources`). The advisory database is still fetched by cargo-deny itself; say how it behaves on a failed fetch. Then a CI run green on all nine jobs, the head and run id at the top of the request; the architect merges it, and then puts the 011g follow-up (PR #24) on top.
+
 ## 1. Why
 
 `interpreters install` (`crates/mimlys/src/commands/interpreters.rs`, `download`) makes one request with no deadline and no retry, and a failure is reported as `internal`, which tells the user the runtime is at fault. A user on a flaky network sees a bare failure; the CI turns a one-file test change red on eight jobs whenever GitHub's downloads degrade.
