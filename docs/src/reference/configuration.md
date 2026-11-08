@@ -220,7 +220,14 @@ return when a tool carries that effect.
 configured and installed. mimlys ships one pinned build per language it
 knows (`javascript`: QuickJS-NG v0.17.0 as a wasip1 module); `mimlys
 interpreters install <language>` downloads it, verifies the SHA-256 the
-binary carries and stores it under `<data_dir>/interpreters/`. A section
+binary carries and stores it under `<data_dir>/interpreters/`. One download
+is given two minutes; a transient failure (no connection, a timeout, HTTP 429
+or 5xx) is retried three times, after 1, 2 and 4 seconds, with one `info` line
+each; any other answer (a 404, say) is not retried. When the download still
+fails, the error is `unavailable` (`component: "download"`), it names the URL,
+the last status and the remedy: obtain the artifact another way and run
+`mimlys interpreters install <language> --from FILE`, which verifies the same
+hash. A section
 `[interpreters.<language>]` overrides the path or the hash; a language mimlys
 does not ship needs both `module` and `sha256` (and `script_name` for the
 file the source is written to under `/tmp`). The worker refuses a module
