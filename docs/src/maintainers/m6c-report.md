@@ -50,10 +50,15 @@ tools through a cache file, `xcrun_db`, in the per-user temporary directory,
 which the profile admits read-only. Where it is absent (a Mac where `xcrun`
 never ran) a sandboxed `xcrun` cannot create it and the build fails (§7). The
 runtime therefore makes it itself, **outside the sandbox**, before it starts
-the first worker: it runs `/usr/bin/xcrun --find clang` with a cleared
-environment, waiting at most LIM-O8 (10 s; a first run took 1.9 to 2.9 s on
-the runner, one with the cache 0.07 s), and `check` and `status` show one line
-naming the file and the remedy if it still is not there (the run goes on; the
+the first worker: it runs `/usr/bin/xcrun --find <tool>` with a cleared
+environment for each tool of one list (`clang`, `ld`, `ar`, `ranlib`, `strip`,
+`libtool`, `lipo`: what a Rust link and the `cc` crate's builds run through the
+`/usr/bin` shims; the constant `WARMED_TOOLS`), each call waiting at most
+LIM-O8 (10 s; on the runner the first call of the list took 2.0 to 2.8 s, the
+others 0.6 to 0.9 s each, 7.0 s for the seven; with the cache, 0.09 s in all,
+§8), and
+`check` and `status` show one line naming the file and the remedy if it still
+is not there (the run goes on; the
 tool's own error then names the cause). A Mac with the Command Line Tools
 selected needs nothing. Never a write rule for the cache in the profile: the
 user's own unconfined `xcrun` trusts the file later, and a tool that could
@@ -196,6 +201,7 @@ outputs are in the review records).
 | the dependency step: a name, port 443, a loopback port that is not 443, the certificates | resolves, connects, `permission denied`, readable; the offline tool does none |
 | the approval | its `Tier` line reads `full` |
 | the demonstration with `xcrun`'s cache deleted first (an Xcode selected) | completes; the cache exists afterwards (made by the runtime) |
+| the cache deleted first, then a host tool runs `xcrun --find <tool>` inside the profile for each of `clang`, `ld`, `ar`, `ranlib`, `strip`, `libtool`, `lipo` (the test names them itself, not from the runtime's list) | each exits 0 and prints a path ending in the tool's name |
 | `status` and `check` when the warming cannot succeed (the debug-only `MIMLYS_TEST_XCRUN` points at a program that fails) | one line each naming the file and the remedy, `xcrun_cache_missing` in the JSON, exit 0; without the hook no line |
 | the demonstration | `cargo test --offline` of a Cargo workspace with a path dependency, `completed{verified}`, no accepted clause |
 
@@ -331,14 +337,36 @@ asker made caches of the same size and the same entries, and each served the
 demonstration), so that there is nothing to translate and a first run takes
 the same two or three seconds.
 
-**Limitation.** The cache holds what has been asked. A build that asks the
-sandboxed `xcrun` for a tool the warming did not ask for (for `libtool`, `ar`,
-`strip` or `lipo` by name, rather than by the `cc` shim) finds it missing and
-fails as in §7, until an unconfined `xcrun` has been asked the same thing with
-the same (empty) environment. The demonstration needs only `clang`. The
-warming asks for what the demonstration and the `cc` shim need and for nothing
-more; extending it is a one-line change per tool, to be made when a toolchain
-is found that needs it.
+**The list (handoff 011c-6, sixth update).** The cache holds what has been
+asked, so a build that asks the sandboxed `xcrun` for a tool the warming did
+not ask for finds it missing and fails as in §7. The demonstration needed only
+`clang`; a crate with C code, a stripped build or a static library does not.
+The warming therefore asks for **`clang`, `ld`, `ar`, `ranlib`, `strip`,
+`libtool` and `lipo`**: the tools a Rust link and the `cc` crate's C builds run
+through the `/usr/bin` shims. It is one named constant (`WARMED_TOOLS` in
+`confine/macos/xcrun.rs`), one call per tool in that order, each call bounded
+by LIM-O8 (so the whole by seven times that, 70 s, at the worst; a call that
+fails or is killed ends the warming and removes the file, a cache for some of
+the tools being no more a cache than a partial file). A tool that is not on the
+list is still asked for the way §7 describes: by an unconfined `xcrun` with an
+empty environment, once; extending the list is a one-line change.
+
+**The whole warming, measured** (two CI runs on `macos-latest`, arm64, Xcode
+26.6, `42432895718` and `42433820982`; the runtime's own calls repeated one by
+one with the same empty environment, then the runtime itself; the first figure
+of each pair is the first run's):
+
+| | first (cache deleted) | cached |
+|---|---|---|
+| `xcrun --find clang` | 2778 and 2000 ms | 13 and 12 ms |
+| `ld`, `ar`, `ranlib`, `strip`, `libtool`, `lipo` | 641 to 775 and 716 to 928 ms each | 10 to 19 ms each |
+| the seven calls | 6937 and 6996 ms (cache 3898 bytes) | 93 and 91 ms |
+| `mimlys status` (it warms, then reports) | 6282 and 6365 ms | 161, 140 and 129, 128 ms |
+
+A first start on a Mac where `xcrun` never ran therefore waits about seven
+seconds, once; every later start about a tenth of a second. The cost of the
+first call is the cache's first creation (the developer directory and the SDK
+are read); each further tool adds 0.6 to 0.9 s. No call came near LIM-O8.
 
 **Command Line Tools selected** (informative, `sudo xcode-select -s
 /Library/Developer/CommandLineTools` on the runner only): the demonstration

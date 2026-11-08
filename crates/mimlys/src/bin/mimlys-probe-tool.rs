@@ -216,6 +216,13 @@ fn main() {
         Some("id") => run_and_print("id", "/usr/bin/id", &["-u"]),
         #[cfg(unix)]
         Some("sudo-id") => run_and_print("sudo-id", "/usr/bin/sudo", &["-n", "/usr/bin/id", "-u"]),
+        // `xcrun --find <tool>`, as a build's `cc` shim or linker driver asks
+        // it; the exit code is 0 only if `xcrun` resolved the tool.
+        #[cfg(target_os = "macos")]
+        Some("xcrun-find") => {
+            let tool = args.get(1).map(String::as_str).unwrap_or("");
+            run_and_print("xcrun-find", "/usr/bin/xcrun", &["--find", tool])
+        }
         #[cfg(target_os = "macos")]
         Some("procargs") => {
             use mimlys_exec::confine::macos::probe::procargs_contains;

@@ -9,8 +9,7 @@ const XCODE: &str = "/Applications/Xcode_26.6.app/Contents/Developer";
 /// [`ensure`] with the command the runtime gives on a native Mac.
 #[cfg(unix)]
 fn run(file: Option<PathBuf>, xcrun: &Path, wait: Duration) -> CacheState {
-    let (program, args) = warming_command(xcrun, false);
-    ensure(file, &program, &args, wait)
+    ensure(file, &warming_commands(xcrun, false), wait)
 }
 
 /// REQ-CONF-005: a translated runtime asks through `arch -arm64`; a native one directly.
@@ -18,24 +17,44 @@ fn run(file: Option<PathBuf>, xcrun: &Path, wait: Duration) -> CacheState {
 fn req_conf_005_a_translated_runtime_warms_through_arch_arm64() {
     let xcrun = Path::new("/usr/bin/xcrun");
     assert_eq!(
-        warming_command(xcrun, false),
+        warming_command(xcrun, false, "clang"),
         (
             PathBuf::from("/usr/bin/xcrun"),
             vec!["--find".to_owned(), "clang".to_owned()]
         )
     );
     assert_eq!(
-        warming_command(xcrun, true),
+        warming_command(xcrun, true, "ld"),
         (
             PathBuf::from("/usr/bin/arch"),
             vec![
                 "-arm64".to_owned(),
                 "/usr/bin/xcrun".to_owned(),
                 "--find".to_owned(),
-                "clang".to_owned()
+                "ld".to_owned()
             ]
         )
     );
+}
+
+/// REQ-CONF-005 (external design §13.3): the warming asks for the tools a
+/// Rust link and the `cc` crate's builds run through the shims, in this
+/// order (`clang` first), one call each, native and translated.
+#[test]
+fn req_conf_005_the_warming_asks_for_each_listed_tool() {
+    assert_eq!(
+        WARMED_TOOLS,
+        ["clang", "ld", "ar", "ranlib", "strip", "libtool", "lipo"]
+    );
+    let xcrun = Path::new("/usr/bin/xcrun");
+    for translated in [false, true] {
+        let calls = warming_commands(xcrun, translated);
+        assert_eq!(calls.len(), WARMED_TOOLS.len());
+        for (call, tool) in calls.iter().zip(WARMED_TOOLS) {
+            assert_eq!(call, &warming_command(xcrun, translated, tool));
+            assert_eq!(call.1.last().map(String::as_str), Some(tool));
+        }
+    }
 }
 
 #[test]
@@ -110,23 +129,31 @@ mod with_a_stand_in {
     }
 
     /// REQ-CONF-005: where the cache is absent and an Xcode is selected, the
-    /// runtime runs `xcrun --find clang` and the file exists afterwards.
+    /// runtime runs `xcrun --find <tool>` for each listed tool, in order, and
+    /// the file exists afterwards.
     #[test]
-    fn req_conf_005_a_missing_cache_is_made_by_running_xcrun_find_clang() {
+    fn req_conf_005_a_missing_cache_is_made_by_asking_for_each_listed_tool() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("xcrun_db");
         let args = dir.path().join("args");
         let xcrun = stand_in(
             dir.path(),
-            &format!("echo \"$@\" > {}\ntouch {}", args.display(), file.display()),
+            &format!(
+                "echo \"$@\" >> {}\ntouch {}",
+                args.display(),
+                file.display()
+            ),
         );
         let state = run(Some(file.clone()), &xcrun, Duration::from_secs(10));
         assert_eq!(state, CacheState::Present);
         assert!(file.exists());
-        assert_eq!(
-            std::fs::read_to_string(args).unwrap().trim(),
-            "--find clang"
-        );
+        let asked: Vec<String> = std::fs::read_to_string(args)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let expected: Vec<String> = WARMED_TOOLS.iter().map(|t| format!("--find {t}")).collect();
+        assert_eq!(asked, expected);
     }
 
     /// REQ-CONF-005: nothing is run where the cache is there, or not needed.
@@ -232,6 +259,47 @@ mod with_a_stand_in {
             CacheState::Missing { file: file.clone() }
         );
         assert!(!file.exists(), "and so was the file of a failed xcrun");
+    }
+
+    /// REQ-CONF-005 / LIM-O8: each call is bounded, and a cache that was
+    /// made for some of the tools only is not a cache. A stand-in that makes
+    /// the file at the first call and then fails or hangs at one tool (`ar`)
+    /// ends the warming there (the tools after it are not asked) and leaves
+    /// no file; the hang costs one bound, not the rest of the list.
+    #[test]
+    fn req_conf_005_a_failing_or_hanging_tool_ends_the_warming_and_leaves_no_file() {
+        for (how, bad) in [("fails", "exit 1"), ("hangs", "exec sleep 30")] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("xcrun_db");
+            let asked = dir.path().join("asked");
+            let xcrun = stand_in(
+                dir.path(),
+                &format!(
+                    "echo \"$2\" >> {}\ntouch {}\n[ \"$2\" = ar ] && {bad}\nexit 0",
+                    asked.display(),
+                    file.display()
+                ),
+            );
+            let started = Instant::now();
+            let state = run(Some(file.clone()), &xcrun, Duration::from_secs(4));
+            assert_eq!(state, CacheState::Missing { file: file.clone() }, "{how}");
+            assert!(!file.exists(), "{how}: the partial file was removed");
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "{how}: returned after {:?}",
+                started.elapsed()
+            );
+            let asked: Vec<String> = std::fs::read_to_string(asked)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(
+                asked,
+                ["clang", "ld", "ar"],
+                "{how}: stopped at the first bad tool"
+            );
+        }
     }
 
     /// REQ-CONF-002 / clause E: the runtime's environment holds

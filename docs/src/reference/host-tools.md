@@ -192,7 +192,9 @@ reachable, and the offline tool cannot resolve a name at all.
 file in the per-user temporary directory that the tools need and cannot
 create inside the confinement. mimlys makes it itself, outside the
 confinement, before its first worker starts (on a Mac where `xcrun` has never
-run it takes a few seconds, once). If it cannot, `check` and `status` say so
+run it takes about seven seconds, once). It asks for the tools a Rust link and the
+`cc` crate's C builds run through the `/usr/bin` shims (`clang`, `ld`, `ar`,
+`ranlib`, `strip`, `libtool`, `lipo`). If it cannot, `check` and `status` say so
 in one line that names the file and the command to run once:
 
 ```text

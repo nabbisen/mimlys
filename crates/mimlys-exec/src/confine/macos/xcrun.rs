@@ -7,8 +7,9 @@
 //! sandboxed `xcrun` cannot create it and falls back to `xcodebuild`, which
 //! fails (measured by 011c-5): the build fails. So the runtime creates it
 //! itself, **outside the sandbox**, before it starts a worker: it runs
-//! `/usr/bin/xcrun --find clang` with a cleared environment and waits at most
-//! LIM-O8. (`--find cc`, which the handoff named, is not enough: the `cc`
+//! `/usr/bin/xcrun --find <tool>` for each of [`WARMED_TOOLS`] (`clang`, `ld`,
+//! `ar`, `ranlib`, `strip`, `libtool`, `lipo`) with a cleared environment and
+//! waits at most LIM-O8 for each. (`--find cc`, which the handoff named, is not enough: the `cc`
 //! shim asks for `clang`, and the cache is keyed by the tool asked for and by
 //! the environment of the asker, so a cache made for `cc`, or by a shell with
 //! its own environment, leaves the sandboxed `cc` to fail. Measured by 011c-6:
@@ -77,13 +78,25 @@ pub fn state_of(file: Option<PathBuf>) -> CacheState {
     }
 }
 
-/// What to run to make the cache: `xcrun --find clang`. A translated (Intel)
-/// runtime on Apple silicon runs it through `arch -arm64`: the cache does not
-/// depend on the architecture of the asker (measured), and the first launch of
-/// an Intel `xcrun` is translated by Rosetta, which took longer than LIM-O8
-/// (about a minute on the runner) and left a half-written cache behind.
-pub fn warming_command(xcrun: &Path, translated: bool) -> (PathBuf, Vec<String>) {
-    let find = ["--find".to_owned(), "clang".to_owned()];
+/// The tools the runtime asks `xcrun` for before the first worker: what a
+/// Rust link and the `cc` crate's C builds run through the `/usr/bin` shims
+/// (`cc` itself asks for `clang`). The cache is keyed by the tool asked for,
+/// so each one a build needs must be asked once, outside the sandbox, or the
+/// sandboxed shim fails for it. `clang` first: it is the one that matters
+/// most. One list, one place (external design §13.3).
+pub const WARMED_TOOLS: [&str; 7] = ["clang", "ld", "ar", "ranlib", "strip", "libtool", "lipo"];
+
+/// One command to run: the program and its arguments.
+pub type Call = (PathBuf, Vec<String>);
+
+/// What to run to ask `xcrun` for one tool: `xcrun --find <tool>`. A
+/// translated (Intel) runtime on Apple silicon runs it through `arch -arm64`:
+/// the cache does not depend on the architecture of the asker (measured), and
+/// the first launch of an Intel `xcrun` is translated by Rosetta, which took
+/// longer than LIM-O8 (about a minute on the runner) and left a half-written
+/// cache behind.
+pub fn warming_command(xcrun: &Path, translated: bool, tool: &str) -> Call {
+    let find = ["--find".to_owned(), tool.to_owned()];
     if translated {
         let mut args = vec!["-arm64".to_owned(), xcrun.to_string_lossy().into_owned()];
         args.extend(find);
@@ -93,15 +106,20 @@ pub fn warming_command(xcrun: &Path, translated: bool) -> (PathBuf, Vec<String>)
     }
 }
 
-/// Runs the warming command (outside any sandbox: the caller is the runtime)
-/// and waits at most `wait`; a child still running then is killed and
-/// reaped. The cache counts as made only if the command ended successfully
-/// and the file exists: anything else (a timeout, a failure) removes what
-/// the command left, since `xcrun` leaves a partial file when it is killed
-/// and a partial file would be taken for the cache. The environment is not
-/// inherited (the runtime's holds `env:`-referenced secrets and `xcrun`
-/// needs none of it). Returns whether the cache was made.
-pub fn warm(file: &Path, program: &Path, args: &[String], wait: Duration) -> bool {
+/// The whole warming: one call per tool of [`WARMED_TOOLS`], in order.
+pub fn warming_commands(xcrun: &Path, translated: bool) -> Vec<Call> {
+    WARMED_TOOLS
+        .iter()
+        .map(|tool| warming_command(xcrun, translated, tool))
+        .collect()
+}
+
+/// Runs one command (outside any sandbox: the caller is the runtime) and
+/// waits at most `wait`; a child still running then is killed and reaped.
+/// The environment is not inherited (the runtime's holds `env:`-referenced
+/// secrets and `xcrun` needs none of it). Returns whether it ended
+/// successfully.
+fn run_bounded(program: &Path, args: &[String], wait: Duration) -> bool {
     let started = Instant::now();
     let spawned = std::process::Command::new(program)
         .args(args)
@@ -114,7 +132,7 @@ pub fn warm(file: &Path, program: &Path, args: &[String], wait: Duration) -> boo
     let Ok(mut child) = spawned else {
         return false;
     };
-    let ended_well = loop {
+    loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.success(),
             Ok(None) if started.elapsed() < wait => {
@@ -126,8 +144,20 @@ pub fn warm(file: &Path, program: &Path, args: &[String], wait: Duration) -> boo
                 break false;
             }
         }
-    };
-    if ended_well && file.exists() {
+    }
+}
+
+/// Runs the warming's calls in order, each bounded by `wait` (so the whole
+/// is bounded by `wait` times the number of calls). The cache counts as made
+/// only if every call ended successfully and the file exists. The first call
+/// that fails or times out ends the warming and removes what the calls left,
+/// since `xcrun` leaves a partial file when it is killed and a partial file
+/// would be taken for the cache. Returns whether the cache was made.
+pub fn warm(file: &Path, calls: &[Call], wait: Duration) -> bool {
+    let all_well = calls
+        .iter()
+        .all(|(program, args)| run_bounded(program, args, wait));
+    if all_well && file.exists() {
         return true;
     }
     let _ = std::fs::remove_file(file);
@@ -135,17 +165,12 @@ pub fn warm(file: &Path, program: &Path, args: &[String], wait: Duration) -> boo
 }
 
 /// Makes the cache if it is needed and absent, and says what is true
-/// afterwards. The command and `wait` are the caller's (the macOS wrapper
+/// afterwards. The calls and `wait` are the caller's (the macOS wrapper
 /// gives the system's and LIM-O8).
-pub fn ensure(
-    file: Option<PathBuf>,
-    program: &Path,
-    args: &[String],
-    wait: Duration,
-) -> CacheState {
+pub fn ensure(file: Option<PathBuf>, calls: &[Call], wait: Duration) -> CacheState {
     match state_of(file) {
         CacheState::Missing { file } => {
-            warm(&file, program, args, wait);
+            warm(&file, calls, wait);
             state_of(Some(file))
         }
         other => other,

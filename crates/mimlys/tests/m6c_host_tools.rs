@@ -92,7 +92,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
-allowed_args = ["ok", "cwd", "read", "write", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "env", "setsid-sleep", "orphan", "fork", "alloc-touch"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -1571,6 +1571,54 @@ fn req_conf_005_the_demonstration_completes_with_the_xcrun_cache_deleted() {
     assert!(!file.exists(), "the control: the cache is absent");
     demonstration(test);
     assert!(file.exists(), "the runtime made {}", file.display());
+}
+
+/// REQ-CONF-005 / external design §13.3 (the warming's list): after the
+/// runtime's warming, a host tool inside the profile resolves EACH tool of the
+/// list through the sandboxed `xcrun` (`xcrun --find <tool>`, run by the probe
+/// tool as a build's shims run it). The cache is keyed by the tool asked for,
+/// so a tool missing from the list fails here and fails a build the same way.
+/// The control: the cache is absent before the run. With the Command Line
+/// Tools selected the cache is not needed and the test says so.
+#[test]
+fn req_conf_005_every_listed_tool_resolves_through_the_sandboxed_xcrun() {
+    // The tools a Rust link and the `cc` crate's builds ask for, written out here and
+    // not read from the runtime's list: a test that took the list from the code under
+    // test would stop asking for a tool the moment the code stopped warming it.
+    const WARMED_TOOLS: [&str; 7] = ["clang", "ld", "ar", "ranlib", "strip", "libtool", "lipo"];
+    let test = "req_conf_005_every_listed_tool_resolves_through_the_sandboxed_xcrun";
+    let serial = cache_lock();
+    let Some(file) = mimlys_exec::confine::macos::xcrun_cache_file() else {
+        common::skip(
+            test,
+            "the Command Line Tools are selected: no cache is needed",
+        );
+        return;
+    };
+    let _ = std::fs::remove_file(&file);
+    assert!(!file.exists(), "the control: the cache is absent");
+    let mut script: Vec<Value> = WARMED_TOOLS
+        .iter()
+        .map(|tool| probe(&["xcrun-find", tool]))
+        .collect();
+    script.push(complete());
+    let env = Env::new_exclusive(&script, "", &serial);
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert!(file.exists(), "the runtime made {}", file.display());
+    for (tool, observation) in WARMED_TOOLS.iter().zip(&obs) {
+        let out = stdout_of(observation);
+        assert_eq!(
+            exit_code_of(observation),
+            0,
+            "xcrun --find {tool} inside the profile: {out}"
+        );
+        assert!(
+            out.trim_end().ends_with(&format!("/{tool}")),
+            "xcrun --find {tool} resolved to: {out}"
+        );
+    }
 }
 
 /// REQ-CONF-003 / external design §13.3: if the cache cannot be made (the

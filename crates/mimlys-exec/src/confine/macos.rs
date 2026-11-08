@@ -704,16 +704,16 @@ pub fn xcrun_cache_state() -> xcrun::CacheState {
 }
 
 /// Makes `xcrun`'s cache where an Xcode is selected and it is absent, outside
-/// any sandbox (the caller is the runtime, before it starts a worker), waiting
-/// at most LIM-O8; says what is true afterwards (implementation decisions,
-/// point 8; external design §13.3).
+/// any sandbox (the caller is the runtime, before it starts a worker), asking
+/// for each tool of [`xcrun::WARMED_TOOLS`] and waiting at most LIM-O8 for
+/// each; says what is true afterwards (implementation decisions, point 8;
+/// external design §13.3).
 #[cfg(target_os = "macos")]
 pub fn ensure_xcrun_cache() -> xcrun::CacheState {
-    let (program, args) = xcrun::warming_command(&xcrun_path(), sys::translated_by_rosetta());
+    let calls = xcrun::warming_commands(&xcrun_path(), sys::translated_by_rosetta());
     xcrun::ensure(
         xcrun_cache_file(),
-        &program,
-        &args,
+        &calls,
         std::time::Duration::from_millis(mimlys_core::limits::LIM_O8_XCRUN_CACHE_MS),
     )
 }

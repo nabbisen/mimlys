@@ -155,8 +155,9 @@ pub struct App {
 }
 
 /// Makes `xcrun`'s cache (macOS, an Xcode selected, the cache absent) by
-/// running `xcrun --find clang` here, outside any sandbox, waiting at most
-/// LIM-O8 (RFC 011 Amendment 2, implementation decisions, point 8). Returns
+/// running `xcrun --find <tool>` for each tool of the warming's list here,
+/// outside any sandbox, waiting at most LIM-O8 for each (RFC 011 Amendment 2,
+/// implementation decisions, point 8). Returns
 /// the cache file if it is still missing afterwards; the run goes on all the
 /// same (the tool's own error then names the cause). Nothing elsewhere.
 pub fn warm_xcrun_cache() -> Option<PathBuf> {
