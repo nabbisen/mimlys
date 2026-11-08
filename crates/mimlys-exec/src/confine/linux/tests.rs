@@ -1,42 +1,71 @@
 use super::*;
 
 /// REQ-CONF-009, REQ-TEST-013 (handoff 011g): the `/proc` walk finds the
-/// descendants of a process and kills them within the grace period (clause
-/// K's fallback rung). The walk is rooted at a helper this test starts, never
-/// at the test process: other tests of the same binary start children of it
-/// in parallel threads, and a walk from the test process would see, and kill,
-/// those. In the product the root is the worker, whose only children are its
-/// tools.
+/// descendants of a process, a grandchild included, and kills them within the
+/// grace period (clause K's fallback rung). The walk is rooted at a helper this
+/// test starts, never at the test process: other tests of the same binary
+/// start children of it in parallel threads, and a walk from the test process
+/// would see, and kill, those. In the product the root is the worker, whose
+/// only children are its tools. The helper has two children, one of which has
+/// a child of its own (helper → inner `sh` → `sleep`, helper → `sleep`), so the
+/// walk's following of ancestry beyond one level is exercised; the trailing `:`
+/// keeps the inner shell from replacing itself with its `sleep`.
 #[test]
 fn rfc_011_descendant_walk_kills_the_tree() {
     let mut helper = std::process::Command::new("sh")
-        .args(["-c", "sleep 30 & sleep 30 & wait"])
+        .args(["-c", "sh -c 'sleep 30; :' & sleep 30 & wait"])
         .spawn()
         .unwrap();
     let root = helper.id();
-    // Both sleepers exist before the walk (bounded, no fixed sleep).
+    // All three exist before the walk (bounded, no fixed sleep).
     let started = std::time::Instant::now();
-    while descendants_of(root).len() < 2 {
+    while descendants_of(root).len() < 3 {
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "the helper's two sleepers did not start: {:?}",
+            "the helper's tree did not start: {:?}",
             descendants_of(root)
         );
         std::thread::sleep(Duration::from_millis(20));
     }
     let found = descendants_of(root);
-    assert_eq!(found.len(), 2, "the helper's two sleepers: {found:?}");
+    assert_eq!(
+        found.len(),
+        3,
+        "inner shell, its sleep, the sleep: {found:?}"
+    );
     assert!(
         !found.contains(&root),
         "the root is not its own descendant: {found:?}"
     );
+    let parent_of = |pid: u32| ppid_of(Path::new(&format!("/proc/{pid}")));
+    let children = found
+        .iter()
+        .filter(|p| parent_of(**p) == Some(root))
+        .count();
+    let grandchildren: Vec<u32> = found
+        .iter()
+        .copied()
+        .filter(|p| parent_of(*p).is_some_and(|pp| pp != root && found.contains(&pp)))
+        .collect();
+    assert_eq!(children, 2, "two children of the helper: {found:?}");
+    assert_eq!(
+        grandchildren.len(),
+        1,
+        "one grandchild, found by following the ancestry: {found:?}"
+    );
     let remaining = kill_descendants(root, Duration::from_secs(2));
     assert_eq!(remaining, 0);
-    // Gone now, not when the sleepers would have ended on their own.
+    // Gone now, not when the sleepers would have ended on their own, the
+    // grandchild included.
     assert!(
         descendants_of(root).is_empty(),
         "left after the kill: {:?}",
         descendants_of(root)
+    );
+    assert!(
+        !Path::new(&format!("/proc/{}", grandchildren[0])).exists()
+            || parent_of(grandchildren[0]).is_none(),
+        "the grandchild is gone"
     );
     let _ = helper.wait();
 }
