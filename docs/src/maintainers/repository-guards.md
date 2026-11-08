@@ -6,15 +6,17 @@
 
 | Where | Check | Verifies |
 |---|---|---|
-| `check` job, Linux, Windows, macOS (and Linux aarch64) | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`, `cargo test --all-features --no-fail-fast` | formatting, lints, build, tests |
+| `check` job, Linux, Windows, macOS (and Linux aarch64) | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`, `cargo test --all-features --no-fail-fast`; before the tests, the pinned interpreter is fetched once with retries and verified (`scripts/fetch-interpreter.sh`), cached by its SHA-256, and the tests use it through `MIMLYS_QJS_WASM` | formatting, lints, build, tests; no test downloads the interpreter itself (handoff 005b) |
 | `rosetta` job, `macos-latest` | installs Rosetta, adds `x86_64-apple-darwin`, runs `cargo test --workspace --all-features --target x86_64-apple-darwin --no-fail-fast` | REQ-PLAT-002 (macOS x86_64): the Intel build and tests under translation; it does not show an Intel Mac's kernel, and a problem here never hides the native macOS result |
 | `msrv` job, Linux | build and test on the toolchain named by `rust-version` (REQ-PLAT-001) | the stated minimum is real |
 | `package` job, Linux | `cargo publish --workspace --dry-run` | the six crates package and verify in dependency order |
-| `deny` job | `cargo deny check advisories licenses bans sources` | REQ-SEC-012 |
-| `rules` job | `scripts/check-core-deps.sh`, `check-unsafe.sh`, `check-rfcs.sh`, `check-doc-refs.sh`, `check-req-tests.sh` (report only), `mdbook build docs` (pinned, 0.5.4) | REQ-ARCH-002, REQ-ENG-001, RFC 000, the registers, the book |
+| `deny` job | `cargo deny --all-features --log-level warn check advisories licenses bans sources`, with cargo-deny 0.20.2 installed from crates.io and cached (not a Docker action) | REQ-SEC-012 |
+| `rules` job | `scripts/check-core-deps.sh`, `check-unsafe.sh`, `check-rfcs.sh`, `check-doc-refs.sh`, `check-req-tests.sh` (report only), `mdbook build docs` (pinned 0.5.4, installed from crates.io and cached, not a GitHub release download) | REQ-ARCH-002, REQ-ENG-001, RFC 000, the registers, the book |
 | `interpreters` workflow, monthly and on demand | rebuilds the pinned interpreter from its recipe and compares the hash | REQ-ARCH-007; a mismatch is a review item, never silently accepted |
 
 A plain `cargo test --workspace` (default features) does not build the test-only binaries, so it skips the suites that need them (the M1 and M2 harness tests among them); the gate is `--all-features`, and the CI jobs run that.
+
+Downloads in the workflows (handoff 005b). GitHub's release downloads answered HTTP 504 intermittently for about an hour on 2026-11-08 and turned a test-only change red on eight jobs. What remains downloaded, and how: the pinned interpreter by `scripts/fetch-interpreter.sh` (`curl --fail --retry 8 --retry-all-errors`, exponential backoff, about four minutes in all, then the SHA-256 check) and the `actions/cache` entry keyed by that hash; `mdbook` from crates.io (cargo's index, not a release asset); the Rust toolchain by `dtolnay/rust-toolchain` (its own curl retry). `cargo-deny` is installed the way `mdbook` is: `cargo install cargo-deny --locked --version 0.20.2` from crates.io, cached by `actions/cache` (key `cargo-deny-0.20.2-<OS>`). 0.20.2 is the version the Docker action it replaced shipped (its Dockerfile fetched the release with `curl --silent -L … | tar`, without `--fail` or a retry, on every run). The advisory database is still fetched by cargo-deny itself, from github.com/RustSec/advisory-db, on every run; observed with the network down and a local copy present: cargo-deny logs `failed to fetch advisory database … Could not connect` and exits 1. A failed fetch therefore fails the job, closed; it does not fall back to a stale copy (`--disable-fetch` would, and is not used). A GitHub outage can still fail that one job, once per run, for that reason.
 
 Rules for the workflows: tools are pinned (the `mdbook` version in use, not `latest`); actions are pinned by commit hash with the tag in a comment; a new job never changes what an existing job runs.
 

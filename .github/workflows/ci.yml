@@ -5,7 +5,7 @@
 # written in docs/src/maintainers/repository-guards.md.
 #
 # Rules for this file: actions are pinned by commit hash with the release in
-# a comment; tools are pinned (mdbook), never `latest`; a new job never
+# a comment; tools are pinned (mdbook, cargo-deny), never `latest`; a new job never
 # changes what an existing job runs.
 name: CI
 
@@ -36,6 +36,24 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo build --workspace --all-targets
+      # The interpreter the tests install (REQ-SBX-001, handoff 005b): fetched
+      # once per job with retries, verified against the pinned SHA-256 (read
+      # from crates/mimlys-exec/src/interpreters.rs), cached by that hash, and
+      # used by the tests through MIMLYS_QJS_WASM instead of a download of
+      # their own.
+      - id: qjs
+        shell: bash
+        run: echo "sha256=$(scripts/pinned-interpreter.sh sha256)" >> "$GITHUB_OUTPUT"
+      - id: qjs-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/qjs/qjs-wasi.wasm
+          key: qjs-wasi-${{ steps.qjs.outputs.sha256 }}
+      - if: steps.qjs-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: scripts/fetch-interpreter.sh "$RUNNER_TEMP/qjs/qjs-wasi.wasm"
+      - shell: bash
+        run: echo "MIMLYS_QJS_WASM=$RUNNER_TEMP/qjs/qjs-wasi.wasm" >> "$GITHUB_ENV"
       # Skips are recorded by `common::skip` (libtest hides a passing test's
       # output); clear the file so that a restored cache cannot add lines.
       - run: rm -f target/tmp/skips.log
@@ -70,6 +88,24 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: rosetta
+      # The interpreter the tests install (REQ-SBX-001, handoff 005b): fetched
+      # once per job with retries, verified against the pinned SHA-256 (read
+      # from crates/mimlys-exec/src/interpreters.rs), cached by that hash, and
+      # used by the tests through MIMLYS_QJS_WASM instead of a download of
+      # their own.
+      - id: qjs
+        shell: bash
+        run: echo "sha256=$(scripts/pinned-interpreter.sh sha256)" >> "$GITHUB_OUTPUT"
+      - id: qjs-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/qjs/qjs-wasi.wasm
+          key: qjs-wasi-${{ steps.qjs.outputs.sha256 }}
+      - if: steps.qjs-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: scripts/fetch-interpreter.sh "$RUNNER_TEMP/qjs/qjs-wasi.wasm"
+      - shell: bash
+        run: echo "MIMLYS_QJS_WASM=$RUNNER_TEMP/qjs/qjs-wasi.wasm" >> "$GITHUB_ENV"
       # With `--target`, CARGO_TARGET_TMPDIR is `target/<triple>/tmp` (verified), not `target/tmp`.
       - run: rm -f target/x86_64-apple-darwin/tmp/skips.log
         shell: bash
@@ -101,6 +137,24 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: rustc --version
       - run: cargo build --workspace --all-targets
+      # The interpreter the tests install (REQ-SBX-001, handoff 005b): fetched
+      # once per job with retries, verified against the pinned SHA-256 (read
+      # from crates/mimlys-exec/src/interpreters.rs), cached by that hash, and
+      # used by the tests through MIMLYS_QJS_WASM instead of a download of
+      # their own.
+      - id: qjs
+        shell: bash
+        run: echo "sha256=$(scripts/pinned-interpreter.sh sha256)" >> "$GITHUB_OUTPUT"
+      - id: qjs-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/qjs/qjs-wasi.wasm
+          key: qjs-wasi-${{ steps.qjs.outputs.sha256 }}
+      - if: steps.qjs-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: scripts/fetch-interpreter.sh "$RUNNER_TEMP/qjs/qjs-wasi.wasm"
+      - shell: bash
+        run: echo "MIMLYS_QJS_WASM=$RUNNER_TEMP/qjs/qjs-wasi.wasm" >> "$GITHUB_ENV"
       # Skips are recorded by `common::skip` (libtest hides a passing test's
       # output); clear the file so that a restored cache cannot add lines.
       - run: rm -f target/tmp/skips.log
@@ -136,9 +190,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
         with:
-          command: check advisories licenses bans sources
+          toolchain: stable
+      # cargo-deny, at the version the pinned Docker action shipped (0.20.2),
+      # installed from crates.io and cached like mdbook: that action built a
+      # container on every run whose Dockerfile fetched the release with
+      # `curl --silent -L | tar`, without --fail or a retry (HTTP 504 on
+      # 2026-11-08). The advisory database is still fetched by cargo-deny
+      # itself from github.com/RustSec/advisory-db on every run; a failed
+      # fetch fails the job (it does not fall back to a stale copy).
+      - id: deny-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-0.20.2-${{ runner.os }}
+      - if: steps.deny-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --locked --version 0.20.2
+      # The command the action ran: its defaults were `--all-features`,
+      # `--manifest-path ./Cargo.toml` and `--log-level warn`.
+      - run: cargo deny --all-features --log-level warn check advisories licenses bans sources
 
   rules:
     name: core dependencies, RFCs, documentation
@@ -156,7 +227,13 @@ jobs:
       # Report only (repository-guards.md §3): lists the requirements and
       # invariants no test names; it fails the job only on a malformed map.
       - run: scripts/check-req-tests.sh
-      - uses: peaceiris/actions-mdbook@ee69d230fe19748b7abf22df32acaa93833fad08 # v2.0.0
+      # mdbook, the pinned version, from crates.io (not a GitHub release
+      # download, which failed with HTTP 504 on 2026-11-08) and cached.
+      - id: mdbook-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          mdbook-version: 0.5.4
+          path: ~/.cargo/bin/mdbook
+          key: mdbook-0.5.4-${{ runner.os }}
+      - if: steps.mdbook-cache.outputs.cache-hit != 'true'
+        run: cargo install mdbook --version 0.5.4 --locked
       - run: mdbook build docs

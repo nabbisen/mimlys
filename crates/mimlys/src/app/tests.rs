@@ -60,3 +60,34 @@ fn req_conf_008_data_directory_error_is_recognized_by_type() {
         "the message carries the error's text: {error}"
     );
 }
+
+/// REQ-SBX-001 (external design §12 and §18): an interpreter download that
+/// failed for good is `unavailable` with `component: "download"`, the URL and
+/// the last status in the detail; the message names the `--from FILE` remedy.
+/// It is typed, never recognized by its text: the same words in an ordinary
+/// error are `internal`.
+#[test]
+fn req_sbx_001_a_failed_download_is_unavailable_download() {
+    let error = AppError::Download(crate::download::DownloadError {
+        url: "https://example.invalid/qjs.wasm".into(),
+        language: "javascript".into(),
+        last_status: Some(504),
+        last: "HTTP status 504".into(),
+        retries: 3,
+    });
+    assert_eq!(error.kind(), "unavailable");
+    let value = error.to_json();
+    assert_eq!(value["error"]["kind"], "unavailable");
+    assert_eq!(value["error"]["detail"]["component"], "download");
+    assert_eq!(value["error"]["detail"]["last_status"], 504);
+    assert_eq!(
+        value["error"]["detail"]["url"],
+        "https://example.invalid/qjs.wasm"
+    );
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(message.contains("--from FILE"), "{message}");
+    let lookalike = AppError::Io {
+        detail: error.to_string(),
+    };
+    assert_eq!(lookalike.kind(), "internal");
+}

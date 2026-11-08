@@ -33,7 +33,7 @@ or configuration error, 2 usage error.
 | `toolchain revoke --all [--yes]` | Windows, before an uninstall: remove every permission the container holds (mimlys's own directories and the declared read paths included, found by a bounded scan if the record lost them), delete the container profile and the record; elsewhere nothing was changed outside the data directory and the command says so. A path with `--all` is a usage error (exit 2) |
 | `check` | Validate the configuration and print it |
 | `interpreters list` | The configured interpreters and whether they are installed |
-| `interpreters install <language> [--from FILE]` | Verify by hash and install an interpreter build (download of the shipped build without `--from`) |
+| `interpreters install <language> [--from FILE]` | Verify by hash and install an interpreter build (download of the shipped build without `--from`, within two minutes and retried three times on a transient failure; if it still fails, the error is `unavailable`, component `download`, and `--from FILE` is the remedy) |
 | `rollback <task> [--snapshot S]` | Restore the workspace to a snapshot (the latest by default) |
 | `rollback <task> --promotion P` | Reverse a promotion from its backup |
 | `promote <task> [--yes] [--summary] [--patch]` | Diff against the base, refuse conflicts, back up, ask, write; `--patch` prints a patch and writes nothing |
