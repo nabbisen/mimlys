@@ -1,6 +1,6 @@
 # Handoff 011f — Windows: the permission lock fails closed (release 0.8)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §7 (the container's entries on the user's directories) · **Specification.** REQ-CONF-008, external design §13.5 (the writers' lock), limits LIM-O7; threat THR-36 · **Decision.** Investigation D1 (`.git-exclude/review-requests/D1-windows-flake/README.md`), decided by the architect on 2026-11-07 (`e034744`) · **Release.** 0.8 · **Depends on** 011b, 011e (done).
+**RFC.** [RFC 011](../../done/011-confinement-backends.md) §7 (the container's entries on the user's directories) · **Specification.** REQ-CONF-008, external design §13.5 (the writers' lock), limits LIM-O7; threat THR-36 · **Decision.** Investigation D1 (`.git-exclude/review-requests/D1-windows-flake/README.md`), decided by the architect on 2026-11-07 (`e034744`) · **Release.** 0.8 · **Depends on** 011b, 011e (done).
 
 ## Status (2026-11-08): merged
 

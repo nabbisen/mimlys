@@ -48,7 +48,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 
 | Order | Handoff | RFC | Depends on |
 |---|---|---|---|
-| 1 | [011a The Linux backend and host tools](./011a-confinement-linux/implementation-handoff.md) | [RFC 011](../accepted/011-confinement-backends.md) | 001–010 |
+| 1 | [011a The Linux backend and host tools](./011a-confinement-linux/implementation-handoff.md) | [RFC 011](../done/011-confinement-backends.md) | 001–010 |
 | 2 | [011b The Windows backend](./011b-confinement-windows/implementation-handoff.md) | RFC 011 §3, §7 | 011a |
 | 3 | [011d Linux hardening and read-set hygiene (0.7.1)](./011d-linux-hardening/implementation-handoff.md) | RFC 011 Amendment 1 | 011a, 011b |
 | 4 | [011c The macOS backend](./011c-confinement-macos/implementation-handoff.md) | RFC 011 §4, §5 | 011a, 011d |

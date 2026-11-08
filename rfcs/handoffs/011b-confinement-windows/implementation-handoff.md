@@ -1,6 +1,6 @@
 # Handoff 011b — The Windows backend (M6b)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §3, §7 · **Specification.** REQ-CONF-005 (Windows), REQ-CONF-008, REQ-TEST-013; external design §13.3, §19.2 (`toolchain`) · **Milestone.** M6b (release 0.7). Depends on 011a.
+**RFC.** [RFC 011](../../done/011-confinement-backends.md) §3, §7 · **Specification.** REQ-CONF-005 (Windows), REQ-CONF-008, REQ-TEST-013; external design §13.3, §19.2 (`toolchain`) · **Milestone.** M6b (release 0.7). Depends on 011a.
 
 ## 1. Scope
 

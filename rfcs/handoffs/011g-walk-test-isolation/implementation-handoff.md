@@ -1,6 +1,6 @@
 # Handoff 011g — The descendant-walk test must not walk the test process (release 0.8)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md) (clause K, Linux's walk rung) · **Specification.** REQ-CONF-009, REQ-TEST-013 · **Found.** `main`'s CI after 011c-6: run `42461069396` (`e25f75f`) and `42461134298` (`2e1384e`), job `check (ubuntu-24.04-arm)`, both failed in `confine::linux::tests::rfc_011_descendant_walk_kills_the_tree` (`assertion failed: descendants_of(me).is_empty()`, `tests.rs:19`); the other eight jobs passed. The PR's own CI of 011c-6 passed.
+**RFC.** [RFC 011](../../done/011-confinement-backends.md) (clause K, Linux's walk rung) · **Specification.** REQ-CONF-009, REQ-TEST-013 · **Found.** `main`'s CI after 011c-6: run `42461069396` (`e25f75f`) and `42461134298` (`2e1384e`), job `check (ubuntu-24.04-arm)`, both failed in `confine::linux::tests::rfc_011_descendant_walk_kills_the_tree` (`assertion failed: descendants_of(me).is_empty()`, `tests.rs:19`); the other eight jobs passed. The PR's own CI of 011c-6 passed.
 
 ## Status (2026-11-08, fourth): merged
 

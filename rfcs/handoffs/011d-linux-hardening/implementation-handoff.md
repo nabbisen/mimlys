@@ -1,6 +1,6 @@
 # Handoff 011d — Linux hardening and read-set hygiene (release 0.7.1)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md), Amendment 1 · **Specification.** REQ-CONF-005 (Linux), REQ-CONF-011, REQ-CONF-012, REQ-TEST-013; external design §13.3, §13.5; limits LIM-H5; threats THR-11, THR-23, THR-24, THR-36 · **Release.** 0.7.1 (patch; the owner tags and publishes) · **Depends on** 011a, 011b (done).
+**RFC.** [RFC 011](../../done/011-confinement-backends.md), Amendment 1 · **Specification.** REQ-CONF-005 (Linux), REQ-CONF-011, REQ-CONF-012, REQ-TEST-013; external design §13.3, §13.5; limits LIM-H5; threats THR-11, THR-23, THR-24, THR-36 · **Release.** 0.7.1 (patch; the owner tags and publishes) · **Depends on** 011a, 011b (done).
 **Origin.** Intake review N-01 and N-02 (`.git-exclude/reviewed/intake-0.7.0/README.md`), reproduced by the outgoing architect. Read both before you start; `evidence/uring_vs_seccomp.c` there is the reproducer for N-01.
 
 ## 1. Scope

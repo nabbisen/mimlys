@@ -21,7 +21,6 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Accepted on |
 |----|-------|-------------|
-| 011 | [Confinement backends and host tools](./accepted/011-confinement-backends.md) | 2026-10-29 (§1–§3 and §6–§10 shipped in 0.7.0 on Linux and Windows; the macOS backend, §4, implemented on `main` for 0.8; moves to `done/` when 0.8 ships) |
 | 012 | [Decisions as native tool calls](./accepted/012-decisions-as-native-tool-calls.md) | 2026-11-08 (for 0.9) |
 
 ## Implemented
@@ -39,6 +38,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 | 008 | [The model backend adapter](./done/008-model-backend-adapter.md) | 0.7.0 (M4) |
 | 009 | [The MCP client and tool pinning](./done/009-mcp-client-and-tool-pinning.md) | 0.7.0 (M5) |
 | 010 | [CLI and operator interface](./done/010-cli-and-operator-interface.md) | 0.7.0 (M1 to M5) |
+| 011 | [Confinement backends and host tools](./done/011-confinement-backends.md) | 0.8.0 (M6a to M6c) |
 
 ## Archive
 

@@ -1,6 +1,6 @@
 # Handoff 011e — Windows: removing every trace before an uninstall (release 0.8)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §7 ("record them … so that `revoke` and an uninstall leave the user's profile as it was") and Amendment 1, point 4 · **Specification.** REQ-CONF-008 (amended 2026-11-07), external design §13.5 and §19.2 (`toolchain revoke --all`); threat THR-36 · **Release.** 0.8 · **Depends on** 011b, 011d (done).
+**RFC.** [RFC 011](../../done/011-confinement-backends.md) §7 ("record them … so that `revoke` and an uninstall leave the user's profile as it was") and Amendment 1, point 4 · **Specification.** REQ-CONF-008 (amended 2026-11-07), external design §13.5 and §19.2 (`toolchain revoke --all`); threat THR-36 · **Release.** 0.8 · **Depends on** 011b, 011d (done).
 
 ## 1. Why
 

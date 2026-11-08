@@ -1,6 +1,6 @@
 # Handoff 011h — Release candidate 0.8.0 (M6c; RFC 011 complete)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md): 0.8.0 ships its last part (the macOS backend) · **Scope.** `ROADMAP.md`, "Release 0.8" (rescoped by the owner on 2026-11-08: the real-model run and LIM-C1 moved to 0.9) · **Model.** The 0.7.1 candidate (R1), with its corrections folded in from the start.
+**RFC.** [RFC 011](../../done/011-confinement-backends.md): 0.8.0 ships its last part (the macOS backend) · **Scope.** `ROADMAP.md`, "Release 0.8" (rescoped by the owner on 2026-11-08: the real-model run and LIM-C1 moved to 0.9) · **Model.** The 0.7.1 candidate (R1), with its corrections folded in from the start.
 
 Prepare the candidate on a branch `release-0.8.0` from `main`. **Do not tag, publish or merge**: the owner decides who runs the commands of §4.
 

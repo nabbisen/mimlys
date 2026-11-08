@@ -1,6 +1,6 @@
 # Handoff 011a — The Linux backend and host tools (M6a)
 
-**RFC.** [RFC 011](../../accepted/011-confinement-backends.md) (Accepted)
+**RFC.** [RFC 011](../../done/011-confinement-backends.md) (Accepted)
 **Specification.** REQ-CONF-001 … 010; REQ-CAP-002 (`host_tool`); REQ-TEST-013; external design §11 (`run_host_tool`), §13, §19.1 (`[host_tools]`), §23 (M6a); limits LIM-H1 … H4, LIM-O2.
 **Crates.** `mimlys-exec` (`confine/linux.rs`: Landlock, seccomp, namespaces, cgroup, subreaper; `confine.rs`: `ConfinementSpec`, the backend reports; `worker_main.rs`: self-confinement before the first frame, `run_host_tool`; `tools.rs`: the `run_host_tool` definition and the argument validation), `mimlys-core` (`host_tool.rs`: declarations and the validation; `confine.rs`: `ClauseState` with the primitive; `Tier` with accepted best-effort; the event), `mimlys` (`[host_tools.<name>]`, `[policy] accept_best_effort`, `mimlys toolchain list`, `status`, the book chapter, the M6a tests and demonstration).
 **Milestone.** M6a (release 0.6). Depends on 001–010.
