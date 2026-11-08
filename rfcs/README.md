@@ -15,7 +15,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Priority |
 |----|-------|----------|
-| — | none at the moment | |
+| 012 | [Decisions as native tool calls](./proposed/012-decisions-as-native-tool-calls.md) | High: no measured model acts under today's envelope (spike S2); the M4 real-model run depends on it |
 
 ## Accepted
 

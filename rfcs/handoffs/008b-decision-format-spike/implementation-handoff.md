@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 008](../../done/008-model-backend-adapter.md) (the backend adapter) · **Specification.** REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-002; external design §15; the M4 report §6 · **Kind.** Spike: measurements and a report, **no product change**. Whatever it shows, a change to how decisions are requested is an RFC of the architect's, written from your numbers.
 
+## Status (2026-11-08): done
+
+The report is accepted (`.git-exclude/review-requests/S2-decision-format/README.md`): its matrix is the basis of RFC 012 (proposed) and of the M4 report §6. Nothing is open in this handoff.
+
 ## 1. Why
 
 Run B of M4 never got past its first step (M4 report §6). Replaying the captured request against the same engine, the architect found that the model answers `ask_user` under the custom decision envelope, whatever the wording, but calls `read_file` at once when the same tools are offered in its own function-calling format. Single probes, not a measurement. This spike measures it.

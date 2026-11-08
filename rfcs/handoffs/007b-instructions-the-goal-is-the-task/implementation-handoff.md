@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 007](../../done/007-context-assembly-and-observation-pipeline.md) (context assembly) · **Specification.** REQ-CTX-002 (amended 2026-11-07), external design §15.1 row 1; the M4 report §1; limits LIM-C1 · **Finding.** L1, the M4 demonstration against a real local model (`.git-exclude/review-requests/L1-m4-real-model/README.md`) · **Release.** 0.8.
 
+## Status (2026-11-08, second): merged
+
+007b is on `main` (`2e1384e`). The instructions are the envelope transport's text; spike S2 showed they do not make a model act (RFC 012, proposed).
+
 ## Status (2026-11-08)
 
 007b-1 is approved as built (the three statements, the test by words, five mutations). C9 was merged first and the branch now conflicts with `main`: **rebase on `main`, run the CI, update the head and run id at the top of the request**; the architect merges it. The rerun showed the instructions reach the model but are not enough (M4 report §6); what follows is spike S2 (handoff 008b), not more wording.

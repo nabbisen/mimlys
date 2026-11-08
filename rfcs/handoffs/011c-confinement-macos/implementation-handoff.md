@@ -3,6 +3,10 @@
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 and Amendment 1 (the read-set rules) · **Specification.** REQ-CONF-001 … 012 (macOS), REQ-TEST-013; external design §13.2 … §13.5, §23 (M6c); limits LIM-H1 … H5, LIM-O2; threats THR-11, THR-17, THR-23, THR-24, THR-32 · **Milestone.** M6c (release 0.8). Depends on 011a, 011d (done).
 **Rewritten 2026-11-07** (the first version was a three-line stub written before any backend existed). It carries what 011a, 011b and 011d taught, in §2.
 
+## Status, seventh update (2026-11-08): merged; M6c's implementation is complete
+
+011c-6 with its tool list is on `main` (`e25f75f`, CI `42434656942`, 9 of 9). Every slice of this handoff is merged; nothing is open. RFC 011 moves to `done/` with the release that ships it.
+
 ## Status, sixth update (2026-11-08): 011c-6 approved; its rebase carries the tool list
 
 011c-6 (PR #22) is approved: `clang` with an empty environment, the partial file removed, the native call from a translated runtime, `check` warming too, one warming for both workers. The specification now says so (external design §13.3; RFC 011, implementation decisions, point 8; LIM-O8 fixed at 10 s per call from your measurement). C9 was merged first (`d0a4842`), so **rebase on `main`**, and add in one more commit:
