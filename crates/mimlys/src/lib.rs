@@ -8,6 +8,7 @@
 pub mod app;
 pub mod commands;
 pub mod config;
+pub mod download;
 pub mod follow;
 pub mod logging;
 pub mod messages;

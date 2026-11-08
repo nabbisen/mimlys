@@ -77,8 +77,15 @@ pub fn install_cmd(
             let p = pinned(language).ok_or_else(|| AppError::Io {
                 detail: messages::no_artifact(language),
             })?;
-            out.line(messages::downloading(p.url));
-            download(p.url)?
+            // Debug builds only (the download tests): another address for the
+            // pinned artifact. A release binary has no such variable.
+            #[cfg(debug_assertions)]
+            let url =
+                std::env::var("MIMLYS_DEBUG_INTERPRETER_URL").unwrap_or_else(|_| p.url.into());
+            #[cfg(not(debug_assertions))]
+            let url = p.url.to_owned();
+            out.line(messages::downloading(&url));
+            download(language, &url)?
         }
     };
     let path =
@@ -93,24 +100,17 @@ pub fn install_cmd(
     Ok(())
 }
 
-fn download(url: &str) -> Result<Vec<u8>, AppError> {
-    let limit = mimlys_core::limits::LIM_S5_MODULE_BYTES;
-    let response = ureq::get(url).call().map_err(|e| AppError::Io {
-        detail: format!("download failed: {e}"),
-    })?;
-    let mut body = response.into_body();
-    let mut bytes = Vec::new();
-    use std::io::Read;
-    body.as_reader()
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| AppError::Io {
-            detail: format!("download failed: {}", e.kind()),
-        })?;
-    if bytes.len() as u64 > limit {
-        return Err(AppError::Io {
-            detail: "the artifact is larger than LIM-S5".into(),
-        });
-    }
-    Ok(bytes)
+/// The pinned artifact, under the download policy (LIM-O9, LIM-O10):
+/// transient failures are retried with one `info` line each; a failure that
+/// remains is the typed `unavailable` / `download` error (external design §12).
+fn download(language: &str, url: &str) -> Result<Vec<u8>, AppError> {
+    crate::download::fetch(
+        url,
+        language,
+        &crate::download::Policy::shipped(),
+        crate::download::http_get,
+        std::thread::sleep,
+        |line| tracing::info!("{line}"),
+    )
+    .map_err(AppError::Download)
 }
