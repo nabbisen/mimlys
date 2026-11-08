@@ -449,6 +449,8 @@ External tools appear with the name `<server>.<tool>` and the declaration of REQ
 | Modules | ≤ LIM-S5; validated before instantiation |
 | Overhead | setup time measured per execution; target LIM-S8 |
 
+`mimlys interpreters install <language>` downloads the shipped build's artifact within LIM-O9 and verifies its SHA-256 before anything is stored. A transient failure (no connection, a timeout, HTTP 429 or 5xx) is retried LIM-O10 times with the waits LIM-O10 states; any other status is not retried. When the download still fails, the error is `unavailable` with `component: "download"` (§18), naming the URL, the last status and the remedy `--from FILE` (an artifact obtained another way, verified by the same hash); never `internal`, which says the runtime is at fault.
+
 ---
 
 ## 13. Worker and confinement
@@ -658,7 +660,7 @@ Structured lines on standard error: timestamp, level, event, task and action ids
 | `state` | the verb is not valid in the current state | `state`, `pending` |
 | `denied` | a grant or budget beyond the ceiling; promotion not allowed | `reason`, `ceiling` |
 | `conflict` | overlapping project scope; promotion conflicts | `with`, `paths` |
-| `unavailable` | backend, worker or server not reachable; on Windows, the permissions of a directory being written by another runtime past LIM-O7 or their lock not obtainable (`component: "permissions"`; retrying later is the remedy) | `component`, `retry_after_ms` |
+| `unavailable` | backend, worker or server not reachable; on Windows, the permissions of a directory being written by another runtime past LIM-O7 or their lock not obtainable (`component: "permissions"`; retrying later is the remedy); an interpreter download that failed after its retries (`component: "download"`, §12) | `component`, `retry_after_ms` |
 | `internal` | a runtime defect | `reference` (an event id; never a stack trace) |
 
 Messages are at most LIM-I5 characters and never carry secrets, file content or provider text.

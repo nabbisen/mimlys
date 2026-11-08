@@ -114,6 +114,8 @@
 | LIM-O6 | Startup of an MCP server | 15000 ms | 1000 – 120000 | Child process |
 | LIM-O7 | Wait for another runtime's write of the same directory's permissions (Windows) | 60000 ms | fixed | Measured (D1, 2026-11-07): one write takes 0.1 s on a near-empty DACL and up to 9 s with hundreds of entries; at the end of the wait the write is refused, never made on a stale base |
 | LIM-O8 | Wait for one `xcrun --find <tool>` making `xcrun`'s cache (macOS, an Xcode selected, the cache absent) | 10000 ms | fixed | Measured (011c-6): a first native call 1.9 to 2.9 s, a cached one 0.07 s; past the wait the call is killed, its partial file removed, and `check` and `status` say the cache is missing (external design §13.3) |
+| LIM-O9 | Deadline of one download of an interpreter artifact (`interpreters install`) | 120000 ms | fixed | The shipped artifacts are a few MB; a slower link uses `--from FILE` |
+| LIM-O10 | Retries of a transient download failure (no connection, timeout, HTTP 429 or 5xx), and the waits before them | 3, after 1 s, 2 s and 4 s | fixed | GitHub's release downloads answered 504 intermittently for an hour on 2026-11-08 (011g's CI) |
 
 ## Model backend
 

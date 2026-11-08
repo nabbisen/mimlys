@@ -21,6 +21,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | Order | Handoff | RFC | Depends on |
 |---|---|---|---|
 | 1 | [005 Execution worker, sandbox profile, confinement probe](./005-execution-worker-and-sandbox-profile/implementation-handoff.md) | [RFC 005](../done/005-execution-worker-and-sandbox-profile.md) | 001–004, 010 |
+| 2 | [005b The interpreter download survives a flaky network (0.8)](./005b-download-robustness/implementation-handoff.md) | RFC 005; 011g's CI | 005 |
 
 ## Milestone M3
 

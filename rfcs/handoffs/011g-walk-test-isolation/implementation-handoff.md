@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) (clause K, Linux's walk rung) · **Specification.** REQ-CONF-009, REQ-TEST-013 · **Found.** `main`'s CI after 011c-6: run `42461069396` (`e25f75f`) and `42461134298` (`2e1384e`), job `check (ubuntu-24.04-arm)`, both failed in `confine::linux::tests::rfc_011_descendant_walk_kills_the_tree` (`assertion failed: descendants_of(me).is_empty()`, `tests.rs:19`); the other eight jobs passed. The PR's own CI of 011c-6 passed.
 
+## Status (2026-11-08, second): follow-up approved, merge waits for a green run
+
+The grandchild follow-up (PR #24, `6436b28`) is approved: three descendants with the grandchild found only past one level, both mutations killed. Its CI (run `42465321601`) failed only on HTTP 504s from GitHub's downloads; the walk test passed on every Linux job that reached it. A test-only change is still merged on a green run: **re-run the failed jobs once the downloads answer** (the architect checked at the time of review: still 504) and update the run id at the top of the request. Handoff 005b removes the CI's dependence on those downloads.
+
 ## Status (2026-11-08): merged; one small follow-up
 
 011g is on `main` (`d3d913a`, CI `42462179051`, 9 of 9; 20 of 20 runs clean against 10 of 20 failing on unfixed `main`). One thing the rewrite lost: the old test reached a **grandchild** (test process → `sh` → `sleep`), the new one only children of the helper (helper → two `sleep`s), so the walk's following of ancestry beyond one level is no longer tested. On a short branch: give the helper a grandchild (for example `sh -c 'sh -c "sleep 30; :" & sleep 30 & wait'`, where the trailing `:` keeps the inner shell from replacing itself with `sleep`), assert the walk finds three descendants with the grandchild among them, and that none is left after the kill. Mutation: `descendants_of` returning only direct children; the test fails. Update the request at the top.
