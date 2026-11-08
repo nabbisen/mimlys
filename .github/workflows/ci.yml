@@ -5,7 +5,7 @@
 # written in docs/src/maintainers/repository-guards.md.
 #
 # Rules for this file: actions are pinned by commit hash with the release in
-# a comment; tools are pinned (mdbook), never `latest`; a new job never
+# a comment; tools are pinned (mdbook, cargo-deny), never `latest`; a new job never
 # changes what an existing job runs.
 name: CI
 
@@ -190,9 +190,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
         with:
-          command: check advisories licenses bans sources
+          toolchain: stable
+      # cargo-deny, at the version the pinned Docker action shipped (0.20.2),
+      # installed from crates.io and cached like mdbook: that action built a
+      # container on every run whose Dockerfile fetched the release with
+      # `curl --silent -L | tar`, without --fail or a retry (HTTP 504 on
+      # 2026-11-08). The advisory database is still fetched by cargo-deny
+      # itself from github.com/RustSec/advisory-db on every run; a failed
+      # fetch fails the job (it does not fall back to a stale copy).
+      - id: deny-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-0.20.2-${{ runner.os }}
+      - if: steps.deny-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --locked --version 0.20.2
+      # The command the action ran: its defaults were `--all-features`,
+      # `--manifest-path ./Cargo.toml` and `--log-level warn`.
+      - run: cargo deny --all-features --log-level warn check advisories licenses bans sources
 
   rules:
     name: core dependencies, RFCs, documentation
