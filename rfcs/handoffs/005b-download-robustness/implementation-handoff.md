@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 005](../../done/005-execution-worker-and-sandbox-profile.md) (the sandbox profile and its interpreters) · **Specification.** REQ-SBX-001; external design §12 (the paragraph after the profile table) and §18 (`unavailable`, `component: "download"`); limits LIM-O9, LIM-O10 (new) · **Found.** 011g's follow-up CI, run `42465321601`: five attempts, every failure an HTTP 504 from GitHub's release downloads (the QuickJS artifact in nine tests, mdbook, the cargo-deny container) · **Release.** 0.8.
 
+## Status (2026-11-08, second): merged
+
+005b with its correction is on `main` (cherry-picked onto `1ef7379`, documents only in between; `main`'s CI `42478310288`, 9 of 9). A failed fetch of the advisory database fails the audit job, closed: accepted (a security gate must not pass on a stale database). Nothing is open here.
+
 ## Status (2026-11-08): approved; one correction before the merge
 
 005b (PR #25, `2dc2932`) is approved: the product's download (bounded, transient failures retried, typed `unavailable`/`download` with the `--from FILE` remedy), the CI's cached and verified interpreter, mdbook from crates.io. Accepted as built: `MIMLYS_QJS_WASM` instead of a `--from` run; the guards document's note that this handoff changes existing jobs; every failure of the download being the typed error; no mirror for now (a cache miss during a long outage remains, stated in the guards document).
