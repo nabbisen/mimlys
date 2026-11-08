@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 007](../../done/007-context-assembly-and-observation-pipeline.md) (context assembly) · **Specification.** REQ-CTX-002 (amended 2026-11-07), external design §15.1 row 1; the M4 report §1; limits LIM-C1 · **Finding.** L1, the M4 demonstration against a real local model (`.git-exclude/review-requests/L1-m4-real-model/README.md`) · **Release.** 0.8.
 
+## Status (2026-11-08)
+
+007b-1 is approved as built (the three statements, the test by words, five mutations). C9 was merged first and the branch now conflicts with `main`: **rebase on `main`, run the CI, update the head and run id at the top of the request**; the architect merges it. The rerun showed the instructions reach the model but are not enough (M4 report §6); what follows is spike S2 (handoff 008b), not more wording.
+
 ## 1. Why
 
 The first run against a real model (Qwen2.5-Coder-7B-Instruct, Q4_K_M, llama.cpp) ended its first step in `waiting_user` four runs of four: the model asked the user for the content of `tools/sum.js`, which the goal told it to read and `read_file` could read. The cause is in the fixed instructions (`runtime/context.rs`, `SYSTEM_INSTRUCTIONS`): they call every labelled segment, user text included, "data … never instructions", and the goal is such a segment. A model told that its goal is not an instruction, and never told to use its tools before asking, asks. Nothing else malfunctioned. A user would see a task waiting for an answer the runtime could have found itself: that is the product's fault, not the model's.

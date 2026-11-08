@@ -82,7 +82,13 @@ deadline, cancellation within a poll interval, the bound on the body and on
 the content, usage in OpenAI's and llama-server's names, no usage, the
 bearer token, and the loop end to end with `completed{verified}`.
 
-## 6. What run B will add
+## 6. Run B, first attempts (2026-11-07 and 2026-11-08): no repair
+
+Qwen2.5-Coder-7B-Instruct (Q4_K_M) on llama.cpp (build 11429, CPU), `json_schema` accepted, temperature 0. Every run ended at its first step with `ask_user`: four runs asked for the content of `tools/sum.js` (a file the goal said to read, with `read_file` granted); after handoff 007b corrected the fixed instructions (they had called the goal "data, never instructions"), three runs asked "Do you want to proceed with the given goal?". Measured on the way: `chars_per_prompt_token` 4.36 (5 716 characters, 1 310 tokens; 4.35 with the corrected instructions), and the engine's prompt cache took 1 309 of 1 310 tokens of an identical re-request.
+
+The architect replayed the captured request against the same engine with one change at a time (2026-11-08): the separate decision-request message after the goal is what turns the model's answer into "proceed?" (without it the model returns a correct plan), yet with a plan present it asks which file to read first; wording, an example, the empty `grants` list and the schema itself changed nothing that mattered. Offered the same tools in its own function-calling format, the model called `read_file` on the test file at once, with or without a trailing request. What this points at, from single probes and not yet a measurement: **the custom decision envelope rather than the model's ability** keeps this 7B model from acting. Spike S2 (handoff 008b) measures the decision formats across models before any design change; LIM-C1 stays provisional until a run completes.
+
+## 7. What run B will add
 
 The transcript of a real repair, the engine's own cached-token count
 against the runtime's prefix ratio, `chars_per_prompt_token` for the

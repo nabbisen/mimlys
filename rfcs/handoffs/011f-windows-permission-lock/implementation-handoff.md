@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §7 (the container's entries on the user's directories) · **Specification.** REQ-CONF-008, external design §13.5 (the writers' lock), limits LIM-O7; threat THR-36 · **Decision.** Investigation D1 (`.git-exclude/review-requests/D1-windows-flake/README.md`), decided by the architect on 2026-11-07 (`e034744`) · **Release.** 0.8 · **Depends on** 011b, 011e (done).
 
+## Status (2026-11-08): merged
+
+C9 round 3 is on `main` (`d0a4842`, CI `42380595093`, 9 of 9). Nothing is open in this handoff.
+
 ## Status (2026-11-07, after the review of C9 round 2)
 
 The corrections are approved as built (`4c33c25`, CI `42373455304`), including `acquire_within` for the test, `detail` without `retry_after_ms`, and `revoke --all` reporting a refused entry as a `failed` row. 011c-5 was merged first (`ebb4ab9`), so **rebase `c9-windows-lock` on `main`, run the CI, and update the head and run id at the top of the request**; the architect merges it then.

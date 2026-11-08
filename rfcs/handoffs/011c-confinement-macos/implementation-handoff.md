@@ -3,6 +3,16 @@
 **RFC.** [RFC 011](../../accepted/011-confinement-backends.md) §4, §5 and Amendment 1 (the read-set rules) · **Specification.** REQ-CONF-001 … 012 (macOS), REQ-TEST-013; external design §13.2 … §13.5, §23 (M6c); limits LIM-H1 … H5, LIM-O2; threats THR-11, THR-17, THR-23, THR-24, THR-32 · **Milestone.** M6c (release 0.8). Depends on 011a, 011d (done).
 **Rewritten 2026-11-07** (the first version was a three-line stub written before any backend existed). It carries what 011a, 011b and 011d taught, in §2.
 
+## Status, sixth update (2026-11-08): 011c-6 approved; its rebase carries the tool list
+
+011c-6 (PR #22) is approved: `clang` with an empty environment, the partial file removed, the native call from a translated runtime, `check` warming too, one warming for both workers. The specification now says so (external design §13.3; RFC 011, implementation decisions, point 8; LIM-O8 fixed at 10 s per call from your measurement). C9 was merged first (`d0a4842`), so **rebase on `main`**, and add in one more commit:
+
+1. **The warming's list:** `clang`, `ld`, `ar`, `ranlib`, `strip`, `libtool`, `lipo` (the tools a Rust link and the `cc` crate's C builds run through the `/usr/bin` shims), one named constant; each call bounded by LIM-O8; the whole warming measured on the runner (first and cached), in the request.
+2. **A test** that a host tool can resolve each listed tool through the sandboxed `xcrun` after the warming (`xcrun --find <tool>` inside the profile, from the probe tool or a shell command), on `macos-latest`; mutation: one tool removed from the list, its resolution fails.
+3. The M6c report and the CHANGELOG say the list.
+
+Then update the head and run id at the top of the request; the architect merges it.
+
 ## Status, fifth update (2026-11-07): 011c-5 merged; 011c-6
 
 011c-5 is on `main` (`ebb4ab9`). Its two questions are decided (RFC 011 "Amendment 2, implementation decisions", point 8 on `xcrun`'s cache, and LIM-H6 fixed at 100 ms; external design §13.3). **011c-6**, one branch on `main`, request `011c-6-macos`:
