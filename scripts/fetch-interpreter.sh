@@ -17,10 +17,12 @@ rm -f "$part"
 curl --fail --silent --show-error --location \
   --retry 8 --retry-all-errors --retry-max-time 600 --max-time 120 \
   --output "$part" "$url"
+# The hash is read from standard input: given a file name with backslashes (a
+# Windows runner's temporary directory) sha256sum prefixes its output with `\`.
 if command -v sha256sum > /dev/null 2>&1; then
-  got="$(sha256sum "$part" | cut -d' ' -f1)"
+  got="$(sha256sum < "$part" | cut -d' ' -f1)"
 else
-  got="$(shasum -a 256 "$part" | cut -d' ' -f1)"
+  got="$(shasum -a 256 < "$part" | cut -d' ' -f1)"
 fi
 if [ "$got" != "$want" ]; then
   rm -f "$part"
