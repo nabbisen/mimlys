@@ -38,6 +38,12 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 3 | [007b The fixed instructions: the goal is the task (0.8)](./007b-instructions-the-goal-is-the-task/implementation-handoff.md) | RFC 007; finding of L1 | 007, 008 |
 | 4 | [008b Spike S2: how the decision reaches a small local model](./008b-decision-format-spike/implementation-handoff.md) | RFC 008; M4 report §6 | 007b |
 
+## Release 0.9
+
+| Order | Handoff | RFC | Depends on |
+|---|---|---|---|
+| 1 | [012 Decisions as native tool calls](./012-decisions-as-native-tool-calls/implementation-handoff.md) | [RFC 012](../accepted/012-decisions-as-native-tool-calls.md) | 007b, 008b |
+
 ## Milestone M5
 
 | Order | Handoff | RFC | Depends on |

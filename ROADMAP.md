@@ -1,6 +1,6 @@
 # mimlys — Roadmap
 
-**Status:** Authorized by the owner on 2026-10-02 (startup review, decisions D-01 … D-24; D-06 and D-07 in their v2 form). Release 0.7.0 (M1 to M6b) is the first tagged release, 2026-11-03, and was not published; 0.7.1 (the same milestones plus the Linux hardening) is the first release on crates.io; 0.8.0 (M1 to M6c: the macOS backend completes RFC 011) was released on 2026-11-08 (tag `0.8.0`, crates.io, GitHub); 0.1 to 0.6 were accepted milestones without a published release.
+**Status:** Authorized by the owner on 2026-10-02 (startup review, decisions D-01 … D-24; D-06 and D-07 in their v2 form). Release 0.7.0 (M1 to M6b) is the first tagged release, 2026-11-03, and was not published; 0.7.1 (the same milestones plus the Linux hardening) is the first release on crates.io; 0.8.0 (M1 to M6c: the macOS backend completes RFC 011) was released on 2026-11-08 (tag `0.8.0`, crates.io, GitHub); 0.1 to 0.6 were accepted milestones without a published release. **Replanned on 2026-11-08** (the owner's review of the replanning report): 0.9, the independent audit in parallel, 0.10, then the operation theme's RFC and the daemon or DR-016/017, then 1.0 by the definition below.
 Milestones are the unit of planning, release and acceptance. Every requirement in `docs/src/maintainers/requirements.md` names the milestone in which it is verified.
 
 ## Principles
@@ -48,7 +48,36 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | Out | reading a call written into the model's text (RFC 012, rejected); models that do not return structured calls (the Coder variants measured) |
 | Done when | run B completes on llama.cpp and Ollama and the M4 report records it; LIM-C1 fixed; prefix stability measured for both transports; every CI job green with skips counted; the threat register's review for 0.9; the CHANGELOG |
 | Major risks | engines and chat templates change what a model returns (S2: the same file behaved differently under two templates); one task and three runs per cell are thin evidence, so run B repeats across both engines |
-| Next | the replanning report decides what follows |
+| Next | 0.10; the independent audit runs in parallel with 0.9 |
+
+## The independent audit (in parallel with 0.9; owner's decision of 2026-11-08)
+
+| | |
+|---|---|
+| Who | a fresh reviewer session given the code at tag `0.8.0`, the specifications, the RFCs and the handoffs, and none of the project's own review conclusions |
+| Scope | `mimlys-exec/confine` on the three backends and the sweeper; the validator's twelve stages; approval binding; snapshot and restore; promotion (intake N-03) |
+| Record | the reviewer's raw report kept unchanged under `.git-exclude/reviewed/audit-0.8/raw/` with its SHA-256; the architect's triage beside it; the owner decides each finding |
+| Next | findings that need code join 0.10; the model adapter and the context assembly are audited after 0.9 lands |
+
+## Release 0.10 (scoped 2026-11-08)
+
+| | |
+|---|---|
+| Objective | Hygiene, the audit's findings, and the operator's view of one machine (the bridge of the operation theme) |
+| In | The audit's code findings. The hygiene set of the replanning report §3 C: Windows container entries without propagation (an RFC 011 follow-up RFC); one HTTP stack; narrowing `/etc` and `/opt` on Linux; naming the remaining untested requirements; a data-driven hostile corpus. The bridge items: **B1** read commands open the store without the exclusive lock (amends REQ-PERS and external design §14; LIM-O3 unchanged); **B2** a storage view (`status --storage` or `mimlys storage`; external design §19, a new REQ in §21); **B3** `task prune` for terminal tasks, the plan shown first (external design §19.2, a new REQ; it reuses `task delete`); **B4** the book's "Storage" page and "Several projects, several jobs" section; **B5** `status` warns when the engine's context cannot hold the prefix (external design §20). Each item's handoff lists its REQ and LIM amendments |
+| Out | the operation theme's admission, CPU bound and engine gate (its RFC); the daemon; DR-016/017 |
+| Done when | each item's acceptance; every CI job green with skips counted; the threat register's review for 0.10; the CHANGELOG |
+| Next | at 0.10's disposition: the operation theme's RFC first, then the daemon RFC alongside DR-016/017 (the daemon first if concurrent use proves to be the need) |
+
+## After 0.10 (planned; RFCs written when 0.9 is in review, decided at 0.10's disposition)
+
+- **The operation theme** (one RFC): admission per user (at most a new LIM-X5 executions at once), a CPU bound per host-tool tree (a new LIM-H id; LIM-H6 is the macOS tracking interval), one engine request in flight per endpoint, and the machine view in `status`. Defaults are measured first.
+- **The daemon** (one RFC in this repository, superseding DR-002 in part): one daemon per operating-system user over a local socket with a peer-credential check, no network, no multi-user; approvals stay with the human at a client.
+- **DR-016 / DR-017**: host paths read and written under grants (their own RFC).
+
+## 1.0 (definition adopted on 2026-11-08)
+
+1.0 when: (1) a local model completes the M4 task on llama.cpp and Ollama on all three platforms; (2) the independent audit is done and its findings are closed or accepted; (3) the external contract (REQ-MAIN-001) is frozen; (4) the book covers every command with a tested example; (5) the behaviour of several runtimes on one machine is specified, bounded and documented (the operation theme delivered).
 
 ## RFCs, in order
 
@@ -66,6 +95,9 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | 009 | MCP client and tool pinning | M5 | M-06, K-01 … K-07, D-13 |
 | 010 | CLI and operator interface | M1 → M5 | D-17, D-18, M-13 |
 | 011 | Confinement backends | M6a–M6c | D-06 v2, D-07 v2 |
+| 012 | Decisions as native tool calls | 0.9 | M4 report §6, spike S2 |
+| planned | Operation on one machine (admission, CPU bound, engine gate) | after 0.10 | owner's review of 2026-11-08; number on creation |
+| planned | The daemon (per user, local socket) | after 0.10 | owner's review of 2026-11-08; DR-002 in part; number on creation |
 
 RFCs enter `rfcs/proposed/`, move to `rfcs/accepted/` on the owner's sign-off, and to `rfcs/done/` when the release that ships them is tagged (an RFC whose milestones span several releases stays in `accepted/` with a Status line saying what shipped) (RFC 000, five-folder variant).
 

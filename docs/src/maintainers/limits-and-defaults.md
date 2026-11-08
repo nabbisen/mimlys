@@ -80,8 +80,8 @@
 
 | ID | Parameter | Default | Range | Basis |
 |---|---|---:|---|---|
-| LIM-X1 | Tasks in `running` at once | 1 | 1–16 | v1 is sequential (D-11); one task per project scope |
-| LIM-X2 | Executions in flight, whole runtime | 1 | 1–8 | Memory: LIM-X2 × LIM-S3 |
+| LIM-X1 | Tasks in `running` at once, per runtime | 1 | fixed | v1 is sequential (D-11); no configuration changes it. A later scheduler (the daemon theme) may make it configurable; until then a range here would mislead |
+| LIM-X2 | Executions in flight, per runtime | 1 | fixed | Memory: LIM-X2 × LIM-S3; no configuration changes it (as LIM-X1) |
 | LIM-X3 | Worker or MCP server restarts per task | 3 | 0–10 | Fault containment |
 | LIM-X4 | Worker start, including interpreter compilation | 60000 ms | 5000 – 600000 | Cranelift compiles a multi-megabyte interpreter once per worker |
 
