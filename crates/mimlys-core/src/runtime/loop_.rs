@@ -58,7 +58,8 @@ pub struct StepResultView {
 /// and how the decision arrived (REQ-MDL-009).
 struct Decided {
     result: Result<Vec<u8>, BackendError>,
-    measures: StepMeasures,
+    /// None when no request was assembled (the transport could not be settled).
+    measures: Option<StepMeasures>,
     transport: DecisionTransport,
     text_chars: Option<u64>,
 }
@@ -333,7 +334,7 @@ impl Runtime {
             Err(error) => {
                 return Ok(Decided {
                     result: Err(error),
-                    measures: StepMeasures::default(),
+                    measures: None,
                     transport: DecisionTransport::Envelope,
                     text_chars: None,
                 });
@@ -464,7 +465,7 @@ impl Runtime {
         };
         Ok(Decided {
             result,
-            measures,
+            measures: Some(measures),
             transport,
             text_chars,
         })
@@ -534,7 +535,7 @@ impl Runtime {
             transport,
             text_chars,
         } = self.decide(&task, env, now).await?;
-        step.measures = Some(measures);
+        step.measures = measures;
         let raw = match decided {
             Ok(bytes) => bytes,
             Err(BackendError::Cancelled) => {
