@@ -1,0 +1,39 @@
+# THROWAWAY (handoff 011i): the sweeper tests, 20 runs on the Rosetta setup of
+# ci.yml. This branch is never merged; the workflow is not part of the PR.
+name: 011i rosetta x20
+on:
+  push:
+    branches: [011i-throwaway-rosetta-20]
+permissions:
+  contents: read
+jobs:
+  rosetta-sweeper-x20:
+    name: sweeper x20 under Rosetta
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: softwareupdate --install-rosetta --agree-to-license
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: rosetta
+      - shell: bash
+        run: |
+          uname -m; arch -x86_64 uname -m
+          cargo test -p mimlys --all-features --target x86_64-apple-darwin --test sweeper --no-run
+      - shell: bash
+        run: |
+          fail=0
+          for i in $(seq 1 20); do
+            if cargo test -p mimlys --all-features --target x86_64-apple-darwin --test sweeper > "run$i.log" 2>&1; then
+              echo "run $i: ok ($(grep -E '^test result' "run$i.log" | sed 's/.*finished in //'))"
+            else
+              fail=$((fail+1)); echo "run $i: FAILED"; cat "run$i.log"
+            fi
+          done
+          echo "sweeper runs under Rosetta: 20, failures: $fail"
+          [ "$fail" -eq 0 ]
