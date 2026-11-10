@@ -74,6 +74,7 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 - **The operation theme** (one RFC): admission per user (at most a new LIM-X5 executions at once), a CPU bound per host-tool tree (a new LIM-H id; LIM-H6 is the macOS tracking interval), one engine request in flight per endpoint, and the machine view in `status`. Defaults are measured first.
 - **The daemon** (one RFC in this repository, superseding DR-002 in part): one daemon per operating-system user over a local socket with a peer-credential check, no network, no multi-user; approvals stay with the human at a client.
 - **DR-016 / DR-017**: host paths read and written under grants (their own RFC).
+- **Adaptive effort** (owner's direction of 2026-11-10, D-E1 to D-E4): RFC 015 part one (levels as envelopes, a backend per level, the fitness probe, the plan-first gate) after the operation theme; the automatic level (`auto`) and parallel `deep` attempts in a later RFC citing it. Escalation local-only until 1.0.
 
 ## 1.0 (definition adopted on 2026-11-08)
 
@@ -96,8 +97,9 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | 010 | CLI and operator interface | M1 → M5 | D-17, D-18, M-13 |
 | 011 | Confinement backends | M6a–M6c | D-06 v2, D-07 v2 |
 | 012 | Decisions as native tool calls | 0.9 | M4 report §6, spike S2 |
-| planned | Operation on one machine (admission, CPU bound, engine gate) | after 0.10 | owner's review of 2026-11-08; number on creation |
-| planned | The daemon (per user, local socket) | after 0.10 | owner's review of 2026-11-08; DR-002 in part; number on creation |
+| 013 (proposed) | Operation on one machine (part one in 0.10: read-only open, storage view, prune; part two after: admission, CPU bound, engine gate, machine view) | 0.10 and after | owner's review of 2026-11-08 |
+| 015 (proposed) | Adaptive effort, part one (effort levels, a backend per level, the fitness probe, the plan-first gate) | after 0.10 | owner's direction of 2026-11-10 (D-E1 to D-E4) |
+| 014 (proposed) | The local daemon (per user and store, local socket) | decided at 0.10's disposition | owner's review of 2026-11-08; DR-002 in part |
 
 RFCs enter `rfcs/proposed/`, move to `rfcs/accepted/` on the owner's sign-off, and to `rfcs/done/` when the release that ships them is tagged (an RFC whose milestones span several releases stays in `accepted/` with a Status line saying what shipped) (RFC 000, five-folder variant).
 

@@ -40,4 +40,4 @@ The corpus is the set of tests that feed hostile input to the runtime and whose 
 
 ## 4. Other scripts
 
-`check-core-deps.sh` (the core depends on no I/O or protocol crate), `check-unsafe.sh` (`unsafe` only under `crates/mimlys-exec/src/confine/`, each block with a `SAFETY:` line), `check-doc-refs.sh` (every `REQ-`, `LIM-` and `THR-` cited is defined; every requirement appears in the external design's coverage table).
+`check-core-deps.sh` (the core depends on no I/O or protocol crate), `check-unsafe.sh` (`unsafe` only under `crates/mimlys-exec/src/confine/`, each block with a `SAFETY:` line), `check-doc-refs.sh` (every `REQ-`, `LIM-` and `THR-` cited is defined, except in `rfcs/proposed/`, where an RFC may cite the identifiers it proposes and which must resolve from its acceptance on; every requirement appears in the external design's coverage table).

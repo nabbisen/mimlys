@@ -15,7 +15,9 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Priority |
 |----|-------|----------|
-| — | none at the moment | |
+| 013 | [Operation on one machine](./proposed/013-operation-on-one-machine.md) | 1: part one (read-only open, storage view, prune, the book) is 0.10's scope |
+| 015 | [Adaptive effort, part one](./proposed/015-adaptive-effort.md) | 2: after 013; may run alongside 013's part two |
+| 014 | [The local daemon](./proposed/014-local-daemon.md) | 3: decided at 0.10's disposition, with the audit known |
 
 ## Accepted
 

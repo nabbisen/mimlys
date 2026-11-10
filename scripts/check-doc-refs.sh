@@ -7,7 +7,9 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 grep -oE '^### REQ-[A-Z]+-[0-9]{3}' "$docs/requirements.md" | sed 's/^### //' | sort -u > "$tmp/req.def"
 grep -oE '^\| LIM-[A-Z][0-9]+ ' "$docs/limits-and-defaults.md" | sed -E 's/^\| //; s/ $//' | sort -u > "$tmp/lim.def"
 grep -oE '^\| THR-[0-9]{2} ' "$docs/threat-register.md" | sed -E 's/^\| //; s/ $//' | sort -u > "$tmp/thr.def"
-files="$(ls "$docs"/*.md rfcs/*/*.md rfcs/handoffs/*/*.md 2>/dev/null)"
+# A proposed RFC may cite the identifiers it proposes; they must resolve from
+# its acceptance on, when its normative text is written (repository-guards.md).
+files="$(ls "$docs"/*.md rfcs/*/*.md rfcs/handoffs/*/*.md 2>/dev/null | grep -v '^rfcs/proposed/' || true)"
 grep -ohE 'REQ-[A-Z]+-[0-9]{3}' $files | sort -u > "$tmp/req.use"
 grep -ohE 'LIM-[A-Z][0-9]+' $files | sort -u > "$tmp/lim.use"
 grep -ohE 'THR-[0-9]{2}' $files | sort -u > "$tmp/thr.use"
