@@ -42,7 +42,8 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 
 | Order | Handoff | RFC | Depends on |
 |---|---|---|---|
-| 1 | [012 Decisions as native tool calls](./012-decisions-as-native-tool-calls/implementation-handoff.md) | [RFC 012](../accepted/012-decisions-as-native-tool-calls.md) | 007b, 008b |
+| 1 | [009b Four advisories against locked dependencies](./009b-dependency-advisories/implementation-handoff.md) | RFC 009, RFC 004 | — |
+| 2 | [012 Decisions as native tool calls](./012-decisions-as-native-tool-calls/implementation-handoff.md) | [RFC 012](../accepted/012-decisions-as-native-tool-calls.md) | 007b, 008b, 009b |
 
 ## Milestone M5
 

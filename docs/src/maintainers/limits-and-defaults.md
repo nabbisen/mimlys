@@ -1,6 +1,6 @@
 # Limits and Defaults
 
-**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-07. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). Fixed by measurement on 2026-11-07: LIM-O7 (investigation D1) and LIM-H6 (011c-5). Fixed by measurement on 2026-11-08: LIM-O8 (011c-6). **Still provisional: LIM-C1**, which waits for a completed M4 run against a real local model (the runs of 2026-11-07 ended at their first step: the M4 report §6). The other values are design choices, not measurements, and change only here.
+**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-10. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). Fixed by measurement on 2026-11-07: LIM-O7 (investigation D1) and LIM-H6 (011c-5). Fixed by measurement on 2026-11-08: LIM-O8 (011c-6). Fixed by measurement on 2026-11-10: LIM-C1 (the M4 report §7, run B). No limit is provisional now. The other values are design choices, not measurements, and change only here.
 **Governs:** every number that the [requirements](./requirements.md) and the [external design](./external-design.md) cite by a `LIM-` identifier. The documents never repeat a value; a value changes here only.
 
 "Range" is what an administrator may configure. "fixed" means no configuration changes it. Budgets a user may set per task are bounded by the administrator's ceiling, which is itself within the range.
@@ -47,7 +47,7 @@
 
 | ID | Parameter | Default | Range | Basis |
 |---|---|---:|---|---|
-| LIM-C1 | Context budget per model request | 32000 characters | 4000 – 1000000 | About 8k tokens of English; per-backend override |
+| LIM-C1 | Context budget per model request | 32000 characters | 4000 – 1000000 | Measured (M4 report §7, run B, 2026-11-10): at 3.35 characters per token in the `tool_calls` transport, about 9 600 tokens, which with LIM-M2 fits a 16 384-token engine context; the largest request measured was under 12 000 characters; per-backend override |
 | LIM-C2 | Observation excerpt (head + tail) | 4000 characters (3000 + 1000) | 500–64000 | Compiler errors cluster at the tail |
 | LIM-C3 | Recent steps kept in full | 6 | 1–50 | Prefix stability |
 | LIM-C4 | Summary of a compressed step | 300 characters | fixed | Rule-based summaries (D-12) |
