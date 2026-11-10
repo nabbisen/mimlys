@@ -160,6 +160,23 @@ enum Exchange {
     Oversized(Vec<u8>),
 }
 
+/// Does the listed model id name the configured model? An exact match always
+/// does. A configured name without a tag also matches `<name>:latest`, the way
+/// Ollama itself resolves it (`/v1/models` lists `qwen2.5:7b-instruct` and
+/// `mymodel:latest`, while `mymodel` is accepted in a request). A name with a
+/// tag matches only exactly. The tag is what follows a colon in the last path
+/// segment, so a registry host with a port (`localhost:5000/ns/model`) is not one.
+fn model_matches(listed: &str, configured: &str) -> bool {
+    if listed == configured {
+        return true;
+    }
+    let tagged = configured
+        .rsplit('/')
+        .next()
+        .is_some_and(|last| last.contains(':'));
+    !tagged && listed.strip_suffix(":latest") == Some(configured)
+}
+
 impl OpenAiBackend {
     /// Builds the adapter; nothing is contacted.
     pub fn new(config: OpenAiConfig) -> Self {
@@ -487,7 +504,9 @@ impl OpenAiBackend {
                 let listed = serde_json::from_slice::<Value>(&body).ok().and_then(|v| {
                     v.get("data").and_then(Value::as_array).map(|models| {
                         models.iter().any(|m| {
-                            m.get("id").and_then(Value::as_str) == Some(&self.config.model)
+                            m.get("id")
+                                .and_then(Value::as_str)
+                                .is_some_and(|id| model_matches(id, &self.config.model))
                         })
                     })
                 });
