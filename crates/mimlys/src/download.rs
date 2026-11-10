@@ -13,7 +13,6 @@
 use mimlys_core::limits::{
     LIM_O9_DOWNLOAD_MS, LIM_O10_DOWNLOAD_RETRIES, LIM_O10_DOWNLOAD_WAITS_MS, LIM_S5_MODULE_BYTES,
 };
-use std::io::Read;
 use std::time::Duration;
 
 #[cfg(test)]
@@ -167,36 +166,85 @@ pub fn fetch(
 }
 
 /// One real attempt: a GET within `deadline`, the body bounded by LIM-S5.
+///
+/// The request is `reqwest`'s, the HTTP client of the model adapter too (handoff
+/// 008c). Inside the CLI's multi-thread runtime it runs on that runtime
+/// (`block_in_place`; no second runtime is made); called from anywhere else
+/// (a test, a current-thread runtime) it runs on a short-lived thread with a
+/// current-thread runtime of its own. Behaviour on the wire is that of `ureq`
+/// before it: the system proxy variables are honoured, the bundled WebPKI root
+/// certificates are the trust store (rustls, no platform verifier), redirects are
+/// followed up to ten times, and `deadline` bounds the whole attempt, body included.
 pub fn http_get(url: &str, deadline: Duration) -> Result<Vec<u8>, Failure> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(deadline))
-        .http_status_as_error(false)
+    use tokio::runtime::{Builder, Handle, RuntimeFlavor};
+    if let Ok(handle) = Handle::try_current()
+        && handle.runtime_flavor() == RuntimeFlavor::MultiThread
+    {
+        return tokio::task::block_in_place(|| handle.block_on(get(url, deadline)));
+    }
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| Failure::Fatal(format!("no runtime for the download: {e}")))?;
+                runtime.block_on(get(url, deadline))
+            })
+            .join()
+            .unwrap_or_else(|_| Err(Failure::Fatal("the download thread panicked".into())))
+    })
+}
+
+async fn get(url: &str, deadline: Duration) -> Result<Vec<u8>, Failure> {
+    let client = reqwest::Client::builder()
+        .timeout(deadline)
+        .user_agent(concat!("mimlys/", env!("CARGO_PKG_VERSION")))
         .build()
-        .into();
-    let response = agent.get(url).call().map_err(classify)?;
+        .map_err(|e| Failure::Fatal(e.without_url().to_string()))?;
+    let mut response = client.get(url).send().await.map_err(classify)?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         return Err(Failure::Status(status));
     }
-    let mut body = response.into_body();
     let mut bytes = Vec::new();
-    body.as_reader()
-        .take(LIM_S5_MODULE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| Failure::Transport(format!("the transfer broke: {}", e.kind())))?;
-    if bytes.len() as u64 > LIM_S5_MODULE_BYTES {
-        return Err(Failure::Fatal("the artifact is larger than LIM-S5".into()));
+    while let Some(chunk) = response.chunk().await.map_err(classify_body)? {
+        if bytes.len() as u64 + chunk.len() as u64 > LIM_S5_MODULE_BYTES {
+            return Err(Failure::Fatal("the artifact is larger than LIM-S5".into()));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
 }
 
-fn classify(error: ureq::Error) -> Failure {
-    use ureq::Error;
-    match error {
-        Error::Timeout(_) => Failure::Transport("timed out".into()),
-        Error::Io(e) => Failure::Transport(format!("no connection or a broken one: {}", e.kind())),
-        Error::ConnectionFailed => Failure::Transport("no connection".into()),
-        Error::HostNotFound => Failure::Transport("the host was not found".into()),
-        other => Failure::Fatal(other.to_string()),
+/// A failure before or while the answer arrives. A timeout, a refused or lost
+/// connection and an unresolved host are transient; a bad address, too many
+/// redirects and the like are not.
+fn classify(error: reqwest::Error) -> Failure {
+    if error.is_timeout() {
+        return Failure::Transport("timed out".into());
+    }
+    if error.is_connect() {
+        let mut source = std::error::Error::source(&error);
+        while let Some(cause) = source {
+            if cause.to_string().contains("dns error") {
+                return Failure::Transport("the host was not found".into());
+            }
+            source = cause.source();
+        }
+        return Failure::Transport("no connection or a broken one".into());
+    }
+    if error.is_body() || error.is_decode() {
+        return Failure::Transport("the transfer broke".into());
+    }
+    Failure::Fatal(error.without_url().to_string())
+}
+
+/// A failure while the body is read.
+fn classify_body(error: reqwest::Error) -> Failure {
+    if error.is_timeout() {
+        Failure::Transport("timed out".into())
+    } else {
+        Failure::Transport("the transfer broke".into())
     }
 }

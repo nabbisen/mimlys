@@ -277,3 +277,91 @@ fn req_sbx_001_over_http_a_silent_server_is_cut_at_the_deadline() {
         started.elapsed()
     );
 }
+
+/// REQ-SBX-001 (LIM-S5): over HTTP an artifact larger than LIM-S5 is refused
+/// after one request (a failure no retry changes), as the typed error.
+#[test]
+fn req_sbx_001_over_http_an_artifact_over_lim_s5_is_refused_without_a_retry() {
+    let (url, served) = stand_in(vec![Some((
+        200,
+        vec![0u8; LIM_S5_MODULE_BYTES as usize + 1],
+    ))]);
+    let err = fetch(
+        &url,
+        "javascript",
+        &Policy {
+            deadline: Duration::from_secs(30),
+            waits: vec![ms(5), ms(5), ms(5)],
+        },
+        http_get,
+        std::thread::sleep,
+        |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(*served.lock().unwrap(), 1, "not retried");
+    assert_eq!(err.retries, 0);
+    assert!(err.last.contains("LIM-S5"), "{}", err.last);
+}
+
+/// REQ-SBX-001: a redirect is followed (the pinned artifact is served from a
+/// release address that redirects to the storage address).
+#[test]
+fn req_sbx_001_over_http_a_redirect_is_followed() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let served = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&served);
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let path = request
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_owned();
+            seen.lock().unwrap().push(path.clone());
+            let answer = if path == "/a.wasm" {
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{address}/b.wasm\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+            } else {
+                "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nthe artifact"
+                    .to_owned()
+            };
+            let _ = stream.write_all(answer.as_bytes());
+        }
+    });
+    let got = http_get(&format!("http://{address}/a.wasm"), Duration::from_secs(10)).unwrap();
+    assert_eq!(got, b"the artifact");
+    assert_eq!(*served.lock().unwrap(), ["/a.wasm", "/b.wasm"]);
+}
+
+/// REQ-SBX-001: the request runs on the CLI's multi-thread runtime when there is one
+/// (no second runtime is made), and the same call works inside a current-thread
+/// runtime, where it cannot block the worker.
+#[test]
+fn req_sbx_001_http_get_works_inside_both_runtime_flavors() {
+    let (url, _) = stand_in(vec![
+        Some((200, b"multi".to_vec())),
+        Some((200, b"single".to_vec())),
+    ]);
+    let multi = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let got = multi.block_on(async { http_get(&url, Duration::from_secs(10)) });
+    assert_eq!(got.unwrap(), b"multi");
+    let single = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let got = single.block_on(async { http_get(&url, Duration::from_secs(10)) });
+    assert_eq!(got.unwrap(), b"single");
+}
