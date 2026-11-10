@@ -20,6 +20,7 @@ announced here under "Changed".
 ### Documentation
 
 - The configuration chapter: `decision_transport`, what `auto` does, which models were measured to return structured calls (spike S2: Qwen2.5-7B-Instruct 378 of 378 replies; Qwen2.5-Coder-7B and -14B none of 391) and Ollama's `num_ctx` (its OpenAI endpoint cannot set the context length and defaults to 4096 tokens; set `num_ctx` in the Modelfile). The `status` fields in the CLI reference.
+- README, Getting started and the configuration chapter: "the model, plainly" now says what run B measured (release 0.9's real-model run of M4, Qwen2.5-7B-Instruct Q4_K_M: the task repaired and verified in 9 of 10 runs, 4 of 5 on llama.cpp and 5 of 5 on Ollama; one model, one task, one machine) in place of 0.8's statement that no measured model completed a task.
 
 ## [0.8.0] - 2026-11-08
 
