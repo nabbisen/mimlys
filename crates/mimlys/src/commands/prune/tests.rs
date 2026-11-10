@@ -196,15 +196,3 @@ fn req_ws_014_a_failure_midway_leaves_the_rest_untouched_and_named() {
     assert!(outcome.failed.is_none() && outcome.untouched.is_empty());
     assert!(!seen.contains(&found[2].task_id));
 }
-
-/// The words for people.
-#[test]
-fn sizes_and_ages_are_written_for_people() {
-    assert_eq!(size_text(0), "0 B");
-    assert_eq!(size_text(1024), "1.0 KiB");
-    assert_eq!(size_text(1536 * 1024), "1.5 MiB");
-    assert_eq!(age_text(-1), "0s");
-    assert_eq!(age_text(90), "1m");
-    assert_eq!(age_text(5 * 3600), "5h");
-    assert_eq!(age_text(9 * 86_400), "9d");
-}

@@ -5,6 +5,7 @@
 # For new users
 
 - [Getting started](./getting-started.md)
+- [Storage](./reference/storage.md)
 
 # For integrators
 

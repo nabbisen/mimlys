@@ -110,32 +110,6 @@ impl Candidate {
     }
 }
 
-/// A byte count for people: `1.5 MiB`, and plain bytes below a KiB.
-pub fn size_text(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64 / 1024.0;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
-}
-
-/// An age for people: `40s`, `12m`, `5h`, `3d`.
-pub fn age_text(seconds: i64) -> String {
-    let s = seconds.max(0);
-    match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m", s / 60),
-        3600..=86_399 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86_400),
-    }
-}
-
 /// The tasks to delete, in the order given.
 pub fn to_delete(candidates: &[Candidate]) -> Vec<&Candidate> {
     candidates.iter().filter(|c| c.kept.is_none()).collect()
