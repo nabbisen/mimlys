@@ -1133,3 +1133,60 @@ mod snapshots_m3 {
         integrity::check(&store, fx.now()).unwrap();
     }
 }
+
+/// REQ-PERS-006 (handoff 009b): a store written by 0.8.0 (bundled SQLite of `rusqlite` 0.38, its
+/// data in an uncheckpointed `-wal`) opens under the current `rusqlite`, keeps schema version 2,
+/// passes the integrity check, lists its tasks and recovers.
+#[test]
+fn req_pers_006_a_store_written_by_0_8_0_opens_checks_lists_and_recovers() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v0_8_0");
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    for name in ["mimlys.db", "mimlys.db-wal"] {
+        std::fs::copy(fixture.join(name), data.join(name)).unwrap();
+    }
+    assert!(
+        std::fs::metadata(data.join("mimlys.db-wal")).unwrap().len() > 100_000,
+        "the fixture's data is in its -wal"
+    );
+    let fx = Fx::new();
+    let store = open(&data).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 2, "SCHEMA_VERSION stays 2");
+    assert_eq!(crate::SCHEMA_VERSION, 2);
+    integrity::check(&store, fx.now()).unwrap();
+    let mut tasks = store.list_tasks().unwrap();
+    tasks.sort_by_key(|t| t.task_id.to_string());
+    let ids: Vec<String> = tasks.iter().map(|t| t.task_id.to_string()).collect();
+    assert_eq!(
+        ids,
+        [
+            "00000000-0001-7000-8000-000000000001",
+            "00000000-0015-7000-8000-000000000015"
+        ]
+    );
+    for t in &tasks {
+        assert_eq!(t.goal, "fix the failing test");
+        assert_eq!(t.state, "running");
+        assert!(store.load_task(t.task_id).unwrap().is_some());
+    }
+    // Recovery: the two tasks were running when the copy was taken. A restarted process
+    // draws new identifiers; the scripted source starts above the ones in the fixture.
+    let later_ids = ScriptedIds::starting_at(1_000_000);
+    let ctx = RecoveryContext {
+        ids: &later_ids,
+        now: fx.now(),
+        policy_hash: hash_bytes(b"policy"),
+        recovery: Recovery { auto_resume: false },
+    };
+    let out = recover_all(&store, &ctx, &fake_workspaces()).unwrap();
+    assert_eq!(out.len(), 2);
+    for t in &tasks {
+        assert_ne!(
+            store.load_task(t.task_id).unwrap().unwrap().state,
+            TaskState::Running,
+            "a task that was running is not running after recovery"
+        );
+    }
+    integrity::check(&store, fx.now()).unwrap();
+}
