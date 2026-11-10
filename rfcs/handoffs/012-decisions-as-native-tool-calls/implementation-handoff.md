@@ -2,6 +2,25 @@
 
 **RFC.** [RFC 012](../../accepted/012-decisions-as-native-tool-calls.md) (accepted 2026-11-08) · **Specification.** REQ-MDL-009 (new), REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-003, REQ-CTX-010 (amended); external design §15.4 (new), §15.1, §17 (`decision.received`), §19.1 (`decision_transport`); limits LIM-C1, LIM-D1, LIM-M4 · **Evidence it rests on.** Spike S2 (handoff 008b), the M4 report §6 · **Release.** 0.9.
 
+## Status (2026-11-10): approved; two corrections, then the merge after 009b
+
+012-1, 012-2 and 012-4 (PRs #27 to #29) are approved, and so is run B: 9 of 10 verified, 4 of 5 on llama.cpp and 5 of 5 on Ollama. The architect wrote run B into the M4 report (§7) and fixed LIM-C1.
+
+**Your questions, decided:**
+1. Both tools of a collision are unavailable: accepted (nothing shadows anything).
+2. Computing availability at the step, once the transport is known: accepted. REQ-MDL-009 now says so instead of "at pin time". It also says `status` lists such a tool, which is correction 1.
+3. The plan acknowledgement repeating the steps: keep it.
+4. A rejection without a recorded call as a labelled `user` message: confirmed.
+5. The advisories: upgrade, in handoff 009b, which lands first.
+6. Additive event fields need no bump of an existing constant. But REQ-MAIN-002 asks for an event-schema version and an action/observation-schema version, and **neither exists in the code**. This gap predates this change; it goes to 0.10 (ROADMAP). Do not add them here.
+7. Ollama's implicit tag: correction 2.
+
+**Corrections, as commits on top of the stack after you rebase it on `main` with 009b:**
+1. **`status` names what the model cannot see.** In the `tool_calls` transport, a tool unavailable for its function name appears in `status`'s existing lists, `servers[].unavailable` for an MCP tool and `host_tools[].unavailable` for a host tool, with the `function_name_*` reason. A user must not find out from the model that a tool is missing. Test and mutation.
+2. **No false `model_not_listed`.** A configured model name without a tag matches a listed `<name>:latest`, the way Ollama itself resolves it; a name with a tag matches only exactly. Test against the stand-in listing `qwen2.5-7b-instruct-m4:latest`. Mutation: exact match only.
+
+Then CI 9 of 9 on the top of the stack, heads and run ids at the top of the request; the architect merges #27 to #29 in order.
+
 ## 1. Scope
 
 Requests ask for the decision through the engine's native function calling. The reply's one structured call is mapped onto the existing decision envelope, then passes the twelve stages unchanged. The envelope stays as the transport for an engine that refuses `tools`. Nothing is repaired. Then run B of M4, the real-model run, on both engines.
