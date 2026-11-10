@@ -286,14 +286,16 @@ fn main() {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         Some("sweeper-demo") => {
             // The sweeper's pipe, alone (REQ-CONF-009): `sweeper-demo <marker>
-            // <hold_secs> <slow_ms> <child>`. Forks the sweeper (it writes
-            // `<marker>` at end of file, after `slow_ms`), prints its pid,
-            // starts a `sleep 4` child when `<child>` is 1, holds for
-            // `hold_secs` and exits. Single-threaded, as the sweeper requires.
+            // <hold_secs> <slow_ms> <child_secs>`. Forks the sweeper (it writes
+            // `<marker>` at end of file, after `slow_ms`), prints its pid, then,
+            // when `<child_secs>` is not 0, starts a `sleep <child_secs>` child
+            // and prints `child <pid>`; holds for `hold_secs` and exits.
+            // Single-threaded, as the sweeper requires. The tests decide by the
+            // state of these processes, not by elapsed time (handoff 011i).
             let marker = args.get(1).cloned().unwrap_or_default();
             let hold: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
             let slow: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let with_child = args.get(4).is_some_and(|s| s == "1");
+            let child_secs: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
             let sweeper = mimlys_exec::confine::sweeper::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(slow));
                 let _ = std::fs::write(&marker, "end of file");
@@ -302,15 +304,18 @@ fn main() {
                 Ok(sweeper) => {
                     println!("sweeper {}", sweeper.pid);
                     let _ = std::io::stdout().flush();
-                    let child = with_child.then(|| {
-                        std::process::Command::new("sleep")
-                            .arg("4")
+                    if child_secs > 0 {
+                        let child = std::process::Command::new("sleep")
+                            .arg(child_secs.to_string())
                             .stdin(std::process::Stdio::null())
                             .stdout(std::process::Stdio::null())
                             .stderr(std::process::Stdio::null())
-                            .spawn()
-                    });
-                    drop(child);
+                            .spawn();
+                        if let Ok(child) = child {
+                            println!("child {}", child.id());
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(hold));
                     0
                 }
