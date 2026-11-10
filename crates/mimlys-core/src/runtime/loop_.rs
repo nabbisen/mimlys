@@ -354,10 +354,8 @@ impl Runtime {
                     .filter(|t| !offer.unavailable.iter().any(|(name, _)| name == &t.name))
                     .cloned()
                     .collect();
-                let definitions =
-                    render_definitions(&offered).map_err(|e| RuntimeError::Denied {
-                        detail: e.to_string(),
-                    })?;
+                // The definitions travel as `tools`, not as a segment.
+                let definitions = String::from("[]");
                 let mut unavailable = env.unavailable.clone();
                 unavailable.extend(offer.unavailable.iter().cloned());
                 (offered, definitions, unavailable)
@@ -393,6 +391,8 @@ impl Runtime {
             unavailable: &unavailable,
             budget: self.deps.context_chars,
             now,
+            transport,
+            functions: &offer.functions,
         });
         let mut measures = StepMeasures {
             context: assembled.measures,
@@ -400,12 +400,15 @@ impl Runtime {
             usage: None,
         };
         {
+            // The prefix is measured over the request as sent: the `tools`
+            // array included in the `tool_calls` transport (REQ-CTX-010).
+            let sent = crate::context::prefix_view(&assembled.messages, &offer.functions);
             let mut last = self.last_requests.lock().expect("last requests lock");
             if let Some(previous) = last.get(&task.task_id) {
                 measures.context.prefix_chars =
-                    crate::context::common_prefix_chars(previous, &assembled.messages) as u64;
+                    crate::context::common_prefix_chars(previous, &sent) as u64;
             }
-            last.insert(task.task_id, assembled.messages.clone());
+            last.insert(task.task_id, sent);
         }
         let messages = assembled.messages;
         let request = GenerateRequest {

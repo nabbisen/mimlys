@@ -9,7 +9,7 @@
 //! The QuickJS build comes from `MIMLYS_QJS_WASM` when set, else from the
 //! pinned artifact through `mimlys interpreters install` (network).
 
-use mimlys_model::mock::{MockConfig, MockServer, Reply, UsageStyle};
+use mimlys_model::mock::{MockConfig, MockServer, Reply, ToolsSupport, UsageStyle};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -165,16 +165,36 @@ fn repair_script() -> Vec<Reply> {
     ]
 }
 
-/// External design §23, M4, against the mock server: the adapter carries
-/// the loop end to end (`completed{verified}` within LIM-T1 steps), the
-/// probe is visible in `status` and `runtime.started`, the task records
-/// its backend, the prefix of segments 1–4 is byte-stable across the run,
-/// and the usage the server reports reaches the metrics.
+/// External design §23, M4, against the mock server in the envelope
+/// transport (the mock refuses `tools`, as an engine without function calling
+/// does, so `auto` resolves to `envelope`): the adapter carries the loop end
+/// to end (`completed{verified}` within LIM-T1 steps), the probe is visible in
+/// `status` and `runtime.started`, the task records its backend, the prefix of
+/// segments 1–4 is byte-stable across the run, and the usage the server
+/// reports reaches the metrics.
 #[test]
 fn m4_mock_engine_repairs_the_defect() {
+    repairs_the_defect(false);
+}
+
+/// The same demonstration in the `tool_calls` transport (RFC 012; REQ-MDL-009,
+/// external design §15.4): the mock accepts `tools`, `auto` resolves to
+/// `tool_calls`, every decision is one structured call, the history travels as
+/// native turns, and the request never ends with an assistant message.
+#[test]
+fn m4_mock_engine_repairs_the_defect_with_tool_calls() {
+    repairs_the_defect(true);
+}
+
+fn repairs_the_defect(native: bool) {
     let server = MockServer::start(
         MockConfig {
             refuse_formats: vec!["json_schema".into()],
+            tools: if native {
+                ToolsSupport::Accept
+            } else {
+                MockConfig::default().tools
+            },
             ..MockConfig::default()
         },
         repair_script(),
@@ -191,8 +211,15 @@ fn m4_mock_engine_repairs_the_defect() {
     assert_eq!(status["backend"]["locality"], "local");
     assert_eq!(status["backend"]["reachable"], true);
     assert_eq!(status["backend"]["model_listed"], true);
-    assert_eq!(status["backend"]["structured_output"], "json_object");
-    assert_eq!(status["backend"]["fell_back"], true);
+    if native {
+        assert_eq!(status["backend"]["decision_transport"], "tool_calls");
+        assert_eq!(status["backend"]["structured_output"], Value::Null);
+        assert_eq!(status["backend"]["fell_back"], false);
+    } else {
+        assert_eq!(status["backend"]["decision_transport"], "envelope");
+        assert_eq!(status["backend"]["structured_output"], "json_object");
+        assert_eq!(status["backend"]["fell_back"], true);
+    }
 
     let (code, value) = env.json(&[
         "run",
@@ -216,12 +243,25 @@ fn m4_mock_engine_repairs_the_defect() {
         "the project is untouched until promotion"
     );
 
-    // Every decision request carried json_object; segments 1–4 are byte-stable.
+    // Every decision request carried json_object (envelope) or the functions
+    // (tool_calls); segments 1–4 are byte-stable.
     let requests = server.decision_requests();
     assert!(requests.len() >= 7, "{}", requests.len());
     let first = &requests[0].body["messages"];
     for (k, r) in requests.iter().enumerate() {
-        assert_eq!(r.body["response_format"]["type"], "json_object");
+        if native {
+            assert!(r.body.get("response_format").is_none());
+            assert!(r.body.get("tool_choice").is_none());
+            assert_eq!(r.body["parallel_tool_calls"], false);
+            assert_eq!(
+                r.body["tools"], requests[0].body["tools"],
+                "the functions changed at request {k}"
+            );
+            assert_native_turns(k, r.body["messages"].as_array().unwrap());
+        } else {
+            assert_eq!(r.body["response_format"]["type"], "json_object");
+            assert!(r.body.get("tools").is_none());
+        }
         assert_eq!(
             r.body["messages"][0], first[0],
             "segments 1–3 changed at request {k}"
@@ -262,7 +302,10 @@ fn m4_mock_engine_repairs_the_defect() {
             .unwrap()
             .iter()
             .map(|m| m["content"].as_str().unwrap_or("").chars().count())
-            .sum();
+            .sum::<usize>()
+            + r.body
+                .get("tools")
+                .map_or(0, |t| t.to_string().chars().count());
         eprintln!(
             "  request {k}: {} messages, {chars} chars",
             r.body["messages"].as_array().unwrap().len()
@@ -281,6 +324,37 @@ fn m4_mock_engine_repairs_the_defect() {
     );
     let (_, all) = env.json(&["metrics"]);
     assert!(all["events_by_name"]["runtime.started"].as_u64().unwrap() >= 2);
+}
+
+/// External design §15.4: every call is answered by the next message with the
+/// same id, and the request does not end with an `assistant` message.
+fn assert_native_turns(request: usize, messages: &[Value]) {
+    let mut open: Option<&str> = None;
+    for (i, m) in messages.iter().enumerate() {
+        match m["role"].as_str().unwrap() {
+            "assistant" => {
+                assert!(open.is_none(), "request {request}, message {i}");
+                let id = m["tool_calls"][0]["id"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("request {request}, message {i}: no call"));
+                open = Some(id);
+            }
+            "tool" => {
+                assert_eq!(
+                    open.take(),
+                    m["tool_call_id"].as_str(),
+                    "request {request}, message {i}"
+                );
+            }
+            _ => assert!(open.is_none(), "request {request}, message {i}"),
+        }
+    }
+    assert!(open.is_none(), "request {request}: an unanswered call");
+    assert_ne!(
+        messages.last().unwrap()["role"],
+        "assistant",
+        "request {request} ends with an assistant message"
+    );
 }
 
 /// RFC 008 §2: `auto` that ends at plain text is announced once by `run`

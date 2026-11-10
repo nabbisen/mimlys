@@ -164,9 +164,34 @@ impl StepSummary {
     }
 }
 
-/// The characters of every message content, summed (the budget's unit).
+/// The characters of every message, summed (the budget's unit): its content
+/// and, in the `tool_calls` transport, the name and arguments of the call it
+/// carries, which are sent as well.
 pub fn content_chars(messages: &[Message]) -> usize {
-    messages.iter().map(|m| m.content.chars().count()).sum()
+    messages
+        .iter()
+        .map(|m| {
+            m.content.chars().count()
+                + m.call
+                    .as_ref()
+                    .map_or(0, |c| c.name.chars().count() + c.arguments.chars().count())
+        })
+        .sum()
+}
+
+/// The request as the prefix measure sees it: the messages, with the
+/// `tools` array placed after the system message, where the engines' chat
+/// templates put it. Without functions, the messages as they are.
+pub fn prefix_view(messages: &[Message], functions: &[crate::native::Function]) -> Vec<Message> {
+    let mut view = messages.to_vec();
+    if !functions.is_empty() {
+        let tools = Message::text(
+            Role::System,
+            crate::native::tools_json(functions).to_string(),
+        );
+        view.insert(usize::from(!view.is_empty()), tools);
+    }
+    view
 }
 
 /// Serializes messages identically for prefix comparison: `role\n content\n` each.
@@ -182,6 +207,13 @@ fn serialize_for_prefix(messages: &[Message]) -> String {
         out.push('\n');
         out.push_str(&m.content);
         out.push('\n');
+        if let Some(call) = &m.call {
+            out.push_str(&format!("{}\n{}\n{}\n", call.id, call.name, call.arguments));
+        }
+        if let Some(id) = &m.call_id {
+            out.push_str(id);
+            out.push('\n');
+        }
     }
     out
 }
