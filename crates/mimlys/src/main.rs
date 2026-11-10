@@ -257,6 +257,21 @@ enum TaskCommand {
         /// Task id or a unique prefix.
         task: String,
     },
+    /// Delete terminal tasks in bulk: lists them with their footprints, asks once, then deletes each as `task delete` does.
+    Prune {
+        /// Only these terminal states (comma-separated: completed, failed, cancelled); all three by default.
+        #[arg(long, value_delimiter = ',', value_name = "STATES")]
+        state: Vec<String>,
+        /// Only tasks whose last change is at least this long ago, e.g. `7d`, `12h`.
+        #[arg(long, value_name = "DURATION")]
+        older_than: Option<String>,
+        /// Remove the tasks' events and records too.
+        #[arg(long)]
+        audit: bool,
+        /// Delete without asking (the only way without a terminal).
+        #[arg(long)]
+        yes: bool,
+    },
     /// Delete a terminal task's workspace, snapshots and blobs; the audit stays unless --audit.
     Delete {
         /// Task id or a unique prefix.
@@ -476,6 +491,20 @@ async fn dispatch(
             }
             TaskCommand::Pause { task } => commands::task::pause(app, &task, out),
             TaskCommand::Cancel { task } => commands::task::cancel(app, &task, out),
+            TaskCommand::Prune {
+                state,
+                older_than,
+                audit,
+                yes,
+            } => commands::prune::run(
+                app,
+                &state,
+                older_than.as_deref(),
+                audit,
+                yes,
+                terminal,
+                out,
+            ),
             TaskCommand::Delete { task, audit, yes } => {
                 commands::task::delete(app, &task, audit, yes, terminal, out)
             }
