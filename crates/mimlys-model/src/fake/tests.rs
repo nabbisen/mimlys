@@ -5,12 +5,7 @@ use serde_json::json;
 
 fn request() -> GenerateRequest {
     GenerateRequest {
-        messages: vec![Message {
-            role: Role::System,
-            call: None,
-            call_id: None,
-            content: "s".into(),
-        }],
+        messages: vec![Message::text(Role::System, "s")],
         schema_version: 1,
         max_bytes: 1024,
         deadline_ms: 1000,

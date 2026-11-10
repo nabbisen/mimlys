@@ -24,24 +24,9 @@ fn config(url: &str, mode: Mode) -> OpenAiConfig {
 fn request() -> GenerateRequest {
     GenerateRequest {
         messages: vec![
-            Message {
-                role: Role::System,
-                call: None,
-                call_id: None,
-                content: "sys".into(),
-            },
-            Message {
-                role: Role::User,
-                call: None,
-                call_id: None,
-                content: "goal".into(),
-            },
-            Message {
-                role: Role::Assistant,
-                call: None,
-                call_id: None,
-                content: "{\"decision\":\"plan\",\"steps\":[]}".into(),
-            },
+            Message::text(Role::System, "sys"),
+            Message::text(Role::User, "goal"),
+            Message::text(Role::Assistant, "{\"decision\":\"plan\",\"steps\":[]}"),
         ],
         schema_version: 1,
         max_bytes: LIM_D1_DECISION_BYTES,

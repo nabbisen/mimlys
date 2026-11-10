@@ -82,6 +82,24 @@ impl RejectionCode {
     }
 }
 
+impl RejectionCode {
+    /// The hint as the model reads it in `transport`. In the `tool_calls`
+    /// transport the envelope is not described to the model: `malformed` and
+    /// `unknown_tool` tell it to call exactly one of the provided functions;
+    /// every other hint is the same in both.
+    pub fn hint_for(self, transport: crate::native::DecisionTransport) -> &'static str {
+        match (transport, self) {
+            (crate::native::DecisionTransport::ToolCalls, RejectionCode::Malformed) => {
+                "Call exactly one of the provided functions, with its arguments as one JSON object. A call written into your text is not read."
+            }
+            (crate::native::DecisionTransport::ToolCalls, RejectionCode::UnknownTool) => {
+                "Call one of the provided functions."
+            }
+            _ => self.hint(),
+        }
+    }
+}
+
 impl fmt::Display for RejectionCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())

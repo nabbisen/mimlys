@@ -34,7 +34,8 @@ data_dir = "/home/me/.local/share/mimlys"   # platform default when absent
 kind = "fake"                   # "fake" (scripted) or "openai_compatible" (a local model)
 script = "decisions.json"       # fake backend: the decisions to return, in order
 locality = "local"              # "remote" needs policy.remote_backend_allowed and a profile with external = true
-structured_output = "auto"      # auto | schema | none; auto is resolved at the probe and shown by `status`
+decision_transport = "auto"     # auto | tool_calls | envelope; auto is resolved at the probe and shown by `status`
+structured_output = "auto"      # auto | schema | none; the envelope transport only; resolved at the probe and shown by `status`
 timeout_ms = 600000             # LIM-M1, 10000–3600000
 max_tokens = 4096               # LIM-M2, 256–65536
 context_chars = 32000           # LIM-C1, 4000–1000000; `mimlys metrics` shows chars per prompt token
@@ -154,12 +155,71 @@ model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # Ollama: qwen2.5:7b-instruct
 
 Before a task runs, and for `mimlys status`, mimlys probes the server
 within five seconds: whether it answers, whether the model is listed, and
-which structured-output mode it accepts. `structured_output = "auto"` tries
-the decision schema, then plain JSON mode, then nothing, and `status` shows
-the result; `run` says so once when it ended at plain text. In every mode
-the runtime parses the model's text strictly: a mode changes how often the
-model succeeds, never what the runtime accepts. `schema` on a server that
-refuses it is a startup error naming the fix.
+how decisions are asked for (the decision transport, below), and, for the
+envelope transport, which structured-output mode it accepts.
+`structured_output = "auto"` tries the decision schema, then plain JSON mode,
+then nothing, and `status` shows the result; `run` says so once when it
+ended at plain text. In every mode the runtime parses the model's text
+strictly: a mode changes how often the model succeeds, never what the runtime
+accepts. `schema` on a server that refuses it is a startup error naming the
+fix. A probe that times out while the engine loads its model says
+`timeout (the model may still be loading)`; the transport is then settled by
+the first request of the task, which has the whole request deadline.
+
+### The decision transport
+
+`decision_transport` says how the model's decision reaches the runtime.
+
+- `tool_calls` asks for it through the engine's native function calling: every
+  granted tool is offered as a function (its name with `.` written `__`, so
+  `server.tool` is `server__tool`; its parameters a JSON schema generated from the
+  tool's definition), beside four more: `plan`, `ask_user`, `complete` and
+  `give_up`. The reply must carry exactly one structured call naming one of the
+  functions, with one JSON object as its arguments. Anything else (no call, two,
+  an unknown name, arguments that are not one JSON object) is `malformed`, like a
+  reply that is not one JSON object in the other transport, and the
+  runtime changes nothing to make it pass: **a call written into the reply's
+  text is never read**, and text written beside a structured call is not read or
+  kept (`decision.received` records only its length, `text_chars`). The call
+  then passes the same twelve validation stages as any decision.
+- `envelope` asks for the decision as one JSON object written as text, as 0.8
+  did; `structured_output` applies to it only.
+- `auto` (the default) sends one request with one function when it probes: if
+  the engine accepts `tools`, the transport is `tool_calls`; if it refuses them
+  (for example llama.cpp started without `--jinja` answers HTTP 500 `tools param
+  requires --jinja flag`) it is `envelope`, and `status` shows the engine's
+  reason beside it. `status` always
+  shows the transport in force, and whether the engine accepts
+  `parallel_tool_calls: false`, which mimlys sends where it does.
+  `tool_calls` configured on an engine that refuses `tools` is not
+  replaced by the envelope: the task halts `backend_unavailable` and `run` and
+  `status` give the engine's reason.
+
+Whether a model returns structured calls depends on the model, not on the
+engine. In the spike that measured this (S2, three models on llama.cpp and
+Ollama, Q4_K_M): Qwen2.5-7B-Instruct returned structured calls in 378 of 378 replies;
+Qwen2.5-Coder-7B and Qwen2.5-Coder-14B in none of 391, writing the call into the text
+instead. With `tool_calls`, such a model does not work, and mimlys does not
+read the text to make it; with `envelope`, the models measured under 0.8 did not
+complete a task either (the M4 report, §6). Other models are not measured.
+
+**Ollama and the context length.** Ollama's OpenAI-compatible endpoint cannot
+set the context length, and the model runs with 4096 tokens unless its own
+settings say otherwise; a request of a task, with its `tools`, is larger. Set
+`num_ctx` where Ollama reads it, in the Modelfile (the spike used 16384), and
+create the model from it:
+
+```text
+FROM ./Qwen2.5-7B-Instruct-Q4_K_M.gguf
+PARAMETER num_ctx 16384
+```
+
+```sh
+ollama create qwen2.5-7b-instruct-16k -f Modelfile
+```
+
+llama.cpp takes the context length when it starts (`-c 16384`) and needs its chat
+template with tools, which current builds enable by default (`--jinja`).
 
 One request is sent per step, with the whole context (`context_chars`
 characters at most; `mimlys metrics` reports characters per prompt token so
