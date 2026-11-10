@@ -136,7 +136,15 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
             app.host_tools_unavailable.get(&d.name).map(String::as_str),
         ));
     }
-    let servers = app.server_status();
+    let mut servers = app.server_status();
+    // The model sees only the tools that can be functions of the transport; the user
+    // is told which are left out, and why, here and not by the model (REQ-MDL-009).
+    if matches!(
+        backend.probe.as_ref().and_then(|p| p.decision_transport),
+        Some(mimlys_core::native::DecisionTransport::ToolCalls)
+    ) {
+        mark_function_name_unavailable(&mut servers);
+    }
     for s in &servers {
         out.line(messages::server_line(s));
         for (tool, reason) in &s.unavailable {
@@ -197,4 +205,88 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
             .collect(),
     });
     Ok(())
+}
+
+/// In the `tool_calls` transport, moves an MCP tool whose function name is
+/// invalid, or equals another tool's, from a server's `tools` to its
+/// `unavailable` with the `function_name_*` reason, by the rule that builds the
+/// functions (`mimlys_core::native::name_reasons`). Host tools are not functions
+/// of their own (the single `run_host_tool` names them in an argument), so a
+/// function name never makes one unavailable.
+fn mark_function_name_unavailable(servers: &mut [mimlys_mcp::ServerStatus]) {
+    let blocked: std::collections::BTreeMap<String, &'static str> = {
+        let names: Vec<&str> = servers
+            .iter()
+            .flat_map(|s| s.tools.iter().map(String::as_str))
+            .collect();
+        names
+            .iter()
+            .zip(mimlys_core::native::name_reasons(&names))
+            .filter_map(|(name, reason)| reason.map(|r| ((*name).to_owned(), r)))
+            .collect()
+    };
+    if blocked.is_empty() {
+        return;
+    }
+    for server in servers {
+        let (left_out, kept): (Vec<String>, Vec<String>) = std::mem::take(&mut server.tools)
+            .into_iter()
+            .partition(|tool| blocked.contains_key(tool));
+        server.tools = kept;
+        for tool in left_out {
+            let reason = blocked[&tool].to_owned();
+            server.unavailable.push((tool, reason));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(name: &str, tools: &[&str]) -> mimlys_mcp::ServerStatus {
+        mimlys_mcp::ServerStatus {
+            name: name.into(),
+            state: "running".into(),
+            detail: None,
+            revision: None,
+            server_name: None,
+            server_version: None,
+            instructions: None,
+            tools: tools.iter().map(|t| (*t).to_owned()).collect(),
+            unavailable: vec![("old.tool".into(), "definition_invalid".into())],
+            undeclared: vec![],
+            list_changed: false,
+        }
+    }
+
+    /// REQ-MDL-009: both tools of a collision are named (`a.b__c` and `a__b.c`
+    /// are both `a__b__c` as functions), each with the reason; a tool that is
+    /// fine stays available; the reasons the import gave are kept.
+    #[test]
+    fn req_mdl_009_a_collision_is_named_on_both_servers() {
+        let mut servers = vec![
+            server("a", &["a.b__c", "a.fine"]),
+            server("a__b", &["a__b.c"]),
+        ];
+        mark_function_name_unavailable(&mut servers);
+        assert_eq!(servers[0].tools, ["a.fine"]);
+        assert_eq!(
+            servers[0].unavailable,
+            [
+                ("old.tool".to_owned(), "definition_invalid".to_owned()),
+                ("a.b__c".to_owned(), "function_name_collision".to_owned())
+            ]
+        );
+        assert!(servers[1].tools.is_empty());
+        assert_eq!(
+            servers[1].unavailable[1],
+            ("a__b.c".to_owned(), "function_name_collision".to_owned())
+        );
+        // Nothing to name: nothing changes.
+        let mut fine = vec![server("a", &["a.b", "a.c"])];
+        mark_function_name_unavailable(&mut fine);
+        assert_eq!(fine[0].tools, ["a.b", "a.c"]);
+        assert_eq!(fine[0].unavailable.len(), 1);
+    }
 }
