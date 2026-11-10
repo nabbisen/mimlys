@@ -217,6 +217,8 @@ instead. With `tool_calls`, such a model does not work, and mimlys does not
 read the text to make it; with `envelope`, the models measured under 0.8 did not
 complete a task either (the M4 report, §6). Other models are not measured.
 
+**Proxies.** `mimlys interpreters install` honours the system's proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`), since the artifact comes from the internet. Requests to the model backend never go through a proxy: the engine is on this machine.
+
 **Ollama and the context length.** Ollama's OpenAI-compatible endpoint cannot
 set the context length, and the model runs with 4096 tokens unless its own
 settings say otherwise; a request of a task, with its `tools`, is larger. Set

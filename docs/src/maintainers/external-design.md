@@ -519,6 +519,8 @@ The worker started with `--trace` (which the runtime passes when its log admits 
 
 The default data directory is the platform's user data directory (`$XDG_DATA_HOME/mimlys`, `%LOCALAPPDATA%\mimlys`, `~/Library/Application Support/mimlys`).
 
+`mimlys.holder` (pid and RFC 3339 time of the process holding `mimlys.lock`, written by the writer after it takes the lock and removed before it releases it) lets a reader name the holder without reading a lock file that Windows keeps closed to others (REQ-PERS-013).
+
 ### 14.2 Materialization (REQ-WS-002, REQ-WS-003)
 
 The project scope is copied into `tree` (reflink where the filesystem supports it, otherwise a copy; never a hard link). LIM-W4 paths and LIM-W5 patterns are skipped. Symbolic links whose target stays inside the scope are recreated; others are omitted with `symlink_omitted`. A scope above LIM-W1 or LIM-W2 is refused at creation with the measured size.
@@ -657,6 +659,8 @@ No timer and no collector: everything on disk belongs to one task (RFC 006 §6).
 ## 17. Events, metrics and logs
 
 ### 17.1 Events (REQ-OBS-001)
+
+Events are written by a writing runtime only; a read command (REQ-PERS-013) records none, `runtime.started` and `runtime.stopped` included.
 
 `task.created`, `task.state_changed{from, to, reason?}`, `task.pause_requested`, `task.deleted{audit}`, `step.started`, `step.finished{outcome}`, `decision.received{hash, transport, text_chars?}` (from 0.9: `transport` is `tool_calls` or `envelope`; `text_chars` counts text beside a structured call, which is not part of the decision), `decision.rejected{code}`, `action.proposed`, `action.authorized`, `action.started`, `execution.finished{attempt, termination}`, `action.finished{status, cause?}`, `approval.requested`, `approval.decided{decision}`, `approval.invalidated`, `question.asked`, `question.answered`, `grant.issued`, `grant.revoked`, `workspace.materialized`, `workspace.snapshot{reason}`, `workspace.rollback`, `workspace.promoted{files}`, `task.recovered{disposition}`, `tool.pinned`, `tool.unpinned`, `server.started{server, version?}`, `server.stopped{server, reason}`, `runtime.started{tier, backend}`, `runtime.stopped`, `runtime.orphans_killed{count}`. `backend` is the descriptor `{kind, model?, locality}` of the backend in force (REQ-SEC-010, RFC 008); the same descriptor is recorded on every task's versions at creation.
 

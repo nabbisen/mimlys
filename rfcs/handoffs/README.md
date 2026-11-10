@@ -58,6 +58,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 5 | [012c The engine context warning (B5)](./012c-engine-context-warning/implementation-handoff.md) | RFC 012 | — |
 | 6 | [002b Test hygiene](./002b-test-hygiene/implementation-handoff.md) | RFC 002 | — |
 | 7 | [010b A book page on the request-to-response flow](./010b-request-to-response-page/implementation-handoff.md) | RFC 010 | 013 (its storage words) |
+| 8 | [009c rypsok 0.9.0, compatibility measured](./009c-rypsok-0.9.0/implementation-handoff.md) | RFC 009 | — |
 
 ## Milestone M5
 

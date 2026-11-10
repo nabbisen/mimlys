@@ -2,6 +2,26 @@
 
 **RFC.** [RFC 013](../../accepted/013-operation-on-one-machine.md), decisions 1 to 4 (accepted 2026-11-10) · **Specification.** REQ-PERS-013, REQ-WS-013, REQ-WS-014, REQ-CLI-007 (new); external design §14.6, §16, §19; limits LIM-O3 (unchanged) · **Not here.** Decisions 5 to 8 (admission, the CPU part of clause C, the engine gate, the machine view) are part two, M7b, a later handoff.
 
+## Status (2026-11-11): approved; one correction, then the merge
+
+013-1 to 013-4 (PRs #34 to #37) are approved. The type split (`PersistenceRead`), the momentary try-lock that names the holder without holding it, the records-not-a-walk storage view and prune's three guards are what was asked, and each has a mutation that was caught.
+
+**Your questions, decided** (the specification now says so):
+1. The momentary shared try-lock: accepted. REQ-PERS-013 says "hold no lock while they read".
+2. `mimlys.holder`: accepted; external design §14.1 lists it.
+3. Both numbers registered: **LIM-I8** (tasks in the text of `status --storage`, 10) and **LIM-O15** (`events --follow`'s poll, 500 ms). Use the ids in the doc comments.
+4. Reflink judged from the filesystem's type, with `unknown`: accepted.
+5. The queued flag: REQ-SCHED-001 is **not met** through 0.9; the requirement says so now, and part two (M7b) delivers the flag with its `reason`. The book stays as you wrote it until then.
+6. `rollback --dry-run`: dropped from REQ-PERS-013's list.
+7. Read commands record no event, `runtime.started` included: accepted, and external design §17 says so.
+8. **Correction:** `status` must not start the MCP servers in the current directory when the data directory does not exist yet. It says `servers: not started (no data directory yet)` and lists the declared tools as declared. A server's working directory is the data directory; starting it anywhere else, from a read command, is a side effect nobody asked for. Test and mutation.
+9. Unreversed promotions kept even when no longer reversible: accepted.
+10. Leftovers after a failed deletion, finished by `task delete`: accepted.
+
+**Also, in the same commit:** the CHANGELOG names the public API change (`Persistence` and `WorkspaceProvider` split into reading and writing traits, `PersistenceError::MigrationPending`) under Changed, for library users.
+
+**Landing:** `main` refuses merge commits, so after the correction the architect lands the stack as a linear series (the tree compared with the CI-verified head), as for handoff 012.
+
 ## 1. Read-only open (REQ-PERS-013)
 
 - **A second persistence handle type.** `mimlys-persist` gains a read-only open alongside `open`. It opens the database as a WAL reader (SQLite's read-only mode), takes **no** lock on `mimlys.lock`, and runs **no** recovery, integrity check (LIM-P5 belongs to the writer), reaping or migration. Its handle exposes only reading methods. A read command cannot call a writing method because the type does not have one: no runtime check stands in for that.

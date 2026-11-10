@@ -518,7 +518,7 @@ The data directory shall be self-contained: copying it while the runtime is stop
 Every task shall record the policy hash, the decision-schema version, the tool-definition hashes and the runtime version at creation. (ED §83 of the draft)
 
 ### REQ-PERS-013 Read-only open — M7a · T
-Commands that only read (`status`, `events`, `task list`, `task show`, `metrics`, `follow`, `toolchain list`, `check`, and `promote --patch` and `rollback --dry-run` where they only read) shall open the store as WAL readers without its exclusive lock, and shall run no recovery, integrity check, reaping or migration. A store that needs recovery is read as committed and `status` says `recovery pending`; while another process holds the lock, `status` names it. A read command that writes is a defect, refused by the type of its persistence handle. (RFC 013)
+Commands that only read (`status`, `events` and `events --follow`, `task list`, `task show`, `metrics`, `toolchain list`, `promote --patch`; `check` opens no store) shall open the store as WAL readers that hold no lock while they read (a momentary try-lock, released at once, may tell whether a writer holds the store), and shall run no recovery, integrity check, reaping or migration; they record no event, `runtime.started` included, because a read command is not a runtime. A store that needs recovery is read as committed and `status` says `recovery pending`; while another process holds the lock, `status` names it. A read command that writes is a defect, refused by the type of its persistence handle. (RFC 013)
 
 ### REQ-PERS-014 One owner of a store under the daemon — M9 · T
 A daemon shall hold the store's exclusive lock for its life; a daemon and an embedded runtime never own one store at once, and whichever comes second names the holder and exits. (RFC 014)
@@ -531,7 +531,7 @@ Each step shall record the backend's name, the model and the decision transport 
 ## 15. Scheduling and concurrency
 
 ### REQ-SCHED-001 Concurrency limits — M1 · T
-At most LIM-X1 tasks shall be `running` and at most LIM-X2 executions in flight; further tasks wait in `created` with a visible queued flag; nothing is dropped.
+At most LIM-X1 tasks shall be `running` and at most LIM-X2 executions in flight; further tasks wait in `created` with a visible queued flag; nothing is dropped. (Not met through 0.9: a second task is refused with `conflict` instead of queued; the queued flag, with its `reason`, is delivered by RFC 013 part two, M7b. Found in handoff 013's review, 2026-11-11.)
 
 ### REQ-SCHED-002 Sequential steps — M1 · T
 One step at a time per task; one execution at a time per task. (D-11)

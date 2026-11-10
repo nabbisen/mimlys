@@ -42,6 +42,7 @@
 | LIM-I5 | Length of a notice, hint or error message | 200 characters | fixed | Context budget |
 | LIM-I6 | Rendered approval request | 4000 characters | fixed | Readable in a terminal |
 | LIM-I7 | Entries returned by `list_dir` or `search_files` | 500 | 50–5000 | Context budget |
+| LIM-I8 | Tasks listed in the text of `status --storage` (the JSON lists all) | 10 | 1–1000 | Interface size (handoff 013) |
 
 ## Context
 
@@ -121,6 +122,7 @@
 | LIM-O12 | Engine requests in flight per backend endpoint per user (`max_in_flight`) | 1 | 1–16 | Provisional (RFC 013); one consumer GPU serves one request at a time |
 | LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
 | LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
+| LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
 
 ## Model backend
 
