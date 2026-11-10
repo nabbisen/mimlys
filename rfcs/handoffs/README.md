@@ -52,6 +52,12 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | Order | Handoff | RFC | Depends on |
 |---|---|---|---|
 | 1 | [013 Operation on one machine, part one (M7a)](./013-operation-on-one-machine/implementation-handoff.md) | [RFC 013](../accepted/013-operation-on-one-machine.md) decisions 1 to 4 | — |
+| 2 | [008c One HTTP stack, one sha2](./008c-dependency-hygiene/implementation-handoff.md) | RFC 008 | — |
+| 3 | [011j Linux: narrow /etc and /opt](./011j-linux-read-set/implementation-handoff.md) | RFC 011 | — |
+| 4 | [004b Event and action schema versions](./004b-schema-versions/implementation-handoff.md) | RFC 004 | — |
+| 5 | [012c The engine context warning (B5)](./012c-engine-context-warning/implementation-handoff.md) | RFC 012 | — |
+| 6 | [002b Test hygiene](./002b-test-hygiene/implementation-handoff.md) | RFC 002 | — |
+| 7 | [010b A book page on the request-to-response flow](./010b-request-to-response-page/implementation-handoff.md) | RFC 010 | 013 (its storage words) |
 
 ## Milestone M5
 

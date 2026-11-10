@@ -1,0 +1,8 @@
+# Handoff 008c — One HTTP stack, one `sha2` (release 0.10)
+
+**RFC.** [RFC 008](../../done/008-model-backend-adapter.md) (the backend adapter's HTTP client) · **Specification.** REQ-SEC-012 (dependency hygiene), REQ-SBX-001 (the interpreter download), external design §12; limits LIM-O9, LIM-O10 · **From.** The replanning report §3 C (two HTTP stacks); handoff 009b (two `sha2` lines).
+
+1. **One HTTP stack.** The model adapter uses `reqwest` (async, rustls); the interpreter download (`crates/mimlys/src/download.rs`) uses `ureq`. Keep `reqwest`: the model path is the one that matters, and it is already async. Move the download to it: blocking or async, whichever fits the command's code without a second runtime. Keep LIM-O9 as the whole download's deadline, LIM-O10's retries and waits, the typed `unavailable`/`download` error and every existing test of handoff 005b, unchanged in what they assert. Then remove `ureq` from the workspace. State the TLS and proxy behaviour of the download before and after (environment proxy variables, the certificate store), and make them the same as the model adapter's.
+2. **One `sha2`.** Move the workspace's `sha2 = "0.10"` to `0.11`, the version `rmcp` 3.9 requires, so that `cargo deny` reports no `sha2`/`digest` duplicate. Every hash the product computes (snapshot objects, interpreter pins, the tool-definition hashes, canonical decision hashes, the policy hash) must be **byte-identical** before and after. Prove it with golden values from 0.9.0 in a test. A store written by 0.9.0 opens and verifies.
+
+Return: `.git-exclude/review-requests/008c-dependency-hygiene/README.md` with the `Cargo.lock` summary and `cargo deny`'s duplicate list before and after.
