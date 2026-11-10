@@ -698,14 +698,14 @@ pub fn prune_plan(found: &[crate::commands::prune::Candidate], audit: bool) -> V
                 "  {}  {:<10}  {:>5}  {:>10}",
                 c.task_id,
                 c.state,
-                crate::commands::prune::age_text(c.age_seconds),
-                crate::commands::prune::size_text(c.bytes())
+                age_text(c.age_seconds),
+                bytes_text(c.bytes())
             ),
             Some(why) => format!(
                 "  {}  {:<10}  {:>5}  kept: {why} (`mimlys rollback <task> --promotion <id>` reverses it; `mimlys task delete <task>` deletes anyway)",
                 c.task_id,
                 c.state,
-                crate::commands::prune::age_text(c.age_seconds)
+                age_text(c.age_seconds)
             ),
         });
     }
@@ -713,7 +713,7 @@ pub fn prune_plan(found: &[crate::commands::prune::Candidate], audit: bool) -> V
     lines.push(format!(
         "total: {} task(s), {} ({total} bytes)",
         todo.len(),
-        crate::commands::prune::size_text(total)
+        bytes_text(total)
     ));
     lines.push(if audit {
         "audit: the tasks' events and records go too (--audit)".into()
@@ -726,9 +726,7 @@ pub fn prune_plan(found: &[crate::commands::prune::Candidate], audit: bool) -> V
 pub fn prune_deleted(task_id: &str, f: &mimlys_core::snapshot::Footprint) -> String {
     format!(
         "deleted {task_id}: {} freed",
-        crate::commands::prune::size_text(
-            f.workspace_bytes + f.object_bytes_exclusive + f.blob_bytes
-        )
+        bytes_text(f.workspace_bytes + f.object_bytes_exclusive + f.blob_bytes)
     )
 }
 /// `task prune`: one task's deletion failed.
@@ -737,10 +735,7 @@ pub fn prune_failed(task_id: &str, why: &str) -> String {
 }
 /// `task prune`: all done.
 pub fn prune_done(count: usize, freed: u64) -> String {
-    format!(
-        "pruned {count} task(s), {} freed",
-        crate::commands::prune::size_text(freed)
-    )
+    format!("pruned {count} task(s), {} freed", bytes_text(freed))
 }
 /// `task prune`: stopped at a failure; the rest is untouched and named.
 pub fn prune_stopped(failed: &str, why: &str, untouched: &[String], deleted: usize) -> String {

@@ -138,7 +138,46 @@ mimlys task delete <task>
 shows what will go (and that any promotion of that task can no longer be
 reversed), asks, and removes it. The task's events stay as audit unless you
 add `--audit`. Copying the data directory while mimlys is not running is a
-complete backup.
+complete backup. To see what is stored and to remove finished tasks in bulk,
+see [Storage](./reference/storage.md): `mimlys status --storage` and
+`mimlys task prune`.
+
+## Several projects, several jobs
+
+- **One store per user.** By default every project you work on shares one data
+  directory, so `mimlys task list` shows every task, whichever project it
+  works on; each task has a private copy of its own project (`--scope`). What
+  the store holds, and how to tidy it, is in [Storage](./reference/storage.md).
+- **One job runs at a time, and a second terminal can watch.** A task runs
+  inside the `mimlys` process that drives it, and that process holds the store
+  for writing while it runs. From another terminal you can read, and reading
+  never says "locked": `mimlys status` tells you `store: in use by runtime
+  <pid> since <time>`, and `task list`, `task show`, `events --follow` and
+  `metrics` answer from what the running process has committed.
+  Acting is another matter: a command that writes (`run`, `approve`, `task
+  cancel` …) from a second terminal waits one second and then says `store
+  locked by another runtime`. Finish or stop the first job, or approve from
+  the terminal that runs it.
+- **Two runtimes on two data directories do not know each other.** If you point
+  two configurations at two directories (`runtime.data_dir`), each runtime
+  keeps its own bounds on memory, processes and time, but neither knows what
+  the other is running, so two jobs at once can use the machine's memory or
+  cores together. Nothing limits them across runtimes yet; that is part two of
+  RFC 013, which is not in this release.
+- **Why a task waits.** A task that cannot start waits for one of two reasons.
+  `concurrency`: a runtime runs at most one task at a time (LIM-X1), so
+  resuming a second is refused with `conflict: 1 task(s) already running; LIM-X1
+  allows 1` and the task stays as it was (a command drives one task, so you
+  rarely meet this). `admission`: a cap on how many executions all your
+  runtimes together may run, which comes with part two of RFC 013; today it
+  never applies.
+
+<!-- tested -->
+```sh
+mimlys task list
+mimlys status
+mimlys events <task> --follow
+```
 
 ## What to look at next
 
