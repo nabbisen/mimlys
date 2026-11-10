@@ -158,7 +158,9 @@ model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # Ollama: qwen2.5:7b-instruct
 ```
 
 Before a task runs, and for `mimlys status`, mimlys probes the server
-within five seconds: whether it answers, whether the model is listed, and
+within five seconds: whether it answers, whether the model is listed (a name
+without a tag also matches Ollama's `<name>:latest`; a name with a tag matches
+only exactly), and
 how decisions are asked for (the decision transport, below), and, for the
 envelope transport, which structured-output mode it accepts.
 `structured_output = "auto"` tries the decision schema, then plain JSON mode,
@@ -198,6 +200,13 @@ the first request of the task, which has the whole request deadline.
   `tool_calls` configured on an engine that refuses `tools` is not
   replaced by the envelope: the task halts `backend_unavailable` and `run` and
   `status` give the engine's reason.
+
+In the `tool_calls` transport an MCP tool can be left out of the functions
+because its name cannot be one: written with `.` as `__` (`server.tool` is
+`server__tool`) it is longer than 64 characters, or it equals another tool's.
+`status` lists it in its server's `unavailable` with the reason
+(`function_name_invalid`, `function_name_collision`), and the model is told once
+that the tool is unavailable; the remedy is a shorter server or tool name.
 
 Whether a model returns structured calls depends on the model, not on the
 engine. In the spike that measured this (S2, three models on llama.cpp and
