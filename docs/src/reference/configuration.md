@@ -133,11 +133,15 @@ debug_prompts = false           # true logs prompts and model output, and warns 
 `kind = "openai_compatible"` talks to any server with the chat-completions
 API. Two that run on your own machine.
 
-**In 0.8 the local models measured did not complete a task** under mimlys's
-decision format (the [M4 report](../maintainers/m4-report.md), §6): asked for a
-decision, they asked the user a question or repeated their plan instead of acting. The example below
-shows how a model is configured; it does not promise that 0.8 drives it
-through a task. Release 0.9 changes how decisions are requested (RFC 012).
+**What was measured to work.** Under 0.8's decision format no local model
+measured completed a task (the [M4 report](../maintainers/m4-report.md), §6).
+0.9 asks for decisions through the engine's native function calling (the
+decision transport, below), and with it Qwen2.5-7B-Instruct (Q4_K_M) repaired
+the M4 task in 9 of 10 runs: 4 of 5 on llama.cpp and 5 of 5 on Ollama, the run
+that did not finish ending in a question to the user. That is one model, one
+task and ten runs on one machine; a model that does not return structured
+calls does not act. The example below shows how a model is configured; it does
+not promise that your model drives a task.
 
 ```sh
 # llama.cpp

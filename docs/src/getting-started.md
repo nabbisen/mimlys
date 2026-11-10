@@ -13,12 +13,17 @@ Every write action is a transaction over the workspace: a snapshot before, a
 snapshot after, and a rollback when it fails. Nothing reaches your project
 until you promote it. The decisions come from a local model through any
 OpenAI-compatible server (llama-server, Ollama), or from the scripted fake
-backend that the examples below use. **The model, plainly:** in 0.8 the local
-models measured (the [M4 report](./maintainers/m4-report.md), §6) did not
-complete a task under the decision format mimlys uses: asked for a decision,
-they asked the user a question or repeated their plan instead of acting. Release 0.9 changes how
-decisions are requested (RFC 012). Do not expect 0.8 to drive a local model
-through a task. On Linux a declared toolchain command
+backend that the examples below use. **The model, plainly:** 0.9 asks the
+model for its decision through the engine's native function calling. With it,
+one model on one task was measured to work: Qwen2.5-7B-Instruct (Q4_K_M)
+repaired the M4 task (a failing test in a small JavaScript project) in 9 of
+10 runs, 4 of 5 on llama.cpp and 5 of 5 on Ollama; the run that did not finish
+ended by asking the user a question. A model that does not return structured
+calls does not act, and under 0.8's decision format (still available as
+`decision_transport = "envelope"`) no measured model acted (the
+[M4 report](./maintainers/m4-report.md), §6). That is one model, one task and
+ten runs on one machine, a result to repeat on your own model rather than a
+promise; the fake backend below needs no model at all. On Linux a declared toolchain command
 such as `cargo test` runs under kernel confinement (see
 [Host tools](./reference/host-tools.md)).
 
@@ -45,8 +50,8 @@ directory (`~/.local/share/mimlys`, `%LOCALAPPDATA%\mimlys`,
 ## First run
 
 With a local model, point the configuration at it (see
-[Configuration](./reference/configuration.md#a-local-model); in 0.8 the models
-measured did not complete a task, see above) and run:
+[Configuration](./reference/configuration.md#a-local-model); what was measured
+to work is above) and run:
 
 ```sh
 mimlys run "fix the failing test in this project" --scope .
