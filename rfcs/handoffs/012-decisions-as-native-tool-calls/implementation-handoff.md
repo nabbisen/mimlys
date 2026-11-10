@@ -1,6 +1,6 @@
 # Handoff 012 — Decisions as native tool calls (release 0.9)
 
-**RFC.** [RFC 012](../../accepted/012-decisions-as-native-tool-calls.md) (accepted 2026-11-08) · **Specification.** REQ-MDL-009 (new), REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-003, REQ-CTX-010 (amended); external design §15.4 (new), §15.1, §17 (`decision.received`), §19.1 (`decision_transport`); limits LIM-C1, LIM-D1, LIM-M4 · **Evidence it rests on.** Spike S2 (handoff 008b), the M4 report §6 · **Release.** 0.9.
+**RFC.** [RFC 012](../../done/012-decisions-as-native-tool-calls.md) (accepted 2026-11-08) · **Specification.** REQ-MDL-009 (new), REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-003, REQ-CTX-010 (amended); external design §15.4 (new), §15.1, §17 (`decision.received`), §19.1 (`decision_transport`); limits LIM-C1, LIM-D1, LIM-M4 · **Evidence it rests on.** Spike S2 (handoff 008b), the M4 report §6 · **Release.** 0.9.
 
 ## Status (2026-11-10, second): merged
 

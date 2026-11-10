@@ -1,6 +1,6 @@
 # Handoff 012b — Release candidate 0.9.0 (RFC 012 complete)
 
-**RFC.** [RFC 012](../../accepted/012-decisions-as-native-tool-calls.md): 0.9.0 ships it · **Scope.** `ROADMAP.md`, "Release 0.9". Its "done when" is met on `main`: run B (the M4 report §7), LIM-C1 fixed, prefix stability measured for both transports, CI green, and the threat register's 0.9 row (written by the architect). The CHANGELOG is this candidate's · **Model.** Handoff 011h (0.8.0), with what its review corrected.
+**RFC.** [RFC 012](../../done/012-decisions-as-native-tool-calls.md): 0.9.0 ships it · **Scope.** `ROADMAP.md`, "Release 0.9". Its "done when" is met on `main`: run B (the M4 report §7), LIM-C1 fixed, prefix stability measured for both transports, CI green, and the threat register's 0.9 row (written by the architect). The CHANGELOG is this candidate's · **Model.** Handoff 011h (0.8.0), with what its review corrected.
 
 Prepare the candidate on a branch `release-0.9.0` from `main`. **Do not tag, publish or merge**: the architect does that after the Go (the owner's rule).
 
