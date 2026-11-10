@@ -218,6 +218,56 @@ fn lim_m4_probe_reports_reachability() {
     assert_eq!(probe.detail.as_deref(), Some("transport"));
 }
 
+/// LIM-M4 (handoff 012, correction 2): a configured model name without a tag
+/// matches Ollama's `<name>:latest`; a name with a tag matches only exactly.
+/// 0.8 compared exactly and reported a false `model_not_listed`.
+#[test]
+fn lim_m4_an_untagged_name_matches_the_latest_tag() {
+    let rt = rt();
+    let probe_for = |listed: &str, configured: &str| {
+        let server = MockServer::start(
+            MockConfig {
+                models: vec![listed.into()],
+                ..MockConfig::default()
+            },
+            vec![],
+        );
+        let backend = OpenAiBackend::new(OpenAiConfig {
+            model: configured.into(),
+            ..config(server.url(), Mode::None)
+        });
+        let probe = rt.block_on(backend.probe());
+        (probe.model_listed, probe.detail)
+    };
+    let latest = "qwen2.5-7b-instruct-m4:latest";
+    assert_eq!(
+        probe_for(latest, "qwen2.5-7b-instruct-m4"),
+        (Some(true), None)
+    );
+    assert_eq!(probe_for(latest, latest), (Some(true), None));
+    // A tag matches only exactly.
+    for configured in ["qwen2.5-7b-instruct-m4:q4", "qwen2.5-7b-instruct-m4:Latest"] {
+        let (listed, detail) = probe_for(latest, configured);
+        assert_eq!(listed, Some(false), "{configured}");
+        assert_eq!(detail.as_deref(), Some("model_not_listed"));
+    }
+    assert_eq!(probe_for("qwen2.5-7b-instruct-m4", latest).0, Some(false));
+    // The rule, not the usual listing: a tagged name does not take `:latest` on top of its tag.
+    assert_eq!(probe_for("m:q4:latest", "m:q4").0, Some(false));
+    // llama-server's ids have no tag and match exactly, as before.
+    assert_eq!(probe_for("m.gguf", "m.gguf"), (Some(true), None));
+    assert_eq!(probe_for("m.gguf", "m").0, Some(false));
+    // A different model's `:latest` is not this one; a registry port is not a tag.
+    assert_eq!(
+        probe_for("other:latest", "qwen2.5-7b-instruct-m4").0,
+        Some(false)
+    );
+    assert_eq!(
+        probe_for("localhost:5000/ns/model:latest", "localhost:5000/ns/model").0,
+        Some(true)
+    );
+}
+
 /// REQ-MDL-003: a 5xx or a 429 is `unavailable` after a pause (the loop's
 /// identical retry is spaced, not hammered); a 404 is `unavailable` at once;
 /// a dropped connection is `unavailable{transport}`; a wrong shape is
