@@ -1,6 +1,6 @@
 //! Metrics derived from events and records (REQ-OBS-003, REQ-OBS-008).
 
-use crate::sqlite::{Store, storage};
+use crate::sqlite::{poisoned, storage};
 use mimlys_core::event::{Event, EventRecord};
 use mimlys_core::ids::TaskId;
 use mimlys_core::spi::{ContextSums, Metrics, PersistenceError};
@@ -8,8 +8,13 @@ use mimlys_core::step::Step;
 use rusqlite::params;
 
 /// Counts over all tasks or one task.
-pub fn metrics(store: &Store, task_id: Option<TaskId>) -> Result<Metrics, PersistenceError> {
-    store.with_conn(|conn| -> Result<Metrics, PersistenceError> {
+pub fn metrics(
+    conn: &std::sync::Mutex<rusqlite::Connection>,
+    task_id: Option<TaskId>,
+) -> Result<Metrics, PersistenceError> {
+    let conn = conn.lock().map_err(|_| poisoned())?;
+    let conn = &*conn;
+    (|| -> Result<Metrics, PersistenceError> {
         let mut m = Metrics::default();
         let mut stmt = conn
             .prepare(
@@ -88,5 +93,5 @@ pub fn metrics(store: &Store, task_id: Option<TaskId>) -> Result<Metrics, Persis
         }
         m.context = sums.finish();
         Ok(m)
-    })?
+    })()
 }

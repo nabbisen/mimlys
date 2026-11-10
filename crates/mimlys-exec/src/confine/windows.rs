@@ -495,6 +495,26 @@ pub fn ensure_profile(name: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The SID of the AppContainer profile `name`, derived from the name alone
+/// (the same SID whether the profile exists or not). Creates nothing: for the
+/// commands that only read (REQ-PERS-013).
+pub fn derive_sid(name: &str) -> Result<Vec<u8>, String> {
+    let name_w = wide(OsStr::new(name));
+    let mut sid: PSID = std::ptr::null_mut();
+    // SAFETY: the name is null-terminated UTF-16 and `sid` a valid out pointer.
+    let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name_w.as_ptr(), &mut sid) };
+    if hr < 0 {
+        return Err(format!(
+            "DeriveAppContainerSidFromAppContainerName failed: 0x{:08x}",
+            hr as u32
+        ));
+    }
+    let bytes = copy_sid(sid);
+    // SAFETY: the SID was allocated by the system for the caller to free once with FreeSid.
+    unsafe { FreeSid(sid) };
+    Ok(bytes)
+}
+
 /// Deletes the AppContainer profile (`toolchain revoke --all`, REQ-CONF-008).
 /// A profile that does not exist is already deleted. The permissions its SID
 /// holds on directories are removed first, by the caller: deleting the

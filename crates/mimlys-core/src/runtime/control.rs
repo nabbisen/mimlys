@@ -20,8 +20,8 @@ use crate::snapshot::{Footprint, Promotion, PromotionPlan, SnapshotRecord, Works
 use crate::spi::{Metrics, PositionedEvent, TaskSummary};
 use crate::step::{Budgets, StepOutcome, StepResult};
 use crate::task::{
-    CompletionCheck, Extension, ExtensionCeiling, PendingItem, PlanVersion, ScopeSpec, Task,
-    TaskInput, TaskSpec, TaskState, TaskVersions, WaitKind,
+    CompletionCheck, Extension, ExtensionCeiling, PlanVersion, ScopeSpec, Task, TaskInput,
+    TaskSpec, TaskState, TaskVersions, WaitKind,
 };
 
 /// A request to create a task (REQ-TASK-001).
@@ -409,18 +409,11 @@ impl Runtime {
 
     /// Phase 1 of a promotion (REQ-WS-007): the plan, or the conflicts.
     pub fn promotion_plan(&self, task_id: TaskId) -> Result<PromotionPlan, RuntimeError> {
-        let task = self.load(task_id)?;
-        if matches!(task.state, TaskState::Running | TaskState::Recovering) {
-            return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: task.state.name(),
-                input: "promote_workspace",
-            }));
-        }
-        let base = self.base_snapshot(task_id)?;
-        Ok(self
-            .deps
-            .workspaces
-            .promotion_plan(task_id, &base, &task.scope.root)?)
+        super::read::promotion_plan(
+            self.deps.persistence.as_ref(),
+            self.deps.workspaces.as_ref(),
+            task_id,
+        )
     }
 
     /// Phase 2: after the user's confirmation, the backup, the writes and the record.
@@ -557,23 +550,6 @@ impl Runtime {
         Ok(footprint)
     }
 
-    /// The task's first snapshot: `base` for a copy, `fork` for a fork.
-    fn base_snapshot(&self, task_id: TaskId) -> Result<SnapshotRecord, RuntimeError> {
-        self.deps
-            .persistence
-            .load_snapshots(task_id)?
-            .into_iter()
-            .find(|s| {
-                matches!(
-                    s.reason,
-                    crate::snapshot::SnapshotReason::Base | crate::snapshot::SnapshotReason::Fork
-                )
-            })
-            .ok_or(RuntimeError::NotFound {
-                what: "base snapshot".into(),
-            })
-    }
-
     /// What the task holds on disk (RFC 006 §6): the latest snapshot's bytes,
     /// the objects exclusive to the task against those shared, the blobs.
     pub fn footprint(
@@ -582,38 +558,13 @@ impl Runtime {
         snapshots: &[SnapshotRecord],
         promotions: &[Promotion],
     ) -> Result<Footprint, RuntimeError> {
-        let mut per_task: std::collections::BTreeMap<crate::hash::Hash, (u64, u64)> =
-            std::collections::BTreeMap::new();
-        for s in snapshots {
-            if let Ok(manifest) = self.deps.workspaces.manifest(s) {
-                for (hash, size) in manifest.objects() {
-                    let e = per_task.entry(hash).or_insert((size, 0));
-                    e.1 += 1;
-                }
-            }
-        }
-        let hashes: Vec<crate::hash::Hash> = per_task.keys().cloned().collect();
-        let mut exclusive = 0;
-        let mut shared = 0;
-        for (hash, size, refs) in self.deps.persistence.object_references(&hashes)? {
-            let mine = per_task.get(&hash).map(|(_, n)| *n).unwrap_or(0);
-            if refs <= mine {
-                exclusive += size;
-            } else {
-                shared += size;
-            }
-        }
-        Ok(Footprint {
-            workspace_bytes: self.deps.workspaces.tree_bytes(task_id).unwrap_or(0),
-            snapshots: snapshots.len() as u64,
-            object_bytes_exclusive: exclusive,
-            object_bytes_shared: shared,
-            blob_bytes: self.deps.persistence.blob_bytes(task_id)?,
-            promotions: promotions
-                .iter()
-                .filter(|p| p.reversed_at.is_none())
-                .count() as u64,
-        })
+        super::read::footprint(
+            self.deps.persistence.as_ref(),
+            self.deps.workspaces.as_ref(),
+            task_id,
+            snapshots,
+            promotions,
+        )
     }
 
     /// Resumes from `created`, `paused` or `halted` (REQ-TASK-005).
@@ -1178,41 +1129,12 @@ impl Runtime {
 
     /// The task with its pending items, plan and grants.
     pub fn get_task(&self, task_id: TaskId) -> Result<TaskView, RuntimeError> {
-        let task = self.load(task_id)?;
-        let now = self.deps.clock.now();
-        let pending_approval = match task.pending {
-            Some(PendingItem::Approval { .. }) => {
-                self.deps.persistence.load_pending_approval(task_id)?
-            }
-            _ => None,
-        };
-        let pending_question = match task.pending {
-            Some(PendingItem::Question { .. }) => {
-                self.deps.persistence.load_pending_question(task_id)?
-            }
-            _ => None,
-        };
-        let plan = self.deps.persistence.load_plan(task_id)?;
-        let grants = self
-            .deps
-            .persistence
-            .load_grants(task_id)?
-            .into_iter()
-            .filter(|g| g.is_active(now))
-            .collect();
-        let snapshots = self.deps.persistence.load_snapshots(task_id)?;
-        let promotions = self.deps.persistence.load_promotions(task_id)?;
-        let footprint = self.footprint(task_id, &snapshots, &promotions)?;
-        Ok(TaskView {
-            task,
-            pending_approval,
-            pending_question,
-            plan,
-            grants,
-            snapshots,
-            promotions,
-            footprint,
-        })
+        super::read::get_task(
+            self.deps.persistence.as_ref(),
+            self.deps.workspaces.as_ref(),
+            self.deps.clock.now(),
+            task_id,
+        )
     }
 
     /// Tasks, newest first.
@@ -1237,14 +1159,7 @@ impl Runtime {
 
     /// The runtime's status (REQ-OBS-006).
     pub fn get_runtime_status(&self) -> Result<RuntimeStatus, RuntimeError> {
-        let mut pending = Vec::new();
-        for id in self.deps.persistence.tasks_in_state("waiting_user")? {
-            if let Some(task) = self.deps.persistence.load_task(id)?
-                && let TaskState::WaitingUser { wait_kind } = task.state
-            {
-                pending.push((id, wait_kind));
-            }
-        }
+        let activity = super::read::activity(self.deps.persistence.as_ref())?;
         Ok(RuntimeStatus {
             version: self.deps.runtime_version.clone(),
             backend: self.guard("model_backend", || self.deps.backend.describe())?,
@@ -1255,8 +1170,8 @@ impl Runtime {
                 .describe(),
             clauses: self.deps.probe.clauses.clone(),
             unavailable_clauses: self.deps.probe.unavailable_lines(),
-            running: self.deps.persistence.tasks_in_state("running")?,
-            pending,
+            running: activity.running,
+            pending: activity.pending,
         })
     }
 

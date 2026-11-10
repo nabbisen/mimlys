@@ -189,6 +189,33 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
     }))
 }
 
+/// The container as `toolchain list` and `status` show it, for a command that
+/// only reads (REQ-PERS-013): the profile's name, its SID derived from the name
+/// (the profile is not created) and the record file as it is. No directory's
+/// permissions are read or changed here; `applied` reads them back one by one.
+/// Returns `None` on other platforms.
+#[cfg(windows)]
+pub fn inspect(data_dir: &Path) -> Option<Container> {
+    use mimlys_exec::confine::windows::{derive_sid, profile_name, sid_string};
+    let profile = profile_name(data_dir);
+    let sid = derive_sid(&profile).ok()?;
+    let mut record = Record::load(data_dir);
+    record.profile = profile.clone();
+    record.sid = sid_string(&sid);
+    Some(Container {
+        profile,
+        sid_text: record.sid.clone(),
+        sid,
+        record,
+    })
+}
+
+/// Nothing to inspect: Landlock and Seatbelt take the paths from the specification.
+#[cfg(not(windows))]
+pub fn inspect(_data_dir: &Path) -> Option<Container> {
+    None
+}
+
 /// Nothing to prepare: Landlock and Seatbelt take the paths from the specification.
 #[cfg(not(windows))]
 pub fn prepare(_data_dir: &Path, _paths: &RuntimePaths<'_>) -> Result<Option<Container>, AppError> {

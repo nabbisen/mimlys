@@ -12,7 +12,7 @@ use crate::limits::LIM_T5_DEADLINE_MS;
 use crate::path::PlatformRules;
 use crate::policy::{OnReject, Policy};
 use crate::spi::fake::{FakePersistence, FakeToolProvider, FakeWorkspaces, ScriptedBackend};
-use crate::spi::{BackendError, ExecutionOutcome};
+use crate::spi::{BackendError, ExecutionOutcome, PersistenceRead};
 use crate::step::{Budgets, StepOutcome};
 use crate::task::{CompletionCheck, Extension, HaltReason, ScopeSpec, TaskState, WaitKind};
 use crate::tool::{Param, ParamSchema, ParamType, Provider, ResourceProfile, ToolDefinition};

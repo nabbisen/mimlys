@@ -681,7 +681,13 @@ fn m6a_orphans_are_reaped_at_startup() {
     )
     .unwrap();
     assert!(sleepers("4321") >= 1);
+    // REQ-PERS-013: `status` only reads; it reaps nothing. The leftover tree and
+    // its record are as they were.
     let (_, _) = env.json(&["status"]);
+    assert!(sleepers("4321") >= 1, "a reader does not reap a worker");
+    assert!(data.join("worker.json").exists());
+    // A command that writes reaps it at startup (REQ-CONF-009).
+    let (_, _) = env.json(&["interpreters", "list"]);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while sleepers("4321") > 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));

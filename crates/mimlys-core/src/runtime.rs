@@ -9,9 +9,11 @@ mod contain;
 mod context;
 mod control;
 mod loop_;
+mod read;
 
 pub use control::{CreateTask, RuntimeStatus, TaskView};
 pub use loop_::StepResultView;
+pub use read::{Activity, Reader};
 
 use crate::clock::Clock;
 use crate::event::{Actor, Event, EventRecord};

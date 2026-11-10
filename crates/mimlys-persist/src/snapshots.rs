@@ -30,6 +30,14 @@ impl SnapshotFiles {
         Ok(Self { root })
     }
 
+    /// The snapshot directories for reading only: nothing is created, locked or
+    /// recovered (REQ-PERS-013). A directory that is not there reads as empty.
+    pub fn open_for_reading(data_dir: &Path) -> Self {
+        Self {
+            root: data_dir.join("snapshots"),
+        }
+    }
+
     fn object_path(&self, hash: &Hash) -> PathBuf {
         self.root.join("objects").join(hash.as_str())
     }

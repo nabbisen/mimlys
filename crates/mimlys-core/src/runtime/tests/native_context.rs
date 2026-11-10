@@ -53,7 +53,6 @@ struct State {
 impl State {
     fn of(h: &Harness, id: TaskId) -> Self {
         use crate::clock::Clock;
-        use crate::spi::Persistence;
         let now = h.clock.now();
         let mut grants = GrantSet::new();
         for g in h.persistence.load_grants(id).unwrap() {
@@ -459,7 +458,6 @@ fn req_ctx_010_prefix_stability_is_recorded_for_both_transports() {
         }
         let first = h.backend.requests()[0].clone();
         let measures: Vec<_> = {
-            use crate::spi::Persistence;
             h.persistence
                 .load_steps(id)
                 .unwrap()

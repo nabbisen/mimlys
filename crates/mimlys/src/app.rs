@@ -15,6 +15,9 @@ use mimlys_persist::recovery::{Recovered, RecoveryContext, recover_all};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod read;
+pub use read::{HolderView, ReadApp, StoreState, StoreView, probe_confinement};
+
 /// Anything a command can fail with (external design §18). Exit code 1.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AppError {
@@ -341,6 +344,134 @@ fn data_dir_error(data_dir: &Path, e: std::io::Error) -> AppError {
     }
 }
 
+/// The backend made from the configuration: the backend, and the adapter when
+/// it is `openai_compatible` (for the probe).
+pub(crate) type MadeBackend = (Arc<dyn ModelBackend>, Option<Arc<OpenAiBackend>>);
+
+/// The model backend the configuration names (or the one a test supplies),
+/// and the adapter when it is `openai_compatible` (for the probe).
+pub(crate) fn make_backend(
+    config: &Config,
+    loaded: &Loaded,
+    supplied: Option<Arc<dyn ModelBackend>>,
+) -> Result<MadeBackend, AppError> {
+    let mut openai: Option<Arc<OpenAiBackend>> = None;
+    let backend: Arc<dyn ModelBackend> = match supplied {
+        Some(b) => b,
+        None => match config.backend.kind {
+            BackendKind::Fake => match &config.backend.script {
+                Some(path) => {
+                    Arc::new(FakeBackend::from_script(path).map_err(|e| AppError::Io {
+                        detail: format!(
+                            "cannot read the backend script {}: {}",
+                            path.display(),
+                            e.kind()
+                        ),
+                    })?)
+                }
+                None => Arc::new(FakeBackend::with_decisions(vec![])),
+            },
+            BackendKind::OpenaiCompatible => {
+                let adapter = Arc::new(OpenAiBackend::new(OpenAiConfig {
+                    url: config.backend.url.clone().unwrap_or_default(),
+                    model: config.backend.model.clone().unwrap_or_default(),
+                    api_key: loaded
+                        .secrets
+                        .iter()
+                        .find(|(name, _)| name == "backend.api_key")
+                        .map(|(_, value)| value.clone()),
+                    timeout_ms: config.backend.timeout_ms,
+                    max_tokens: config.backend.max_tokens,
+                    temperature: config.backend.temperature,
+                    decision_transport: match config.backend.decision_transport {
+                        crate::config::DecisionTransport::Auto => TransportMode::Auto,
+                        crate::config::DecisionTransport::ToolCalls => TransportMode::ToolCalls,
+                        crate::config::DecisionTransport::Envelope => TransportMode::Envelope,
+                    },
+                    structured_output: match config.backend.structured_output {
+                        crate::config::StructuredOutput::Auto => Mode::Auto,
+                        crate::config::StructuredOutput::Schema => Mode::Schema,
+                        crate::config::StructuredOutput::None => Mode::None,
+                    },
+                    locality: config.backend.locality,
+                }));
+                openai = Some(Arc::clone(&adapter));
+                adapter
+            }
+        },
+    };
+    Ok((backend, openai))
+}
+
+/// Probes the backend (LIM-M4; RFC 008 §4): the model listing and the
+/// structured-output mode. A `schema` backend whose server refuses the schema
+/// is an error naming the fix. Returns the probe and the notice to print when
+/// `auto` fell back to plain text. Shared by the commands that write and by
+/// `status`, which only reads (REQ-PERS-013).
+pub(crate) async fn probe_backend_of(
+    loaded: &Loaded,
+    openai: Option<&Arc<OpenAiBackend>>,
+) -> Result<(BackendProbe, Option<String>), AppError> {
+    let probe = match openai {
+        Some(adapter) => {
+            let Probe {
+                reachable,
+                model_listed,
+                structured_output,
+                fell_back,
+                detail,
+                decision_transport,
+                transport_reason,
+                parallel_tool_calls,
+            } = adapter.probe().await;
+            BackendProbe {
+                reachable,
+                model_listed,
+                structured_output,
+                fell_back,
+                detail,
+                decision_transport,
+                transport_reason,
+                parallel_tool_calls,
+            }
+        }
+        None => {
+            let b = &loaded.config.backend;
+            let no_script = b.kind == crate::config::BackendKind::Fake && b.script.is_none();
+            BackendProbe {
+                reachable: !no_script,
+                model_listed: None,
+                structured_output: Some(Resolved::None),
+                fell_back: false,
+                detail: no_script.then(|| "no_script".to_owned()),
+                decision_transport: Some(mimlys_core::native::DecisionTransport::Envelope),
+                transport_reason: None,
+                parallel_tool_calls: None,
+            }
+        }
+    };
+    if loaded.config.backend.structured_output == crate::config::StructuredOutput::Schema
+        && probe.reachable
+        && probe.detail.as_deref() == Some("format_refused")
+    {
+        return Err(AppError::Io {
+            detail: "backend unusable: the server refuses json_schema; set backend.structured_output = \"none\" or \"auto\"".into(),
+        });
+    }
+    let notice = if probe.detail.as_deref() == Some("tool_calls_refused") {
+        Some(crate::messages::tool_calls_refused(
+            probe
+                .transport_reason
+                .as_deref()
+                .unwrap_or("no reason given"),
+        ))
+    } else {
+        (probe.fell_back && probe.structured_output == Some(Resolved::None))
+            .then(|| crate::messages::structured_output_none().to_owned())
+    };
+    Ok((probe, notice))
+}
+
 impl App {
     /// Opens the data directory, recovers, checks consistency and builds
     /// the runtime (REQ-PERS-006, REQ-PERS-007).
@@ -498,51 +629,7 @@ impl App {
             &*workspaces,
         )?;
         mimlys_persist::integrity::check(&store, now)?;
-        let mut openai: Option<Arc<OpenAiBackend>> = None;
-        let backend: Arc<dyn ModelBackend> = match backend {
-            Some(b) => b,
-            None => match config.backend.kind {
-                BackendKind::Fake => match &config.backend.script {
-                    Some(path) => {
-                        Arc::new(FakeBackend::from_script(path).map_err(|e| AppError::Io {
-                            detail: format!(
-                                "cannot read the backend script {}: {}",
-                                path.display(),
-                                e.kind()
-                            ),
-                        })?)
-                    }
-                    None => Arc::new(FakeBackend::with_decisions(vec![])),
-                },
-                BackendKind::OpenaiCompatible => {
-                    let adapter = Arc::new(OpenAiBackend::new(OpenAiConfig {
-                        url: config.backend.url.clone().unwrap_or_default(),
-                        model: config.backend.model.clone().unwrap_or_default(),
-                        api_key: loaded
-                            .secrets
-                            .iter()
-                            .find(|(name, _)| name == "backend.api_key")
-                            .map(|(_, value)| value.clone()),
-                        timeout_ms: config.backend.timeout_ms,
-                        max_tokens: config.backend.max_tokens,
-                        temperature: config.backend.temperature,
-                        decision_transport: match config.backend.decision_transport {
-                            crate::config::DecisionTransport::Auto => TransportMode::Auto,
-                            crate::config::DecisionTransport::ToolCalls => TransportMode::ToolCalls,
-                            crate::config::DecisionTransport::Envelope => TransportMode::Envelope,
-                        },
-                        structured_output: match config.backend.structured_output {
-                            crate::config::StructuredOutput::Auto => Mode::Auto,
-                            crate::config::StructuredOutput::Schema => Mode::Schema,
-                            crate::config::StructuredOutput::None => Mode::None,
-                        },
-                        locality: config.backend.locality,
-                    }));
-                    openai = Some(Arc::clone(&adapter));
-                    adapter
-                }
-            },
-        };
+        let (backend, openai) = make_backend(&config, &loaded, backend)?;
         let store: Arc<dyn Persistence> = Arc::new(store);
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store,
@@ -621,70 +708,14 @@ impl App {
     }
 
     /// Probes the backend once (LIM-M4; RFC 008 §4): the model listing and
-    /// the structured-output mode. A `schema` backend whose server refuses
-    /// the schema is an error naming the fix. Returns the notice to print
-    /// when `auto` fell back to plain text.
+    /// the structured-output mode. A `schema` backend whose server refuses the
+    /// schema is an error naming the fix. Returns the notice to print when
+    /// `auto` fell back to plain text.
     pub async fn probe_backend(&self) -> Result<Option<String>, AppError> {
         if self.backend_probe.lock().expect("probe lock").is_some() {
             return Ok(None);
         }
-        let probe = match &self.openai {
-            Some(adapter) => {
-                let Probe {
-                    reachable,
-                    model_listed,
-                    structured_output,
-                    fell_back,
-                    detail,
-                    decision_transport,
-                    transport_reason,
-                    parallel_tool_calls,
-                } = adapter.probe().await;
-                BackendProbe {
-                    reachable,
-                    model_listed,
-                    structured_output,
-                    fell_back,
-                    detail,
-                    decision_transport,
-                    transport_reason,
-                    parallel_tool_calls,
-                }
-            }
-            None => {
-                let b = &self.loaded.config.backend;
-                let no_script = b.kind == crate::config::BackendKind::Fake && b.script.is_none();
-                BackendProbe {
-                    reachable: !no_script,
-                    model_listed: None,
-                    structured_output: Some(Resolved::None),
-                    fell_back: false,
-                    detail: no_script.then(|| "no_script".to_owned()),
-                    decision_transport: Some(mimlys_core::native::DecisionTransport::Envelope),
-                    transport_reason: None,
-                    parallel_tool_calls: None,
-                }
-            }
-        };
-        if self.loaded.config.backend.structured_output == crate::config::StructuredOutput::Schema
-            && probe.reachable
-            && probe.detail.as_deref() == Some("format_refused")
-        {
-            return Err(AppError::Io {
-                detail: "backend unusable: the server refuses json_schema; set backend.structured_output = \"none\" or \"auto\"".into(),
-            });
-        }
-        let notice = if probe.detail.as_deref() == Some("tool_calls_refused") {
-            Some(crate::messages::tool_calls_refused(
-                probe
-                    .transport_reason
-                    .as_deref()
-                    .unwrap_or("no reason given"),
-            ))
-        } else {
-            (probe.fell_back && probe.structured_output == Some(Resolved::None))
-                .then(|| crate::messages::structured_output_none().to_owned())
-        };
+        let (probe, notice) = probe_backend_of(&self.loaded, self.openai.as_ref()).await?;
         *self.backend_probe.lock().expect("probe lock") = Some(probe);
         Ok(notice)
     }
@@ -736,37 +767,14 @@ impl App {
 
     /// Resolves a task id or a unique prefix of one.
     pub fn resolve_task(&self, text: &str) -> Result<TaskId, AppError> {
-        if let Ok(uuid) = uuid::Uuid::parse_str(text) {
-            return Ok(TaskId::from_uuid(uuid));
-        }
-        let text = text.trim();
-        if text.len() < 4 {
-            return Err(AppError::TaskRef {
-                detail: "give a task id or at least four characters of it".into(),
-                not_found: false,
-            });
-        }
-        let matches: Vec<TaskId> = self
-            .runtime
-            .list_tasks()?
-            .into_iter()
-            .map(|t| t.task_id)
-            .filter(|id| id.to_string().starts_with(text))
-            .collect();
-        match matches.as_slice() {
-            [one] => Ok(*one),
-            [] => Err(AppError::TaskRef {
-                detail: format!("no task starts with {text}"),
-                not_found: true,
-            }),
-            many => Err(AppError::TaskRef {
-                detail: format!(
-                    "{} tasks start with {text}; give more characters",
-                    many.len()
-                ),
-                not_found: false,
-            }),
-        }
+        resolve_task_ref(text, || {
+            Ok(self
+                .runtime
+                .list_tasks()?
+                .into_iter()
+                .map(|t| t.task_id)
+                .collect())
+        })
     }
 
     /// The configuration in force.
@@ -777,6 +785,42 @@ impl App {
     /// The id source (for records the commands build).
     pub fn ids(&self) -> &dyn IdSource {
         &SystemIds
+    }
+}
+
+/// Resolves a task id or a unique prefix of one (at least four characters)
+/// among the tasks `tasks` lists; the list is read only when a prefix needs it.
+pub(crate) fn resolve_task_ref(
+    text: &str,
+    tasks: impl FnOnce() -> Result<Vec<TaskId>, AppError>,
+) -> Result<TaskId, AppError> {
+    if let Ok(uuid) = uuid::Uuid::parse_str(text) {
+        return Ok(TaskId::from_uuid(uuid));
+    }
+    let text = text.trim();
+    if text.len() < 4 {
+        return Err(AppError::TaskRef {
+            detail: "give a task id or at least four characters of it".into(),
+            not_found: false,
+        });
+    }
+    let matches: Vec<TaskId> = tasks()?
+        .into_iter()
+        .filter(|id| id.to_string().starts_with(text))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(AppError::TaskRef {
+            detail: format!("no task starts with {text}"),
+            not_found: true,
+        }),
+        many => Err(AppError::TaskRef {
+            detail: format!(
+                "{} tasks start with {text}; give more characters",
+                many.len()
+            ),
+            not_found: false,
+        }),
     }
 }
 

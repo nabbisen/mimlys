@@ -1,6 +1,6 @@
 //! `mimlys task show|list|resume|pause|cancel` (REQ-TASK-005, REQ-TASK-006).
 
-use crate::app::{App, AppError};
+use crate::app::{App, AppError, ReadApp};
 use crate::commands::{finish, parse_duration_ms, print_view};
 use crate::messages;
 use crate::output::Output;
@@ -9,9 +9,9 @@ use mimlys_core::clock::Clock;
 use mimlys_core::task::Extension;
 
 /// `task show`.
-pub fn show(app: &App, task: &str, out: &Output) -> Result<(), AppError> {
+pub fn show(app: &ReadApp, task: &str, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    let view = app.runtime.get_task(id)?;
+    let view = app.reader.get_task(id)?;
     for line in messages::show_lines(&view) {
         out.line(line);
     }
@@ -28,16 +28,16 @@ pub fn show(app: &App, task: &str, out: &Output) -> Result<(), AppError> {
 }
 
 /// `task list`.
-pub fn list(app: &App, out: &Output) -> Result<(), AppError> {
-    let tasks = app.runtime.list_tasks()?;
+pub fn list(app: &ReadApp, out: &Output) -> Result<(), AppError> {
+    let tasks = app.reader.list_tasks()?;
     if !tasks.is_empty() {
         out.line(messages::LIST_HEADER);
     }
     let mut rows = Vec::new();
     for t in &tasks {
-        let snapshots = app.runtime.persistence().load_snapshots(t.task_id)?;
-        let promotions = app.runtime.persistence().load_promotions(t.task_id)?;
-        let footprint = app.runtime.footprint(t.task_id, &snapshots, &promotions)?;
+        let snapshots = app.reader.persistence().load_snapshots(t.task_id)?;
+        let promotions = app.reader.persistence().load_promotions(t.task_id)?;
+        let footprint = app.reader.footprint(t.task_id, &snapshots, &promotions)?;
         rows.push(serde_json::json!({
             "task_id": t.task_id, "goal": t.goal, "state": t.state, "created_at": t.created_at, "updated_at": t.updated_at,
             "footprint": footprint,

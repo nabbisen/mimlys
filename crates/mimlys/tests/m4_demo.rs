@@ -322,8 +322,14 @@ fn repairs_the_defect(native: bool) {
         Value::Null,
         "runtime.started has no task"
     );
+    // REQ-PERS-013: one command wrote (`run`); `status`, `task show`, `events`
+    // and `metrics` only read, and a reader records no `runtime.started`.
     let (_, all) = env.json(&["metrics"]);
-    assert!(all["events_by_name"]["runtime.started"].as_u64().unwrap() >= 2);
+    assert_eq!(
+        all["events_by_name"]["runtime.started"].as_u64().unwrap(),
+        1,
+        "{all}"
+    );
 }
 
 /// External design §15.4: every call is answered by the next message with the

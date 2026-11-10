@@ -13,7 +13,7 @@ use mimlys_core::hash::Hash;
 use mimlys_core::ids::{EventId, IdSource, TaskId};
 use mimlys_core::policy::Recovery;
 use mimlys_core::recovery::plan_recovery;
-use mimlys_core::spi::{Persistence, PersistenceError};
+use mimlys_core::spi::{Persistence, PersistenceError, PersistenceRead};
 use mimlys_core::task::{HaltReason, Task, TaskInput, TaskState, WaitKind};
 
 /// What recovery did to one task.
