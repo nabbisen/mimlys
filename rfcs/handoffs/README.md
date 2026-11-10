@@ -44,6 +44,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 |---|---|---|---|
 | 1 | [009b Four advisories against locked dependencies](./009b-dependency-advisories/implementation-handoff.md) | RFC 009, RFC 004 | — |
 | 2 | [012 Decisions as native tool calls](./012-decisions-as-native-tool-calls/implementation-handoff.md) | [RFC 012](../accepted/012-decisions-as-native-tool-calls.md) | 007b, 008b, 009b |
+| 3 | [011i The sweeper's stream test needs a margin](./011i-sweeper-test-margin/implementation-handoff.md) | RFC 011 | 011c |
 
 ## Milestone M5
 
