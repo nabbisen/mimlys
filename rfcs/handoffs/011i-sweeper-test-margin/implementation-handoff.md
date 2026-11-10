@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 011](../../done/011-confinement-backends.md) (Amendment 2, implementation decisions, point 6: the sweeper) · **Specification.** REQ-CONF-009, REQ-TEST-013 · **Found.** `main`'s CI on `11d3748` (run `42801724567`): only the job `macOS x86_64 under Rosetta` failed, in `crates/mimlys/tests/sweeper.rs:151`, `req_conf_009_sweeper_has_its_own_group_and_holds_no_stream`: "end of file on the owner's output came with the owner, not with the sweeper (2.004350042s)".
 
+## Status (2026-11-10): merged
+
+On `main` (`41d4e03`; CI `42806070020`, 9 of 9; 20 of 20 runs under Rosetta). The three sweeper tests decide by process state, and the durations they hold are far longer than anything they wait for. The same pass over the other test files is a 0.10 hygiene item (ROADMAP). The throwaway branch `011i-throwaway-rosetta-20` is the owner's to delete. Nothing is open here.
+
 ## 1. Cause (the architect's reading; confirm it)
 
 The test tells the two cases apart by time: the sweeper sleeps 3 s, and end of file must come within 2 s of the group kill. Under Rosetta, a cold, translated reader thread can take two seconds on its own. It measured 2.004 s, still a second before the sweeper's end, so the property held and the margin did not. Nothing in the product changed between this run and the last green one.
