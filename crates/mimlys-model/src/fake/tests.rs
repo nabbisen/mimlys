@@ -7,11 +7,15 @@ fn request() -> GenerateRequest {
     GenerateRequest {
         messages: vec![Message {
             role: Role::System,
+            call: None,
+            call_id: None,
             content: "s".into(),
         }],
         schema_version: 1,
         max_bytes: 1024,
         deadline_ms: 1000,
+        transport: Default::default(),
+        functions: vec![],
     }
 }
 

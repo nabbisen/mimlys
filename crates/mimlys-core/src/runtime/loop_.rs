@@ -23,6 +23,7 @@ use crate::ids::{ActionId, ApprovalId, ExecutionId, ObservationId, QuestionId, S
 use crate::limits::{
     LIM_A1_EXPIRY_MS, LIM_D1_DECISION_BYTES, LIM_M1_REQUEST_MS, LIM_M3_BACKEND_RETRIES,
 };
+use crate::native::{self, DecisionTransport};
 use crate::observation::{Observation, ObservationStatus, Verdict};
 use crate::panic_text::bounded_message;
 use crate::path::CaseMode;
@@ -30,7 +31,7 @@ use crate::policy::Profile;
 use crate::question::Question;
 use crate::rejection::RejectionCode;
 use crate::snapshot::{SnapshotReason, SnapshotRecord};
-use crate::spi::{BackendError, ExecutionContext, GenerateRequest, ToolProvider};
+use crate::spi::{BackendError, Cancellation, ExecutionContext, GenerateRequest, ToolProvider};
 use crate::step::StepMeasures;
 use crate::step::{ActionOutcome, Step, StepOutcome, StepPhase, StepResult};
 use crate::task::{
@@ -51,6 +52,15 @@ pub struct StepResultView {
     pub outcome: StepOutcome,
     /// The task's state afterwards.
     pub state: TaskState,
+}
+
+/// What one decision request produced: the backend's answer, the measures,
+/// and how the decision arrived (REQ-MDL-009).
+struct Decided {
+    result: Result<Vec<u8>, BackendError>,
+    measures: StepMeasures,
+    transport: DecisionTransport,
+    text_chars: Option<u64>,
 }
 
 /// What one step runs under: the grants, the visible tools and the policy
@@ -279,6 +289,35 @@ impl Runtime {
         Ok(())
     }
 
+    /// The decision transport in force (REQ-MDL-009), asked of the backend
+    /// before every decision, with the same containment and LIM-M3 retries as
+    /// the request itself. A configured `tool_calls` that the engine refuses
+    /// comes back as `Unavailable`; the step then halts `backend_unavailable`.
+    async fn resolve_transport(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<DecisionTransport, BackendError> {
+        let mut attempt = 0;
+        loop {
+            let call = contained(
+                || self.deps.backend.decision_transport(cancel.clone()),
+                |panicked| self.log_contained_panic("model_backend", panicked),
+            );
+            match call.await {
+                Err(panicked) => {
+                    self.log_contained_panic("model_backend", &panicked);
+                    return Err(BackendError::Unavailable {
+                        detail: "adapter_panic".into(),
+                    });
+                }
+                Ok(Err(BackendError::Unavailable { .. })) if attempt < LIM_M3_BACKEND_RETRIES => {
+                    attempt += 1
+                }
+                Ok(other) => return other,
+            }
+        }
+    }
+
     /// The model request with LIM-M3 retries of an identical request
     /// (REQ-MDL-003), with the context's and the model's measures (REQ-CTX-010).
     async fn decide(
@@ -286,8 +325,49 @@ impl Runtime {
         task: &Task,
         env: &StepEnv,
         now: Instant,
-    ) -> Result<(Result<Vec<u8>, BackendError>, StepMeasures), RuntimeError> {
+    ) -> Result<Decided, RuntimeError> {
         let persistence = &self.deps.persistence;
+        let cancel = self.cancellation(task.task_id);
+        let transport = match self.resolve_transport(&cancel).await {
+            Ok(transport) => transport,
+            Err(error) => {
+                return Ok(Decided {
+                    result: Err(error),
+                    measures: StepMeasures::default(),
+                    transport: DecisionTransport::Envelope,
+                    text_chars: None,
+                });
+            }
+        };
+        // The functions are a view of the pinned list (REQ-MDL-009): a tool
+        // whose function name is invalid or collides is left out here, with
+        // the reason, and named to the model like any unavailable tool.
+        let offer = match transport {
+            DecisionTransport::ToolCalls => native::offer(&env.visible),
+            DecisionTransport::Envelope => native::Offer::default(),
+        };
+        let (offered, definitions, unavailable) = match transport {
+            DecisionTransport::ToolCalls => {
+                let offered: Vec<ToolDefinition> = env
+                    .visible
+                    .iter()
+                    .filter(|t| !offer.unavailable.iter().any(|(name, _)| name == &t.name))
+                    .cloned()
+                    .collect();
+                let definitions =
+                    render_definitions(&offered).map_err(|e| RuntimeError::Denied {
+                        detail: e.to_string(),
+                    })?;
+                let mut unavailable = env.unavailable.clone();
+                unavailable.extend(offer.unavailable.iter().cloned());
+                (offered, definitions, unavailable)
+            }
+            DecisionTransport::Envelope => (
+                env.visible.clone(),
+                env.definitions.clone(),
+                env.unavailable.clone(),
+            ),
+        };
         let plan = persistence.load_plan(task.task_id)?;
         let steps = persistence.load_steps(task.task_id)?;
         let actions = persistence.load_actions(task.task_id)?;
@@ -300,8 +380,8 @@ impl Runtime {
         };
         let assembled = assemble(&ContextInputs {
             task,
-            tools: &env.visible,
-            tool_definitions: &env.definitions,
+            tools: &offered,
+            tool_definitions: &definitions,
             grants: &env.grants,
             plan: plan.as_ref(),
             steps: &steps,
@@ -310,7 +390,7 @@ impl Runtime {
             questions: &questions,
             approvals: &approvals,
             history: history.as_ref(),
-            unavailable: &env.unavailable,
+            unavailable: &unavailable,
             budget: self.deps.context_chars,
             now,
         });
@@ -333,8 +413,9 @@ impl Runtime {
             schema_version: DECISION_SCHEMA_VERSION,
             max_bytes: LIM_D1_DECISION_BYTES,
             deadline_ms: LIM_M1_REQUEST_MS.min(task.remaining_ms(now).max(1)),
+            transport,
+            functions: offer.functions,
         };
-        let cancel = self.cancellation(task.task_id);
         let started = self.deps.clock.now();
         let mut attempt = 0;
         let result = loop {
@@ -368,7 +449,22 @@ impl Runtime {
                 }
             };
         }
-        Ok((result, measures))
+        let text_chars = match result {
+            Ok(_) => match contained_call(|| self.deps.backend.last_text_chars()) {
+                Ok(chars) => chars,
+                Err(panicked) => {
+                    self.log_contained_panic("model_backend", &panicked);
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+        Ok(Decided {
+            result,
+            measures,
+            transport,
+            text_chars,
+        })
     }
 
     /// Logs that a panic in an adapter was contained (REQ-SEC-011). The
@@ -429,7 +525,12 @@ impl Runtime {
         )?;
 
         step.phase = StepPhase::Decide;
-        let (decided, measures) = self.decide(&task, env, now).await?;
+        let Decided {
+            result: decided,
+            measures,
+            transport,
+            text_chars,
+        } = self.decide(&task, env, now).await?;
         step.measures = Some(measures);
         let raw = match decided {
             Ok(bytes) => bytes,
@@ -458,7 +559,11 @@ impl Runtime {
                 Some(task.task_id),
                 Some(step.step_id),
                 None,
-                Event::DecisionReceived { hash },
+                Event::DecisionReceived {
+                    hash,
+                    transport,
+                    text_chars,
+                },
             )
         });
         match outcome {
@@ -518,6 +623,8 @@ impl Runtime {
                         Some(action.action_id),
                         Event::DecisionReceived {
                             hash: authorized.decision_hash().clone(),
+                            transport,
+                            text_chars,
                         },
                     ),
                 )?; // 2
@@ -917,6 +1024,9 @@ impl Runtime {
                 Some(action.action_id),
                 Event::DecisionReceived {
                     hash: authorized.decision_hash().clone(),
+                    // The runtime's own check, not a model's decision: the envelope's form.
+                    transport: DecisionTransport::Envelope,
+                    text_chars: None,
                 },
             ),
         )?;

@@ -177,6 +177,7 @@ fn serialize_for_prefix(messages: &[Message]) -> String {
             Role::System => "system",
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::Tool => "tool",
         });
         out.push('\n');
         out.push_str(&m.content);

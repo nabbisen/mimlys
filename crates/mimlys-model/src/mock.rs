@@ -1,7 +1,10 @@
 //! A scripted OpenAI-compatible server on a loopback port, for tests only
 //! (feature `mock-server`). It speaks just enough HTTP/1.1 for one request
 //! per connection, records every request, and answers `GET /models` and
-//! `POST /chat/completions` from a script.
+//! `POST /chat/completions` from a script. A request carrying `tools` is
+//! answered as an engine would: refused (the default, as llama.cpp without
+//! jinja does), or accepted, in which case a scripted decision is returned as
+//! one structured call (RFC 012).
 
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -52,6 +55,52 @@ pub enum Reply {
     Slow(u64, Box<Reply>),
     /// Drop the connection without answering.
     Close,
+    /// A reply with structured `tool_calls`, as `(name, arguments text)`
+    /// pairs, and text beside them when given. For a request that carries
+    /// `tools`; sent as is, so a malformed shape can be scripted.
+    Calls {
+        /// The message's text, when any.
+        text: Option<String>,
+        /// The calls: function name and `arguments` string.
+        calls: Vec<(String, String)>,
+        /// Whether `arguments` is sent as a JSON object instead of a string.
+        arguments_as_object: bool,
+    },
+}
+
+impl Reply {
+    /// One structured call of `name` with `arguments`.
+    pub fn call(name: &str, arguments: &Value) -> Self {
+        Reply::Calls {
+            text: None,
+            calls: vec![(name.to_owned(), arguments.to_string())],
+            arguments_as_object: false,
+        }
+    }
+
+    /// One structured call with `text` beside it.
+    pub fn call_with_text(text: &str, name: &str, arguments: &Value) -> Self {
+        Reply::Calls {
+            text: Some(text.to_owned()),
+            calls: vec![(name.to_owned(), arguments.to_string())],
+            arguments_as_object: false,
+        }
+    }
+}
+
+/// How the server answers a request that carries `tools`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolsSupport {
+    /// Accepted: the probe gets a completion, a decision request a structured call.
+    Accept,
+    /// Refused with this status and message (llama.cpp without jinja: 500,
+    /// `tools param requires --jinja flag`).
+    Refuse {
+        /// HTTP status.
+        status: u16,
+        /// The error message in the body.
+        message: String,
+    },
 }
 
 /// The server's settings.
@@ -65,6 +114,13 @@ pub struct MockConfig {
     pub usage: UsageStyle,
     /// The bearer token expected, when any (a mismatch is 401).
     pub expect_bearer: Option<String>,
+    /// How a request with `tools` is answered; the default refuses, like an
+    /// engine without function calling, so that `auto` resolves to `envelope`.
+    pub tools: ToolsSupport,
+    /// Refuse a request that carries `parallel_tool_calls` (HTTP 400 naming it).
+    pub refuse_parallel_tool_calls: bool,
+    /// Wait this long before answering the probe request that carries `tools`.
+    pub tools_probe_delay_ms: u64,
 }
 
 impl Default for MockConfig {
@@ -74,6 +130,12 @@ impl Default for MockConfig {
             refuse_formats: vec![],
             usage: UsageStyle::OpenAi,
             expect_bearer: None,
+            tools: ToolsSupport::Refuse {
+                status: 500,
+                message: "tools param requires --jinja flag".into(),
+            },
+            refuse_parallel_tool_calls: false,
+            tools_probe_delay_ms: 0,
         }
     }
 }
@@ -251,6 +313,35 @@ impl State {
             );
             return;
         }
+        if body_value.get("tools").is_some() {
+            match &self.config.tools {
+                ToolsSupport::Refuse { status, message } => {
+                    respond(
+                        &mut stream,
+                        *status,
+                        &json!({"error": {"message": message}}).to_string(),
+                        &[],
+                    );
+                    return;
+                }
+                ToolsSupport::Accept => {}
+            }
+            if self.config.refuse_parallel_tool_calls
+                && body_value.get("parallel_tool_calls").is_some()
+            {
+                respond(
+                    &mut stream,
+                    400,
+                    &json!({"error": {"message": "unknown parameter: parallel_tool_calls"}})
+                        .to_string(),
+                    &[],
+                );
+                return;
+            }
+            if is_probe(&body_value) && self.config.tools_probe_delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(self.config.tools_probe_delay_ms));
+            }
+        }
         if is_probe(&body_value) {
             respond(
                 &mut stream,
@@ -275,6 +366,47 @@ impl State {
 
     fn reply(&self, stream: &mut TcpStream, reply: Reply, request: &Value) {
         match reply {
+            Reply::Decision(value) if request.get("tools").is_some() => {
+                let (name, arguments) = decision_as_call(&value);
+                self.reply(
+                    stream,
+                    Reply::Calls {
+                        text: None,
+                        calls: vec![(name, arguments.to_string())],
+                        arguments_as_object: false,
+                    },
+                    request,
+                );
+            }
+            Reply::Calls {
+                text,
+                calls,
+                arguments_as_object,
+            } => {
+                let calls: Vec<Value> = calls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, arguments))| {
+                        let arguments = if arguments_as_object {
+                            serde_json::from_str(arguments).unwrap_or(Value::Null)
+                        } else {
+                            Value::String(arguments.clone())
+                        };
+                        json!({
+                            "id": format!("call_{i}"),
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        })
+                    })
+                    .collect();
+                let mut value = self.completion(text.as_deref().unwrap_or(""), request);
+                value["choices"][0]["message"]["tool_calls"] = Value::Array(calls);
+                value["choices"][0]["finish_reason"] = json!("tool_calls");
+                if text.is_none() {
+                    value["choices"][0]["message"]["content"] = Value::Null;
+                }
+                respond(stream, 200, &value.to_string(), &[]);
+            }
             Reply::Decision(value) => {
                 let content = serde_json::to_string(&value).expect("serializes");
                 respond(
@@ -308,16 +440,28 @@ impl State {
     }
 
     fn completion(&self, content: &str, request: &Value) -> Value {
-        let prompt_chars: usize = request
+        let message_chars: usize = request
             .get("messages")
             .and_then(Value::as_array)
             .map(|ms| {
                 ms.iter()
-                    .filter_map(|m| m.get("content").and_then(Value::as_str))
-                    .map(|c| c.chars().count())
+                    .map(|m| {
+                        let content = m
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .map_or(0, |c| c.chars().count());
+                        let calls = m
+                            .get("tool_calls")
+                            .map_or(0, |c| c.to_string().chars().count());
+                        content + calls
+                    })
                     .sum()
             })
             .unwrap_or(0);
+        let tools_chars = request
+            .get("tools")
+            .map_or(0, |t| t.to_string().chars().count());
+        let prompt_chars = message_chars + tools_chars;
         let prompt_tokens = prompt_chars.div_ceil(4) as u64;
         let completion_tokens = content.chars().count().div_ceil(4) as u64;
         let cached = prompt_tokens / 2;
@@ -351,6 +495,31 @@ impl State {
         }
         value
     }
+}
+
+/// A scripted decision as the structured call a model would make: the tool's
+/// name with `.` written `__` and its arguments, or the reserved function
+/// named like the decision with the decision's one field.
+fn decision_as_call(decision: &Value) -> (String, Value) {
+    let kind = decision
+        .get("decision")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if kind == "act" {
+        let tool = decision
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return (
+            tool.replace('.', "__"),
+            decision.get("arguments").cloned().unwrap_or(json!({})),
+        );
+    }
+    let mut arguments = decision.clone();
+    if let Some(object) = arguments.as_object_mut() {
+        object.remove("decision");
+    }
+    (kind.to_owned(), arguments)
 }
 
 /// A parsed request: the request line, the headers and the body.

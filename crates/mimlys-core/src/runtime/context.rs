@@ -152,6 +152,8 @@ pub fn assemble(inputs: &ContextInputs<'_>) -> Assembled {
             .collect();
         request.push(Message {
             role: Role::User,
+            call: None,
+            call_id: None,
             content: write_segment(
                 SegmentLabel::Feedback,
                 &[("kind", "tool_unavailable")],
@@ -161,6 +163,8 @@ pub fn assemble(inputs: &ContextInputs<'_>) -> Assembled {
     }
     request.push(Message {
         role: Role::User,
+        call: None,
+        call_id: None,
         content: write_segment(
             SegmentLabel::Feedback,
             &[("kind", "decision_request")],
@@ -186,6 +190,8 @@ pub fn assemble(inputs: &ContextInputs<'_>) -> Assembled {
         if !summaries.is_empty() || dropped > 0 {
             messages.push(Message {
                 role: Role::User,
+                call: None,
+                call_id: None,
                 content: write_segment(
                     SegmentLabel::Feedback,
                     &[
@@ -266,10 +272,14 @@ fn stable_messages(inputs: &ContextInputs<'_>) -> Vec<Message> {
     system.push_str(&capability_summary(inputs.tools, inputs.grants, inputs.now));
     let mut messages = vec![Message {
         role: Role::System,
+        call: None,
+        call_id: None,
         content: system,
     }];
     messages.push(Message {
         role: Role::User,
+        call: None,
+        call_id: None,
         content: write_segment(
             SegmentLabel::User,
             &[("kind", "goal")],
@@ -279,6 +289,8 @@ fn stable_messages(inputs: &ContextInputs<'_>) -> Vec<Message> {
     if let Some(history) = inputs.history {
         messages.push(Message {
             role: Role::User,
+            call: None,
+            call_id: None,
             content: write_segment(
                 SegmentLabel::History,
                 &[
@@ -292,6 +304,8 @@ fn stable_messages(inputs: &ContextInputs<'_>) -> Vec<Message> {
     if let Some(plan) = inputs.plan {
         messages.push(Message {
             role: Role::Assistant,
+            call: None,
+            call_id: None,
             content: write_segment(
                 SegmentLabel::Plan,
                 &[("version", &plan.version.to_string())],
@@ -373,6 +387,8 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
     if let Some(action) = e.action {
         messages.push(Message {
             role: Role::Assistant,
+            call: None,
+            call_id: None,
             content: serde_json::to_string(&json!({
                 "decision": "act",
                 "tool": action.content().tool(),
@@ -383,16 +399,22 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
         if let Some(observation) = e.observation {
             messages.push(Message {
                 role: Role::User,
+                call: None,
+                call_id: None,
                 content: observation_segment_with(observation, collapse),
             });
         } else if let Some(code) = e.step.rejection {
             messages.push(Message {
                 role: Role::User,
+                call: None,
+                call_id: None,
                 content: feedback_segment(code),
             });
             if let Some(note) = e.note {
                 messages.push(Message {
                     role: Role::User,
+                    call: None,
+                    call_id: None,
                     content: write_segment(
                         SegmentLabel::User,
                         &[("kind", "rejection_note")],
@@ -404,12 +426,16 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
     } else if let Some(code) = e.step.rejection {
         messages.push(Message {
             role: Role::User,
+            call: None,
+            call_id: None,
             content: feedback_segment(code),
         });
     }
     if let Some(question) = e.question {
         messages.push(Message {
             role: Role::Assistant,
+            call: None,
+            call_id: None,
             content: serde_json::to_string(
                 &json!({"decision": "ask_user", "question": question.text}),
             )
@@ -418,6 +444,8 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
         if let Some(answer) = &question.answer {
             messages.push(Message {
                 role: Role::User,
+                call: None,
+                call_id: None,
                 content: write_segment(SegmentLabel::User, &[("kind", "answer")], &json!(answer)),
             });
         }
