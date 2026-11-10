@@ -224,7 +224,28 @@ pub fn status_lines(
             (true, Some(false)) => "reachable, model not listed".to_owned(),
             (true, _) => "reachable".to_owned(),
         };
-        backend_line.push_str(&format!("; {reach}; structured output {mode}"));
+        backend_line.push_str(&format!("; {reach}"));
+        // The transport in force, with the engine's reason when `auto` chose the envelope
+        // (REQ-MDL-009); structured output belongs to the envelope transport only.
+        let transport = match p.decision_transport {
+            Some(t) => t.as_str(),
+            None => "unresolved",
+        };
+        backend_line.push_str(&format!("; decision transport {transport}"));
+        if let Some(reason) = &p.transport_reason {
+            backend_line.push_str(&format!(" ({reason})"));
+        }
+        match p.decision_transport {
+            Some(mimlys_core::native::DecisionTransport::ToolCalls) => {
+                if p.parallel_tool_calls == Some(false) {
+                    backend_line.push_str("; parallel_tool_calls not accepted");
+                }
+            }
+            Some(mimlys_core::native::DecisionTransport::Envelope) => {
+                backend_line.push_str(&format!("; structured output {mode}"));
+            }
+            None => {}
+        }
         if let Some(d) = &p.detail {
             backend_line.push_str(&format!(" ({d})"));
         }
@@ -408,6 +429,13 @@ pub fn ceiling_undeclared_warning(tool: &str) -> String {
 /// `auto` structured output ended at plain text (RFC 008 §2).
 pub fn structured_output_none() -> &'static str {
     "structured output: none (the server refused json_schema and json_object; decisions are parsed strictly all the same)"
+}
+/// `decision_transport = "tool_calls"` is configured and the engine refuses `tools`
+/// (REQ-MDL-009): the backend is unavailable; there is no fallback.
+pub fn tool_calls_refused(reason: &str) -> String {
+    format!(
+        "decision transport: tool_calls is configured and the engine refuses it ({reason}); the task will halt backend_unavailable. Set backend.decision_transport = \"auto\" or \"envelope\", or fix the engine"
+    )
 }
 /// Status: a clause that is unavailable.
 pub fn status_unavailable(reason: &str) -> String {

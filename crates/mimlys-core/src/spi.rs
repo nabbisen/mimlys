@@ -12,6 +12,7 @@ use crate::approval::ApprovalRequest;
 use crate::event::EventRecord;
 use crate::grant::Grant;
 use crate::ids::{ActionId, BlobId, PromotionId, SnapshotId, TaskId};
+pub use crate::native::DecisionTransport;
 use crate::observation::Notice;
 use crate::observation::Observation;
 use crate::path::CaseMode;
@@ -65,6 +66,20 @@ pub enum Role {
     User,
     /// The model's earlier output.
     Assistant,
+    /// The answer to an earlier call of the model (the `tool_calls` transport).
+    Tool,
+}
+
+/// A structured call the model made, carried by an `assistant` message in
+/// the `tool_calls` transport (external design §15.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// The call's id; the `tool` message that answers it names the same id.
+    pub id: String,
+    /// The function's name.
+    pub name: String,
+    /// The arguments as one JSON object, in text.
+    pub arguments: String,
 }
 
 /// One message of a model request.
@@ -74,6 +89,44 @@ pub struct Message {
     pub role: Role,
     /// Content.
     pub content: String,
+    /// The call an `assistant` message carries (`tool_calls` transport only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<ToolCall>,
+    /// The id of the call a `tool` message answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+}
+
+impl Message {
+    /// A message of plain text, as the envelope transport sends every message.
+    pub fn text(role: Role, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            call: None,
+            call_id: None,
+        }
+    }
+
+    /// An `assistant` message carrying one call and no text.
+    pub fn call(call: ToolCall) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: String::new(),
+            call: Some(call),
+            call_id: None,
+        }
+    }
+
+    /// The `tool` message answering the call `id`.
+    pub fn answer(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            call: None,
+            call_id: Some(id.into()),
+        }
+    }
 }
 
 /// A request for one decision (REQ-MDL-001).
@@ -87,6 +140,12 @@ pub struct GenerateRequest {
     pub max_bytes: usize,
     /// Deadline in milliseconds.
     pub deadline_ms: i64,
+    /// How the decision is asked for and read (REQ-MDL-009).
+    #[serde(default)]
+    pub transport: DecisionTransport,
+    /// The functions offered, in the `tool_calls` transport; empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<crate::native::Function>,
 }
 
 /// Why a backend could not answer.
@@ -150,6 +209,26 @@ pub trait ModelBackend: Send + Sync {
 
     /// Usage of the last request, when reported.
     fn last_usage(&self) -> Option<Usage> {
+        None
+    }
+
+    /// The decision transport in force (REQ-MDL-009): the runtime assembles
+    /// the context for it before every decision. A backend that offers one
+    /// transport only keeps the default. `Err` means the transport could not
+    /// be settled now (a configured `tool_calls` the engine refuses, an
+    /// engine not answering); the step then halts `backend_unavailable`.
+    fn decision_transport<'a>(
+        &'a self,
+        cancel: Cancellation,
+    ) -> BoxFuture<'a, Result<DecisionTransport, BackendError>> {
+        let _ = cancel;
+        Box::pin(async { Ok(DecisionTransport::Envelope) })
+    }
+
+    /// The characters of text the last reply carried beside its one structured
+    /// call, when it had both: not part of the decision, recorded in
+    /// `decision.received` and nowhere else (REQ-DEC-003).
+    fn last_text_chars(&self) -> Option<u64> {
         None
     }
 }
@@ -765,6 +844,10 @@ pub mod fake {
         responses: Mutex<VecDeque<Result<Vec<u8>, BackendError>>>,
         requests: Mutex<Vec<GenerateRequest>>,
         remote: bool,
+        transport: Mutex<DecisionTransport>,
+        transport_error: Mutex<Option<BackendError>>,
+        text_chars: Mutex<VecDeque<Option<u64>>>,
+        last_text_chars: Mutex<Option<u64>>,
     }
 
     impl ScriptedBackend {
@@ -781,7 +864,31 @@ pub mod fake {
                 ),
                 requests: Mutex::new(Vec::new()),
                 remote: false,
+                transport: Mutex::new(DecisionTransport::Envelope),
+                transport_error: Mutex::new(None),
+                text_chars: Mutex::new(VecDeque::new()),
+                last_text_chars: Mutex::new(None),
             }
+        }
+
+        /// The same backend in the `tool_calls` transport: the scripted
+        /// decisions stand for the mapped envelope of a structured call
+        /// (REQ-MDL-009), and the runtime assembles native turns for it.
+        pub fn tool_calls(self) -> Self {
+            *self.transport.lock().expect("fake lock") = DecisionTransport::ToolCalls;
+            self
+        }
+
+        /// From now on the transport cannot be settled: the engine refuses a
+        /// configured `tool_calls`, or does not answer (REQ-MDL-009).
+        pub fn fail_transport(&self, error: BackendError) {
+            *self.transport_error.lock().expect("fake lock") = Some(error);
+        }
+
+        /// Queues the text length reported beside the next reply's call
+        /// (`None` for a reply without text), one entry per reply.
+        pub fn push_text_chars(&self, chars: Option<u64>) {
+            self.text_chars.lock().expect("fake lock").push_back(chars);
         }
 
         /// The same backend declaring itself `remote` (REQ-SEC-010 tests).
@@ -843,12 +950,34 @@ pub mod fake {
                     panic!("{message}");
                 }
                 self.requests.lock().expect("fake lock").push(request);
+                *self.last_text_chars.lock().expect("fake lock") = self
+                    .text_chars
+                    .lock()
+                    .expect("fake lock")
+                    .pop_front()
+                    .flatten();
                 self.responses
                     .lock()
                     .expect("fake lock")
                     .pop_front()
                     .unwrap_or(Err(BackendError::ScriptExhausted))
             })
+        }
+
+        fn decision_transport<'a>(
+            &'a self,
+            _cancel: Cancellation,
+        ) -> BoxFuture<'a, Result<DecisionTransport, BackendError>> {
+            Box::pin(async move {
+                if let Some(error) = self.transport_error.lock().expect("fake lock").clone() {
+                    return Err(error);
+                }
+                Ok(*self.transport.lock().expect("fake lock"))
+            })
+        }
+
+        fn last_text_chars(&self) -> Option<u64> {
+            *self.last_text_chars.lock().expect("fake lock")
         }
 
         fn locality(&self) -> Locality {

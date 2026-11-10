@@ -74,6 +74,14 @@ impl Decision {
 
 /// Parses the model's bytes strictly (REQ-DEC-003).
 pub fn parse_strict(bytes: &[u8]) -> Result<Decision, Rejection> {
+    decode(parse_strict_object(bytes)?)
+}
+
+/// Parses bytes that must be exactly one JSON object, within LIM-D1, with no
+/// duplicate keys and nothing before or after it (REQ-DEC-003). The first
+/// half of [`parse_strict`]; the `tool_calls` transport applies it to a
+/// call's `arguments` string (REQ-MDL-009).
+pub fn parse_strict_object(bytes: &[u8]) -> Result<Map<String, Value>, Rejection> {
     if bytes.len() > LIM_D1_DECISION_BYTES {
         return Err(Rejection::malformed(
             MalformedProblem::TooLarge,
@@ -107,7 +115,7 @@ pub fn parse_strict(bytes: &[u8]) -> Result<Decision, Rejection> {
     let Value::Object(object) = first.0 else {
         return Err(Rejection::malformed(MalformedProblem::NotObject, None));
     };
-    decode(object)
+    Ok(object)
 }
 
 fn decode(object: Map<String, Value>) -> Result<Decision, Rejection> {

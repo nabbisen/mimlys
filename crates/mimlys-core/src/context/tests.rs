@@ -112,10 +112,7 @@ fn req_ctx_007_redactor() {
 /// REQ-CTX-010: the prefix measure counts the shared serialized head.
 #[test]
 fn req_ctx_010_common_prefix() {
-    let m = |role: Role, s: &str| Message {
-        role,
-        content: s.to_owned(),
-    };
+    let m = |role: Role, s: &str| Message::text(role, s);
     let a = vec![
         m(Role::System, "sys"),
         m(Role::User, "goal"),

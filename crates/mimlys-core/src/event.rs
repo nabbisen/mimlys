@@ -5,6 +5,7 @@
 use crate::clock::Instant;
 use crate::hash::Hash;
 use crate::ids::{ActionId, ApprovalId, EventId, GrantId, QuestionId, SnapshotId, StepId, TaskId};
+use crate::native::DecisionTransport;
 use crate::rejection::RejectionCode;
 use crate::step::StepOutcome;
 use crate::task::HaltReason;
@@ -105,8 +106,16 @@ pub enum Event {
     /// A decision was received.
     #[serde(rename = "decision.received")]
     DecisionReceived {
-        /// Its hash.
+        /// Its hash: the canonical hash of the decision envelope, which in the
+        /// `tool_calls` transport is the envelope the call was mapped onto.
         hash: Hash,
+        /// How the decision arrived (from 0.9; `envelope` in records without it).
+        #[serde(default)]
+        transport: DecisionTransport,
+        /// Characters of text beside a structured call: not part of the
+        /// decision, not parsed, not put into the context (from 0.9).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_chars: Option<u64>,
     },
     /// A decision was rejected.
     #[serde(rename = "decision.rejected")]

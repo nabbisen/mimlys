@@ -510,6 +510,19 @@ pub enum StructuredOutput {
     None,
 }
 
+/// How the model's decision is asked for and read (REQ-MDL-009; RFC 012).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionTransport {
+    /// `tool_calls` when the engine accepts `tools`, else `envelope`; `status` says which and why.
+    #[default]
+    Auto,
+    /// The model's native function calls; an engine that refuses `tools` is `backend_unavailable`.
+    ToolCalls,
+    /// The decision envelope written as text; no request carries `tools`.
+    Envelope,
+}
+
 /// `[backend]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -526,7 +539,10 @@ pub struct BackendSection {
     /// Where the backend runs; `remote` needs `policy.remote_backend_allowed`.
     #[serde(default = "default_locality")]
     pub locality: Locality,
-    /// Structured-output mode.
+    /// The decision transport (0.9).
+    #[serde(default)]
+    pub decision_transport: DecisionTransport,
+    /// Structured-output mode; the `envelope` transport only.
     #[serde(default)]
     pub structured_output: StructuredOutput,
     /// Deadline of one model request (LIM-M1).
@@ -571,6 +587,7 @@ impl Default for BackendSection {
             url: None,
             model: None,
             locality: Locality::Local,
+            decision_transport: DecisionTransport::Auto,
             structured_output: StructuredOutput::Auto,
             timeout_ms: LIM_M1_REQUEST_MS,
             max_tokens: LIM_M2_MAX_TOKENS,
@@ -1146,6 +1163,12 @@ impl Config {
                     return Err(ConfigError::new(
                         "backend.kind",
                         "`fake` takes no url, model or api_key; use `script` for a script file",
+                    ));
+                }
+                if b.decision_transport == DecisionTransport::ToolCalls {
+                    return Err(ConfigError::new(
+                        "backend.decision_transport",
+                        "the `fake` backend answers from a script and has no `tool_calls` transport",
                     ));
                 }
             }

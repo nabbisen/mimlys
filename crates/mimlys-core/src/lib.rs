@@ -32,6 +32,7 @@ pub mod hooks;
 pub mod host_tool;
 pub mod ids;
 pub mod limits;
+pub mod native;
 pub mod observation;
 pub mod panic_text;
 pub mod path;
