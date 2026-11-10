@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 mod native;
+mod native_context;
 
 fn tool(name: &str, kind: EffectKind) -> ToolDefinition {
     ToolDefinition {
