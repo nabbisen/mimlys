@@ -673,6 +673,78 @@ pub fn delete_plan(
     });
     lines
 }
+/// `task prune`: nothing matched.
+pub const PRUNE_NOTHING: &str = "no terminal task matches: nothing to prune";
+/// `task prune`: the confirmation question (asked once).
+pub const PRUNE_CONFIRM: &str = "Delete these tasks?";
+/// `task prune`: not confirmed.
+pub const PRUNE_NOT_CONFIRMED: &str = "nothing deleted; confirm with --yes";
+/// `task prune`: the plan, before anything goes (REQ-WS-014).
+pub fn prune_plan(found: &[crate::commands::prune::Candidate], audit: bool) -> Vec<String> {
+    let todo: Vec<_> = found.iter().filter(|c| c.kept.is_none()).collect();
+    let mut lines = vec![format!(
+        "Pruning deletes {} terminal task(s): each one's workspace, snapshots and blobs",
+        todo.len()
+    )];
+    for c in found {
+        lines.push(match c.kept {
+            None => format!(
+                "  {}  {:<10}  {:>5}  {:>10}",
+                c.task_id,
+                c.state,
+                crate::commands::prune::age_text(c.age_seconds),
+                crate::commands::prune::size_text(c.bytes())
+            ),
+            Some(why) => format!(
+                "  {}  {:<10}  {:>5}  kept: {why} (`mimlys rollback <task> --promotion <id>` reverses it; `mimlys task delete <task>` deletes anyway)",
+                c.task_id,
+                c.state,
+                crate::commands::prune::age_text(c.age_seconds)
+            ),
+        });
+    }
+    let total: u64 = todo.iter().map(|c| c.bytes()).sum();
+    lines.push(format!(
+        "total: {} task(s), {} ({total} bytes)",
+        todo.len(),
+        crate::commands::prune::size_text(total)
+    ));
+    lines.push(if audit {
+        "audit: the tasks' events and records go too (--audit)".into()
+    } else {
+        "audit: kept (add --audit to remove the events and records)".into()
+    });
+    lines
+}
+/// `task prune`: one task deleted.
+pub fn prune_deleted(task_id: &str, f: &mimlys_core::snapshot::Footprint) -> String {
+    format!(
+        "deleted {task_id}: {} freed",
+        crate::commands::prune::size_text(
+            f.workspace_bytes + f.object_bytes_exclusive + f.blob_bytes
+        )
+    )
+}
+/// `task prune`: one task's deletion failed.
+pub fn prune_failed(task_id: &str, why: &str) -> String {
+    format!("failed  {task_id}: {why}")
+}
+/// `task prune`: all done.
+pub fn prune_done(count: usize, freed: u64) -> String {
+    format!(
+        "pruned {count} task(s), {} freed",
+        crate::commands::prune::size_text(freed)
+    )
+}
+/// `task prune`: stopped at a failure; the rest is untouched and named.
+pub fn prune_stopped(failed: &str, why: &str, untouched: &[String], deleted: usize) -> String {
+    let rest = if untouched.is_empty() {
+        "no other task was left".to_owned()
+    } else {
+        format!("not touched: {}", untouched.join(", "))
+    };
+    format!("prune stopped at {failed} ({why}) after {deleted} deleted; {rest}")
+}
 /// `task delete`: the confirmation question.
 pub const DELETE_CONFIRM: &str = "Delete?";
 /// `task delete`: not confirmed.

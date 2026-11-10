@@ -11,6 +11,7 @@ pub mod grant;
 pub mod interpreters;
 pub mod metrics;
 pub mod promote;
+pub mod prune;
 pub mod reject;
 pub mod revoke;
 pub mod rollback;
