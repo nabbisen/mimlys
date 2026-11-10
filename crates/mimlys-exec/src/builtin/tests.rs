@@ -109,6 +109,53 @@ fn req_tool_003_definitions_are_valid() {
     mimlys_core::tool::render_definitions(&defs).unwrap();
 }
 
+/// REQ-MDL-009 (RFC 012): the golden functions of every built-in tool (the
+/// six file tools, `run_script`, `run_wasm`, `run_host_tool`): the same
+/// descriptors give these bytes, so a change to a tool's descriptor or to the
+/// generation is visible in review. The pinned definitions are not touched.
+#[test]
+fn req_mdl_009_golden_functions_of_every_builtin_tool() {
+    let mut defs = BuiltinTools::all_definitions();
+    defs.push(crate::tools::run_script_definition(&[
+        "javascript".to_owned(),
+        "python".to_owned(),
+    ]));
+    defs.push(crate::tools::run_wasm_definition());
+    let declaration: mimlys_core::host_tool::HostToolDeclaration = serde_json::from_value(
+        json!({"name": "cargo_test", "command": "cargo", "effect": "workspace_write", "max_args": 2}),
+    )
+    .unwrap();
+    defs.push(crate::tools::run_host_tool_definition(&[declaration]));
+    let before: Vec<String> = defs
+        .iter()
+        .map(|d| serde_json::to_string(d).unwrap())
+        .collect();
+    let offer = mimlys_core::native::offer(&defs);
+    assert!(offer.unavailable.is_empty(), "{:?}", offer.unavailable);
+    let actual = serde_json::to_string_pretty(&mimlys_core::native::tools_json(&offer.functions))
+        .unwrap()
+        + "\n";
+    assert_eq!(
+        actual,
+        include_str!("native_functions.golden.json"),
+        "the generated functions changed; review the golden file"
+    );
+    let again = serde_json::to_string_pretty(&mimlys_core::native::tools_json(
+        &mimlys_core::native::offer(&defs).functions,
+    ))
+    .unwrap()
+        + "\n";
+    assert_eq!(actual, again, "the same input, the same bytes");
+    let after: Vec<String> = defs
+        .iter()
+        .map(|d| serde_json::to_string(d).unwrap())
+        .collect();
+    assert_eq!(
+        before, after,
+        "generation leaves the definitions as they were"
+    );
+}
+
 /// REQ-TOOL-003 / ED §11: `read_file` returns content, ranges, truncation notices, and fails past the end.
 #[tokio::test]
 async fn req_tool_003_read_file() {

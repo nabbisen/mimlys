@@ -1,0 +1,370 @@
+[
+  {
+    "function": {
+      "description": "Read a text file from the workspace, from an optional start line (1-based), up to max_chars characters. Fails with line_out_of_range when start_line is past the end.",
+      "name": "read_file",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "max_chars": {
+            "description": "Maximum characters to return.",
+            "maximum": 64000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path of the file, relative to the workspace root.",
+            "type": "string"
+          },
+          "start_line": {
+            "description": "First line to return (1-based).",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Create or overwrite a text file in the workspace; missing parent directories are created.",
+      "name": "write_file",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "The whole content of the file.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path of the file, relative to the workspace root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Replace exact text in a workspace file. Fails when `find` matches a different number of times than `occurrences` (default 1; 0 means every occurrence).",
+      "name": "replace_in_file",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "find": {
+            "description": "Exact text to find.",
+            "type": "string"
+          },
+          "occurrences": {
+            "description": "Expected number of matches; 0 replaces all.",
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path of the file, relative to the workspace root.",
+            "type": "string"
+          },
+          "replace": {
+            "description": "Replacement text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "find",
+          "replace"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "List entries of a workspace directory, up to `depth` levels deep (1 to 3). Entries are files, directories or symlinks.",
+      "name": "list_dir",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "depth": {
+            "description": "Levels to descend.",
+            "maximum": 3,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Directory to list; \".\" is the workspace root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Search workspace files line by line with a regular expression; `glob` restricts the files (for example `**/*.rs`). Symbolic links and files over the size limit are skipped and counted.",
+      "name": "search_files",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "glob": {
+            "description": "Glob over relative paths.",
+            "type": "string"
+          },
+          "max_results": {
+            "description": "Maximum matches to return.",
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pattern": {
+            "description": "Regular expression.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Delete a file, or a directory with `recursive`. The workspace root cannot be deleted.",
+      "name": "delete_path",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Path to delete, relative to the workspace root.",
+            "type": "string"
+          },
+          "recursive": {
+            "description": "Required to delete a non-empty directory.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Run a script in the sandbox with one of the listed languages; the result carries termination, exit_code, stdout and stderr.",
+      "name": "run_script",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Command-line arguments.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "language": {
+            "description": "The interpreter.",
+            "enum": [
+              "javascript",
+              "python"
+            ],
+            "type": "string"
+          },
+          "mode": {
+            "description": "read_only sees the workspace; read_write may change it (default).",
+            "enum": [
+              "read_only",
+              "read_write"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "description": "The program.",
+            "type": "string"
+          },
+          "stdin": {
+            "description": "Text given on standard input.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "language",
+          "source"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Run a wasip1 module from the workspace in the sandbox; the result carries termination, exit_code, stdout and stderr.",
+      "name": "run_wasm",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Command-line arguments.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "description": "read_only sees the workspace; read_write may change it (default).",
+            "enum": [
+              "read_only",
+              "read_write"
+            ],
+            "type": "string"
+          },
+          "module": {
+            "description": "The module file.",
+            "type": "string"
+          },
+          "stdin": {
+            "description": "Text given on standard input.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Run one declared host tool under confinement in the workspace (offline); the result carries termination, exit_code, stdout and stderr.",
+      "name": "run_host_tool",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Arguments the declaration allows.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tool": {
+            "description": "The declared tool.",
+            "enum": [
+              "cargo_test"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Record your intended steps.",
+      "name": "plan",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Ask the user a question.",
+      "name": "ask_user",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "question": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "The goal is reached; give a summary.",
+      "name": "complete",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "The goal cannot be reached; give the reason.",
+      "name": "give_up",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }
+]
