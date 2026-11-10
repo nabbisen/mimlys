@@ -4,6 +4,7 @@
 **Tracks.** The M4 report §6 (run B never got past its first step); spike S2 (handoff 008b, `.git-exclude/review-requests/S2-decision-format/README.md`).
 **Touches.** `mimlys-model` (the OpenAI-compatible adapter: the request and the reply), `mimlys-core` (context assembly per transport, the fixed instructions, the budget's count), `mimlys` (configuration, `status`, the book); requirements REQ-MDL-003, REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-002, REQ-CTX-003; external design §15, §19.1, §20; limits LIM-C1.
 **Release.** 0.9.
+**Implementation decision (2026-11-10, handoff 012's review):** a function-name problem is computed at each step once the transport is known, not at pin time (the transport can change between the task's creation and a step), and both tools of a collision are unavailable; REQ-MDL-009 governs.
 **Normative text** (written 2026-11-08): REQ-MDL-009 (new); REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-003, REQ-CTX-010 (amended); external design §15.4 (new), §17, §19.1. Handoff 012.
 
 ## Summary
