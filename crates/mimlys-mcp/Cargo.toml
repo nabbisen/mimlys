@@ -14,7 +14,7 @@ repository.workspace = true
 test-server = []
 
 [dependencies]
-mimlys-core = { path = "../mimlys-core", version = "0.8.0" }
+mimlys-core = { path = "../mimlys-core", version = "0.9.0" }
 rmcp = { version = "=3.9.0", default-features = false, features = ["client", "transport-child-process"] }
 serde.workspace = true
 serde_json.workspace = true

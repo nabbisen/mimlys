@@ -14,7 +14,7 @@ repository.workspace = true
 mock-server = []
 
 [dependencies]
-mimlys-core = { path = "../mimlys-core", version = "0.8.0" }
+mimlys-core = { path = "../mimlys-core", version = "0.9.0" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
