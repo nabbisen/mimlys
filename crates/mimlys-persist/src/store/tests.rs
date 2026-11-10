@@ -189,6 +189,8 @@ fn sequence(
                     &task,
                     Event::DecisionReceived {
                         hash: hash_bytes(b"d"),
+                        transport: Default::default(),
+                        text_chars: None,
                     },
                 ),
             )
@@ -276,6 +278,8 @@ fn sequence(
                     &task,
                     Event::DecisionReceived {
                         hash: hash_bytes(b"d"),
+                        transport: Default::default(),
+                        text_chars: None,
                     },
                 ),
             )

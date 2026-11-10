@@ -19,6 +19,8 @@ use crate::tool::{Param, ParamSchema, ParamType, Provider, ResourceProfile, Tool
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod native;
+
 fn tool(name: &str, kind: EffectKind) -> ToolDefinition {
     ToolDefinition {
         name: name.into(),
@@ -88,15 +90,28 @@ impl Harness {
         secrets: Vec<(String, String)>,
         context_chars: usize,
     ) -> Self {
+        Self::with_backend_and_tools(backend, policy, secrets, context_chars, vec![])
+    }
+
+    /// As [`Harness::with_backend`], the provider offering `extra` tools beside the six built-in ones.
+    fn with_backend_and_tools(
+        backend: Arc<ScriptedBackend>,
+        policy: Policy,
+        secrets: Vec<(String, String)>,
+        context_chars: usize,
+        extra: Vec<ToolDefinition>,
+    ) -> Self {
         let persistence = Arc::new(FakePersistence::default());
-        let tools = Arc::new(FakeToolProvider::new(vec![
+        let mut definitions = vec![
             tool("read_file", EffectKind::WorkspaceRead),
             tool("write_file", EffectKind::WorkspaceWrite),
             tool("list_dir", EffectKind::WorkspaceRead),
             tool("search_files", EffectKind::WorkspaceRead),
             tool("replace_in_file", EffectKind::WorkspaceWrite),
             tool("delete_path", EffectKind::WorkspaceWrite),
-        ]));
+        ];
+        definitions.extend(extra);
+        let tools = Arc::new(FakeToolProvider::new(definitions));
         let clock = Arc::new(FakeClock::default());
         let workspaces = Arc::new(FakeWorkspaces::new(tools.clone()));
         let runtime = Runtime::new(RuntimeDeps {

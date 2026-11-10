@@ -10,7 +10,7 @@ use mimlys_core::path::PlatformRules;
 use mimlys_core::runtime::{Runtime, RuntimeDeps, RuntimeError, Session};
 use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_model::fake::FakeBackend;
-use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved};
+use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved, TransportMode};
 use mimlys_persist::recovery::{Recovered, RecoveryContext, recover_all};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -118,12 +118,20 @@ pub struct BackendProbe {
     pub reachable: bool,
     /// The configured model is listed, when the listing was readable.
     pub model_listed: Option<bool>,
-    /// The structured-output mode in force.
+    /// The structured-output mode in force; none under the `tool_calls` transport, which does not use it.
     pub structured_output: Option<Resolved>,
     /// `auto` ended below `json_schema`.
     pub fell_back: bool,
     /// A fixed-vocabulary reason when something was not as configured.
     pub detail: Option<String>,
+    /// The decision transport in force (REQ-MDL-009), once settled.
+    pub decision_transport: Option<mimlys_core::native::DecisionTransport>,
+    /// Why `auto` chose `envelope`, or why a configured `tool_calls` is refused: the engine's reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_reason: Option<String>,
+    /// Whether the engine accepts `parallel_tool_calls: false`; under `tool_calls` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 /// The running process.
@@ -494,6 +502,11 @@ impl App {
                         timeout_ms: config.backend.timeout_ms,
                         max_tokens: config.backend.max_tokens,
                         temperature: config.backend.temperature,
+                        decision_transport: match config.backend.decision_transport {
+                            crate::config::DecisionTransport::Auto => TransportMode::Auto,
+                            crate::config::DecisionTransport::ToolCalls => TransportMode::ToolCalls,
+                            crate::config::DecisionTransport::Envelope => TransportMode::Envelope,
+                        },
                         structured_output: match config.backend.structured_output {
                             crate::config::StructuredOutput::Auto => Mode::Auto,
                             crate::config::StructuredOutput::Schema => Mode::Schema,
@@ -599,6 +612,9 @@ impl App {
                     structured_output,
                     fell_back,
                     detail,
+                    decision_transport,
+                    transport_reason,
+                    parallel_tool_calls,
                 } = adapter.probe().await;
                 BackendProbe {
                     reachable,
@@ -606,6 +622,9 @@ impl App {
                     structured_output,
                     fell_back,
                     detail,
+                    decision_transport,
+                    transport_reason,
+                    parallel_tool_calls,
                 }
             }
             None => {
@@ -617,6 +636,9 @@ impl App {
                     structured_output: Some(Resolved::None),
                     fell_back: false,
                     detail: no_script.then(|| "no_script".to_owned()),
+                    decision_transport: Some(mimlys_core::native::DecisionTransport::Envelope),
+                    transport_reason: None,
+                    parallel_tool_calls: None,
                 }
             }
         };
@@ -628,8 +650,17 @@ impl App {
                 detail: "backend unusable: the server refuses json_schema; set backend.structured_output = \"none\" or \"auto\"".into(),
             });
         }
-        let notice = (probe.fell_back && probe.structured_output == Some(Resolved::None))
-            .then(|| crate::messages::structured_output_none().to_owned());
+        let notice = if probe.detail.as_deref() == Some("tool_calls_refused") {
+            Some(crate::messages::tool_calls_refused(
+                probe
+                    .transport_reason
+                    .as_deref()
+                    .unwrap_or("no reason given"),
+            ))
+        } else {
+            (probe.fell_back && probe.structured_output == Some(Resolved::None))
+                .then(|| crate::messages::structured_output_none().to_owned())
+        };
         *self.backend_probe.lock().expect("probe lock") = Some(probe);
         Ok(notice)
     }

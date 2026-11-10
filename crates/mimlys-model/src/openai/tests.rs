@@ -5,6 +5,8 @@ use crate::mock::{MockConfig, MockServer, Reply, UsageStyle};
 use mimlys_core::limits::{LIM_D1_DECISION_BYTES, LIM_M2_MAX_TOKENS};
 use serde_json::json;
 
+mod native;
+
 fn config(url: &str, mode: Mode) -> OpenAiConfig {
     OpenAiConfig {
         url: url.to_owned(),
@@ -14,6 +16,7 @@ fn config(url: &str, mode: Mode) -> OpenAiConfig {
         max_tokens: LIM_M2_MAX_TOKENS,
         temperature: 0.0,
         structured_output: mode,
+        decision_transport: TransportMode::Envelope,
         locality: Locality::Local,
     }
 }
@@ -23,20 +26,28 @@ fn request() -> GenerateRequest {
         messages: vec![
             Message {
                 role: Role::System,
+                call: None,
+                call_id: None,
                 content: "sys".into(),
             },
             Message {
                 role: Role::User,
+                call: None,
+                call_id: None,
                 content: "goal".into(),
             },
             Message {
                 role: Role::Assistant,
+                call: None,
+                call_id: None,
                 content: "{\"decision\":\"plan\",\"steps\":[]}".into(),
             },
         ],
         schema_version: 1,
         max_bytes: LIM_D1_DECISION_BYTES,
         deadline_ms: 5000,
+        transport: Default::default(),
+        functions: vec![],
     }
 }
 
@@ -117,6 +128,9 @@ fn req_mdl_004_auto_resolves_at_probe() {
             structured_output: Some(Resolved::JsonSchema),
             fell_back: false,
             detail: None,
+            decision_transport: Some(DecisionTransport::Envelope),
+            transport_reason: None,
+            parallel_tool_calls: None,
         }
     );
     assert_eq!(server.remaining(), 1, "probe completions consume no script");
