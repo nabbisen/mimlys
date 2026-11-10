@@ -47,6 +47,12 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 3 | [011i The sweeper's stream test needs a margin](./011i-sweeper-test-margin/implementation-handoff.md) | RFC 011 | 011c |
 | 4 | [012b Release candidate 0.9.0](./012b-release-0.9.0/implementation-handoff.md) | RFC 012 (complete with 0.9.0) | every 0.9 handoff |
 
+## Release 0.10
+
+| Order | Handoff | RFC | Depends on |
+|---|---|---|---|
+| 1 | [013 Operation on one machine, part one (M7a)](./013-operation-on-one-machine/implementation-handoff.md) | [RFC 013](../accepted/013-operation-on-one-machine.md) decisions 1 to 4 | — |
+
 ## Milestone M5
 
 | Order | Handoff | RFC | Depends on |

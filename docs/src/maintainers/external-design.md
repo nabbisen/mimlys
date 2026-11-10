@@ -545,6 +545,13 @@ Promotion is reversible through the backup snapshot. It is the only operation th
 
 LIM-W1 (read from the latest snapshot at the step boundary), LIM-W2, LIM-W3. `allocated → active → archived → deleted`: `archived` is the task's terminal state (nothing removed); `deleted` is the user's `task delete`, valid for a terminal task only, which removes the workspace, the snapshots, the objects no remaining manifest references (reference counts in the same transactions as the rows), the blobs and the promotion backups, after showing what will go; the audit stays unless `--audit`. Nothing expires; `task list` and `status` show the footprint (RFC 006).
 
+
+**Seeing and reclaiming the store (REQ-WS-013, REQ-WS-014; RFC 013, 0.10).** `mimlys status --storage` shows, read-only:
+- the store's path, its filesystem and whether it reflinks;
+- the bytes by kind (working trees, snapshot objects exclusive and shared, blobs, interpreters, database and WAL, temporary), taken from the store's own records, with only `tmp/`, the interpreters and the database files measured on disk;
+- the tasks that hold the most, with their state and age.
+
+`mimlys task prune [--state …] [--older-than …] [--audit] [--yes]` lists the matching terminal tasks with their footprints, asks once, then deletes each as `task delete` does. It keeps a task whose promotion is still reversible (`kept: promotion reversible`), keeps audits unless `--audit`, and never touches a task that is not terminal.
 ---
 
 ## 15. Context assembly (REQ-CTX-001 to REQ-CTX-010)
@@ -598,6 +605,12 @@ A request therefore never ends with an `assistant` message, which both measured 
 ---
 
 ## 16. Persistence and recovery
+
+**Readers and the writer (REQ-PERS-013; RFC 013, 0.10).** One process writes a store at a time, holding `mimlys.lock` (LIM-O3). Commands that only read open the database as WAL readers without that lock, through a handle type that has no writing method.
+- They run no recovery, integrity check, reaping or migration.
+- A store that needs recovery is read as committed, and `status` says `recovery pending: the next command that writes recovers it`.
+- While the lock is held, `status` names the holder (`store: in use by runtime <pid> since <time>`).
+- A reader never reports a store as locked.
 
 ### 16.1 Entities (REQ-PERS-001)
 
