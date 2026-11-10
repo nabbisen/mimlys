@@ -96,24 +96,16 @@ pub fn valid_function_name(name: &str) -> bool {
 /// so is the other tool of a collision, so that no tool shadows another
 /// (REQ-MDL-009). Deterministic: the same list gives the same bytes.
 pub fn offer(tools: &[ToolDefinition]) -> Offer {
-    let names: Vec<String> = tools.iter().map(|t| function_name(&t.name)).collect();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    let reasons = name_reasons(&names);
     let mut offer = Offer::default();
-    for (tool, name) in tools.iter().zip(&names) {
-        let reason = if !valid_function_name(name) {
-            Some(UNAVAILABLE_NAME_INVALID)
-        } else if RESERVED_FUNCTIONS.iter().any(|(r, _)| r == name) {
-            Some(UNAVAILABLE_NAME_RESERVED)
-        } else if names.iter().filter(|n| *n == name).count() > 1 {
-            Some(UNAVAILABLE_NAME_COLLISION)
-        } else {
-            None
-        };
+    for (tool, reason) in tools.iter().zip(reasons) {
         match reason {
             Some(reason) => offer
                 .unavailable
                 .push((tool.name.clone(), reason.to_owned())),
             None => offer.functions.push(Function {
-                name: name.clone(),
+                name: function_name(&tool.name),
                 tool: Some(tool.name.clone()),
                 description: tool.description.clone(),
                 parameters: object_schema(&tool.input),
@@ -122,6 +114,29 @@ pub fn offer(tools: &[ToolDefinition]) -> Offer {
     }
     offer.functions.extend(reserved_functions());
     offer
+}
+
+/// For each tool name, in order, why it cannot be a function of the
+/// `tool_calls` transport: `function_name_invalid`, `function_name_reserved` or
+/// `function_name_collision` (the other tool of a collision gets it too); `None`
+/// when it can. [`offer`] and `mimlys status` both ask this, so that what the
+/// user is told is what the model is offered.
+pub fn name_reasons(tools: &[&str]) -> Vec<Option<&'static str>> {
+    let names: Vec<String> = tools.iter().map(|t| function_name(t)).collect();
+    names
+        .iter()
+        .map(|name| {
+            if !valid_function_name(name) {
+                Some(UNAVAILABLE_NAME_INVALID)
+            } else if RESERVED_FUNCTIONS.iter().any(|(r, _)| r == name) {
+                Some(UNAVAILABLE_NAME_RESERVED)
+            } else if names.iter().filter(|n| *n == name).count() > 1 {
+                Some(UNAVAILABLE_NAME_COLLISION)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn reserved_functions() -> Vec<Function> {

@@ -243,3 +243,66 @@ fn req_mdl_009_configuration_values() {
     assert_eq!(code, 1);
     assert!(stderr.contains("backend.decision_transport"), "{stderr}");
 }
+
+/// REQ-MDL-009 (handoff 012, correction 1): in the `tool_calls` transport,
+/// `status` tells the user which MCP tools the model cannot see for their
+/// function name, with the reason, in the server's `unavailable` list (JSON and
+/// text), and no longer lists them as available. The case: a tool name that is
+/// valid at 64 characters (`<server>.web_search`, 53 + 1 + 10) is 65 as a
+/// function name, where the dot is written `__`; its neighbour one character
+/// shorter (`web_fetch`) stays. Under the envelope transport there are no
+/// function names and both stay; a host tool is never affected.
+#[test]
+fn req_mdl_009_status_names_the_tools_the_model_cannot_see() {
+    let server = format!("s{}", "x".repeat(52)); // 53 characters
+    let extra = format!(
+        "\n[servers.{server}]\ncommand = {:?}\nenv_allow = [\"PATH\"]\n",
+        env!("CARGO_BIN_EXE_mimlys-mcp-testserver")
+    );
+    let names = |status: &Value, key: &str| -> Vec<String> {
+        status["servers"][0][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| v[0].as_str().unwrap().to_owned())
+            })
+            .collect()
+    };
+    let search = format!("{server}.web_search");
+    let fetch = format!("{server}.web_fetch");
+
+    let accepting = MockServer::start(accepts_tools(), vec![]);
+    let env = Env::new(&format!("{}{extra}", backend(&accepting, "auto")));
+    let (code, status) = env.json(&["status"]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(status["backend"]["decision_transport"], "tool_calls");
+    assert_eq!(status["servers"][0]["state"], "running", "{status}");
+    let unavailable = status["servers"][0]["unavailable"].as_array().unwrap();
+    let entry = unavailable
+        .iter()
+        .find(|e| e[0] == search.as_str())
+        .unwrap_or_else(|| panic!("{search} is left out: {unavailable:?}"));
+    assert_eq!(entry[1], "function_name_invalid", "{entry}");
+    let available = names(&status, "tools");
+    assert!(!available.contains(&search), "{available:?}");
+    assert!(available.contains(&fetch), "{available:?}");
+    let (_, text, _) = env.run(&["status"]);
+    assert!(text.contains("function_name_invalid"), "{text}");
+    // Host tools are not functions of their own.
+    for host_tool in status["host_tools"].as_array().unwrap() {
+        assert!(host_tool.get("unavailable").is_none(), "{host_tool}");
+    }
+
+    let envelope = MockServer::start(accepts_tools(), vec![]);
+    let env = Env::new(&format!("{}{extra}", backend(&envelope, "envelope")));
+    let (_, status) = env.json(&["status"]);
+    assert_eq!(status["backend"]["decision_transport"], "envelope");
+    assert!(
+        !names(&status, "unavailable").contains(&search),
+        "no function names in the envelope transport: {status}"
+    );
+    assert!(names(&status, "tools").contains(&search), "{status}");
+}
