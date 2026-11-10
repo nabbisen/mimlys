@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) (the MCP client, which pins `rmcp`) and RFC 004 (persistence, `rusqlite`) · **Specification.** REQ-SEC-012 (the dependency audit on every change), THR-12 · **Found.** The `dependency audit and licenses` job of PRs #27 to #29 (handoff 012); `main`'s dependencies are the same, so `main` fails it too since the advisories were published.
 
+## Status (2026-11-10): merged
+
+On `main` (with handoff 012's series, `11d3748`); CI `42792780963`, 9 of 9, the audit green with no ignore. The two `sha2` lines are a 0.10 hygiene item (ROADMAP). Nothing is open here.
+
 ## 1. What and why
 
 | Advisory | Crate (locked) | Fixed in | Exposure in mimlys |

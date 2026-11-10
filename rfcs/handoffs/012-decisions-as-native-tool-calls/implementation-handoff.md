@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 012](../../accepted/012-decisions-as-native-tool-calls.md) (accepted 2026-11-08) · **Specification.** REQ-MDL-009 (new), REQ-MDL-004, REQ-DEC-003, REQ-CTX-001, REQ-CTX-003, REQ-CTX-010 (amended); external design §15.4 (new), §15.1, §17 (`decision.received`), §19.1 (`decision_transport`); limits LIM-C1, LIM-D1, LIM-M4 · **Evidence it rests on.** Spike S2 (handoff 008b), the M4 report §6 · **Release.** 0.9.
 
+## Status (2026-11-10, second): merged
+
+On `main` as a linear series (`11d3748`). The repository refuses merge commits on `main`, so the architect cherry-picked 009b and the stack's ten commits without the three merge commits. The resulting tree is byte-identical to the CI-verified head `4182d3d` (run `42794403168`, 9 of 9). Correction 1's host-tool reading is confirmed: a host tool is an argument of `run_host_tool`, not a function, so it can never be unavailable for its name; my wording was wrong. Nothing is open in this handoff; 0.9's release review follows.
+
 ## Status (2026-11-10): approved; two corrections, then the merge after 009b
 
 012-1, 012-2 and 012-4 (PRs #27 to #29) are approved, and so is run B: 9 of 10 verified, 4 of 5 on llama.cpp and 5 of 5 on Ollama. The architect wrote run B into the M4 report (§7) and fixed LIM-C1.
