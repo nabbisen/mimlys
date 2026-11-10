@@ -163,8 +163,12 @@ enum Command {
         #[arg(long, value_name = "TASK")]
         task: Option<String>,
     },
-    /// Show the runtime's status.
-    Status,
+    /// Show the runtime's status; with --storage, what the data directory holds instead.
+    Status {
+        /// Show the store's path, its filesystem, the bytes by kind and the tasks that hold the most.
+        #[arg(long)]
+        storage: bool,
+    },
     /// Validate the configuration and print it.
     Check,
     /// Interpreter builds for `run_script`.
@@ -373,6 +377,7 @@ fn needs_backend(command: &Command) -> bool {
 /// it is not.
 enum ReadCommand {
     Status,
+    Storage,
     Events {
         task: Option<String>,
         follow: bool,
@@ -395,7 +400,8 @@ impl ReadCommand {
     /// The read command a parsed command is, if it is one.
     fn of(command: &Command) -> Option<Self> {
         match command {
-            Command::Status => Some(Self::Status),
+            Command::Status { storage: false } => Some(Self::Status),
+            Command::Status { storage: true } => Some(Self::Storage),
             Command::Events {
                 task,
                 follow,
@@ -422,6 +428,7 @@ impl ReadCommand {
 async fn dispatch_read(app: &ReadApp, command: ReadCommand, out: &Output) -> Result<(), AppError> {
     match command {
         ReadCommand::Status => commands::status::run(app, out).await,
+        ReadCommand::Storage => commands::storage::run(app, out),
         ReadCommand::Events {
             task,
             follow,
@@ -502,7 +509,7 @@ async fn dispatch(
         }
         Command::Events { .. }
         | Command::Metrics { .. }
-        | Command::Status
+        | Command::Status { .. }
         | Command::Toolchain(ToolchainCommand::List) => {
             unreachable!("routed to the reader by ReadCommand::of")
         }

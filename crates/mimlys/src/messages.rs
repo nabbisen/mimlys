@@ -471,6 +471,94 @@ pub fn store_lines(view: &crate::app::StoreView) -> Vec<String> {
         }
     }
 }
+/// A byte count for people: `1.5 MiB`, and plain bytes below a KiB.
+pub fn bytes_text(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+/// An age for people: `40s`, `12m`, `5h`, `3d`.
+pub fn age_text(seconds: i64) -> String {
+    let s = seconds.max(0);
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m", s / 60),
+        3600..=86_399 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86_400),
+    }
+}
+/// `status --storage`: the lines (REQ-WS-013). `shown` tasks are listed.
+pub fn storage_lines(view: &crate::storage::StorageView, shown: usize) -> Vec<String> {
+    let b = &view.bytes;
+    let line = |name: &str, bytes: u64| {
+        let exact = if bytes >= 1024 {
+            format!("  ({bytes} bytes)")
+        } else {
+            String::new()
+        };
+        format!("  {name:<28}{:>12}{exact}", bytes_text(bytes))
+    };
+    let fs = match &view.filesystem.name {
+        Some(name) => format!("{name} (reflinks: {})", view.filesystem.reflink.word()),
+        None => format!(
+            "not known on this platform (reflinks: {})",
+            view.filesystem.reflink.word()
+        ),
+    };
+    let mut lines = vec![
+        format!("store            {}", view.path),
+        format!("filesystem       {fs}"),
+        "bytes by kind".to_owned(),
+        line("working trees", b.working_trees),
+        line("snapshot objects, exclusive", b.snapshot_objects_exclusive),
+        line("snapshot objects, shared", b.snapshot_objects_shared),
+        line("blobs", b.blobs),
+        line("interpreters", b.interpreters),
+        line("database and WAL", b.database),
+        line("temporary", b.temporary),
+        line("total", b.total),
+    ];
+    if view.unreadable_manifests > 0 {
+        lines.push(format!(
+            "  {} snapshot manifest(s) could not be read; their objects are not counted",
+            view.unreadable_manifests
+        ));
+    }
+    if view.tasks.is_empty() {
+        lines.push("no tasks".to_owned());
+        return lines;
+    }
+    lines.push(format!(
+        "tasks that hold the most (what deleting one frees; {} of {})",
+        shown.min(view.tasks.len()),
+        view.tasks.len()
+    ));
+    for t in view.tasks.iter().take(shown) {
+        lines.push(format!(
+            "  {}  {:<16}  {:>5}  {:>10}  {}",
+            t.task_id,
+            t.state,
+            age_text(t.age_seconds),
+            bytes_text(t.total),
+            serde_json::to_string(&t.goal).unwrap_or_default()
+        ));
+    }
+    if view.tasks.len() > shown {
+        lines.push(format!(
+            "  and {} more (`--json` lists every task)",
+            view.tasks.len() - shown
+        ));
+    }
+    lines
+}
 /// Status: running tasks.
 pub fn status_running(count: usize) -> String {
     format!("running tasks   {count}")
