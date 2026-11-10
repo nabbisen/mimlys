@@ -704,7 +704,7 @@ The core shall call a model only for the step decision. (D-12)
 ## 20. MCP client
 
 ### REQ-MCP-001 Servers as children — M5 · T
-MCP servers are configured by the administrator and spawned over stdio with an allow-listed environment and secrets by reference; they are terminated at runtime exit; restarts are bounded by LIM-X3; startup by LIM-O6. (K-05)
+MCP servers are configured by the administrator and spawned over stdio with an allow-listed environment and secrets by reference; they are terminated at runtime exit by closing their standard input and, after LIM-O16 (per server `shutdown_ms`), killing their process group; restarts are bounded by LIM-X3; startup by LIM-O6. (K-05; LIM-O16 from rypsok's letter of 2026-11-11)
 
 ### REQ-MCP-002 Discovery and pinning — M5 · T
 Tool definitions shall be listed at task start, hashed and pinned on the task. A changed definition shall make the tool unavailable for that task with the event `tool.unpinned` until a new task pins it; the change is detected at the next step boundary and named to the model (RFC 009 §7). (R-08, THR-25)
@@ -716,7 +716,7 @@ Descriptions shall be sanitized (REQ-CTX-008) and bounded by LIM-I2; schemas abo
 The administrator declares, per external tool, the effect, `idempotent`, destination arguments and deadline (`reversible` is always false for external effects, RFC 003). An undeclared tool is `external_write`, non-idempotent. A declaration admits the tool to the ceiling (RFC 009 §4). (K-06)
 
 ### REQ-MCP-005 Destination validation — M5 · T
-Destination arguments shall be validated against the task's `network` grants (scheme, domain, port) before the call and again on a `redirected` result. (K-02)
+Destination arguments shall be validated against the task's `network` grants (scheme, domain, port) before the call and again on a `redirected` result. An `http` destination is judged in both of its forms: the grant must also cover its `https` form on port 443, because a server may read it over HTTPS (rypsok does by default), so a grant for port 80 alone does not admit it. (K-02; amended 2026-11-11 from rypsok's letter)
 
 ### REQ-MCP-006 Results — M5 · T
 Structured content is validated against the declared output schema; `isError` becomes the cause `tool_error`; content is bounded and labelled external. (K-10)

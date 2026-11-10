@@ -123,6 +123,7 @@
 | LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
 | LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
 | LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
+| LIM-O16 | Grace for an MCP server to end after its standard input closes, before its group is killed | 5000 ms | 500 – 30000; per server `shutdown_ms` | rypsok's graceful shutdown takes up to 3 s by default (its letter of 2026-11-11); LIM-O2's 2 s cut it short |
 
 ## Model backend
 

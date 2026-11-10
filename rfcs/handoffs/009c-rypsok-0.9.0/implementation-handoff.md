@@ -2,6 +2,8 @@
 
 **RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) (the MCP client; rypsok as the first server) · **Specification.** REQ-MCP-001 … 009, external design §11.1, §19.1 · **From.** rypsok's letter of 2026-11-11 (`.git-exclude/upstream/rypsok/receive/2026-11-11-to-mimlys-team.md`): rypsok 0.9.0 (2026-11-08), MCP revision 2026-07-28, "several" contract changes since 0.8.0.
 
+**Status (2026-11-11): rypsok's reply adds what to check.** The rypsok team listed the changes from 0.8.0 to 0.9.0 that a stdio client sees (`.git-exclude/upstream/rypsok/receive/2026-11-11-to-mimlys-team-reply.md`): all three tool definitions changed, so pins see a change; `engine_status`'s output schema gained a `oneOf` and an `anyOf` (our validator supports both and local `$ref`: confirm on the real schema); the error vocabulary is unchanged, with new `detail.kind` values. Use that list as item 3's starting point and confirm each item, rather than rebuilding it. Also measure the MCP revision mimlys's `rmcp =3.9.0` negotiates over stdio (rypsok accepts 2024-11-05 to 2025-11-25 in the handshake; 2026-07-28 is served stateless). The changes the letter makes necessary in mimlys are handoff 009d, not this one.
+
 mimlys was built against rypsok's 0.7.0/0.8.0 contract. Measure 0.9.0 against it before anyone relies on the combination.
 
 1. **Install rypsok 0.9.0** from crates.io (`cargo install rypsok --locked --version 0.9.0 --root .git-exclude/tmp/rypsok`), not a downloaded binary. Run it as mimlys runs it: a child over stdio, `env_allow = ["PATH"]`, no Brave key (Wikipedia only), and `web_fetch` with a granted domain.
