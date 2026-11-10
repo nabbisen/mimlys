@@ -333,6 +333,43 @@ mod snapshots {
         );
     }
 
+    /// REQ-WS-004, REQ-SEC-012 (handoff 008c): the hashes of a walked tree are those
+    /// 0.9.0 computed, on a short file and on a file of several read blocks.
+    #[test]
+    fn req_ws_004_golden_walk_hashes_of_0_9_0() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("tools")).unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"fix the failing test\n").unwrap();
+        let big: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.path().join("tools/big.bin"), &big).unwrap();
+        let handle =
+            cap_std::fs::Dir::open_ambient_dir(dir.path(), cap_std::ambient_authority()).unwrap();
+        let manifest = super::super::snapshot::walk_manifest(&handle, None).unwrap();
+        let hashes: Vec<(String, String)> = manifest
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                mimlys_core::snapshot::Entry::File { path, hash, .. } => {
+                    Some((path.clone(), hash.to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hashes,
+            [
+                (
+                    "a.txt".to_owned(),
+                    "f3ea8f2a2e6215bd4b5c03ca09e9cfc6e81652ecc7349fb5e82165edd04b989b".to_owned()
+                ),
+                (
+                    "tools/big.bin".to_owned(),
+                    "9dc177c2fde29dea8e7c29f7ddf147b7c449c99d049c62f3aac0a5933ecf76a3".to_owned()
+                )
+            ]
+        );
+    }
+
     fn walk(fx: &Fx) -> mimlys_core::snapshot::Manifest {
         let dir =
             cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority()).unwrap();

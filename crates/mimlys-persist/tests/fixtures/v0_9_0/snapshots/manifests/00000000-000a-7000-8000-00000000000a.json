@@ -1,0 +1,1 @@
+{"entries":[{"executable":false,"hash":"f3ea8f2a2e6215bd4b5c03ca09e9cfc6e81652ecc7349fb5e82165edd04b989b","path":"a.txt","size":21,"type":"file"},{"path":"tools","type":"dir"},{"executable":true,"hash":"9dc177c2fde29dea8e7c29f7ddf147b7c449c99d049c62f3aac0a5933ecf76a3","path":"tools/big.bin","size":70000,"type":"file"}]}

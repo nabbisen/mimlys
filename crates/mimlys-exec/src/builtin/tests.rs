@@ -481,3 +481,43 @@ async fn req_tool_006_007_deadline_and_cancellation() {
     assert_eq!(o.termination, Termination::Deadline);
     assert_eq!(o.failure, Some(FailureCause::Timeout));
 }
+
+/// REQ-SEC-012 (handoff 008c), REQ-TOOL-003: the pinned definition hash of every
+/// built-in file tool is the one 0.9.0 computed (tasks of 0.9.0 pin these), whatever
+/// `sha2` the build uses.
+#[test]
+fn req_tool_003_golden_definition_hashes_of_0_9_0() {
+    let expected = [
+        (
+            "read_file",
+            "6ad0178877631ad7a305d38e2bad40737f894c291a11a4e71bad31d1881d5335",
+        ),
+        (
+            "write_file",
+            "a9b52ef2ceb29485a876b043a460419ac904f1a8a01791b3d6c1b83a267416a4",
+        ),
+        (
+            "replace_in_file",
+            "1113facd7c6a6d509aec02494a187d8ae830769344daef5c44ecea05170c5579",
+        ),
+        (
+            "list_dir",
+            "2da1196f44aa4bcaa7f6d6b8187ddfb2b3d11538a45b0c54f9f32e653b003104",
+        ),
+        (
+            "search_files",
+            "5bb3e5ce184e46a0e55ca0874e07f4cdd084c02979e828c9059737ae6cb040ff",
+        ),
+        (
+            "delete_path",
+            "80370161a0ed0c027277d6b7ebb15fb9308d3b8f7f0f4149193f7c7620a0db68",
+        ),
+    ];
+    let definitions = crate::builtin::BuiltinTools::all_definitions();
+    assert_eq!(definitions.len(), expected.len());
+    for (definition, (name, hash)) in definitions.iter().zip(expected) {
+        assert_eq!(definition.name, name);
+        let actual = mimlys_core::hash::hash_canonical(&serde_json::to_value(definition).unwrap());
+        assert_eq!(actual.as_str(), hash, "{name}");
+    }
+}

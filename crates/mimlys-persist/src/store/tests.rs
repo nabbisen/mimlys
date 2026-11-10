@@ -1194,3 +1194,87 @@ fn req_pers_006_a_store_written_by_0_8_0_opens_checks_lists_and_recovers() {
     }
     integrity::check(&store, fx.now()).unwrap();
 }
+
+/// REQ-PERS-006, REQ-PERS-009, REQ-SEC-012 (handoff 008c): a store written by 0.9.0
+/// (`sha2` 0.10; its data in an uncheckpointed `-wal`, with two snapshot objects and a
+/// manifest) opens, checks and lists under the current build, and its snapshot files
+/// verify: the manifest against its recorded hash, every object against its name.
+#[test]
+fn req_pers_006_a_store_written_by_0_9_0_opens_and_verifies() {
+    use mimlys_core::hash::Hash;
+    use mimlys_core::ids::SnapshotId;
+    use mimlys_core::snapshot::Entry;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v0_9_0");
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    for sub in ["snapshots/objects", "snapshots/manifests"] {
+        std::fs::create_dir_all(data.join(sub)).unwrap();
+        for entry in std::fs::read_dir(fixture.join(sub)).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), data.join(sub).join(entry.file_name())).unwrap();
+        }
+    }
+    for name in ["mimlys.db", "mimlys.db-wal"] {
+        std::fs::copy(fixture.join(name), data.join(name)).unwrap();
+    }
+    assert!(
+        std::fs::metadata(data.join("mimlys.db-wal")).unwrap().len() > 100_000,
+        "the fixture's data is in its -wal"
+    );
+    let fx = Fx::new();
+    let store = open(&data).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 2);
+    integrity::check(&store, fx.now()).unwrap();
+    let tasks = store.list_tasks().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        tasks[0].task_id.to_string(),
+        "00000000-0001-7000-8000-000000000001"
+    );
+    assert_eq!(tasks[0].state, "running");
+    assert!(store.load_task(tasks[0].task_id).unwrap().is_some());
+
+    // The snapshot files verify with the hashes 0.9.0 wrote.
+    let files = crate::snapshots::SnapshotFiles::open(&data).unwrap();
+    let snapshot: SnapshotId =
+        serde_json::from_str("\"00000000-000a-7000-8000-00000000000a\"").unwrap();
+    let recorded =
+        Hash::from_hex("bb5b91bc5cc8279c564abd7db9c54827ecbe2f428913685d9d97531253e11dd8").unwrap();
+    let manifest = files.read_manifest(snapshot, &recorded).unwrap();
+    assert_eq!(manifest.hash(), recorded, "the manifest's canonical hash");
+    let mut checked = 0;
+    for entry in &manifest.entries {
+        if let Entry::File { hash, size, .. } = entry {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut files.open_object(hash).unwrap(), &mut bytes).unwrap();
+            assert_eq!(bytes.len() as u64, *size);
+            assert_eq!(&hash_bytes(&bytes), hash, "an object is named by its hash");
+            // Writing the object into an empty directory hashes it again, streaming, and
+            // accepts only its name; a wrong name is refused.
+            let elsewhere = tempfile::tempdir().unwrap();
+            let fresh = crate::snapshots::SnapshotFiles::open(elsewhere.path()).unwrap();
+            fresh.put_object(hash, &bytes[..]).unwrap();
+            assert!(fresh.has_object(hash));
+            assert!(
+                fresh
+                    .put_object(&hash_bytes(b"another name"), &bytes[..])
+                    .is_err()
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 2);
+    // The names are the ones 0.9.0 gave them.
+    assert!(
+        files.has_object(
+            &Hash::from_hex("f3ea8f2a2e6215bd4b5c03ca09e9cfc6e81652ecc7349fb5e82165edd04b989b")
+                .unwrap()
+        )
+    );
+    assert!(
+        files.has_object(
+            &Hash::from_hex("9dc177c2fde29dea8e7c29f7ddf147b7c449c99d049c62f3aac0a5933ecf76a3")
+                .unwrap()
+        )
+    );
+}

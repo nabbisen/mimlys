@@ -56,3 +56,18 @@ fn pinned_table_is_well_formed() {
     }
     assert!(pinned("python").is_none());
 }
+
+/// REQ-SBX-001, REQ-SEC-012 (handoff 008c): the digest that pins an interpreter is
+/// SHA-256 as 0.9.0 computed it, on a short and on a multi-block input.
+#[test]
+fn req_sbx_001_golden_sha256_hex_of_0_9_0() {
+    let big: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert_eq!(
+        sha256_hex(&big),
+        "e24bc62381f1224fbbb74688663f8f9743b9680b193edd666835e97b06e730eb"
+    );
+}
