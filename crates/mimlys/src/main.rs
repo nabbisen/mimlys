@@ -2,7 +2,7 @@
 //! Exit codes: 0 success, 1 runtime or configuration error, 2 usage error.
 
 use clap::{Args, Parser, Subcommand};
-use mimlys::app::{App, AppError};
+use mimlys::app::{App, AppError, ReadApp};
 use mimlys::commands::run::NewTask;
 use mimlys::config::Config;
 use mimlys::output::Output;
@@ -314,6 +314,13 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     if let Command::Check = &cli.command {
         return commands::check::run(&loaded, out);
     }
+    // REQ-PERS-013: a command that only reads opens the store as a reader,
+    // without the lock, and runs no recovery, reaping or migration. It cannot
+    // call a writing method: its handle has none.
+    if let Some(read) = ReadCommand::of(&cli.command) {
+        let app = ReadApp::open(loaded)?;
+        return dispatch_read(&app, read, out).await;
+    }
     let app = App::open(loaded)?;
     if runs_steps(&cli.command) {
         app.backend_ready()?;
@@ -356,8 +363,76 @@ fn needs_backend(command: &Command) -> bool {
             | Command::Approve { .. }
             | Command::Reject { .. }
             | Command::Answer { .. }
-            | Command::Status
     )
+}
+
+/// The commands that only read (REQ-PERS-013), and what each needs of the
+/// command line. `promote --patch` and `rollback --dry-run` are read-only
+/// "where they only read": `promote --patch` plans and prints and writes
+/// nothing, so it is here; `rollback` has no dry run and always restores, so
+/// it is not.
+enum ReadCommand {
+    Status,
+    Events {
+        task: Option<String>,
+        follow: bool,
+        since: u64,
+    },
+    Metrics {
+        task: Option<String>,
+    },
+    TaskShow {
+        task: String,
+    },
+    TaskList,
+    ToolchainList,
+    PromotePatch {
+        task: String,
+    },
+}
+
+impl ReadCommand {
+    /// The read command a parsed command is, if it is one.
+    fn of(command: &Command) -> Option<Self> {
+        match command {
+            Command::Status => Some(Self::Status),
+            Command::Events {
+                task,
+                follow,
+                since,
+            } => Some(Self::Events {
+                task: task.clone(),
+                follow: *follow,
+                since: *since,
+            }),
+            Command::Metrics { task } => Some(Self::Metrics { task: task.clone() }),
+            Command::Task(TaskCommand::Show { task }) => {
+                Some(Self::TaskShow { task: task.clone() })
+            }
+            Command::Task(TaskCommand::List) => Some(Self::TaskList),
+            Command::Toolchain(ToolchainCommand::List) => Some(Self::ToolchainList),
+            Command::Promote {
+                task, patch: true, ..
+            } => Some(Self::PromotePatch { task: task.clone() }),
+            _ => None,
+        }
+    }
+}
+
+async fn dispatch_read(app: &ReadApp, command: ReadCommand, out: &Output) -> Result<(), AppError> {
+    match command {
+        ReadCommand::Status => commands::status::run(app, out).await,
+        ReadCommand::Events {
+            task,
+            follow,
+            since,
+        } => commands::events::run(app, task.as_deref(), since, follow, out).await,
+        ReadCommand::Metrics { task } => commands::metrics::run(app, task.as_deref(), out),
+        ReadCommand::TaskShow { task } => commands::task::show(app, &task, out),
+        ReadCommand::TaskList => commands::task::list(app, out),
+        ReadCommand::ToolchainList => commands::toolchain::list(app, out),
+        ReadCommand::PromotePatch { task } => commands::promote::patch(app, &task, out),
+    }
 }
 
 async fn dispatch(
@@ -374,8 +449,9 @@ async fn dispatch(
             TaskCommand::New { args, hold } => {
                 commands::run::run(app, &args.into_new_task(hold), terminal, out).await
             }
-            TaskCommand::Show { task } => commands::task::show(app, &task, out),
-            TaskCommand::List => commands::task::list(app, out),
+            TaskCommand::Show { .. } | TaskCommand::List => {
+                unreachable!("routed to the reader by ReadCommand::of")
+            }
             TaskCommand::Resume {
                 task,
                 extend_steps,
@@ -406,8 +482,11 @@ async fn dispatch(
             task,
             yes,
             summary,
-            patch,
-        } => commands::promote::run(app, &task, yes, summary, patch, terminal, out),
+            patch: false,
+        } => commands::promote::run(app, &task, yes, summary, terminal, out),
+        Command::Promote { patch: true, .. } => {
+            unreachable!("routed to the reader by ReadCommand::of")
+        }
         Command::Approve { task } => commands::approve::run(app, &task, terminal, out).await,
         Command::Reject { task, note, halt } => {
             commands::reject::run(app, &task, note, halt, terminal, out).await
@@ -421,14 +500,12 @@ async fn dispatch(
         Command::Revoke { task, grant } => {
             commands::revoke::run(app, &task, &grant, terminal, out).await
         }
-        Command::Events {
-            task,
-            follow,
-            since,
-        } => commands::events::run(app, task.as_deref(), since, follow, out).await,
-        Command::Metrics { task } => commands::metrics::run(app, task.as_deref(), out),
-        Command::Status => commands::status::run(app, out),
-        Command::Toolchain(ToolchainCommand::List) => commands::toolchain::list(app, out),
+        Command::Events { .. }
+        | Command::Metrics { .. }
+        | Command::Status
+        | Command::Toolchain(ToolchainCommand::List) => {
+            unreachable!("routed to the reader by ReadCommand::of")
+        }
         Command::Toolchain(ToolchainCommand::Grant { path, yes }) => {
             commands::toolchain::grant(app, &path, yes, terminal, out)
         }

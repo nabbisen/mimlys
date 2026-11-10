@@ -16,6 +16,22 @@ pub const SCHEMA_VERSION: u32 = 2;
 /// LIM-O3: wait for the runtime lock before refusing to start, in milliseconds.
 pub const LIM_O3_LOCK_WAIT_MS: u64 = 1000;
 
+/// The file beside the lock in which the writer records who holds it
+/// (REQ-PERS-013): `{"pid": N, "since": "<RFC 3339>"}`. The lock file itself
+/// carries no content, because on Windows a held lock is mandatory and a
+/// reader could not read it. The record is information for `status`; the lock
+/// is the truth about whether it is held.
+pub const HOLDER_FILE: &str = "mimlys.holder";
+
+/// The runtime that holds the store's lock, as it recorded itself.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Holder {
+    /// The holder's process id.
+    pub pid: u32,
+    /// When it took the lock (RFC 3339, UTC).
+    pub since: String,
+}
+
 const MIGRATIONS: [(u32, &str); 2] = [
     (1, include_str!("migrations/001_initial.sql")),
     (2, include_str!("migrations/002_snapshots.sql")),
@@ -56,6 +72,8 @@ pub fn open(data_dir: &Path) -> Result<Store, PersistenceError> {
     conn.busy_timeout(Duration::from_millis(LIM_O3_LOCK_WAIT_MS))
         .map_err(storage("busy_timeout"))?;
     migrate(&conn)?;
+    // Last, so that a refusal above leaves no record of a holder that is gone.
+    record_holder(data_dir);
     Ok(Store {
         conn: Mutex::new(conn),
         data_dir: data_dir.to_path_buf(),
@@ -63,6 +81,31 @@ pub fn open(data_dir: &Path) -> Result<Store, PersistenceError> {
         #[cfg(test)]
         transactions: std::sync::atomic::AtomicUsize::new(0),
     })
+}
+
+impl Drop for Store {
+    /// The holder record goes while the lock is still held (the field is
+    /// released after this runs), so a new holder's record is never removed.
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.data_dir.join(HOLDER_FILE));
+    }
+}
+
+/// Records this process as the holder, atomically; failing to is not an error
+/// (the record is information for readers, the lock is the guard).
+fn record_holder(data_dir: &Path) {
+    let holder = Holder {
+        pid: std::process::id(),
+        since: mimlys_core::clock::Clock::now(&mimlys_core::clock::SystemClock).to_rfc3339(),
+    };
+    let Ok(text) = serde_json::to_string(&holder) else {
+        return;
+    };
+    let tmp = data_dir.join(format!("{HOLDER_FILE}.tmp"));
+    let target = data_dir.join(HOLDER_FILE);
+    if fs::write(&tmp, text).is_ok() && restrict_file(&tmp).is_ok() {
+        let _ = fs::rename(&tmp, &target);
+    }
 }
 
 impl Store {
@@ -99,7 +142,7 @@ impl Store {
     }
 }
 
-fn migrate(conn: &Connection) -> Result<(), PersistenceError> {
+pub(crate) fn migrate(conn: &Connection) -> Result<(), PersistenceError> {
     let exists: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
@@ -131,7 +174,7 @@ fn migrate(conn: &Connection) -> Result<(), PersistenceError> {
     Ok(())
 }
 
-fn read_version(conn: &Connection) -> Result<u32, PersistenceError> {
+pub(crate) fn read_version(conn: &Connection) -> Result<u32, PersistenceError> {
     conn.query_row("SELECT version FROM schema_version", [], |r| {
         r.get::<_, i64>(0)
     })

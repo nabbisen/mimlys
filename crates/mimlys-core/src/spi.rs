@@ -461,20 +461,44 @@ pub struct WorkspaceInfo {
     pub symlinks_omitted: u64,
 }
 
+/// The reading half of the workspace interface (external design §14.6;
+/// REQ-PERS-013, RFC 013): what a read command needs to show a task's
+/// footprint and a promotion's plan. It changes nothing on disk. A read
+/// command holds this type, never [`WorkspaceProvider`].
+pub trait WorkspaceRead: Send + Sync {
+    /// A snapshot's manifest, verified against the recorded hash.
+    fn manifest(&self, snapshot: &SnapshotRecord) -> Result<Manifest, WorkspaceError>;
+
+    /// Phase 1 of a promotion: the diff against the base, conflicts refused (REQ-WS-007).
+    fn promotion_plan(
+        &self,
+        task_id: TaskId,
+        base: &SnapshotRecord,
+        project_root: &str,
+    ) -> Result<PromotionPlan, WorkspaceError>;
+
+    /// Bytes of the working tree.
+    fn tree_bytes(&self, task_id: TaskId) -> Result<u64, WorkspaceError>;
+}
+
 /// Task workspaces: materialization, tools over the tree, quota (external design §14; REQ-WS-002, REQ-WS-008).
-pub trait WorkspaceProvider: Send + Sync {
+pub trait WorkspaceProvider: WorkspaceRead {
     /// Materializes the scope into the task's workspace.
     fn materialize(
         &self,
         task_id: TaskId,
         scope: &ScopeSpec,
     ) -> Result<WorkspaceInfo, WorkspaceError>;
+
     /// An existing workspace.
     fn open(&self, task_id: TaskId) -> Result<WorkspaceInfo, WorkspaceError>;
+
     /// The built-in tools bound to the task's workspace.
     fn tools(&self, task_id: TaskId) -> Result<std::sync::Arc<dyn ToolProvider>, WorkspaceError>;
+
     /// Bytes the workspace may still grow by, when tracked.
     fn remaining_bytes(&self, task_id: TaskId) -> Result<Option<u64>, WorkspaceError>;
+
     /// Prepares a snapshot of the tree: every file hashed, objects and the
     /// manifest written durably, the journal open (REQ-WS-004, REQ-PERS-009).
     /// When the manifest equals `previous`'s, that record is reused and no
@@ -488,16 +512,17 @@ pub trait WorkspaceProvider: Send + Sync {
         previous: Option<&SnapshotRecord>,
         now: crate::clock::Instant,
     ) -> Result<PreparedSnapshot, WorkspaceError>;
+
     /// Closes the journal of a recorded snapshot.
     fn seal(&self, snapshot_id: SnapshotId) -> Result<(), WorkspaceError>;
+
     /// Makes the tree equal to the snapshot's manifest (REQ-WS-006).
     fn restore(
         &self,
         task_id: TaskId,
         snapshot: &SnapshotRecord,
     ) -> Result<RestoreReport, WorkspaceError>;
-    /// A snapshot's manifest, verified against the recorded hash.
-    fn manifest(&self, snapshot: &SnapshotRecord) -> Result<Manifest, WorkspaceError>;
+
     /// Materializes a new task's tree from a snapshot and prepares its `fork` snapshot (REQ-TASK-004).
     fn materialize_from(
         &self,
@@ -507,13 +532,7 @@ pub trait WorkspaceProvider: Send + Sync {
         scope: &ScopeSpec,
         now: crate::clock::Instant,
     ) -> Result<(WorkspaceInfo, PreparedSnapshot), WorkspaceError>;
-    /// Phase 1 of a promotion: the diff against the base, conflicts refused (REQ-WS-007).
-    fn promotion_plan(
-        &self,
-        task_id: TaskId,
-        base: &SnapshotRecord,
-        project_root: &str,
-    ) -> Result<PromotionPlan, WorkspaceError>;
+
     /// Phase 2: backs the targets up (a prepared `backup` snapshot) and applies the plan.
     fn promote(
         &self,
@@ -524,14 +543,14 @@ pub trait WorkspaceProvider: Send + Sync {
         promotion_id: PromotionId,
         now: crate::clock::Instant,
     ) -> Result<(PreparedSnapshot, Promotion), WorkspaceError>;
+
     /// Reverses a promotion from its backup.
     fn revert_promotion(
         &self,
         promotion: &Promotion,
         backup: &SnapshotRecord,
     ) -> Result<RestoreReport, WorkspaceError>;
-    /// Bytes of the working tree.
-    fn tree_bytes(&self, task_id: TaskId) -> Result<u64, WorkspaceError>;
+
     /// Removes the files the database no longer references (RFC 006 §6).
     fn delete_files(&self, task_id: TaskId, rows: &DeletedRows) -> Result<(), WorkspaceError>;
 }
@@ -1033,6 +1052,27 @@ pub mod fake {
         }
     }
 
+    impl WorkspaceRead for FakeWorkspaces {
+        fn manifest(&self, _snapshot: &SnapshotRecord) -> Result<Manifest, WorkspaceError> {
+            Ok(Manifest::default())
+        }
+
+        fn promotion_plan(
+            &self,
+            _task_id: TaskId,
+            _base: &SnapshotRecord,
+            _project_root: &str,
+        ) -> Result<PromotionPlan, WorkspaceError> {
+            Err(WorkspaceError::Refused {
+                reason: "no promotion in the fake".into(),
+            })
+        }
+
+        fn tree_bytes(&self, _task_id: TaskId) -> Result<u64, WorkspaceError> {
+            Ok(0)
+        }
+    }
+
     impl WorkspaceProvider for FakeWorkspaces {
         fn materialize(
             &self,
@@ -1128,10 +1168,6 @@ pub mod fake {
             Ok(RestoreReport::default())
         }
 
-        fn manifest(&self, _snapshot: &SnapshotRecord) -> Result<Manifest, WorkspaceError> {
-            Ok(Manifest::default())
-        }
-
         fn materialize_from(
             &self,
             task_id: TaskId,
@@ -1166,17 +1202,6 @@ pub mod fake {
             ))
         }
 
-        fn promotion_plan(
-            &self,
-            _task_id: TaskId,
-            _base: &SnapshotRecord,
-            _project_root: &str,
-        ) -> Result<PromotionPlan, WorkspaceError> {
-            Err(WorkspaceError::Refused {
-                reason: "no promotion in the fake".into(),
-            })
-        }
-
         fn promote(
             &self,
             _task_id: TaskId,
@@ -1199,10 +1224,6 @@ pub mod fake {
             Err(WorkspaceError::NotFound {
                 what: "promotion".into(),
             })
-        }
-
-        fn tree_bytes(&self, _task_id: TaskId) -> Result<u64, WorkspaceError> {
-            Ok(0)
         }
 
         fn delete_files(&self, task_id: TaskId, _rows: &DeletedRows) -> Result<(), WorkspaceError> {
@@ -1308,21 +1329,7 @@ pub mod fake {
         }
     }
 
-    impl Persistence for FakePersistence {
-        fn create_task(
-            &self,
-            task: &Task,
-            grants: &[Grant],
-            event: &EventRecord,
-        ) -> Result<(), PersistenceError> {
-            self.write("create_task", |i| {
-                i.tasks.push(task.clone());
-                i.grants.extend(grants.iter().cloned());
-                i.events.push(event.clone());
-                Ok(())
-            })
-        }
-
+    impl PersistenceRead for FakePersistence {
         fn load_task(&self, task_id: TaskId) -> Result<Option<Task>, PersistenceError> {
             Ok(self
                 .inner
@@ -1361,6 +1368,319 @@ pub mod fake {
                 .filter(|t| t.state.name() == state)
                 .map(|t| t.task_id)
                 .collect())
+        }
+
+        fn load_grants(&self, task_id: TaskId) -> Result<Vec<Grant>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .grants
+                .iter()
+                .filter(|g| g.task_id == task_id)
+                .cloned()
+                .collect())
+        }
+
+        fn load_steps(&self, task_id: TaskId) -> Result<Vec<Step>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .steps
+                .iter()
+                .filter(|s| s.task_id == task_id)
+                .cloned()
+                .collect())
+        }
+
+        fn load_actions(&self, task_id: TaskId) -> Result<Vec<Action>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .actions
+                .iter()
+                .filter(|a| a.task_id == task_id)
+                .cloned()
+                .collect())
+        }
+
+        fn load_running_action(&self, task_id: TaskId) -> Result<Option<Action>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .actions
+                .iter()
+                .rev()
+                .find(|a| a.task_id == task_id && a.status == crate::action::ActionStatus::Running)
+                .cloned())
+        }
+
+        fn load_observations(&self, task_id: TaskId) -> Result<Vec<Observation>, PersistenceError> {
+            let inner = self.inner.lock().expect("fake lock");
+            let ids: Vec<ActionId> = inner
+                .actions
+                .iter()
+                .filter(|a| a.task_id == task_id)
+                .map(|a| a.action_id)
+                .collect();
+            Ok(inner
+                .observations
+                .iter()
+                .filter(|o| ids.contains(&o.action_id))
+                .cloned()
+                .collect())
+        }
+
+        fn load_executions(&self, action_id: ActionId) -> Result<Vec<Execution>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .executions
+                .iter()
+                .filter(|e| e.action_id == action_id)
+                .cloned()
+                .collect())
+        }
+
+        fn load_approvals(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Vec<ApprovalRequest>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .approvals
+                .iter()
+                .filter(|a| a.task_id == task_id)
+                .cloned()
+                .collect())
+        }
+
+        fn load_pending_approval(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Option<ApprovalRequest>, PersistenceError> {
+            use crate::approval::ApprovalStatus;
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .approvals
+                .iter()
+                .rev()
+                .find(|a| {
+                    a.task_id == task_id
+                        && matches!(a.status, ApprovalStatus::Pending | ApprovalStatus::Approved)
+                })
+                .cloned())
+        }
+
+        fn load_pending_question(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Option<Question>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .questions
+                .iter()
+                .rev()
+                .find(|q| {
+                    q.task_id == task_id && q.status == crate::question::QuestionStatus::Pending
+                })
+                .cloned())
+        }
+
+        fn load_questions(&self, task_id: TaskId) -> Result<Vec<Question>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .questions
+                .iter()
+                .filter(|q| q.task_id == task_id)
+                .cloned()
+                .collect())
+        }
+
+        fn load_plan(&self, task_id: TaskId) -> Result<Option<PlanVersion>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .plans
+                .iter()
+                .filter(|p| p.task_id == task_id)
+                .max_by_key(|p| p.version)
+                .cloned())
+        }
+
+        fn metrics(&self, task_id: Option<TaskId>) -> Result<Metrics, PersistenceError> {
+            let inner = self.inner.lock().expect("fake lock");
+            let mut m = Metrics::default();
+            for e in inner
+                .events
+                .iter()
+                .filter(|e| task_id.is_none() || e.task_id == task_id)
+            {
+                *m.events_by_name
+                    .entry(e.event.name().to_owned())
+                    .or_default() += 1;
+            }
+            for t in inner
+                .tasks
+                .iter()
+                .filter(|t| task_id.is_none_or(|id| t.task_id == id))
+            {
+                *m.tasks_by_state
+                    .entry(t.state.name().to_owned())
+                    .or_default() += 1;
+            }
+            let mut sums = ContextSums::default();
+            for s in inner
+                .steps
+                .iter()
+                .filter(|s| task_id.is_none_or(|id| s.task_id == id))
+            {
+                sums.add(s);
+            }
+            m.context = sums.finish();
+            Ok(m)
+        }
+
+        fn events_since(
+            &self,
+            position: u64,
+            task_id: Option<TaskId>,
+            limit: usize,
+        ) -> Result<Vec<PositionedEvent>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .events
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (i as u64 + 1, e))
+                .filter(|(p, e)| *p > position && (task_id.is_none() || e.task_id == task_id))
+                .take(limit)
+                .map(|(position, record)| PositionedEvent {
+                    position,
+                    record: record.clone(),
+                })
+                .collect())
+        }
+
+        fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .snapshots
+                .iter()
+                .filter(|s| s.task_id == task_id)
+                .cloned()
+                .collect())
+        }
+
+        fn load_snapshot(
+            &self,
+            snapshot_id: SnapshotId,
+        ) -> Result<Option<SnapshotRecord>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .snapshots
+                .iter()
+                .find(|s| s.snapshot_id == snapshot_id)
+                .cloned())
+        }
+
+        fn load_workspace_state(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Option<WorkspaceState>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .workspace_states
+                .get(&task_id)
+                .copied())
+        }
+
+        fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .promotions
+                .iter()
+                .filter(|p| p.task_id == task_id)
+                .cloned()
+                .collect())
+        }
+
+        fn object_references(
+            &self,
+            hashes: &[crate::hash::Hash],
+        ) -> Result<Vec<(crate::hash::Hash, u64, u64)>, PersistenceError> {
+            let i = self.inner.lock().expect("fake lock");
+            Ok(hashes
+                .iter()
+                .filter_map(|h| {
+                    i.objects
+                        .get(h)
+                        .map(|(size, refs)| (h.clone(), *size, *refs))
+                })
+                .collect())
+        }
+
+        fn blob_bytes(&self, _task_id: TaskId) -> Result<u64, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .blobs
+                .iter()
+                .map(|(_, b)| b.len() as u64)
+                .sum())
+        }
+
+        fn get_blob(&self, blob_id: BlobId) -> Result<Vec<u8>, PersistenceError> {
+            self.inner
+                .lock()
+                .expect("fake lock")
+                .blobs
+                .iter()
+                .find(|(id, _)| *id == blob_id)
+                .map(|(_, b)| b.clone())
+                .ok_or(PersistenceError::NotFound {
+                    what: "blob".into(),
+                })
+        }
+    }
+
+    impl Persistence for FakePersistence {
+        fn create_task(
+            &self,
+            task: &Task,
+            grants: &[Grant],
+            event: &EventRecord,
+        ) -> Result<(), PersistenceError> {
+            self.write("create_task", |i| {
+                i.tasks.push(task.clone());
+                i.grants.extend(grants.iter().cloned());
+                i.events.push(event.clone());
+                Ok(())
+            })
         }
 
         fn record_task_transition(
@@ -1602,218 +1922,11 @@ pub mod fake {
             })
         }
 
-        fn load_grants(&self, task_id: TaskId) -> Result<Vec<Grant>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .grants
-                .iter()
-                .filter(|g| g.task_id == task_id)
-                .cloned()
-                .collect())
-        }
-
-        fn load_steps(&self, task_id: TaskId) -> Result<Vec<Step>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .steps
-                .iter()
-                .filter(|s| s.task_id == task_id)
-                .cloned()
-                .collect())
-        }
-
-        fn load_actions(&self, task_id: TaskId) -> Result<Vec<Action>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .actions
-                .iter()
-                .filter(|a| a.task_id == task_id)
-                .cloned()
-                .collect())
-        }
-
-        fn load_running_action(&self, task_id: TaskId) -> Result<Option<Action>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .actions
-                .iter()
-                .rev()
-                .find(|a| a.task_id == task_id && a.status == crate::action::ActionStatus::Running)
-                .cloned())
-        }
-
-        fn load_observations(&self, task_id: TaskId) -> Result<Vec<Observation>, PersistenceError> {
-            let inner = self.inner.lock().expect("fake lock");
-            let ids: Vec<ActionId> = inner
-                .actions
-                .iter()
-                .filter(|a| a.task_id == task_id)
-                .map(|a| a.action_id)
-                .collect();
-            Ok(inner
-                .observations
-                .iter()
-                .filter(|o| ids.contains(&o.action_id))
-                .cloned()
-                .collect())
-        }
-
-        fn load_executions(&self, action_id: ActionId) -> Result<Vec<Execution>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .executions
-                .iter()
-                .filter(|e| e.action_id == action_id)
-                .cloned()
-                .collect())
-        }
-
-        fn load_approvals(
-            &self,
-            task_id: TaskId,
-        ) -> Result<Vec<ApprovalRequest>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .approvals
-                .iter()
-                .filter(|a| a.task_id == task_id)
-                .cloned()
-                .collect())
-        }
-
-        fn load_pending_approval(
-            &self,
-            task_id: TaskId,
-        ) -> Result<Option<ApprovalRequest>, PersistenceError> {
-            use crate::approval::ApprovalStatus;
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .approvals
-                .iter()
-                .rev()
-                .find(|a| {
-                    a.task_id == task_id
-                        && matches!(a.status, ApprovalStatus::Pending | ApprovalStatus::Approved)
-                })
-                .cloned())
-        }
-
-        fn load_pending_question(
-            &self,
-            task_id: TaskId,
-        ) -> Result<Option<Question>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .questions
-                .iter()
-                .rev()
-                .find(|q| {
-                    q.task_id == task_id && q.status == crate::question::QuestionStatus::Pending
-                })
-                .cloned())
-        }
-
-        fn load_questions(&self, task_id: TaskId) -> Result<Vec<Question>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .questions
-                .iter()
-                .filter(|q| q.task_id == task_id)
-                .cloned()
-                .collect())
-        }
-
-        fn load_plan(&self, task_id: TaskId) -> Result<Option<PlanVersion>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .plans
-                .iter()
-                .filter(|p| p.task_id == task_id)
-                .max_by_key(|p| p.version)
-                .cloned())
-        }
-
         fn append_event(&self, event: &EventRecord) -> Result<(), PersistenceError> {
             self.write("event", |i| {
                 i.events.push(event.clone());
                 Ok(())
             })
-        }
-
-        fn metrics(&self, task_id: Option<TaskId>) -> Result<Metrics, PersistenceError> {
-            let inner = self.inner.lock().expect("fake lock");
-            let mut m = Metrics::default();
-            for e in inner
-                .events
-                .iter()
-                .filter(|e| task_id.is_none() || e.task_id == task_id)
-            {
-                *m.events_by_name
-                    .entry(e.event.name().to_owned())
-                    .or_default() += 1;
-            }
-            for t in inner
-                .tasks
-                .iter()
-                .filter(|t| task_id.is_none_or(|id| t.task_id == id))
-            {
-                *m.tasks_by_state
-                    .entry(t.state.name().to_owned())
-                    .or_default() += 1;
-            }
-            let mut sums = ContextSums::default();
-            for s in inner
-                .steps
-                .iter()
-                .filter(|s| task_id.is_none_or(|id| s.task_id == id))
-            {
-                sums.add(s);
-            }
-            m.context = sums.finish();
-            Ok(m)
-        }
-
-        fn events_since(
-            &self,
-            position: u64,
-            task_id: Option<TaskId>,
-            limit: usize,
-        ) -> Result<Vec<PositionedEvent>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .events
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (i as u64 + 1, e))
-                .filter(|(p, e)| *p > position && (task_id.is_none() || e.task_id == task_id))
-                .take(limit)
-                .map(|(position, record)| PositionedEvent {
-                    position,
-                    record: record.clone(),
-                })
-                .collect())
         }
 
         fn put_blob(&self, _task_id: TaskId, bytes: &[u8]) -> Result<BlobId, PersistenceError> {
@@ -1845,32 +1958,6 @@ pub mod fake {
             })
         }
 
-        fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .snapshots
-                .iter()
-                .filter(|s| s.task_id == task_id)
-                .cloned()
-                .collect())
-        }
-
-        fn load_snapshot(
-            &self,
-            snapshot_id: SnapshotId,
-        ) -> Result<Option<SnapshotRecord>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .snapshots
-                .iter()
-                .find(|s| s.snapshot_id == snapshot_id)
-                .cloned())
-        }
-
         fn record_workspace_state(
             &self,
             task_id: TaskId,
@@ -1886,19 +1973,6 @@ pub mod fake {
             })
         }
 
-        fn load_workspace_state(
-            &self,
-            task_id: TaskId,
-        ) -> Result<Option<WorkspaceState>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .workspace_states
-                .get(&task_id)
-                .copied())
-        }
-
         fn record_promotion(
             &self,
             promotion: &Promotion,
@@ -1911,33 +1985,6 @@ pub mod fake {
                 i.events.push(event.clone());
                 Ok(())
             })
-        }
-
-        fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .promotions
-                .iter()
-                .filter(|p| p.task_id == task_id)
-                .cloned()
-                .collect())
-        }
-
-        fn object_references(
-            &self,
-            hashes: &[crate::hash::Hash],
-        ) -> Result<Vec<(crate::hash::Hash, u64, u64)>, PersistenceError> {
-            let i = self.inner.lock().expect("fake lock");
-            Ok(hashes
-                .iter()
-                .filter_map(|h| {
-                    i.objects
-                        .get(h)
-                        .map(|(size, refs)| (h.clone(), *size, *refs))
-                })
-                .collect())
         }
 
         fn delete_task_data(
@@ -1990,30 +2037,6 @@ pub mod fake {
                 Ok(out)
             })
         }
-
-        fn blob_bytes(&self, _task_id: TaskId) -> Result<u64, PersistenceError> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake lock")
-                .blobs
-                .iter()
-                .map(|(_, b)| b.len() as u64)
-                .sum())
-        }
-
-        fn get_blob(&self, blob_id: BlobId) -> Result<Vec<u8>, PersistenceError> {
-            self.inner
-                .lock()
-                .expect("fake lock")
-                .blobs
-                .iter()
-                .find(|(id, _)| *id == blob_id)
-                .map(|(_, b)| b.clone())
-                .ok_or(PersistenceError::NotFound {
-                    what: "blob".into(),
-                })
-        }
     }
 }
 
@@ -2028,6 +2051,17 @@ pub enum PersistenceError {
     #[error("database schema version {found} is newer than the supported {supported}")]
     NewerSchema {
         /// Found in the database.
+        found: u32,
+        /// Supported by this runtime.
+        supported: u32,
+    },
+    /// The database schema is older than this runtime's and a read-only open
+    /// cannot migrate it (REQ-PERS-013): the next command that writes does.
+    #[error(
+        "migration pending: the database schema is version {found}, this runtime's is {supported}; the next command that writes migrates it"
+    )]
+    MigrationPending {
+        /// Found in the database (0 when it has no schema yet).
         found: u32,
         /// Supported by this runtime.
         supported: u32,
@@ -2084,12 +2118,105 @@ pub struct PositionedEvent {
     pub record: EventRecord,
 }
 
+/// The reading half of the store (external design §16; REQ-PERS-013, RFC
+/// 013): every method only reads. The read-only handle of the persistence
+/// crate implements this trait and nothing else, so that a command that
+/// holds it cannot call a writing method: the type has none.
+pub trait PersistenceRead: Send + Sync {
+    /// Loads a task.
+    fn load_task(&self, task_id: TaskId) -> Result<Option<Task>, PersistenceError>;
+
+    /// Lists tasks, newest first.
+    fn list_tasks(&self) -> Result<Vec<TaskSummary>, PersistenceError>;
+
+    /// Tasks whose state has this name.
+    fn tasks_in_state(&self, state: &str) -> Result<Vec<TaskId>, PersistenceError>;
+
+    /// The task's grants.
+    fn load_grants(&self, task_id: TaskId) -> Result<Vec<Grant>, PersistenceError>;
+
+    /// The task's steps in order.
+    fn load_steps(&self, task_id: TaskId) -> Result<Vec<Step>, PersistenceError>;
+
+    /// The task's actions in order.
+    fn load_actions(&self, task_id: TaskId) -> Result<Vec<Action>, PersistenceError>;
+
+    /// The task's action in status `running`, if any.
+    fn load_running_action(&self, task_id: TaskId) -> Result<Option<Action>, PersistenceError>;
+
+    /// The task's observations in order.
+    fn load_observations(&self, task_id: TaskId) -> Result<Vec<Observation>, PersistenceError>;
+
+    /// The executions of an action.
+    fn load_executions(&self, action_id: ActionId) -> Result<Vec<Execution>, PersistenceError>;
+
+    /// Every approval request of the task, oldest first.
+    fn load_approvals(&self, task_id: TaskId) -> Result<Vec<ApprovalRequest>, PersistenceError>;
+
+    /// The task's pending approval, if any.
+    fn load_pending_approval(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<ApprovalRequest>, PersistenceError>;
+
+    /// The task's pending question, if any.
+    fn load_pending_question(&self, task_id: TaskId) -> Result<Option<Question>, PersistenceError>;
+
+    /// Every question of the task, oldest first.
+    fn load_questions(&self, task_id: TaskId) -> Result<Vec<Question>, PersistenceError>;
+
+    /// The task's latest plan version, if any.
+    fn load_plan(&self, task_id: TaskId) -> Result<Option<PlanVersion>, PersistenceError>;
+
+    /// The task's snapshots, oldest first.
+    fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError>;
+
+    /// One snapshot.
+    fn load_snapshot(
+        &self,
+        snapshot_id: SnapshotId,
+    ) -> Result<Option<SnapshotRecord>, PersistenceError>;
+
+    /// The workspace's recorded state, if any.
+    fn load_workspace_state(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<WorkspaceState>, PersistenceError>;
+
+    /// The task's promotions, oldest first.
+    fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError>;
+
+    /// How many manifests reference each of these objects, and their sizes.
+    fn object_references(
+        &self,
+        hashes: &[crate::hash::Hash],
+    ) -> Result<Vec<(crate::hash::Hash, u64, u64)>, PersistenceError>;
+
+    /// Bytes of the task's blobs.
+    fn blob_bytes(&self, task_id: TaskId) -> Result<u64, PersistenceError>;
+
+    /// Metrics over all tasks, or one task.
+    fn metrics(&self, task_id: Option<TaskId>) -> Result<Metrics, PersistenceError>;
+
+    /// Events after `position`, oldest first, at most `limit`.
+    fn events_since(
+        &self,
+        position: u64,
+        task_id: Option<TaskId>,
+        limit: usize,
+    ) -> Result<Vec<PositionedEvent>, PersistenceError>;
+
+    /// Reads a blob.
+    fn get_blob(&self, blob_id: BlobId) -> Result<Vec<u8>, PersistenceError>;
+}
+
 /// Durable storage of tasks and everything they own (external design §16;
-/// REQ-PERS-001 … 012). Every method is one transaction that also appends
-/// the event it is given, and returns only after the commit (REQ-PERS-003).
-/// The methods `record_proposed` … `record_step_outcome` are the eight
-/// ordered lines of external design §16.2 (REQ-PERS-004).
-pub trait Persistence: Send + Sync {
+/// REQ-PERS-001 … 012). Every writing method is one transaction that also
+/// appends the event it is given, and returns only after the commit
+/// (REQ-PERS-003). The methods `record_proposed` … `record_step_outcome` are
+/// the eight ordered lines of external design §16.2 (REQ-PERS-004). The
+/// reading methods are [`PersistenceRead`]'s.
+pub trait Persistence: PersistenceRead {
     /// Creates a task with its initial grants (line 0).
     fn create_task(
         &self,
@@ -2097,12 +2224,7 @@ pub trait Persistence: Send + Sync {
         grants: &[Grant],
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
-    /// Loads a task.
-    fn load_task(&self, task_id: TaskId) -> Result<Option<Task>, PersistenceError>;
-    /// Lists tasks, newest first.
-    fn list_tasks(&self) -> Result<Vec<TaskSummary>, PersistenceError>;
-    /// Tasks whose state has this name.
-    fn tasks_in_state(&self, state: &str) -> Result<Vec<TaskId>, PersistenceError>;
+
     /// Persists a task transition outside a step (pause, resume, cancel, halt, recovery).
     fn record_task_transition(
         &self,
@@ -2113,6 +2235,7 @@ pub trait Persistence: Send + Sync {
     /// A step started.
     fn record_step_started(&self, step: &Step, event: &EventRecord)
     -> Result<(), PersistenceError>;
+
     /// Line 1: the proposal with its hash.
     fn record_proposed(
         &self,
@@ -2120,6 +2243,7 @@ pub trait Persistence: Send + Sync {
         action: &Action,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// Line 2: the validation result (a rejection, or the action pending approval or authorized).
     fn record_validation(
         &self,
@@ -2127,6 +2251,7 @@ pub trait Persistence: Send + Sync {
         action: Option<&Action>,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// Line 3: an approval request, with the task now waiting.
     fn record_approval_request(
         &self,
@@ -2135,6 +2260,7 @@ pub trait Persistence: Send + Sync {
         approval: &ApprovalRequest,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// Line 3: the user's decision, with the task's new state.
     fn record_approval_decision(
         &self,
@@ -2142,6 +2268,7 @@ pub trait Persistence: Send + Sync {
         approval: &ApprovalRequest,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// Line 4: authorized, together with the consumed approval when one was required (one transition).
     fn record_authorized(
         &self,
@@ -2149,8 +2276,10 @@ pub trait Persistence: Send + Sync {
         consumed: Option<&ApprovalRequest>,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// Line 5: the running intent; execution may start only after this returns.
     fn record_running(&self, action: &Action, event: &EventRecord) -> Result<(), PersistenceError>;
+
     /// Line 6: the execution record and its observation.
     fn record_execution(
         &self,
@@ -2158,12 +2287,14 @@ pub trait Persistence: Send + Sync {
         observation: &Observation,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// Line 7: the action's terminal status.
     fn record_action_terminal(
         &self,
         action: &Action,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// Line 8: the step's outcome with the task's counters and state.
     fn record_step_outcome(
         &self,
@@ -2179,6 +2310,7 @@ pub trait Persistence: Send + Sync {
         question: &Question,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// A question was answered or expired, with the task's new state.
     fn record_question_update(
         &self,
@@ -2186,42 +2318,19 @@ pub trait Persistence: Send + Sync {
         question: &Question,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// A grant was issued.
     fn record_grant(&self, grant: &Grant, event: &EventRecord) -> Result<(), PersistenceError>;
+
     /// A grant changed status.
     fn record_grant_status(
         &self,
         grant: &Grant,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
+
     /// A plan version was created.
     fn record_plan(&self, plan: &PlanVersion, event: &EventRecord) -> Result<(), PersistenceError>;
-
-    /// The task's grants.
-    fn load_grants(&self, task_id: TaskId) -> Result<Vec<Grant>, PersistenceError>;
-    /// The task's steps in order.
-    fn load_steps(&self, task_id: TaskId) -> Result<Vec<Step>, PersistenceError>;
-    /// The task's actions in order.
-    fn load_actions(&self, task_id: TaskId) -> Result<Vec<Action>, PersistenceError>;
-    /// The task's action in status `running`, if any.
-    fn load_running_action(&self, task_id: TaskId) -> Result<Option<Action>, PersistenceError>;
-    /// The task's observations in order.
-    fn load_observations(&self, task_id: TaskId) -> Result<Vec<Observation>, PersistenceError>;
-    /// The executions of an action.
-    fn load_executions(&self, action_id: ActionId) -> Result<Vec<Execution>, PersistenceError>;
-    /// Every approval request of the task, oldest first.
-    fn load_approvals(&self, task_id: TaskId) -> Result<Vec<ApprovalRequest>, PersistenceError>;
-    /// The task's pending approval, if any.
-    fn load_pending_approval(
-        &self,
-        task_id: TaskId,
-    ) -> Result<Option<ApprovalRequest>, PersistenceError>;
-    /// The task's pending question, if any.
-    fn load_pending_question(&self, task_id: TaskId) -> Result<Option<Question>, PersistenceError>;
-    /// Every question of the task, oldest first.
-    fn load_questions(&self, task_id: TaskId) -> Result<Vec<Question>, PersistenceError>;
-    /// The task's latest plan version, if any.
-    fn load_plan(&self, task_id: TaskId) -> Result<Option<PlanVersion>, PersistenceError>;
 
     /// Records a snapshot whose files are durable, and the objects it references
     /// (counts incremented in the same transaction) (REQ-WS-004, REQ-PERS-009).
@@ -2231,13 +2340,7 @@ pub trait Persistence: Send + Sync {
         objects: &[(crate::hash::Hash, u64)],
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
-    /// The task's snapshots, oldest first.
-    fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError>;
-    /// One snapshot.
-    fn load_snapshot(
-        &self,
-        snapshot_id: SnapshotId,
-    ) -> Result<Option<SnapshotRecord>, PersistenceError>;
+
     /// The workspace's lifecycle state (REQ-WS-009).
     fn record_workspace_state(
         &self,
@@ -2245,26 +2348,14 @@ pub trait Persistence: Send + Sync {
         state: WorkspaceState,
         event: Option<&EventRecord>,
     ) -> Result<(), PersistenceError>;
-    /// The workspace's recorded state, if any.
-    fn load_workspace_state(
-        &self,
-        task_id: TaskId,
-    ) -> Result<Option<WorkspaceState>, PersistenceError>;
+
     /// A promotion applied (REQ-WS-007).
     fn record_promotion(
         &self,
         promotion: &Promotion,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;
-    /// The task's promotions, oldest first.
-    fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError>;
-    /// How many manifests reference each of these objects, and their sizes.
-    fn object_references(
-        &self,
-        hashes: &[crate::hash::Hash],
-    ) -> Result<Vec<(crate::hash::Hash, u64, u64)>, PersistenceError>;
-    /// Bytes of the task's blobs.
-    fn blob_bytes(&self, task_id: TaskId) -> Result<u64, PersistenceError>;
+
     /// Removes the task's snapshot, workspace, promotion and blob rows (and,
     /// with `audit`, its events and records), decrementing the objects;
     /// returns the object hashes that reached zero and the blob ids removed.
@@ -2274,19 +2365,10 @@ pub trait Persistence: Send + Sync {
         audit: bool,
         event: &EventRecord,
     ) -> Result<DeletedRows, PersistenceError>;
+
     /// Appends an event that belongs to no record transition (runtime start and stop, tool pinning, recovery dispositions).
     fn append_event(&self, event: &EventRecord) -> Result<(), PersistenceError>;
-    /// Metrics over all tasks, or one task.
-    fn metrics(&self, task_id: Option<TaskId>) -> Result<Metrics, PersistenceError>;
-    /// Events after `position`, oldest first, at most `limit`.
-    fn events_since(
-        &self,
-        position: u64,
-        task_id: Option<TaskId>,
-        limit: usize,
-    ) -> Result<Vec<PositionedEvent>, PersistenceError>;
+
     /// Stores a bounded blob and returns its id (file first, then the row).
     fn put_blob(&self, task_id: TaskId, bytes: &[u8]) -> Result<BlobId, PersistenceError>;
-    /// Reads a blob.
-    fn get_blob(&self, blob_id: BlobId) -> Result<Vec<u8>, PersistenceError>;
 }

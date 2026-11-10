@@ -22,31 +22,31 @@ use mimlys_core::ids::{
 use mimlys_core::limits::LIM_T5_DEADLINE_MS;
 use mimlys_core::observation::{Observation, ObservationStatus};
 use mimlys_core::policy::Recovery;
-use mimlys_core::spi::{Persistence, PersistenceError};
+use mimlys_core::spi::{Persistence, PersistenceError, PersistenceRead};
 use mimlys_core::step::{Budgets, Step, StepOutcome};
 use mimlys_core::task::{
     HaltReason, PendingItem, Task, TaskInput, TaskState, TaskVersions, WaitKind,
 };
 use serde_json::json;
 
-struct Fx {
-    ids: ScriptedIds,
+pub(crate) struct Fx {
+    pub(crate) ids: ScriptedIds,
     clock: FakeClock,
 }
 
 impl Fx {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             ids: ScriptedIds::default(),
             clock: FakeClock::default(),
         }
     }
 
-    fn now(&self) -> Instant {
+    pub(crate) fn now(&self) -> Instant {
         self.clock.now()
     }
 
-    fn event(&self, task: &Task, event: Event) -> EventRecord {
+    pub(crate) fn event(&self, task: &Task, event: Event) -> EventRecord {
         EventRecord {
             event_id: EventId::new(&self.ids),
             at: self.now(),
@@ -59,7 +59,7 @@ impl Fx {
         }
     }
 
-    fn task(&self) -> Task {
+    pub(crate) fn task(&self) -> Task {
         Task::create(
             mimlys_core::task::TaskSpec {
                 task_id: TaskId::new(&self.ids),
@@ -126,7 +126,7 @@ impl Fx {
 
 /// The eight lines of ED §16.2 for one action, stopping after `upto` lines (0 = create only).
 /// Returns the task and action as they stand.
-fn sequence(
+pub(crate) fn sequence(
     store: &dyn Persistence,
     fx: &Fx,
     upto: usize,

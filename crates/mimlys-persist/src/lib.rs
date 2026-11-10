@@ -9,9 +9,11 @@
 pub mod crash;
 pub mod integrity;
 pub mod metrics;
+pub mod reader;
 pub mod recovery;
 pub mod snapshots;
 pub mod sqlite;
 pub mod store;
 
+pub use reader::{LockState, ReadStore, open_read_only};
 pub use sqlite::{SCHEMA_VERSION, Store, open};

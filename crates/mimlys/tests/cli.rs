@@ -556,7 +556,8 @@ fn req_sec_003_a_persistence_error_runs_nothing() {
 /// the temporary directory is named by `check` and `status`, in one line
 /// that names the key and the risk (a cleaner of temporary files can delete
 /// tasks), in the JSON output as `data_dir_in_temporary_directory`, and is
-/// not refused: both commands succeed and `status` uses the directory. A
+/// not refused: both commands succeed (`status` reads the directory, and creates
+/// nothing in it: REQ-PERS-013). A
 /// data directory outside it is not named.
 #[test]
 fn req_ws_001_a_data_directory_in_the_temporary_directory_is_warned_about_not_refused() {
@@ -586,9 +587,17 @@ fn req_ws_001_a_data_directory_in_the_temporary_directory_is_warned_about_not_re
         assert_eq!(code, 0, "{value}");
         assert_eq!(value["data_dir_in_temporary_directory"], true, "{value}");
     }
+    // REQ-PERS-013: `status` only reads; it creates nothing in the directory it
+    // warns about. A command that writes is what uses it.
+    assert!(
+        !data_dir.exists(),
+        "status and check create no data directory"
+    );
+    let (code, stdout, stderr) = env.bounded(&["interpreters", "list"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(
         data_dir.join("mimlys.db").is_file(),
-        "status used the directory"
+        "a command that writes used the directory"
     );
 
     // Outside the temporary directory: not named. `check` creates nothing.
