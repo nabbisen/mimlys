@@ -9,6 +9,11 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+### Changed
+
+- `mimlys` (handoff 008c; REQ-SEC-012, REQ-SBX-001): **one HTTP stack.** The interpreter download (`interpreters install`) now uses `reqwest`, the model adapter's client; `ureq` (with `ureq-proto` and `utf8-zero`) is out of the dependency tree. What does not change: LIM-O9 bounds the whole attempt, body included; LIM-O10's retries and waits; the typed `unavailable` / `download` error and its `--from FILE` remedy; the 64 MiB bound (LIM-S5); the SHA-256 pin. On the wire it behaves as before: the system proxy variables are honoured, the bundled WebPKI root certificates are the trust store (rustls), redirects are followed (up to ten). One visible difference: the request's `User-Agent` is `mimlys/<version>` (it was `ureq/3.x`). Inside the CLI the request runs on its multi-thread runtime; no second runtime is made.
+- `sha2` moves from 0.10 to 0.11 in the workspace (the version `rmcp` 3.9 uses). Every digest the product computes (snapshot objects and manifests, the interpreter pin, tool-definition hashes, canonical decision hashes, the policy hash) is byte-identical to 0.9.0's: golden values from the tag `0.9.0` and a store written by 0.9.0 are tests. A second `sha2` (0.10) stays in the tree because wasmtime 50.0.1's `cranelift-codegen` requires it; `cargo deny` still lists the `sha2`/`digest` duplicate as a warning.
+
 ## [0.9.0] - 2026-11-10
 
 0.9.0 completes RFC 012: mimlys asks the model for its decision through the engine's native function calling, and one local model, Qwen2.5-7B-Instruct (Q4_K_M), was measured to finish the M4 task (9 of 10 runs: 4 of 5 on llama.cpp, 5 of 5 on Ollama; one model, one task, one machine; the M4 report, §7). The decision envelope of 0.8 stays as `decision_transport = "envelope"`, and the twelve validation stages are unchanged.
