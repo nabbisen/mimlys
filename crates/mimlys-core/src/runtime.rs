@@ -10,10 +10,12 @@ mod context;
 mod control;
 mod loop_;
 mod read;
+mod storage;
 
 pub use control::{CreateTask, RuntimeStatus, TaskView};
 pub use loop_::StepResultView;
 pub use read::{Activity, Reader};
+pub use storage::{Holdings, TaskHolding};
 
 use crate::clock::Clock;
 use crate::event::{Actor, Event, EventRecord};

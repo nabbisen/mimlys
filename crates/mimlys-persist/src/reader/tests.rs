@@ -290,3 +290,144 @@ fn req_pers_013_an_absent_store_is_empty_and_nothing_is_created() {
     drop(open_read_only(&data).unwrap());
     assert_eq!(std::fs::read_dir(&data).unwrap().count(), 0);
 }
+
+/// A workspace stub whose manifests are those it was given, by snapshot.
+struct Manifests(
+    std::collections::BTreeMap<mimlys_core::ids::SnapshotId, mimlys_core::snapshot::Manifest>,
+);
+
+impl mimlys_core::spi::WorkspaceRead for Manifests {
+    fn manifest(
+        &self,
+        snapshot: &mimlys_core::snapshot::SnapshotRecord,
+    ) -> Result<mimlys_core::snapshot::Manifest, mimlys_core::spi::WorkspaceError> {
+        self.0
+            .get(&snapshot.snapshot_id)
+            .cloned()
+            .ok_or(mimlys_core::spi::WorkspaceError::Missing)
+    }
+
+    fn promotion_plan(
+        &self,
+        _task_id: mimlys_core::ids::TaskId,
+        _base: &mimlys_core::snapshot::SnapshotRecord,
+        _project_root: &str,
+    ) -> Result<mimlys_core::snapshot::PromotionPlan, mimlys_core::spi::WorkspaceError> {
+        Err(mimlys_core::spi::WorkspaceError::Missing)
+    }
+
+    fn tree_bytes(
+        &self,
+        _task_id: mimlys_core::ids::TaskId,
+    ) -> Result<u64, mimlys_core::spi::WorkspaceError> {
+        panic!("the storage view never walks a working tree");
+    }
+}
+
+/// REQ-WS-013: the holdings come from the records. Objects only one task's
+/// manifests list are exclusive to it, objects two tasks list are shared, a
+/// promotion's backup counts as objects but not as the working tree, the tree
+/// is the latest snapshot that is not a backup, blobs are per task; no working
+/// tree is walked (the stub panics if it is asked).
+#[test]
+fn req_ws_013_holdings_come_from_the_records() {
+    use mimlys_core::snapshot::{Entry, Manifest, SnapshotReason, SnapshotRecord};
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let fx = Fx::new();
+    let writer = open(&data).unwrap();
+    let (a, _) = sequence(&writer, &fx, 0, false);
+    let (b, _) = sequence(&writer, &fx, 0, false);
+
+    let file = |path: &str, content: &[u8]| Entry::File {
+        path: path.into(),
+        executable: false,
+        size: content.len() as u64,
+        hash: hash_bytes(content),
+    };
+    let mut manifests = std::collections::BTreeMap::new();
+    let mut snapshot = |task: &mimlys_core::task::Task,
+                        reason: SnapshotReason,
+                        entries: Vec<Entry>,
+                        bytes: u64| {
+        let manifest = Manifest::new(entries);
+        let id = mimlys_core::ids::SnapshotId::new(&fx.ids);
+        let objects: Vec<_> = manifest.objects().into_iter().collect();
+        writer
+            .record_snapshot(
+                &SnapshotRecord {
+                    snapshot_id: id,
+                    task_id: task.task_id,
+                    reason,
+                    manifest_hash: manifest.hash(),
+                    bytes,
+                    files: 0,
+                    created_at: fx.now(),
+                    action_id: None,
+                    project_root: None,
+                },
+                &objects,
+                &fx.event(task, Event::RuntimeStopped),
+            )
+            .unwrap();
+        manifests.insert(id, manifest);
+    };
+    // A: base {f1 10, f2 20}; after {f1, f3 5} (tree 15); backup {f5 3}.
+    snapshot(
+        &a,
+        SnapshotReason::Base,
+        vec![file("f1", &[1; 10]), file("f2", &[2; 20])],
+        30,
+    );
+    snapshot(
+        &a,
+        SnapshotReason::After,
+        vec![file("f1", &[1; 10]), file("f3", &[3; 5])],
+        15,
+    );
+    snapshot(&a, SnapshotReason::Backup, vec![file("f5", &[5; 3])], 0);
+    // B: base {f1 (the same content as A's), f4 7}.
+    snapshot(
+        &b,
+        SnapshotReason::Base,
+        vec![file("f1", &[1; 10]), file("f4", &[4; 7])],
+        17,
+    );
+    writer.put_blob(a.task_id, &[0; 100]).unwrap();
+    writer.put_blob(b.task_id, &[0; 40]).unwrap();
+    drop(writer);
+
+    let reader = std::sync::Arc::new(open_read_only(&data).unwrap());
+    let view = mimlys_core::runtime::Reader::new(
+        reader,
+        std::sync::Arc::new(Manifests(manifests)),
+        std::sync::Arc::new(mimlys_core::clock::SystemClock),
+    );
+    let holdings = view.holdings().unwrap();
+    assert_eq!(
+        holdings.object_bytes_shared, 10,
+        "f1 is listed by both tasks"
+    );
+    assert_eq!(holdings.object_bytes_exclusive, 20 + 5 + 3 + 7);
+    assert_eq!(
+        holdings.workspace_bytes,
+        15 + 17,
+        "the latest snapshot that is not a backup"
+    );
+    assert_eq!(holdings.blob_bytes, 140);
+    assert_eq!(holdings.unreadable_manifests, 0);
+    let of = |id| {
+        holdings
+            .tasks
+            .iter()
+            .find(|t| t.task.task_id == id)
+            .unwrap()
+    };
+    assert_eq!(of(a.task_id).object_bytes_exclusive, 28);
+    assert_eq!(of(a.task_id).blob_bytes, 100);
+    assert_eq!(of(b.task_id).object_bytes_exclusive, 7);
+    assert_eq!(of(b.task_id).blob_bytes, 40);
+    assert_eq!(of(a.task_id).snapshots, 3);
+    // Largest first: A (15 + 28 + 100) holds more than B (17 + 7 + 40).
+    assert_eq!(holdings.tasks[0].task.task_id, a.task_id);
+}

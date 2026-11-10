@@ -7,6 +7,7 @@
 
 pub mod builtin;
 pub mod confine;
+pub mod fsinfo;
 pub mod host_tool;
 pub mod interpreters;
 pub mod panic_hook;
