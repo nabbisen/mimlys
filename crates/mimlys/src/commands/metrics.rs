@@ -1,16 +1,16 @@
 //! `mimlys metrics [--task T]` (REQ-OBS-003).
 
-use crate::app::{App, AppError};
+use crate::app::{AppError, ReadApp};
 use crate::messages;
 use crate::output::Output;
 
 /// Prints the derived metrics.
-pub fn run(app: &App, task: Option<&str>, out: &Output) -> Result<(), AppError> {
+pub fn run(app: &ReadApp, task: Option<&str>, out: &Output) -> Result<(), AppError> {
     let task_id = match task {
         Some(t) => Some(app.resolve_task(t)?),
         None => None,
     };
-    let metrics = app.runtime.get_metrics(task_id)?;
+    let metrics = app.reader.get_metrics(task_id)?;
     for (group, map) in [
         ("tasks_by_state", &metrics.tasks_by_state),
         ("events_by_name", &metrics.events_by_name),

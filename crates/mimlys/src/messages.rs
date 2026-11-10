@@ -193,6 +193,8 @@ pub const SIGNAL_INTERRUPTED: &str =
 pub const LIST_HEADER: &str = "task id                               state                 updated                   footprint     goal";
 /// Nothing to list.
 pub const LIST_EMPTY: &str = "no tasks";
+/// `events --follow`: the runtime that ran the task is gone and nothing has recovered the store.
+pub const FOLLOW_RUNTIME_GONE: &str = "the runtime that ran this task is gone; recovery pending: the next command that writes recovers it";
 /// `events`: nothing.
 pub const EVENTS_EMPTY: &str = "no events";
 /// Runtime status lines.
@@ -440,6 +442,28 @@ pub fn tool_calls_refused(reason: &str) -> String {
 /// Status: a clause that is unavailable.
 pub fn status_unavailable(reason: &str) -> String {
     format!("unavailable     {reason}")
+}
+/// Status: the store as a reader finds it (REQ-PERS-013). A reader never says
+/// "locked": another runtime's lock is `in use`, and the reader reads on.
+pub fn store_lines(view: &crate::app::StoreView) -> Vec<String> {
+    use crate::app::StoreState;
+    match view.state {
+        StoreState::Absent => {
+            vec!["store: not created yet (the first command that writes creates it)".into()]
+        }
+        StoreState::Free => vec!["store: free".into()],
+        StoreState::InUse => vec![match &view.holder {
+            Some(h) => format!("store: in use by runtime {} since {}", h.pid, h.since),
+            None => "store: in use by another runtime".into(),
+        }],
+        StoreState::RecoveryPending => vec![
+            "store: free".into(),
+            "recovery pending: the next command that writes recovers it".into(),
+        ],
+        StoreState::LockUntested => {
+            vec!["store: not testable for another runtime on this filesystem".into()]
+        }
+    }
 }
 /// Status: running tasks.
 pub fn status_running(count: usize) -> String {

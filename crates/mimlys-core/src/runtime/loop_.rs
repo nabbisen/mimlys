@@ -1502,12 +1502,7 @@ impl Runtime {
     }
 
     pub(crate) fn load(&self, task_id: TaskId) -> Result<Task, RuntimeError> {
-        self.deps
-            .persistence
-            .load_task(task_id)?
-            .ok_or(RuntimeError::NotFound {
-                what: "task".into(),
-            })
+        super::read::load_task(self.deps.persistence.as_ref(), task_id)
     }
 
     pub(crate) fn profile_of(&self, task: &Task) -> Result<Profile, RuntimeError> {

@@ -15,7 +15,9 @@ use mimlys_core::observation::Observation;
 use mimlys_core::question::Question;
 use mimlys_core::snapshot::{Promotion, SnapshotRecord, WorkspaceState};
 use mimlys_core::spi::DeletedRows;
-use mimlys_core::spi::{Persistence, PersistenceError, PositionedEvent, TaskSummary};
+use mimlys_core::spi::{
+    Persistence, PersistenceError, PersistenceRead, PositionedEvent, TaskSummary,
+};
 use mimlys_core::step::Step;
 use mimlys_core::task::{PlanVersion, Task};
 use rusqlite::{Transaction, TransactionBehavior, params};
@@ -60,31 +62,6 @@ impl Store {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         crash::maybe(point, "after");
         Ok(result)
-    }
-
-    fn query<T: DeserializeOwned>(
-        &self,
-        sql: &str,
-        params: &[&dyn rusqlite::ToSql],
-    ) -> Result<Vec<T>, PersistenceError> {
-        let conn = self.conn.lock().map_err(|_| poisoned())?;
-        let mut stmt = conn.prepare(sql).map_err(storage("prepare"))?;
-        let rows = stmt
-            .query_map(params, |r| r.get::<_, String>(0))
-            .map_err(storage("query"))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(parse(row.map_err(storage("row"))?)?);
-        }
-        Ok(out)
-    }
-
-    fn query_one<T: DeserializeOwned>(
-        &self,
-        sql: &str,
-        params: &[&dyn rusqlite::ToSql],
-    ) -> Result<Option<T>, PersistenceError> {
-        Ok(self.query::<T>(sql, params)?.into_iter().next())
     }
 }
 
@@ -222,6 +199,318 @@ fn status_name<T: Serialize>(value: &T) -> Result<String, PersistenceError> {
         })
 }
 
+/// The reading half of the store, written once for both handles: the
+/// writer's [`Store`] and the read-only handle of `reader` (REQ-PERS-013).
+/// Each needs `conn` and `data_dir` fields.
+macro_rules! persistence_read {
+    ($t:ty) => {
+        impl $t {
+            fn query<T: DeserializeOwned>(
+                &self,
+                sql: &str,
+                params: &[&dyn rusqlite::ToSql],
+            ) -> Result<Vec<T>, PersistenceError> {
+                let conn = self.conn.lock().map_err(|_| poisoned())?;
+                let mut stmt = conn.prepare(sql).map_err(storage("prepare"))?;
+                let rows = stmt
+                    .query_map(params, |r| r.get::<_, String>(0))
+                    .map_err(storage("query"))?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(parse(row.map_err(storage("row"))?)?);
+                }
+                Ok(out)
+            }
+
+            fn query_one<T: DeserializeOwned>(
+                &self,
+                sql: &str,
+                params: &[&dyn rusqlite::ToSql],
+            ) -> Result<Option<T>, PersistenceError> {
+                Ok(self.query::<T>(sql, params)?.into_iter().next())
+            }
+        }
+
+    impl PersistenceRead for $t {
+        fn load_task(&self, task_id: TaskId) -> Result<Option<Task>, PersistenceError> {
+            self.query_one(
+                "SELECT record FROM tasks WHERE task_id = ?1",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn list_tasks(&self) -> Result<Vec<TaskSummary>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn
+                .prepare("SELECT task_id, goal, state, created_at, updated_at FROM tasks ORDER BY created_at DESC")
+                .map_err(storage("prepare"))?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(storage("query"))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (id, goal, state, created, updated) = row.map_err(storage("row"))?;
+                out.push(TaskSummary {
+                    task_id: TaskId::from_uuid(id.parse().map_err(|_| PersistenceError::Storage {
+                        detail: "uuid".into(),
+                    })?),
+                    goal,
+                    state,
+                    created_at: mimlys_core::clock::Instant::parse(&created).map_err(|_| {
+                        PersistenceError::Storage {
+                            detail: "instant".into(),
+                        }
+                    })?,
+                    updated_at: mimlys_core::clock::Instant::parse(&updated).map_err(|_| {
+                        PersistenceError::Storage {
+                            detail: "instant".into(),
+                        }
+                    })?,
+                });
+            }
+            Ok(out)
+        }
+
+        fn tasks_in_state(&self, state: &str) -> Result<Vec<TaskId>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn
+                .prepare("SELECT task_id FROM tasks WHERE state = ?1 ORDER BY created_at")
+                .map_err(storage("prepare"))?;
+            let rows = stmt
+                .query_map([state], |r| r.get::<_, String>(0))
+                .map_err(storage("query"))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let id = row.map_err(storage("row"))?;
+                out.push(TaskId::from_uuid(id.parse().map_err(|_| {
+                    PersistenceError::Storage {
+                        detail: "uuid".into(),
+                    }
+                })?));
+            }
+            Ok(out)
+        }
+
+        fn load_grants(&self, task_id: TaskId) -> Result<Vec<Grant>, PersistenceError> {
+            self.query(
+                "SELECT record FROM grants WHERE task_id = ?1 ORDER BY rowid",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_steps(&self, task_id: TaskId) -> Result<Vec<Step>, PersistenceError> {
+            self.query(
+                "SELECT record FROM steps WHERE task_id = ?1 ORDER BY idx",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_actions(&self, task_id: TaskId) -> Result<Vec<Action>, PersistenceError> {
+            self.query(
+                "SELECT record FROM actions WHERE task_id = ?1 ORDER BY created_at, rowid",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_running_action(&self, task_id: TaskId) -> Result<Option<Action>, PersistenceError> {
+            self.query_one("SELECT record FROM actions WHERE task_id = ?1 AND status = 'running' ORDER BY rowid DESC", &[&task_id.to_string()])
+        }
+
+        fn load_observations(&self, task_id: TaskId) -> Result<Vec<Observation>, PersistenceError> {
+            self.query(
+                "SELECT o.record FROM observations o JOIN actions a ON a.action_id = o.action_id WHERE a.task_id = ?1 ORDER BY o.rowid",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_executions(&self, action_id: ActionId) -> Result<Vec<Execution>, PersistenceError> {
+            self.query(
+                "SELECT record FROM executions WHERE action_id = ?1 ORDER BY attempt",
+                &[&action_id.to_string()],
+            )
+        }
+
+        fn load_approvals(&self, task_id: TaskId) -> Result<Vec<ApprovalRequest>, PersistenceError> {
+            self.query(
+                "SELECT record FROM approvals WHERE task_id = ?1 ORDER BY rowid",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_pending_approval(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Option<ApprovalRequest>, PersistenceError> {
+            self.query_one(
+                "SELECT record FROM approvals WHERE task_id = ?1 AND status IN ('pending', 'approved') ORDER BY rowid DESC",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_pending_question(&self, task_id: TaskId) -> Result<Option<Question>, PersistenceError> {
+            self.query_one("SELECT record FROM questions WHERE task_id = ?1 AND status = 'pending' ORDER BY rowid DESC", &[&task_id.to_string()])
+        }
+
+        fn load_questions(&self, task_id: TaskId) -> Result<Vec<Question>, PersistenceError> {
+            self.query(
+                "SELECT record FROM questions WHERE task_id = ?1 ORDER BY rowid",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_plan(&self, task_id: TaskId) -> Result<Option<PlanVersion>, PersistenceError> {
+            self.query_one(
+                "SELECT record FROM plan_versions WHERE task_id = ?1 ORDER BY version DESC",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn events_since(
+            &self,
+            position: u64,
+            task_id: Option<TaskId>,
+            limit: usize,
+        ) -> Result<Vec<PositionedEvent>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn
+                .prepare("SELECT position, record FROM events WHERE position > ?1 AND (?2 IS NULL OR task_id = ?2) ORDER BY position LIMIT ?3")
+                .map_err(storage("prepare"))?;
+            let rows = stmt
+                .query_map(
+                    params![
+                        position as i64,
+                        task_id.map(|t| t.to_string()),
+                        limit as i64
+                    ],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                )
+                .map_err(storage("query"))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (position, record) = row.map_err(storage("row"))?;
+                out.push(PositionedEvent {
+                    position: position as u64,
+                    record: parse(record)?,
+                });
+            }
+            Ok(out)
+        }
+
+        fn metrics(
+            &self,
+            task_id: Option<TaskId>,
+        ) -> Result<mimlys_core::spi::Metrics, PersistenceError> {
+            crate::metrics::metrics(&self.conn, task_id)
+        }
+
+        fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError> {
+            self.query(
+                "SELECT record FROM snapshots WHERE task_id = ?1 ORDER BY created_at, rowid",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn load_snapshot(
+            &self,
+            snapshot_id: SnapshotId,
+        ) -> Result<Option<SnapshotRecord>, PersistenceError> {
+            self.query_one(
+                "SELECT record FROM snapshots WHERE snapshot_id = ?1",
+                &[&snapshot_id.to_string()],
+            )
+        }
+
+        fn load_workspace_state(
+            &self,
+            task_id: TaskId,
+        ) -> Result<Option<WorkspaceState>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let state: Option<String> = conn
+                .query_row(
+                    "SELECT state FROM workspaces WHERE task_id = ?1",
+                    params![task_id.to_string()],
+                    |r| r.get(0),
+                )
+                .ok();
+            Ok(state.and_then(|s| match s.as_str() {
+                "allocated" => Some(WorkspaceState::Allocated),
+                "active" => Some(WorkspaceState::Active),
+                "deleted" => Some(WorkspaceState::Deleted),
+                _ => None,
+            }))
+        }
+
+        fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError> {
+            self.query(
+                "SELECT record FROM promotions WHERE task_id = ?1 ORDER BY applied_at, rowid",
+                &[&task_id.to_string()],
+            )
+        }
+
+        fn object_references(
+            &self,
+            hashes: &[mimlys_core::hash::Hash],
+        ) -> Result<Vec<(mimlys_core::hash::Hash, u64, u64)>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn
+                .prepare("SELECT size, refs FROM objects WHERE hash = ?1")
+                .map_err(storage("prepare"))?;
+            let mut out = Vec::new();
+            for hash in hashes {
+                if let Ok((size, refs)) = stmt.query_row(params![hash.as_str()], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                }) {
+                    out.push((hash.clone(), size as u64, refs as u64));
+                }
+            }
+            Ok(out)
+        }
+
+        fn blob_bytes(&self, task_id: TaskId) -> Result<u64, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let total: i64 = conn
+                .query_row(
+                    "SELECT coalesce(sum(size), 0) FROM blobs WHERE task_id = ?1",
+                    params![task_id.to_string()],
+                    |r| r.get(0),
+                )
+                .map_err(storage("blob_bytes"))?;
+            Ok(total as u64)
+        }
+
+        fn get_blob(&self, blob_id: BlobId) -> Result<Vec<u8>, PersistenceError> {
+            let exists: i64 = {
+                let conn = self.conn.lock().map_err(|_| poisoned())?;
+                conn.query_row(
+                    "SELECT count(*) FROM blobs WHERE blob_id = ?1",
+                    [blob_id.to_string()],
+                    |r| r.get(0),
+                )
+                .map_err(storage("query"))?
+            };
+            if exists == 0 {
+                return Err(PersistenceError::NotFound {
+                    what: "blob".into(),
+                });
+            }
+            std::fs::read(self.data_dir.join("blobs").join(blob_id.to_string()))
+                .map_err(io("blob_read"))
+        }
+    }
+    };
+}
+
+persistence_read!(Store);
+persistence_read!(crate::reader::ReadStore);
+
 impl Persistence for Store {
     fn create_task(
         &self,
@@ -236,73 +525,6 @@ impl Persistence for Store {
             }
             append_event(tx, event)
         })
-    }
-
-    fn load_task(&self, task_id: TaskId) -> Result<Option<Task>, PersistenceError> {
-        self.query_one(
-            "SELECT record FROM tasks WHERE task_id = ?1",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn list_tasks(&self) -> Result<Vec<TaskSummary>, PersistenceError> {
-        let conn = self.conn.lock().map_err(|_| poisoned())?;
-        let mut stmt = conn
-            .prepare("SELECT task_id, goal, state, created_at, updated_at FROM tasks ORDER BY created_at DESC")
-            .map_err(storage("prepare"))?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            })
-            .map_err(storage("query"))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (id, goal, state, created, updated) = row.map_err(storage("row"))?;
-            out.push(TaskSummary {
-                task_id: TaskId::from_uuid(id.parse().map_err(|_| PersistenceError::Storage {
-                    detail: "uuid".into(),
-                })?),
-                goal,
-                state,
-                created_at: mimlys_core::clock::Instant::parse(&created).map_err(|_| {
-                    PersistenceError::Storage {
-                        detail: "instant".into(),
-                    }
-                })?,
-                updated_at: mimlys_core::clock::Instant::parse(&updated).map_err(|_| {
-                    PersistenceError::Storage {
-                        detail: "instant".into(),
-                    }
-                })?,
-            });
-        }
-        Ok(out)
-    }
-
-    fn tasks_in_state(&self, state: &str) -> Result<Vec<TaskId>, PersistenceError> {
-        let conn = self.conn.lock().map_err(|_| poisoned())?;
-        let mut stmt = conn
-            .prepare("SELECT task_id FROM tasks WHERE state = ?1 ORDER BY created_at")
-            .map_err(storage("prepare"))?;
-        let rows = stmt
-            .query_map([state], |r| r.get::<_, String>(0))
-            .map_err(storage("query"))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let id = row.map_err(storage("row"))?;
-            out.push(TaskId::from_uuid(id.parse().map_err(|_| {
-                PersistenceError::Storage {
-                    detail: "uuid".into(),
-                }
-            })?));
-        }
-        Ok(out)
     }
 
     fn record_task_transition(
@@ -559,111 +781,6 @@ impl Persistence for Store {
         })
     }
 
-    fn load_grants(&self, task_id: TaskId) -> Result<Vec<Grant>, PersistenceError> {
-        self.query(
-            "SELECT record FROM grants WHERE task_id = ?1 ORDER BY rowid",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_steps(&self, task_id: TaskId) -> Result<Vec<Step>, PersistenceError> {
-        self.query(
-            "SELECT record FROM steps WHERE task_id = ?1 ORDER BY idx",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_actions(&self, task_id: TaskId) -> Result<Vec<Action>, PersistenceError> {
-        self.query(
-            "SELECT record FROM actions WHERE task_id = ?1 ORDER BY created_at, rowid",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_running_action(&self, task_id: TaskId) -> Result<Option<Action>, PersistenceError> {
-        self.query_one("SELECT record FROM actions WHERE task_id = ?1 AND status = 'running' ORDER BY rowid DESC", &[&task_id.to_string()])
-    }
-
-    fn load_observations(&self, task_id: TaskId) -> Result<Vec<Observation>, PersistenceError> {
-        self.query(
-            "SELECT o.record FROM observations o JOIN actions a ON a.action_id = o.action_id WHERE a.task_id = ?1 ORDER BY o.rowid",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_executions(&self, action_id: ActionId) -> Result<Vec<Execution>, PersistenceError> {
-        self.query(
-            "SELECT record FROM executions WHERE action_id = ?1 ORDER BY attempt",
-            &[&action_id.to_string()],
-        )
-    }
-
-    fn load_approvals(&self, task_id: TaskId) -> Result<Vec<ApprovalRequest>, PersistenceError> {
-        self.query(
-            "SELECT record FROM approvals WHERE task_id = ?1 ORDER BY rowid",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_pending_approval(
-        &self,
-        task_id: TaskId,
-    ) -> Result<Option<ApprovalRequest>, PersistenceError> {
-        self.query_one(
-            "SELECT record FROM approvals WHERE task_id = ?1 AND status IN ('pending', 'approved') ORDER BY rowid DESC",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_pending_question(&self, task_id: TaskId) -> Result<Option<Question>, PersistenceError> {
-        self.query_one("SELECT record FROM questions WHERE task_id = ?1 AND status = 'pending' ORDER BY rowid DESC", &[&task_id.to_string()])
-    }
-
-    fn load_questions(&self, task_id: TaskId) -> Result<Vec<Question>, PersistenceError> {
-        self.query(
-            "SELECT record FROM questions WHERE task_id = ?1 ORDER BY rowid",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_plan(&self, task_id: TaskId) -> Result<Option<PlanVersion>, PersistenceError> {
-        self.query_one(
-            "SELECT record FROM plan_versions WHERE task_id = ?1 ORDER BY version DESC",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn events_since(
-        &self,
-        position: u64,
-        task_id: Option<TaskId>,
-        limit: usize,
-    ) -> Result<Vec<PositionedEvent>, PersistenceError> {
-        let conn = self.conn.lock().map_err(|_| poisoned())?;
-        let mut stmt = conn
-            .prepare("SELECT position, record FROM events WHERE position > ?1 AND (?2 IS NULL OR task_id = ?2) ORDER BY position LIMIT ?3")
-            .map_err(storage("prepare"))?;
-        let rows = stmt
-            .query_map(
-                params![
-                    position as i64,
-                    task_id.map(|t| t.to_string()),
-                    limit as i64
-                ],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-            )
-            .map_err(storage("query"))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (position, record) = row.map_err(storage("row"))?;
-            out.push(PositionedEvent {
-                position: position as u64,
-                record: parse(record)?,
-            });
-        }
-        Ok(out)
-    }
-
     fn put_blob(&self, task_id: TaskId, bytes: &[u8]) -> Result<BlobId, PersistenceError> {
         if bytes.len() > LIM_S4_BLOB_BYTES {
             return Err(PersistenceError::Storage {
@@ -701,13 +818,6 @@ impl Persistence for Store {
         Ok(blob_id)
     }
 
-    fn metrics(
-        &self,
-        task_id: Option<TaskId>,
-    ) -> Result<mimlys_core::spi::Metrics, PersistenceError> {
-        crate::metrics::metrics(self, task_id)
-    }
-
     fn record_snapshot(
         &self,
         snapshot: &SnapshotRecord,
@@ -742,23 +852,6 @@ impl Persistence for Store {
         })
     }
 
-    fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError> {
-        self.query(
-            "SELECT record FROM snapshots WHERE task_id = ?1 ORDER BY created_at, rowid",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn load_snapshot(
-        &self,
-        snapshot_id: SnapshotId,
-    ) -> Result<Option<SnapshotRecord>, PersistenceError> {
-        self.query_one(
-            "SELECT record FROM snapshots WHERE snapshot_id = ?1",
-            &[&snapshot_id.to_string()],
-        )
-    }
-
     fn record_workspace_state(
         &self,
         task_id: TaskId,
@@ -781,26 +874,6 @@ impl Persistence for Store {
         })
     }
 
-    fn load_workspace_state(
-        &self,
-        task_id: TaskId,
-    ) -> Result<Option<WorkspaceState>, PersistenceError> {
-        let conn = self.conn.lock().map_err(|_| poisoned())?;
-        let state: Option<String> = conn
-            .query_row(
-                "SELECT state FROM workspaces WHERE task_id = ?1",
-                params![task_id.to_string()],
-                |r| r.get(0),
-            )
-            .ok();
-        Ok(state.and_then(|s| match s.as_str() {
-            "allocated" => Some(WorkspaceState::Allocated),
-            "active" => Some(WorkspaceState::Active),
-            "deleted" => Some(WorkspaceState::Deleted),
-            _ => None,
-        }))
-    }
-
     fn record_promotion(
         &self,
         promotion: &Promotion,
@@ -821,44 +894,6 @@ impl Persistence for Store {
             .map_err(storage("upsert_promotion"))?;
             append_event(tx, event)
         })
-    }
-
-    fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError> {
-        self.query(
-            "SELECT record FROM promotions WHERE task_id = ?1 ORDER BY applied_at, rowid",
-            &[&task_id.to_string()],
-        )
-    }
-
-    fn object_references(
-        &self,
-        hashes: &[mimlys_core::hash::Hash],
-    ) -> Result<Vec<(mimlys_core::hash::Hash, u64, u64)>, PersistenceError> {
-        let conn = self.conn.lock().map_err(|_| poisoned())?;
-        let mut stmt = conn
-            .prepare("SELECT size, refs FROM objects WHERE hash = ?1")
-            .map_err(storage("prepare"))?;
-        let mut out = Vec::new();
-        for hash in hashes {
-            if let Ok((size, refs)) = stmt.query_row(params![hash.as_str()], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            }) {
-                out.push((hash.clone(), size as u64, refs as u64));
-            }
-        }
-        Ok(out)
-    }
-
-    fn blob_bytes(&self, task_id: TaskId) -> Result<u64, PersistenceError> {
-        let conn = self.conn.lock().map_err(|_| poisoned())?;
-        let total: i64 = conn
-            .query_row(
-                "SELECT coalesce(sum(size), 0) FROM blobs WHERE task_id = ?1",
-                params![task_id.to_string()],
-                |r| r.get(0),
-            )
-            .map_err(storage("blob_bytes"))?;
-        Ok(total as u64)
     }
 
     fn delete_task_data(
@@ -944,25 +979,6 @@ impl Persistence for Store {
     fn append_event(&self, event: &EventRecord) -> Result<(), PersistenceError> {
         self.transaction("event", |tx| append_event(tx, event))
     }
-
-    fn get_blob(&self, blob_id: BlobId) -> Result<Vec<u8>, PersistenceError> {
-        let exists: i64 = {
-            let conn = self.conn.lock().map_err(|_| poisoned())?;
-            conn.query_row(
-                "SELECT count(*) FROM blobs WHERE blob_id = ?1",
-                [blob_id.to_string()],
-                |r| r.get(0),
-            )
-            .map_err(storage("query"))?
-        };
-        if exists == 0 {
-            return Err(PersistenceError::NotFound {
-                what: "blob".into(),
-            });
-        }
-        std::fs::read(self.data_dir.join("blobs").join(blob_id.to_string()))
-            .map_err(io("blob_read"))
-    }
 }
 
 fn insert_grant(tx: &Transaction<'_>, grant: &Grant) -> Result<(), PersistenceError> {
@@ -1035,4 +1051,4 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

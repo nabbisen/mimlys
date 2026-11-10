@@ -1,6 +1,6 @@
 //! `mimlys status` (REQ-OBS-006).
 
-use crate::app::{App, AppError};
+use crate::app::{AppError, ReadApp, StoreView, make_backend, probe_backend_of, probe_confinement};
 use crate::messages;
 use crate::output::Output;
 use serde::Serialize;
@@ -19,7 +19,9 @@ struct Status<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     xcrun_cache_missing: Option<String>,
     config: Option<String>,
-    recovered: Vec<RecoveredView>,
+    /// What recovery did at startup: always empty here, because `status` recovers
+    /// nothing (REQ-PERS-013); the field stays so that the JSON shape does.
+    recovered: Vec<serde_json::Value>,
     engine_version: &'static str,
     interpreters: Vec<serde_json::Value>,
     /// The configured MCP servers (RFC 009 §8).
@@ -28,6 +30,9 @@ struct Status<'a> {
     host_tools: Vec<HostToolView>,
     /// The worker's read set (REQ-CONF-008).
     read_set: Vec<String>,
+    /// The store as a reader finds it: free, in use by another runtime (and
+    /// which), needing recovery, or not created yet (REQ-PERS-013).
+    store: StoreView,
 }
 
 /// One declared host tool: its command, whether it is the dependency step
@@ -53,17 +58,30 @@ struct BackendView {
     probe: Option<crate::app::BackendProbe>,
 }
 
-#[derive(Serialize)]
-struct RecoveredView {
-    task_id: String,
-    disposition: mimlys_core::event::RecoveryDisposition,
-    state: String,
-}
-
-/// Prints the status.
-pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
-    let mut status = app.runtime.get_runtime_status()?;
-    let probe = app.backend_probe();
+/// Prints the status. `status` only reads (REQ-PERS-013): it opens the store
+/// as a reader without the lock, so it answers while another runtime runs a
+/// task, and it recovers nothing, reaps nothing and records nothing.
+pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
+    let config = &app.loaded.config;
+    let policy = config.resolve_policy()?;
+    let (backend_adapter, openai) = make_backend(config, &app.loaded, None)?;
+    let (backend_probe, notice) = probe_backend_of(&app.loaded, openai.as_ref()).await?;
+    if let Some(notice) = notice {
+        out.line(notice);
+    }
+    let confinement = probe_confinement(config, &app.data_dir, &app.interpreters, &app.host_tools);
+    let activity = app.reader.activity()?;
+    let mut status = mimlys_core::runtime::RuntimeStatus {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        backend: backend_adapter.describe(),
+        tier: confinement.tier_with(&policy.accept_best_effort).describe(),
+        clauses: confinement.clauses.clone(),
+        unavailable_clauses: confinement.unavailable_lines(),
+        running: activity.running,
+        pending: activity.pending,
+    };
+    let probe = Some(backend_probe);
+    let store = app.store_view()?;
     let locality = serde_json::to_value(status.backend.locality)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -79,6 +97,9 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
     ) {
         out.line(line);
     }
+    for line in messages::store_lines(&store) {
+        out.line(line);
+    }
     let backend = BackendView {
         kind: std::mem::take(&mut status.backend.kind),
         model: status.backend.model.take(),
@@ -91,10 +112,7 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
             &app.data_dir.to_string_lossy(),
         ));
     }
-    let xcrun_missing = app
-        .xcrun_cache_missing
-        .as_ref()
-        .map(|f| f.to_string_lossy().into_owned());
+    let xcrun_missing = crate::app::warm_xcrun_cache().map(|f| f.to_string_lossy().into_owned());
     if let Some(file) = &xcrun_missing {
         out.line(messages::xcrun_cache_missing_warning(file));
     }
@@ -136,7 +154,31 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
             app.host_tools_unavailable.get(&d.name).map(String::as_str),
         ));
     }
-    let mut servers = app.server_status();
+    // A server runs in the data directory; a reader creates none, so before the
+    // first command that writes there is none to run in and the server keeps the
+    // current directory of the command.
+    let data_dir_exists = app.data_dir.is_dir();
+    let servers_handle = std::sync::Arc::new(mimlys_mcp::tools::Servers::new(
+        config
+            .servers(&app.data_dir, &app.loaded.secrets)
+            .into_iter()
+            .map(|mut c| {
+                if !data_dir_exists {
+                    c.current_dir = None;
+                }
+                mimlys_mcp::server::Server::new(c)
+            })
+            .collect(),
+    ));
+    let mut servers = if servers_handle.is_empty() {
+        Vec::new()
+    } else {
+        // Started to be listed, then ended; the events of their start and stop
+        // belong to a store a reader does not write, so they are not recorded.
+        let listed = servers_handle.status().await;
+        servers_handle.shutdown().await;
+        listed
+    };
     // The model sees only the tools that can be functions of the transport; the user
     // is told which are left out, and why, here and not by the model (REQ-MDL-009).
     if matches!(
@@ -157,13 +199,6 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
     out.line(messages::status_running(status.running.len()));
     for (id, kind) in &status.pending {
         out.line(messages::status_pending(&id.to_string(), *kind));
-    }
-    for r in &app.recovered {
-        out.line(messages::recovered(
-            &r.task_id.to_string(),
-            &serde_json::to_string(&r.disposition).unwrap_or_default(),
-            &r.state,
-        ));
     }
     out.value(&Status {
         runtime: &status,
@@ -189,20 +224,13 @@ pub fn run(app: &App, out: &Output) -> Result<(), AppError> {
             })
             .collect(),
         read_set: app.read_set(),
+        store,
         interpreters: app
             .interpreters
             .iter()
             .map(|i| serde_json::json!({ "language": i.language, "sha256": i.sha256, "module": i.module.to_string_lossy(), "installed": i.module.is_file() }))
             .collect(),
-        recovered: app
-            .recovered
-            .iter()
-            .map(|r| RecoveredView {
-                task_id: r.task_id.to_string(),
-                disposition: r.disposition,
-                state: r.state.clone(),
-            })
-            .collect(),
+        recovered: Vec::new(),
     });
     Ok(())
 }

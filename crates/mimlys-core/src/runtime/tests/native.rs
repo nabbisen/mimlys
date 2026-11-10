@@ -172,7 +172,6 @@ fn req_mdl_009_an_unsettled_transport_halts_without_a_fallback() {
         h.backend.requests().is_empty(),
         "no request went out, in either transport"
     );
-    use crate::spi::Persistence;
     let steps = h.persistence.load_steps(id).unwrap();
     assert_eq!(steps.len(), 1);
     assert!(

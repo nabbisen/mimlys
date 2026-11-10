@@ -4,7 +4,7 @@
 //! On Linux and macOS the kernel takes the paths from the specification, so
 //! `grant` and `revoke` have nothing to apply and say so.
 
-use crate::app::{App, AppError};
+use crate::app::{App, AppError, ReadApp};
 use crate::messages;
 use crate::output::Output;
 use crate::prompt::Interaction;
@@ -12,9 +12,9 @@ use std::path::Path;
 
 /// Prints the read set and each declared tool's paths; on Windows, whether
 /// each path carries the container's entry, read from the directory.
-pub fn list(app: &App, out: &Output) -> Result<(), AppError> {
+pub fn list(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     let read_set = app.read_set();
-    let container = app.container.lock().expect("container").clone();
+    let container = app.container.clone();
     if let Some(c) = &container {
         out.line(messages::container_line(&c.profile, &c.sid_text));
     }

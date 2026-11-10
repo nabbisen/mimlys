@@ -10,7 +10,9 @@ use cap_std::fs::Dir;
 use mimlys_core::ids::TaskId;
 use mimlys_core::path::{CaseMode, WorkspacePath};
 use mimlys_core::policy::ExclusionMatcher;
-use mimlys_core::spi::{ToolProvider, WorkspaceError, WorkspaceInfo, WorkspaceProvider};
+use mimlys_core::spi::{
+    ToolProvider, WorkspaceError, WorkspaceInfo, WorkspaceProvider, WorkspaceRead,
+};
 use mimlys_core::task::ScopeSpec;
 use mimlys_exec::builtin::BuiltinTools;
 use std::collections::HashMap;
@@ -125,6 +127,23 @@ impl LocalWorkspaces {
             external: None,
             files,
         })
+    }
+
+    /// A provider for commands that only read (REQ-PERS-013): nothing is
+    /// created under the data directory. Used through [`WorkspaceRead`], which
+    /// has no writing method; the limits are those of a writer's and unused.
+    pub fn for_reading(data_dir: PathBuf, patterns: Vec<String>) -> Self {
+        let files = mimlys_persist::snapshots::SnapshotFiles::open_for_reading(&data_dir);
+        Self {
+            data_dir,
+            patterns,
+            max_bytes: 0,
+            max_files: 0,
+            tools: Mutex::new(HashMap::new()),
+            sandbox: None,
+            external: None,
+            files,
+        }
     }
 
     fn write_info(&self, task_id: TaskId, info: &WorkspaceInfo) -> Result<(), WorkspaceError> {
@@ -377,6 +396,34 @@ fn recreate_symlink(src: &Dir, dst: &Dir, link: &str, target: &Path) -> Result<(
     })
 }
 
+impl WorkspaceRead for LocalWorkspaces {
+    fn manifest(
+        &self,
+        snapshot: &mimlys_core::snapshot::SnapshotRecord,
+    ) -> Result<mimlys_core::snapshot::Manifest, WorkspaceError> {
+        self.files
+            .read_manifest(snapshot.snapshot_id, &snapshot.manifest_hash)
+            .map_err(|e| WorkspaceError::Storage {
+                detail: e.to_string(),
+            })
+    }
+
+    fn promotion_plan(
+        &self,
+        task_id: TaskId,
+        base: &mimlys_core::snapshot::SnapshotRecord,
+        project_root: &str,
+    ) -> Result<mimlys_core::snapshot::PromotionPlan, WorkspaceError> {
+        self.promotion_plan_impl(task_id, base, project_root)
+    }
+
+    fn tree_bytes(&self, task_id: TaskId) -> Result<u64, WorkspaceError> {
+        let dir = Dir::open_ambient_dir(self.tree_path(task_id), ambient_authority())
+            .map_err(|_| WorkspaceError::Missing)?;
+        Self::tree_size(&dir, "")
+    }
+}
+
 impl WorkspaceProvider for LocalWorkspaces {
     fn materialize(
         &self,
@@ -511,17 +558,6 @@ impl WorkspaceProvider for LocalWorkspaces {
         self.restore_impl(task_id, snapshot)
     }
 
-    fn manifest(
-        &self,
-        snapshot: &mimlys_core::snapshot::SnapshotRecord,
-    ) -> Result<mimlys_core::snapshot::Manifest, WorkspaceError> {
-        self.files
-            .read_manifest(snapshot.snapshot_id, &snapshot.manifest_hash)
-            .map_err(|e| WorkspaceError::Storage {
-                detail: e.to_string(),
-            })
-    }
-
     fn materialize_from(
         &self,
         task_id: TaskId,
@@ -531,15 +567,6 @@ impl WorkspaceProvider for LocalWorkspaces {
         now: mimlys_core::clock::Instant,
     ) -> Result<(WorkspaceInfo, mimlys_core::spi::PreparedSnapshot), WorkspaceError> {
         self.materialize_from_impl(task_id, snapshot_id, from, scope, now)
-    }
-
-    fn promotion_plan(
-        &self,
-        task_id: TaskId,
-        base: &mimlys_core::snapshot::SnapshotRecord,
-        project_root: &str,
-    ) -> Result<mimlys_core::snapshot::PromotionPlan, WorkspaceError> {
-        self.promotion_plan_impl(task_id, base, project_root)
     }
 
     fn promote(
@@ -566,12 +593,6 @@ impl WorkspaceProvider for LocalWorkspaces {
         backup: &mimlys_core::snapshot::SnapshotRecord,
     ) -> Result<mimlys_core::snapshot::RestoreReport, WorkspaceError> {
         self.revert_promotion_impl(promotion, backup)
-    }
-
-    fn tree_bytes(&self, task_id: TaskId) -> Result<u64, WorkspaceError> {
-        let dir = Dir::open_ambient_dir(self.tree_path(task_id), ambient_authority())
-            .map_err(|_| WorkspaceError::Missing)?;
-        Self::tree_size(&dir, "")
     }
 
     fn delete_files(

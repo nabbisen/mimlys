@@ -2,11 +2,27 @@
 //! REQ-SEC-015): the plan, the diff, the user's confirmation, the backup,
 //! the writes. `--patch` prints a unified patch and writes nothing.
 
-use crate::app::{App, AppError};
+use crate::app::{App, AppError, ReadApp};
 use crate::messages;
 use crate::output::Output;
 use crate::prompt::Interaction;
 use mimlys_core::snapshot::ChangeKind;
+
+/// `promote --patch`: prints the unified patch and writes nothing. It only
+/// reads (REQ-PERS-013): the plan reads the base manifest, the working tree and
+/// the project, and records nothing, so it runs on the reader's handle.
+pub fn patch(app: &ReadApp, task: &str, out: &Output) -> Result<(), AppError> {
+    let id = app.resolve_task(task)?;
+    let plan = app.reader.promotion_plan(id)?;
+    if plan.changes.is_empty() {
+        out.line(messages::PROMOTE_NOTHING);
+    }
+    for (_, diff) in &plan.text_diffs {
+        out.line(diff.trim_end_matches('\n'));
+    }
+    out.value(&plan);
+    Ok(())
+}
 
 /// Plans and, when confirmed, applies a promotion.
 pub fn run(
@@ -14,22 +30,11 @@ pub fn run(
     task: &str,
     yes: bool,
     summary: bool,
-    patch: bool,
     interaction: &mut dyn Interaction,
     out: &Output,
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     let plan = app.runtime.promotion_plan(id)?;
-    if patch {
-        if plan.changes.is_empty() {
-            out.line(messages::PROMOTE_NOTHING);
-        }
-        for (_, diff) in &plan.text_diffs {
-            out.line(diff.trim_end_matches('\n'));
-        }
-        out.value(&plan);
-        return Ok(());
-    }
     if plan.changes.is_empty() {
         out.line(messages::PROMOTE_NOTHING);
         out.value(&serde_json::json!({ "plan": plan, "applied": false }));
