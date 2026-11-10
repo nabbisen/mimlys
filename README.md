@@ -28,7 +28,7 @@ Model Context Protocol.
 
 ## Quick start
 
-mimlys is pre-release. Release 0.8.0 (milestones M1 to M6c) is the deterministic core, the sandbox, the transactional workspace, a local model behind any
+mimlys is pre-release. Release 0.9.0 (milestones M1 to M6c, with decisions as native tool calls) is the deterministic core, the sandbox, the transactional workspace, a local model behind any
 OpenAI-compatible server (llama-server, Ollama), external tools over the
 Model Context Protocol with [rypsok](https://github.com/nabbisen/rypsok) as
 the first server, and declared host tools under the platform's confinement:
