@@ -1,6 +1,6 @@
 # Limits and Defaults
 
-**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-10. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). Fixed by measurement on 2026-11-07: LIM-O7 (investigation D1) and LIM-H6 (011c-5). Fixed by measurement on 2026-11-08: LIM-O8 (011c-6). Fixed by measurement on 2026-11-10: LIM-C1 (the M4 report §7, run B). No limit is provisional now. The other values are design choices, not measurements, and change only here.
+**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-10. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). Fixed by measurement on 2026-11-07: LIM-O7 (investigation D1) and LIM-H6 (011c-5). Fixed by measurement on 2026-11-08: LIM-O8 (011c-6). Fixed by measurement on 2026-11-10: LIM-C1 (the M4 report §7, run B). Provisional again, as candidates until their measurement reports: LIM-X5, LIM-H7, LIM-O11 … O14 (RFCs 013, 014) and LIM-E2, LIM-E3 (RFC 015). The other values are design choices, not measurements, and change only here.
 **Governs:** every number that the [requirements](./requirements.md) and the [external design](./external-design.md) cite by a `LIM-` identifier. The documents never repeat a value; a value changes here only.
 
 "Range" is what an administrator may configure. "fixed" means no configuration changes it. Budgets a user may set per task are bounded by the administrator's ceiling, which is itself within the range.
@@ -84,6 +84,7 @@
 | LIM-X2 | Executions in flight, per runtime | 1 | fixed | Memory: LIM-X2 × LIM-S3; no configuration changes it (as LIM-X1) |
 | LIM-X3 | Worker or MCP server restarts per task | 3 | 0–10 | Fault containment |
 | LIM-X4 | Worker start, including interpreter compilation | 60000 ms | 5000 – 600000 | Cranelift compiles a multi-megabyte interpreter once per worker |
+| LIM-X5 | Executions of one user at once across runtimes (RFC 013 admission) | 2 | 1–16 | Provisional: a candidate until the operation theme's measurement report fixes it (RFC 013) |
 
 ## Approvals and questions
 
@@ -116,6 +117,10 @@
 | LIM-O8 | Wait for one `xcrun --find <tool>` making `xcrun`'s cache (macOS, an Xcode selected, the cache absent) | 10000 ms | fixed | Measured (011c-6): a first native call 1.9 to 2.9 s, a cached one 0.07 s; past the wait the call is killed, its partial file removed, and `check` and `status` say the cache is missing (external design §13.3) |
 | LIM-O9 | Deadline of one download of an interpreter artifact (`interpreters install`) | 120000 ms | fixed | The shipped artifacts are a few MB; a slower link uses `--from FILE` |
 | LIM-O10 | Retries of a transient download failure (no connection, timeout, HTTP 429 or 5xx), and the waits before them | 3, after 1 s, 2 s and 4 s | fixed | GitHub's release downloads answered 504 intermittently for an hour on 2026-11-08 (011g's CI) |
+| LIM-O11 | Bound of one admission-registry operation (take, return, reap) | 2000 ms | fixed | Provisional (RFC 013); past it the runtime runs unadmitted and says so |
+| LIM-O12 | Engine requests in flight per backend endpoint per user (`max_in_flight`) | 1 | 1–16 | Provisional (RFC 013); one consumer GPU serves one request at a time |
+| LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
+| LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
 
 ## Model backend
 
@@ -125,6 +130,13 @@
 | LIM-M2 | Maximum completion tokens | 4096 | 256 – 65536 | Decision plus a written file |
 | LIM-M3 | Transport retries of a model request | 2 | 0–5 | Identical request; never a different one |
 | LIM-M4 | Backend health probe timeout | 5000 ms | fixed | Startup status |
+
+## Effort (RFC 015)
+
+| ID | Parameter | Default | Range | Basis |
+|---|---|---:|---|---|
+| LIM-E2 | Steps of the fitness probe's mini-task | 8 | fixed | Provisional (RFC 015): set by its measurement report |
+| LIM-E3 | Wall time of the fitness probe | 120 s | fixed | Provisional (RFC 015): set by its measurement report |
 
 ## Host tools (M6)
 
@@ -136,3 +148,4 @@
 | LIM-H4 | Captured output of a host tool, each stream | 4 MiB | 64 KiB – 64 MiB | Build logs |
 | LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | fixed | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |
 | LIM-H6 | Interval of the macOS tree tracker and its memory and process-count watchdogs (M6c) | 100 ms | fixed | Measured (011c-5, 2026-11-07, `macos-latest`, about 570 processes): one poll 0.8 ms on average, the worker 0.5 to 0.6 % of a CPU while a tool runs; the shorter, the fewer short-lived excursions missed and the more CPU |
+| LIM-H7 | CPU share of a host tool tree (clause C's CPU part) | half the cores, at least one | one core – all cores | Provisional: measured against the M6a demonstration's duration before it is fixed (RFC 013) |

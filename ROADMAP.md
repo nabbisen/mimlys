@@ -25,6 +25,10 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | M6a | Host tools, Linux | Confinement backend (Landlock, seccomp, namespaces where available, cgroups or rlimits) meeting every clause of the contract; declared host tools (`cargo test` first); the offline dependency step | `cargo test --offline` of a native project under every mandatory clause; the clause tests pass in CI | 0.6 |
 | M6b | Host tools, Windows | AppContainer, Job Object and restricted-token backend; reversible toolchain ACL management; redirected profile and temp paths | The same demonstration on Windows. **Not met in 0.7.0:** `cargo` cannot run inside an AppContainer (the `NUL` device); the clause suite passes with the probe tool. Investigated 2026-11-03 on Windows Server 2022 and 2025: the same refusal, no remedy that keeps F, N and P; an exception without a remedy, revisited if Windows changes | 0.7 |
 | M6c | Host tools, macOS | Seatbelt backend, one profile for the worker and its tools; tree termination by sandbox membership (enforced, RFC 011 Amendment 2); memory and process-count watchdogs over the members (best-effort) | The same demonstration on macOS | 0.8 |
+| M7a | Operation on one machine, part one | Read-only open of the store; storage view; `task prune`; the book's storage and operation pages (RFC 013 decisions 1 to 4) | A second terminal watches a running task; the storage view sums to what the disk holds; prune frees what it listed | 0.10 |
+| M7b | Operation on one machine, part two | Admission per user (LIM-X5), the CPU part of clause C (LIM-H7), the engine gate, the machine view (RFC 013 decisions 5 to 8) | Two runtimes: the second waits and says why; a build stays within its CPU share | after 0.10 |
+| M8 | Adaptive effort, part one | Effort levels, a backend per level, the fitness probe, plan-first (RFC 015) | The M4 task under each level, measured; the probe classifies the models measured so far | after 0.10 |
+| M9 | The local daemon | Served mode over a local socket, one scheduler (RFC 014) | Approve from a second terminal; one queue for the user's tasks | decided at 0.10's disposition |
 
 **0.7.1** is a hardening patch between M6b and M6c (RFC 011 Amendment 1, handoff 011d): the Linux backend's clause N and read set, found in the intake review after 0.7.0. It adds no milestone. 0.7.0 is tagged but not published to crates.io; 0.7.1 (2026-11-04) is the first release published there.
 
@@ -97,9 +101,9 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | 010 | CLI and operator interface | M1 → M5 | D-17, D-18, M-13 |
 | 011 | Confinement backends | M6a–M6c | D-06 v2, D-07 v2 |
 | 012 | Decisions as native tool calls | 0.9 | M4 report §6, spike S2 |
-| 013 (proposed) | Operation on one machine (part one in 0.10: read-only open, storage view, prune; part two after: admission, CPU bound, engine gate, machine view) | 0.10 and after | owner's review of 2026-11-08 |
-| 015 (proposed) | Adaptive effort, part one (effort levels, a backend per level, the fitness probe, the plan-first gate) | after 0.10 | owner's direction of 2026-11-10 (D-E1 to D-E4) |
-| 014 (proposed) | The local daemon (per user and store, local socket) | decided at 0.10's disposition | owner's review of 2026-11-08; DR-002 in part |
+| 013 (accepted) | Operation on one machine (part one in 0.10: read-only open, storage view, prune; part two after: admission, CPU bound, engine gate, machine view) | 0.10 and after | owner's review of 2026-11-08 |
+| 015 (accepted) | Adaptive effort, part one (effort levels, a backend per level, the fitness probe, the plan-first gate) | after 0.10 | owner's direction of 2026-11-10 (D-E1 to D-E4) |
+| 014 (accepted) | The local daemon (per user and store, local socket) | decided at 0.10's disposition | owner's review of 2026-11-08; DR-002 in part |
 
 RFCs enter `rfcs/proposed/`, move to `rfcs/accepted/` on the owner's sign-off, and to `rfcs/done/` when the release that ships them is tagged (an RFC whose milestones span several releases stays in `accepted/` with a Status line saying what shipped) (RFC 000, five-folder variant).
 

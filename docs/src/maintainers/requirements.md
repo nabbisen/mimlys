@@ -123,6 +123,9 @@ Wasmtime and the MCP SDK shall be pinned to exact versions and updated only thro
 ### REQ-ARCH-008 Worker process — M2 · T
 Every sandbox execution and every host-tool execution shall happen in the worker process, never in the runtime process. The worker's death shall be an execution failure, never a runtime failure. (D-10)
 
+### REQ-ARCH-009 Two deployment modes — M9 · T
+The runtime shall run embedded in the client or served by a daemon of the user; every rejection code, event, state, `--json` field and message means the same in both, and `status` says which mode is in force. (RFC 014)
+
 ---
 
 ## 5. Task lifecycle
@@ -162,6 +165,12 @@ A `give_up` decision shall end the task `failed` with `failure_reason = model_ga
 
 ### REQ-TASK-012 One active task per project scope — M1 · T
 A task whose project scope overlaps a non-terminal task's scope shall be refused with the error kind `conflict`. (A-12)
+
+### REQ-TASK-013 Effort levels — M8 · T
+A task shall be created at an effort level (`quick`, `standard`, `deep`; default `standard`), each a configured envelope of budgets and context handling within the ceiling and naming its backend; the level and who chose it are recorded and shown, and never change during the task. A level grants nothing. (RFC 015)
+
+### REQ-TASK-015 Plan first — M8 · T
+A task created with `--plan-first` shall reject any first decision but a `plan` with `state{reason: plan_required}`, show the plan to the user and act on nothing until the user resumes, with an optional note as a labelled `user` segment; the goal is never rewritten. (RFC 015)
 
 ---
 
@@ -385,6 +394,9 @@ A declared read path (`read_paths`, `toolchain grant`) shall be refused, with th
 ### REQ-CONF-012 Process memory and descriptors are not reachable — M6a · T
 The Linux seccomp filter shall always deny `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `process_vm_readv` and `process_vm_writev`, in every worker including the dependency step's. Where Landlock ABI 4 or later exists and network is denied, TCP `bind` and `connect` shall be handled with an empty allow-set as a second layer. The runtime and the worker shall mark themselves non-dumpable at start, so that a same-user process that is not itself inside a Landlock domain cannot read their memory, environment or descriptors through `/proc` or `process_vm_readv` (Landlock already refuses this to a confined process that is outside the target's domain; the flag covers the rest). A clause test per denied route shall show the attempt failing from inside a host tool. (THR-11, THR-23, THR-24; added 2026-11-03, 0.7.1)
 
+### REQ-CONF-013 CPU part of clause C — M7b · T
+Clause C shall gain a CPU part, best effort allowed on every platform (it never lowers the tier): `cpu.max` of the `tool` cgroup where one is delegated (else `unavailable` with the reason), the Job Object's CPU rate on Windows, a lowered priority on macOS reported `best_effort (priority)`; the share is LIM-H7, a budget a task may raise within the ceiling. (RFC 013)
+
 ---
 
 ## 12. Workspace
@@ -424,6 +436,12 @@ Canonicalization shall respect the case sensitivity of the workspace's filesyste
 
 ### REQ-WS-012 Explicit deletion — M3 · T
 Everything on disk belongs to one task. `mimlys task delete` shall remove a terminal task's workspace, snapshots, the objects no remaining manifest references (reference counts kept in the same transactions as the snapshot rows), blobs and promotion backups, after showing what will go and asking; the audit stays unless asked. No collector and no timer exist; a snapshot is a journaled transaction that the next start finishes or undoes, so no orphan is ever left. `task list` and `status` show each task's footprint. (RFC 006; replaces garbage collection)
+
+### REQ-WS-013 Storage view — M7a · T
+`mimlys status --storage` shall show the store's path, its filesystem and whether it reflinks, the bytes by kind (working trees, snapshot objects exclusive and shared, blobs, interpreters, database and WAL, temporary) and the tasks that hold the most with their state and age; read-only. (RFC 013)
+
+### REQ-WS-014 Prune — M7a · T
+`mimlys task prune` shall list the terminal tasks matching `--state` and `--older-than` with their footprints, ask once, then delete each as `task delete` does; it never touches a task that is not terminal or a promotion's backup still needed for reversal (listed `kept: promotion reversible`); audits stay unless `--audit`. (RFC 013)
 
 ---
 
@@ -499,6 +517,15 @@ The data directory shall be self-contained: copying it while the runtime is stop
 ### REQ-PERS-012 Versions recorded — M1 · T
 Every task shall record the policy hash, the decision-schema version, the tool-definition hashes and the runtime version at creation. (ED §83 of the draft)
 
+### REQ-PERS-013 Read-only open — M7a · T
+Commands that only read (`status`, `events`, `task list`, `task show`, `metrics`, `follow`, `toolchain list`, `check`, and `promote --patch` and `rollback --dry-run` where they only read) shall open the store as WAL readers without its exclusive lock, and shall run no recovery, integrity check, reaping or migration. A store that needs recovery is read as committed and `status` says `recovery pending`; while another process holds the lock, `status` names it. A read command that writes is a defect, refused by the type of its persistence handle. (RFC 013)
+
+### REQ-PERS-014 One owner of a store under the daemon — M9 · T
+A daemon shall hold the store's exclusive lock for its life; a daemon and an embedded runtime never own one store at once, and whichever comes second names the holder and exits. (RFC 014)
+
+### REQ-PERS-015 The backend recorded per step — M8 · T
+Each step shall record the backend's name, the model and the decision transport it was decided with, and the task the set of backends it used; the persistence schema version rises with a tested migration. (RFC 015)
+
 ---
 
 ## 15. Scheduling and concurrency
@@ -517,6 +544,15 @@ Cancellation of a task shall reach its model request, its execution and its work
 
 ### REQ-SCHED-005 Resource release — M1 · T
 A terminal task shall hold no worker, backend, lock or scheduler resource.
+
+### REQ-SCHED-006 Admission per user — M7b · T
+At most LIM-X5 executions of one operating-system user shall run at once across all runtimes, counted in an owner-only registry under the user's runtime directory; a runtime without a free slot waits with its task queued (`reason: admission`), says so in `status` and records `task.admission_changed`; a stale entry is reaped at every open; a registry that cannot be used within LIM-O11 lets the runtime run unadmitted, shown in `status` and the task's events. (RFC 013)
+
+### REQ-SCHED-007 Engine gate — M7b · T
+At most `max_in_flight` model requests (default 1) of one user shall be in flight per backend endpoint across runtimes; the wait is a metric and a log line and is bounded by the request's own deadline. (RFC 013)
+
+### REQ-SCHED-008 One scheduler under the daemon — M9 · T
+Under a daemon, LIM-X1, LIM-X2, admission and the engine gate shall be the daemon's, over every client's tasks; clients take no registry slots. (RFC 014)
 
 ---
 
@@ -545,6 +581,12 @@ A task's persisted decisions and tool results shall be replayable through the fa
 
 ### REQ-OBS-008 Refusals counted — M1 · T
 Rejections by code, denials by grant kind and halts by reason shall be counted; the documentation names a rising rejection rate as an interface defect. (CLR-12)
+
+### REQ-OBS-009 Machine view — M7b · T
+`status` shall show the user's runtimes executing or waiting (pid, data directory, task, since when), the engine gates held and the slots taken against LIM-X5; `metrics` gains `admission_wait_ms` and `engine_wait_ms` per task. (RFC 013)
+
+### REQ-OBS-010 Cost visibility — M8 · T
+`task show` shall answer what a task cost: its effort level, the steps used of its envelope, model time, prompt and completion tokens where reported, and the backend; `metrics` aggregates per level. (RFC 015)
 
 ---
 
@@ -594,6 +636,9 @@ Any design or default that would ask the user to approve routine, reversible wor
 
 ### REQ-SEC-015 Promotion is the only exit — All · T
 Nothing but `promote_workspace` shall write to the project scope. (INV-10, THR-28)
+
+### REQ-SEC-016 The daemon's transport — M9 · T
+The daemon shall be reached only through a Unix domain socket of mode 0600 in a 0700 directory with a peer-credential check refusing every uid but its own, or on Windows a named pipe whose DACL admits the user's SID alone; no TCP, no port; a client and a daemon of different runtime versions refuse each other. The daemon resolves configuration and `env:` references at its start and shows their hash in `status`. (RFC 014)
 
 ---
 
@@ -647,6 +692,12 @@ The core shall call a model only for the step decision. (D-12)
 
 ### REQ-MDL-009 Decision transport — M4 · T
 `decision_transport` shall be `auto`, `tool_calls` or `envelope` (default `auto`). With `tool_calls`, every pinned tool is offered as one function whose parameters are a JSON schema generated deterministically from its pinned descriptor, and the four other decision kinds as the reserved functions `plan`, `ask_user`, `complete` and `give_up`; a tool whose function name is invalid or collides (every tool of a collision) is unavailable in this transport with the reason, computed from the pinned list at each step once the transport is known: the model is told through the `tool_unavailable` feedback and `status` lists it with the same reason. `auto` resolves at the probe: `tool_calls` when the engine accepts `tools`, else `envelope` with the reason; a configured `tool_calls` that the engine refuses is `backend_unavailable` with that reason, never a silent fallback. `status` shows the transport in force. (RFC 012, 0.9.)
+
+### REQ-MDL-010 Several backends — M8 · T
+`status` shall list every configured backend with its probe result and, where the engine reports it, the model resident; a level whose backend is unreachable makes `run --effort <level>` refuse with the reason. (RFC 015)
+
+### REQ-MDL-011 Fitness probe — M8 · T
+`mimlys model probe [<backend>]` shall run one scripted mini-task against the real model in a runtime-created scope under the data directory, with the built-in read and write tools only, within LIM-E2 steps and LIM-E3, and record `acts`, `plans_only`, `no_structured_call` or `unreachable` with the date; it never touches a user's project, deletes its task and scope, and is refused while another process holds the store. (RFC 015)
 
 ---
 
@@ -704,6 +755,9 @@ Configuration changes apply at restart.
 ### REQ-CFG-006 Message catalog — M1 · I
 All user-facing messages live in one catalog so that other languages can be added without redesign. (D-17)
 
+### REQ-CFG-007 Effort and backends configuration — M8 · T
+`[effort.<level>]` and `[backends.<name>]` shall be configuration sections; each backend passes REQ-SEC-010 on its own; until 1.0 a level's backend must be local; `config_version` 2, with a version-1 `[backend]` read as `backends.default` for one release. (RFC 015)
+
 ### REQ-CLI-001 Commands — M1 · T
 The `mimlys` binary shall offer the commands of external design §19.2 with exit codes 0 (success), 1 (runtime or configuration error), 2 (usage error).
 
@@ -721,6 +775,12 @@ A stop signal shall pause running tasks at their next boundary, a second signal 
 
 ### REQ-CLI-006 Tier display — M2 · T
 `mimlys status` shall show the tier and every clause the platform cannot enforce.
+
+### REQ-CLI-007 Storage and operation pages — M7a · I
+The book shall have a page on storage (what lives where, reflinks per filesystem, what grows, how to reclaim) and a section on several projects and jobs (one store per user; how several runtimes behave; the two reasons a task is queued), with tested examples. (RFC 013)
+
+### REQ-CLI-008 Daemon lifecycle — M9 · T
+`mimlys daemon start | stop | status` shall exist; without a daemon a client runs embedded; `stop` finishes or checkpoints the running execution within LIM-O2; an idle daemon exits after LIM-O13; a client finding a dead daemon's socket reaps it and says `daemon not running` within LIM-O14. (RFC 014)
 
 ---
 

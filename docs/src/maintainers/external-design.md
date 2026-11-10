@@ -1059,6 +1059,26 @@ Every requirement of the baseline and the section of this document that satisfie
 | REQ-MDL-007 | Output is untrusted text | All | §3 Adapter SPI; §19.1 Configuration (backend) |
 | REQ-MDL-008 | No model inside the core | All | §3 Adapter SPI; §19.1 Configuration (backend) |
 | REQ-MDL-009 | Decision transport | M4 (0.9) | §15.4 The `tool_calls` transport; §19.1 Configuration (backend) |
+| REQ-PERS-013 | Read-only open | M7a | §16 Persistence (RFC 013 decision 1) |
+| REQ-PERS-014 | One owner of a store under the daemon | M9 | §16 Persistence (RFC 014 decision 2) |
+| REQ-PERS-015 | The backend recorded per step | M8 | §16 Persistence (RFC 015 decision 4) |
+| REQ-WS-013 | Storage view | M7a | §14.6 Quotas and lifecycle (RFC 013 decision 2) |
+| REQ-WS-014 | Prune | M7a | §14.6 Quotas and lifecycle (RFC 013 decision 3) |
+| REQ-CLI-007 | Storage and operation pages | M7a | §19 Operator interface (RFC 013 decision 4) |
+| REQ-CLI-008 | Daemon lifecycle | M9 | §19 Operator interface (RFC 014 decision 7) |
+| REQ-SCHED-006 | Admission per user | M7b | §19 Operator interface; §20 (RFC 013 decision 5) |
+| REQ-SCHED-007 | Engine gate | M7b | §20 (RFC 013 decision 7) |
+| REQ-SCHED-008 | One scheduler under the daemon | M9 | §4 Control API (RFC 014 decision 6) |
+| REQ-CONF-013 | CPU part of clause C | M7b | §13.2 Clauses; §13.3 (RFC 013 decision 6) |
+| REQ-OBS-009 | Machine view | M7b | §17 Events, metrics and logs (RFC 013 decision 8) |
+| REQ-OBS-010 | Cost visibility | M8 | §17 (RFC 015 decision 7) |
+| REQ-ARCH-009 | Two deployment modes | M9 | §1 System context; §4 (RFC 014 decision 1) |
+| REQ-SEC-016 | The daemon's transport | M9 | §21 Security (RFC 014 decisions 3, 8) |
+| REQ-TASK-013 | Effort levels | M8 | §5 Task state machine (RFC 015 decision 1) |
+| REQ-TASK-015 | Plan first | M8 | §6.4 Rejection vocabulary (RFC 015 decision 6) |
+| REQ-CFG-007 | Effort and backends configuration | M8 | §19.1 Configuration (RFC 015 decisions 1, 3) |
+| REQ-MDL-010 | Several backends | M8 | §19.1; §20 (RFC 015 decision 3) |
+| REQ-MDL-011 | Fitness probe | M8 | §19 Operator interface (RFC 015 decision 5) |
 | REQ-MCP-001 | Servers as children | M5 | §11.1 External tools; §19.1 Configuration (servers) |
 | REQ-MCP-002 | Discovery and pinning | M5 | §11.1 External tools; §19.1 Configuration (servers) |
 | REQ-MCP-003 | Definition import | M5 | §11.1 External tools; §19.1 Configuration (servers) |
