@@ -515,6 +515,37 @@ pub fn derive_sid(name: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The name of the filesystem on the volume that holds `path` (`NTFS`, `ReFS`
+/// …), for the storage view (REQ-WS-013). Reads only.
+pub fn volume_filesystem(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{GetVolumeInformationW, GetVolumePathNameW};
+    let path_w = wide(path.as_os_str());
+    let mut root = [0u16; 261];
+    // SAFETY: `path_w` is null-terminated UTF-16 and `root` has the length passed.
+    if unsafe { GetVolumePathNameW(path_w.as_ptr(), root.as_mut_ptr(), root.len() as u32) } == 0 {
+        return None;
+    }
+    let mut name = [0u16; 64];
+    // SAFETY: `root` is null-terminated (the call above filled it); the optional outputs are null and `name` has the length passed.
+    let ok = unsafe {
+        GetVolumeInformationW(
+            root.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    Some(String::from_utf16_lossy(&name[..len]))
+}
+
 /// Deletes the AppContainer profile (`toolchain revoke --all`, REQ-CONF-008).
 /// A profile that does not exist is already deleted. The permissions its SID
 /// holds on directories are removed first, by the caller: deleting the

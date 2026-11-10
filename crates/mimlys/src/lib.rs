@@ -14,5 +14,6 @@ pub mod logging;
 pub mod messages;
 pub mod output;
 pub mod prompt;
+pub mod storage;
 pub mod toolchain;
 pub mod workspace;

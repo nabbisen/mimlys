@@ -247,6 +247,11 @@ impl Reader {
         activity(self.persistence.as_ref())
     }
 
+    /// What the store holds, by kind and by task, from its records (REQ-WS-013).
+    pub fn holdings(&self) -> Result<super::storage::Holdings, RuntimeError> {
+        super::storage::holdings(self.persistence.as_ref(), self.workspaces.as_ref())
+    }
+
     /// Phase 1 of a promotion: the plan or the conflicts; writes nothing.
     pub fn promotion_plan(&self, task_id: TaskId) -> Result<PromotionPlan, RuntimeError> {
         promotion_plan(self.persistence.as_ref(), self.workspaces.as_ref(), task_id)
