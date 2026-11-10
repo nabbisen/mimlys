@@ -144,17 +144,18 @@ calls does not act. The example below shows how a model is configured; it does
 not promise that your model drives a task.
 
 ```sh
-# llama.cpp
-llama-server -m Qwen2.5-7B-Instruct-Q4_K_M.gguf --port 8080 --jinja
-# Ollama
-ollama serve   # then: ollama pull qwen2.5:7b-instruct
+# llama.cpp: a context of 16 384 tokens, the chat template with tools
+llama-server -m Qwen2.5-7B-Instruct-Q4_K_M.gguf --port 8080 -c 16384 --jinja
+# Ollama: the same file, with the context set in a Modelfile (see below)
+ollama serve
+ollama create qwen2.5-7b-instruct-16k -f Modelfile
 ```
 
 ```toml
 [backend]
 kind = "openai_compatible"
 url = "http://127.0.0.1:8080/v1"      # Ollama: http://127.0.0.1:11434/v1
-model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # Ollama: qwen2.5:7b-instruct
+model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # Ollama: qwen2.5-7b-instruct-16k
 ```
 
 Before a task runs, and for `mimlys status`, mimlys probes the server
@@ -230,6 +231,8 @@ PARAMETER num_ctx 16384
 ```sh
 ollama create qwen2.5-7b-instruct-16k -f Modelfile
 ```
+
+This is what run B measured: the GGUF file with its own chat template. `FROM qwen2.5:7b-instruct` (the Ollama library's tag) gives the same weights with Ollama's template, which was not measured, and the spike saw a template change what a model returns.
 
 llama.cpp takes the context length when it starts (`-c 16384`) and needs its chat
 template with tools, which current builds enable by default (`--jinja`).

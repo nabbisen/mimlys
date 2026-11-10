@@ -47,7 +47,7 @@ config_version = 1
 [backend]
 kind = "openai_compatible"
 url = "http://127.0.0.1:8080/v1"       # a llama-server or Ollama endpoint on this machine
-model = "qwen2.5:7b-instruct"
+model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # as the engine lists it; it needs a 16 384-token context (the book's configuration chapter)
 EOF
 mimlys run "fix the failing test in this project" --scope .
 ```
