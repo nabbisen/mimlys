@@ -13,7 +13,7 @@ failing test run, a replacement, a passing test run, completion):
 | Run | Driver | State |
 |---|---|---|
 | A | The mock server behind the real adapter, scripted decisions, `structured_output = auto` resolving to `json_object` | executed in CI on every test run (`tests/m4_demo.rs`) |
-| B | A local engine (llama-server or Ollama) with a 7B-class coder model | **pending**: no engine is installed on the reference machine (checked 2026-10-28: no `llama-server`, no `ollama`, no model files; an NVIDIA RTX 5060 Ti with 16 GB and 59 GB of RAM are available). Run with `MIMLYS_M4_BACKEND_URL=… MIMLYS_M4_MODEL=… cargo test -p mimlys --test m4_demo m4_real -- --nocapture`; the transcript and the measures print on standard error. |
+| B | A local engine (llama-server or Ollama) with a 7B-class coder model | **done 2026-11-10** (§7): Qwen2.5-7B-Instruct on llama.cpp and Ollama, native tool calls; earlier attempts under the envelope in §6. Run with `MIMLYS_M4_BACKEND_URL=… MIMLYS_M4_MODEL=… cargo test -p mimlys --test m4_demo m4_real -- --nocapture`; the transcript and the measures print on standard error. |
 
 Run A exercises the whole path except inference: the context assembler,
 the adapter's protocol, the probe, the sandbox, the snapshots and the
@@ -64,7 +64,7 @@ that run exceeds 1 and the history segment changes in batches.
 
 | Limit | Register | Decision |
 |---|---|---|
-| LIM-C1 (context budget) | 32 000 characters | **kept provisionally.** With the stable prefix at about 5 700 characters and about 450 characters per step on this workload, 32 000 characters hold the prefix plus roughly fifty steps before any rule applies, which exceeds LIM-T1 (40 steps). At the mock's four characters per token this is about 8 000 tokens; a model with a 32k window could take `context_chars = 100000`. The final value waits for run B's `chars_per_prompt_token`. |
+| LIM-C1 (context budget) | 32 000 characters | **fixed** by run B (§7); the reasoning kept below was run A's: With the stable prefix at about 5 700 characters and about 450 characters per step on this workload, 32 000 characters hold the prefix plus roughly fifty steps before any rule applies, which exceeds LIM-T1 (40 steps). At the mock's four characters per token this is about 8 000 tokens; a model with a 32k window could take `context_chars = 100000`. The final value waits for run B's `chars_per_prompt_token`. |
 | LIM-C3 (recent steps in full) | 6 | **kept.** Six full steps cover a read, a run, an edit and a re-run with their observations; the batch size keeps the history segment stable across six steps at a time. |
 | LIM-C4 (summary size) | 300 characters | **kept.** Every summary of the test runs rendered within it with the first line present. |
 | LIM-M2 (completion bound) | 4 096 tokens | **kept.** Decisions are short; the bound exists for runaway output. |
@@ -90,10 +90,21 @@ The architect replayed the captured request against the same engine with one cha
 
 **Spike S2 (2026-11-08), measured:** three models (Qwen2.5-Coder-7B, Qwen2.5-7B-Instruct, Qwen2.5-Coder-14B, Q4_K_M), two engines (llama.cpp CPU, Ollama GPU), three runs per cell. Under the envelope (today's request, and with the decision request moved or reworded) no model acted in 102 runs. With the tools offered as native functions, Qwen2.5-7B-Instruct returned structured calls in 378 of 378 replies and completed the task in 12 of 12 runs on Ollama and 5 of 6 on llama.cpp (5 to 14 steps); the Coder models wrote the call into the text instead (0 of 391 structured), which the strict parser rejects. `chars_per_prompt_token`: 4.32 to 4.38 for the envelope, 3.0 to 3.3 with the tools as JSON schema. Design: RFC 012 (accepted 2026-11-08, for 0.9).
 
-## 7. What run B will add
+## 7. Run B (2026-11-10): the repair, through native tool calls
 
-The transcript of a real repair, the engine's own cached-token count
-against the runtime's prefix ratio, `chars_per_prompt_token` for the
-model's tokenizer, the number of steps a 7B-class model needs, and whether
-`json_schema` is accepted by the engine's grammar converter. LIM-C1 is fixed
-then.
+The code of handoff 012 (decisions as native tool calls, RFC 012) at the head of its second slice; `m4_real_engine_repairs_the_defect` unchanged from L1 (the goal, the test, the grants and every limit as before); `decision_transport = "auto"`. It resolved to `tool_calls` on both engines, which also accepted `parallel_tool_calls: false`. Model: Qwen2.5-7B-Instruct, Q4_K_M (SHA-256 as in S2). Engines: the packaged `llama-server` (build 11429, CPU) and Ollama 0.40.15 (GPU, the GGUF's own template, `num_ctx` 16384). Five runs each; none dropped or repeated. Transcripts: the review request of handoff 012.
+
+| | llama.cpp (CPU) | Ollama (GPU) |
+|---|---|---|
+| Completed, verified by the completion check | **4 of 5** (5, 5, 5, 10 steps) | **5 of 5** (16, 6, 6, 6, 6 steps) |
+| Not completed | 1: after 9 steps the model asked the user which of two definitions to keep (`waiting_user`) | none |
+| Rejected replies | 0 | 1 `malformed` (run 1), then valid |
+| `chars_per_prompt_token` | 3.35 to 3.48 | 3.35 to 3.60 |
+| Runtime's prefix ratio / engine's cached share | 0.947 to 0.960 / 0.880 to 0.939 | 0.946 to 0.966 / 0.922 to 0.951 |
+| Context per request (`context_chars_avg`, the `tools` array counted) | 8 116 to 9 633 | 8 512 to 11 829 |
+| Compression or drops | none (`compression_ratio` 1.0, `over_budget_steps` 0) | none |
+| Model time per step | 7 to 10 s | about 1 s |
+
+How to read it: one model, one task, ten runs on one machine. Ollama's runs 2 to 5 are one deterministic trajectory repeated, and so are llama.cpp's runs 2, 3 and 5; the samples are fewer than ten. The model often wrote text beside its call (83 to 490 characters), which the runtime neither read nor kept, as REQ-DEC-003 says. The runtime's character-based prefix ratio and the engine's token-based cache share agree within 0.01 to 0.08.
+
+**LIM-C1 is fixed at 32 000 characters** (the limits register). The largest request measured was under 12 000 characters, so the budget never applied. At the lowest ratio measured in this transport (3.35 characters per token), 32 000 characters are about 9 600 tokens; with a completion of LIM-M2 (4 096 tokens) that fits a 16 384-token context with room to spare. **An engine needs a context of at least 16 384 tokens**: Ollama's default of 4 096 does not hold one request of this task, which is why the book says to set `num_ctx`.

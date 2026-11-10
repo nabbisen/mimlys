@@ -21,6 +21,10 @@ announced here under "Changed".
 
 - The configuration chapter: `decision_transport`, what `auto` does, which models were measured to return structured calls (spike S2: Qwen2.5-7B-Instruct 378 of 378 replies; Qwen2.5-Coder-7B and -14B none of 391) and Ollama's `num_ctx` (its OpenAI endpoint cannot set the context length and defaults to 4096 tokens; set `num_ctx` in the Modelfile). The `status` fields in the CLI reference.
 
+### Security
+
+- Dependencies (handoff 009b; REQ-SEC-012): four advisories published after 2026-11-08 are removed by upgrade, not ignored. `rusqlite` 0.38 to 0.41 brings `libsqlite3-sys` 0.36 to 0.39 and its bundled SQLite (RUSTSEC-2026-0459; mimlys opens only a database in its owner-only data directory, so the exposure was low). `rmcp` `=3.5.0` to `=3.9.0` (RUSTSEC-2026-0457, -0461, -0462: the OAuth client, `StreamableHttpService` and the Streamable HTTP clients; none of those features is enabled, and the pin stays exact with the same features). No code changed; `SCHEMA_VERSION` stays 2, and a test opens a store written by 0.8.0 (its data in an uncheckpointed `-wal`), checks it, lists its tasks and recovers it. `Cargo.lock` moves `rusqlite`, `libsqlite3-sys`, `hashlink`, `rmcp` and, because `rmcp` 3.9 requires them, `sha2` 0.11 with `digest`, `block-buffer`, `crypto-common`, `const-oid` and `hybrid-array`; the older `sha2` stays for the other crates.
+
 ## [0.8.0] - 2026-11-08
 
 The macOS confinement backend (M6c) completes RFC 011: 0.8.0 is M1 to M6c on Linux, Windows and macOS. The real-model run and the context limit LIM-C1 move to 0.9 (`ROADMAP.md`); under 0.8's decision format no measured local model completed a task (the M4 report, §6), and 0.9 changes how decisions are requested (RFC 012).
