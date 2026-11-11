@@ -2,6 +2,10 @@
 
 **RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) · **Specification.** REQ-MCP-005 and REQ-MCP-001 (amended 2026-11-11), external design §11.1; limits LIM-O16 (new) · **From.** rypsok's reply of 2026-11-11 (`.git-exclude/upstream/rypsok/receive/2026-11-11-revisions-changes-and-limits.md`), checked by the rypsok team against their 0.8.0 and 0.9.0 binaries. This handoff runs beside 009c: 009c measures 0.9.0; this one changes what the letter showed to be wrong in mimlys whatever 0.9.0 measures.
 
+## Status (2026-11-11, second): merged
+
+On `main` as a linear series of the branch's six commits (its merge from `main` left out); the tree is byte-identical to the CI-verified head `cbe4b6a` (run `42935798341`, 9 of 9). `scheme_not_https` judges the scheme first; servers end in parallel; the book has the certificates sentence. Nothing is open here.
+
 ## Status (2026-11-11): approved; three small corrections, then the merge
 
 PR #38 is approved.
