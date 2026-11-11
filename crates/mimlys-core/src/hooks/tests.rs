@@ -340,12 +340,18 @@ fn k_02_destination_needs_network_grant() {
 }
 
 /// REQ-MCP-005 (stage 7, and again on a `redirected` result, whose location the
-/// model proposes as a new decision): an `http` URL is denied as
-/// `destination_not_granted` even for a host the task may reach over `https`.
+/// model proposes as a new decision): an `http` URL is `denied` with the reason
+/// `scheme_not_https`, whose hint says to propose the `https` form, for a host
+/// the task may reach over `https` and for one it may not (the scheme is judged
+/// first). An `https` URL to an ungranted host is still `destination_not_granted`.
 #[test]
-fn req_mcp_005_an_http_destination_is_denied_at_stage_7() {
+fn req_mcp_005_an_http_destination_is_scheme_not_https_at_stage_7() {
     let net = Fixture::new(true);
-    for url in ["http://example.org/x", "http://example.org:443/x"] {
+    for url in [
+        "http://example.org/x",
+        "http://example.org:443/x",
+        "http://other.org/x",
+    ] {
         let o = net.run(
             &format!(
                 r#"{{"decision":"act","tool":"rypsok.web_fetch","arguments":{{"url":"{url}"}}}}"#
@@ -353,12 +359,21 @@ fn req_mcp_005_an_http_destination_is_denied_at_stage_7() {
             1000,
             None,
         );
-        assert_eq!(
-            denied_reason(&o),
-            DeniedReason::DestinationNotGranted,
-            "{url}"
-        );
+        assert_eq!(denied_reason(&o), DeniedReason::SchemeNotHttps, "{url}");
     }
+    let o = net.run(
+        r#"{"decision":"act","tool":"rypsok.web_fetch","arguments":{"url":"https://other.org/x"}}"#,
+        1000,
+        None,
+    );
+    assert_eq!(denied_reason(&o), DeniedReason::DestinationNotGranted);
+    // The hint is the reason's own and names the `https` form.
+    assert!(DeniedReason::SchemeNotHttps.hint().contains("`https` form"));
+    assert!(
+        !DeniedReason::SchemeNotHttps
+            .hint()
+            .contains("granted domain")
+    );
 }
 
 /// REQ-APR-001 (stage 9) and REQ-TOOL-006 / REQ-WS-008 (stage 10): approval from the profile, deadline and quota.
