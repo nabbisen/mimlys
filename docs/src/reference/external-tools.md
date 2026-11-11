@@ -31,11 +31,15 @@ rypsok check --config ~/.config/mimlys/rypsok.toml
 ```
 
 `rypsok check` prints the limits the file gives. Two lines matter to mimlys:
-`search: ... deadline_ms=2500` and `fetch: ... deadline_ms=10000`. A search
-call lasts at most about its deadline and a fetch call at most its deadline
-plus one second (11 s with these values; if you raise `fetch.deadline_ms`,
-raise the number below by the same amount). mimlys never gives a call less
-time than the server's `max_call_ms`.
+`search: ... deadline_ms=2500` and `fetch: ... deadline_ms=10000`. rypsok
+documents a search call as lasting at most its deadline plus 0.3 s, and a
+fetch call its deadline plus one second (11 s with these values; if you raise
+`fetch.deadline_ms`, raise the number below by the same amount). In rypsok
+0.9.0 these maxima are documented, not yet enforced over the whole call; its
+next minor release enforces them and prints them in `check` (rypsok's letter
+of 2026-11-11). Either way, mimlys ends every call at its own per-tool
+deadline (`timeout_ms`), and never gives a call less time than the server's
+`max_call_ms`.
 
 ```toml
 [servers.rypsok]
