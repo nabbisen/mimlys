@@ -383,6 +383,14 @@ pub fn host_tool_unavailable_grant(name: &str, reason: &str) -> String {
 pub fn servers_not_started() -> String {
     "servers: not started (no data directory yet)".to_owned()
 }
+/// `status`: the files the dependency step's worker reads and no other
+/// worker does (REQ-CONF-011).
+pub fn dependency_step_reads(files: &[String]) -> String {
+    format!(
+        "dependency step also reads {} (its worker only; the offline tools do not)",
+        files.join(", ")
+    )
+}
 /// One configured MCP server in `status` (RFC 009 §8).
 pub fn server_line(s: &mimlys_mcp::ServerStatus) -> String {
     let mut line = format!("server          {} ({})", s.name, s.state.replace('_', " "));

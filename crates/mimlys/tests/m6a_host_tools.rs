@@ -1258,10 +1258,29 @@ fn req_conf_012_landlock_net_layer_is_reported() {
     }
 }
 
-/// The files of `/etc` the dependency step's worker reads, as the final list
-/// of handoff 011j: each is one the step failed without (measured with
-/// `cargo fetch` and `curl`; the request records the failures).
-const NETWORK_ETC: [&str; 2] = ["/etc/resolv.conf", "/etc/ssl/certs/ca-certificates.crt"];
+/// The files of `/etc` the dependency step's worker may read. The first two
+/// are the list of handoff 011j: each is one the step failed without (measured
+/// with `cargo fetch` and `curl`). The last two (handoff 011l) are the
+/// certificate bundles of the Fedora/RHEL and openSUSE families, **not
+/// measured**: from the families' documented layout. Each is admitted only
+/// where it exists.
+const NETWORK_ETC: [&str; 4] = [
+    "/etc/resolv.conf",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+];
+
+/// The files of `NETWORK_ETC` that exist on this machine, sorted as a read set is.
+fn network_etc_present() -> Vec<String> {
+    let mut present: Vec<String> = NETWORK_ETC
+        .iter()
+        .filter(|f| Path::new(f).exists())
+        .map(|f| (*f).to_owned())
+        .collect();
+    present.sort();
+    present
+}
 
 /// A path is under `dir` as a path component, not as a string prefix
 /// (`/etcetera` is not under `/etc`).
@@ -1271,8 +1290,8 @@ fn under(path: &Path, dir: &str) -> bool {
 
 /// REQ-CONF-011 (handoff 011j): the Linux read set holds neither `/etc` nor
 /// `/opt`. The worker's offline set has no entry under either; the dependency
-/// step's worker adds exactly the two files of `NETWORK_ETC` and nothing
-/// else; a toolchain under `/opt` is in the set only when a declaration names
+/// step's worker adds exactly the files of `NETWORK_ETC` that exist on the
+/// machine and nothing else; a toolchain under `/opt` is in the set only when a declaration names
 /// it.
 #[test]
 fn req_conf_011_the_read_set_holds_no_etc_and_no_opt() {
@@ -1291,8 +1310,9 @@ fn req_conf_011_the_read_set_holds_no_etc_and_no_opt() {
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     assert_eq!(
-        added, NETWORK_ETC,
-        "the dependency step's worker adds exactly these files"
+        added,
+        network_etc_present(),
+        "the dependency step's worker adds exactly the listed files that exist here"
     );
     assert!(
         !offline.iter().any(|p| p.starts_with("/opt")),
@@ -1392,5 +1412,70 @@ fn req_conf_011_etc_is_unreadable_but_for_the_dependency_steps_files() {
             "the dependency step must read {f}: {}",
             stdout_of(&obs[4 + 2 * n])
         );
+    }
+}
+
+/// REQ-CONF-011 (handoff 011l): the step's files are admitted only where they
+/// exist, and the bundles of the Fedora/RHEL and openSUSE families are among
+/// them. Run with a fake test of existence, so that it holds on every machine.
+#[test]
+fn req_conf_011_the_other_families_bundles_are_admitted_where_they_exist() {
+    use mimlys::app::network_read_paths_where;
+    let all = network_read_paths_where(|_| true);
+    let all: Vec<&str> = all.iter().map(|p| p.to_str().unwrap()).collect();
+    assert_eq!(
+        all, NETWORK_ETC,
+        "every candidate, in order, when all exist"
+    );
+    let fedora = network_read_paths_where(|p| p == Path::new("/etc/pki/tls/certs/ca-bundle.crt"));
+    assert_eq!(fedora, [PathBuf::from("/etc/pki/tls/certs/ca-bundle.crt")]);
+    let suse = network_read_paths_where(|p| p == Path::new("/etc/ssl/ca-bundle.pem"));
+    assert_eq!(suse, [PathBuf::from("/etc/ssl/ca-bundle.pem")]);
+    assert!(
+        network_read_paths_where(|_| false).is_empty(),
+        "none where none exists"
+    );
+}
+
+/// REQ-CONF-011 (handoff 011l): the offline set never holds a bundle, and
+/// `status` names both read sets: `read_set` (the offline worker's) and
+/// `dependency_step_read_set_extra` (what the step's worker adds), in JSON and
+/// in text. The extra set holds exactly the step's files that exist here.
+#[test]
+fn req_conf_011_status_names_the_dependency_steps_read_set() {
+    let env = Env::new(&[], "");
+    let (code, status) = env.json(&["status"]);
+    assert_eq!(code, 0, "{status}");
+    let extra: Vec<String> = status["dependency_step_read_set_extra"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no dependency_step_read_set_extra in {status}"))
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    let mut sorted = extra.clone();
+    sorted.sort();
+    assert_eq!(sorted, network_etc_present());
+    let read_set: Vec<&str> = status["read_set"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    for f in NETWORK_ETC {
+        assert!(!read_set.contains(&f), "{f} is the step's alone");
+    }
+    assert!(read_set.contains(&"/usr"));
+    let (code, text, _) = env.run(&["status"]);
+    assert_eq!(code, 0);
+    if extra.is_empty() {
+        assert!(!text.contains("dependency step also reads"), "{text}");
+    } else {
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("dependency step also reads"))
+            .unwrap_or_else(|| panic!("no line for the step's files in {text}"));
+        for f in &extra {
+            assert!(line.contains(f.as_str()), "{line}");
+        }
     }
 }
