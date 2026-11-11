@@ -276,6 +276,8 @@ fn req_mdl_009_status_names_the_tools_the_model_cannot_see() {
 
     let accepting = MockServer::start(accepts_tools(), vec![]);
     let env = Env::new(&format!("{}{extra}", backend(&accepting, "auto")));
+    // `status` starts the servers only once the data directory exists (REQ-PERS-013).
+    std::fs::create_dir_all(env.data.path().join("data")).unwrap();
     let (code, status) = env.json(&["status"]);
     assert_eq!(code, 0, "{status}");
     assert_eq!(status["backend"]["decision_transport"], "tool_calls");
@@ -298,6 +300,8 @@ fn req_mdl_009_status_names_the_tools_the_model_cannot_see() {
 
     let envelope = MockServer::start(accepts_tools(), vec![]);
     let env = Env::new(&format!("{}{extra}", backend(&envelope, "envelope")));
+    // `status` starts the servers only once the data directory exists (REQ-PERS-013).
+    std::fs::create_dir_all(env.data.path().join("data")).unwrap();
     let (_, status) = env.json(&["status"]);
     assert_eq!(status["backend"]["decision_transport"], "envelope");
     assert!(

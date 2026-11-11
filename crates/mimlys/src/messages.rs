@@ -379,9 +379,13 @@ pub fn host_tool_unavailable_grant(name: &str, reason: &str) -> String {
         "host tool {name} is unavailable on this machine ({reason}); the grant would change nothing until `mimlys toolchain grant <path>` is run and mimlys started again"
     )
 }
+/// The servers are not started: a reader creates no data directory to run them in.
+pub fn servers_not_started() -> String {
+    "servers: not started (no data directory yet)".to_owned()
+}
 /// One configured MCP server in `status` (RFC 009 §8).
 pub fn server_line(s: &mimlys_mcp::ServerStatus) -> String {
-    let mut line = format!("server          {} ({})", s.name, s.state);
+    let mut line = format!("server          {} ({})", s.name, s.state.replace('_', " "));
     if let Some(d) = &s.detail {
         line.push_str(&format!(": {d}"));
     }
@@ -390,6 +394,10 @@ pub fn server_line(s: &mimlys_mcp::ServerStatus) -> String {
     }
     if let Some(r) = &s.revision {
         line.push_str(&format!("; revision {r}"));
+    }
+    if !s.declared.is_empty() {
+        line.push_str(&format!("; declared tools: {}", s.declared.join(", ")));
+        return line;
     }
     line.push_str(&format!(
         "; tools: {}",
