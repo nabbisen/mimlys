@@ -64,6 +64,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 11 | [016 The first Verus proof lands](./016-formal-proofs-with-verus/implementation-handoff.md) | [RFC 016](../accepted/016-formal-proofs-with-verus.md) | 011k |
 | 12 | [011l Linux read set, follow-up](./011l-linux-read-set-follow-up/implementation-handoff.md) | RFC 011 | 011j |
 | 13 | [009e rypsok 0.10.0, compatibility measured](./009e-rypsok-0.10.0/implementation-handoff.md) | RFC 009 | 009c, 009d |
+| 14 | [009f Can a stale tool list reach mimlys?](./009f-rmcp-tool-list-cache/implementation-handoff.md) | RFC 009 | 009e |
 
 ## Milestone M5
 

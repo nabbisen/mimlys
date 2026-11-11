@@ -2,6 +2,8 @@
 
 **RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) · **Specification.** REQ-MCP-001 … 009, external design §11.1 · **From.** rypsok's letter of 2026-11-11 announcing 0.10.0 (`.git-exclude/upstream/rypsok/receive/2026-11-11-0.10.0-released.md`). **Method.** As handoff 009c: rypsok from crates.io into `.git-exclude/tmp/`, run as mimlys runs it, no product change.
 
+**Status (2026-11-11): merged.** rypsok 0.10.0 works with mimlys unchanged: the same import, results, pins and revision; it ends 1 ms after its input closes; the fixture still matches; the book says 0.10.0. The SDK's tool-list cache, noted in §2 point 4, is handoff 009f.
+
 Measure 0.10.0 against mimlys at `main`, and confirm or refute the letter's stdio points:
 
 1. **The download.** Install with `cargo install rypsok --locked --version 0.10.0`. The crate is what we run; the letter's `SHA256SUMS` and `gh attestation verify` concern their release files, so check one binary that way too and say whether it matches, as a data point.
