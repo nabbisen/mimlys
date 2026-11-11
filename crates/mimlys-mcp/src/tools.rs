@@ -25,7 +25,8 @@ use std::sync::{Arc, Mutex};
 pub struct ServerStatus {
     /// The configured name.
     pub name: String,
-    /// `running`, or `unavailable` when the server could not be started for this listing.
+    /// `running`; `unavailable` when the server could not be started for this
+    /// listing; `not_started` when it was not tried (no data directory yet).
     pub state: String,
     /// Why it is unavailable, when it is.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,6 +49,10 @@ pub struct ServerStatus {
     pub unavailable: Vec<(String, String)>,
     /// Declared tools the server does not list.
     pub undeclared: Vec<String>,
+    /// The tools the configuration declares, full names, when the server was not
+    /// started (`state` is `not_started`); empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub declared: Vec<String>,
     /// The list changed since the last import; a new task pins the new definitions.
     pub list_changed: bool,
 }
@@ -149,6 +154,7 @@ impl Servers {
                 tools,
                 unavailable,
                 undeclared,
+                declared: Vec::new(),
                 list_changed: server.is_dirty(),
             });
         }

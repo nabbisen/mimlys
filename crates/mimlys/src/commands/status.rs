@@ -154,25 +154,25 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             app.host_tools_unavailable.get(&d.name).map(String::as_str),
         ));
     }
-    // A server runs in the data directory; a reader creates none, so before the
-    // first command that writes there is none to run in and the server keeps the
-    // current directory of the command.
+    // A server runs in the data directory, and a reader creates none. Before the
+    // first command that writes there is none to run in, and a server started
+    // anywhere else (the command's current directory) would be a side effect of a
+    // read command that nobody asked for: so none is started, and the declared
+    // tools are listed as declared (REQ-PERS-013, handoff 013).
     let data_dir_exists = app.data_dir.is_dir();
-    let servers_handle = std::sync::Arc::new(mimlys_mcp::tools::Servers::new(
-        config
-            .servers(&app.data_dir, &app.loaded.secrets)
-            .into_iter()
-            .map(|mut c| {
-                if !data_dir_exists {
-                    c.current_dir = None;
-                }
-                mimlys_mcp::server::Server::new(c)
-            })
-            .collect(),
-    ));
-    let mut servers = if servers_handle.is_empty() {
+    let configured = config.servers(&app.data_dir, &app.loaded.secrets);
+    let servers_not_started = !data_dir_exists && !configured.is_empty();
+    let mut servers = if configured.is_empty() {
         Vec::new()
+    } else if !data_dir_exists {
+        configured.iter().map(not_started).collect()
     } else {
+        let servers_handle = std::sync::Arc::new(mimlys_mcp::tools::Servers::new(
+            configured
+                .into_iter()
+                .map(mimlys_mcp::server::Server::new)
+                .collect(),
+        ));
         // Started to be listed, then ended; the events of their start and stop
         // belong to a store a reader does not write, so they are not recorded.
         let listed = servers_handle.status().await;
@@ -186,6 +186,9 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         Some(mimlys_core::native::DecisionTransport::ToolCalls)
     ) {
         mark_function_name_unavailable(&mut servers);
+    }
+    if servers_not_started {
+        out.line(messages::servers_not_started());
     }
     for s in &servers {
         out.line(messages::server_line(s));
@@ -233,6 +236,29 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         recovered: Vec::new(),
     });
     Ok(())
+}
+
+/// A server that was not started because the data directory does not exist yet:
+/// its declared tools, as declared, and no state of its own.
+fn not_started(config: &mimlys_mcp::server::ServerConfig) -> mimlys_mcp::ServerStatus {
+    mimlys_mcp::ServerStatus {
+        name: config.name.clone(),
+        state: "not_started".to_owned(),
+        detail: Some("no data directory yet".to_owned()),
+        revision: None,
+        server_name: None,
+        server_version: None,
+        instructions: None,
+        tools: Vec::new(),
+        unavailable: Vec::new(),
+        undeclared: Vec::new(),
+        declared: config
+            .tools
+            .keys()
+            .map(|t| format!("{}.{t}", config.name))
+            .collect(),
+        list_changed: false,
+    }
 }
 
 /// In the `tool_calls` transport, moves an MCP tool whose function name is
@@ -284,6 +310,7 @@ mod tests {
             tools: tools.iter().map(|t| (*t).to_owned()).collect(),
             unavailable: vec![("old.tool".into(), "definition_invalid".into())],
             undeclared: vec![],
+            declared: vec![],
             list_changed: false,
         }
     }

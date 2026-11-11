@@ -523,3 +523,64 @@ fn req_pers_013_two_writers_still_exclude_each_other() {
     assert_eq!(code, 0, "{stderr}");
     drop(writer);
 }
+
+/// An environment with one configured MCP server (the test server) that
+/// declares one tool.
+fn env_with_a_server() -> Env {
+    let env = Env::new();
+    let mut text = std::fs::read_to_string(&env.config).unwrap();
+    text.push_str(&format!(
+        "[servers.probe]\ncommand = {:?}\n[servers.probe.tools.web_search]\neffect = \"external_read\"\nidempotent = true\n",
+        env!("CARGO_BIN_EXE_mimlys-mcp-testserver")
+    ));
+    std::fs::write(&env.config, text).unwrap();
+    env
+}
+
+/// REQ-PERS-013: `status` does not start the MCP servers when the data
+/// directory does not exist yet. A server's working directory is the data
+/// directory, a reader creates none, and starting one anywhere else (the
+/// command's current directory) would be a side effect of a read command.
+/// It says so and lists the declared tools as declared.
+#[test]
+fn req_pers_013_status_starts_no_server_without_a_data_directory() {
+    let env = env_with_a_server();
+    let (code, stdout, stderr) = env.run(&["status"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("servers: not started (no data directory yet)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("probe (not started)")
+            && stdout.contains("declared tools: probe.web_search"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("(running)"), "{stdout}");
+    let (code, status) = env.json(&["status"]);
+    assert_eq!(code, 0, "{status}");
+    let server = &status["servers"][0];
+    assert_eq!(server["name"], "probe");
+    assert_eq!(server["state"], "not_started", "{server}");
+    assert_eq!(server["detail"], "no data directory yet");
+    assert_eq!(server["declared"], serde_json::json!(["probe.web_search"]));
+    assert_eq!(server["tools"], serde_json::json!([]));
+    assert!(!env.data.exists(), "a reader creates no data directory");
+}
+
+/// The other side: once the data directory exists, `status` starts the
+/// servers to list their tools, as before.
+#[test]
+fn req_pers_013_status_starts_the_servers_once_the_data_directory_exists() {
+    let env = env_with_a_server();
+    std::fs::create_dir_all(&env.data).unwrap();
+    let (code, status) = env.json(&["status"]);
+    assert_eq!(code, 0, "{status}");
+    let server = &status["servers"][0];
+    assert_eq!(server["state"], "running", "{server}");
+    assert_eq!(server["declared"], serde_json::Value::Null);
+    let tools = server["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|t| t == "probe.web_search"), "{server}");
+    let (_, stdout, _) = env.run(&["status"]);
+    assert!(!stdout.contains("servers: not started"), "{stdout}");
+}
