@@ -426,6 +426,12 @@ pub fn ceiling_undeclared_warning(tool: &str) -> String {
         "warning: {tool} is in policy.ceiling.tools without a [servers.<name>.tools.<tool>] declaration: it runs as external_write, not idempotent, approval required"
     )
 }
+/// `check`: a server's `shutdown_ms` is short (LIM-O16).
+pub fn server_shutdown_short_warning(server: &str, ms: i64) -> String {
+    format!(
+        "warning: servers.{server}.shutdown_ms is {ms}: a server that is still ending by itself after {ms} ms is killed with its group; rypsok takes up to 3000 ms"
+    )
+}
 /// `auto` structured output ended at plain text (RFC 008 §2).
 pub fn structured_output_none() -> &'static str {
     "structured output: none (the server refused json_schema and json_object; decisions are parsed strictly all the same)"

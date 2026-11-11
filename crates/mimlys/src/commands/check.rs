@@ -43,6 +43,9 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
     for tool in loaded.config.undeclared_external_tools() {
         out.line(messages::ceiling_undeclared_warning(&tool));
     }
+    for (server, ms) in loaded.config.short_shutdown_servers() {
+        out.line(messages::server_shutdown_short_warning(&server, ms));
+    }
     for name in loaded.config.host_tools.keys() {
         out.line(messages::ceiling_host_tool(name));
     }
@@ -56,6 +59,7 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         "config": loaded.config,
         "external_tools": loaded.config.declared_external_tools().into_iter().map(|(t, s)| serde_json::json!({"tool": t, "declared_by": s})).collect::<Vec<_>>(),
         "undeclared_external_tools": loaded.config.undeclared_external_tools(),
+        "short_shutdown_servers": loaded.config.short_shutdown_servers().into_iter().map(|(s, ms)| serde_json::json!({"server": s, "shutdown_ms": ms})).collect::<Vec<_>>(),
         "host_tools": loaded.config.host_tools.keys().collect::<Vec<_>>(),
     });
     if let Some(file) = xcrun_missing {
