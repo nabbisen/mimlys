@@ -561,3 +561,85 @@ fn req_task_010_completion_rule() {
     let back: Task = serde_json::from_value(json).unwrap();
     assert_eq!(back, checked);
 }
+
+/// A `versions` record as 0.9.0 and earlier wrote it: no event or action schema version.
+fn old_versions_record(runtime_version: &str) -> serde_json::Value {
+    serde_json::json!({
+        "policy_hash": test_versions().policy_hash,
+        "decision_schema_version": 1,
+        "tool_definition_hashes": {},
+        "runtime_version": runtime_version,
+    })
+}
+
+/// REQ-MAIN-002, REQ-PERS-012: a task created now records the event and the
+/// action schema version beside the decision schema version, and a record
+/// that has them reads them back.
+#[test]
+fn req_main_002_a_new_task_records_both_versions() {
+    let (task, _) = fixture();
+    assert_eq!(
+        task.versions.event_schema_version,
+        crate::event::EVENT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        task.versions.action_schema_version,
+        crate::action::ACTION_SCHEMA_VERSION
+    );
+    let json = serde_json::to_value(&task.versions).unwrap();
+    assert_eq!(
+        json["event_schema_version"],
+        crate::event::EVENT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        json["action_schema_version"],
+        crate::action::ACTION_SCHEMA_VERSION
+    );
+    let back: TaskVersions = serde_json::from_value(json).unwrap();
+    assert_eq!(back, task.versions);
+}
+
+/// REQ-MAIN-002: a task recorded before the two versions existed reads with
+/// the values of its release: events were at 1 up to 0.8.0 and are at 2 from
+/// 0.9.0; actions were at 1 up to 0.7.1 and are at 2 from 0.8.0.
+#[test]
+fn req_main_002_an_old_record_reads_with_the_values_of_its_era() {
+    for (release, event, action) in [
+        ("0.7.0", 1, 1),
+        ("0.7.1", 1, 1),
+        ("0.8.0", 1, 2),
+        ("0.9.0", 2, 2),
+        ("0.9.1", 2, 2),
+        ("0.10.0", 2, 2),
+    ] {
+        let v: TaskVersions = serde_json::from_value(old_versions_record(release)).unwrap();
+        assert_eq!(v.event_schema_version, event, "events of {release}");
+        assert_eq!(v.action_schema_version, action, "actions of {release}");
+        assert_eq!(v.runtime_version, release);
+    }
+}
+
+/// REQ-MAIN-002: a version that is no release (a development or test build,
+/// or text that is not a version) is built from the current code and reads
+/// as the current schemas; a recorded value is never overridden by the era.
+#[test]
+fn req_main_002_a_build_that_is_no_release_reads_as_current_and_a_recorded_value_stays() {
+    for build in ["0.0.0-test", "0.10.0-dev", "nightly", ""] {
+        let v: TaskVersions = serde_json::from_value(old_versions_record(build)).unwrap();
+        assert_eq!(
+            v.event_schema_version,
+            crate::event::EVENT_SCHEMA_VERSION,
+            "{build}"
+        );
+        assert_eq!(
+            v.action_schema_version,
+            crate::action::ACTION_SCHEMA_VERSION,
+            "{build}"
+        );
+    }
+    let mut record = old_versions_record("0.7.0");
+    record["event_schema_version"] = 7.into();
+    record["action_schema_version"] = 9.into();
+    let v: TaskVersions = serde_json::from_value(record).unwrap();
+    assert_eq!((v.event_schema_version, v.action_schema_version), (7, 9));
+}

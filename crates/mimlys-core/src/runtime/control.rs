@@ -247,6 +247,8 @@ impl Runtime {
         let versions = TaskVersions {
             policy_hash: self.policy_hash.clone(),
             decision_schema_version: crate::decision::DECISION_SCHEMA_VERSION,
+            event_schema_version: crate::event::EVENT_SCHEMA_VERSION,
+            action_schema_version: crate::action::ACTION_SCHEMA_VERSION,
             tool_definition_hashes: hashes,
             runtime_version: self.deps.runtime_version.clone(),
             backend: Some(self.guard("model_backend", || self.deps.backend.describe())?),

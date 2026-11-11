@@ -239,6 +239,21 @@ fn req_task_001_create_starts_running_with_profile_grants() {
         "REQ-WS-004: the base snapshot is taken at materialization"
     );
     assert_eq!(view.task.versions.tool_definition_hashes.len(), 6);
+    // REQ-MAIN-002, REQ-PERS-012: the five versions in force are recorded at creation.
+    let versions = &view.task.versions;
+    assert_eq!(
+        versions.decision_schema_version,
+        crate::decision::DECISION_SCHEMA_VERSION
+    );
+    assert_eq!(
+        versions.event_schema_version,
+        crate::event::EVENT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        versions.action_schema_version,
+        crate::action::ACTION_SCHEMA_VERSION
+    );
+    assert_eq!(versions.runtime_version, "0.1.0-test");
 }
 
 /// REQ-PERS-004 / external design §16.2: an authorized action writes the

@@ -681,3 +681,38 @@ fn req_sbx_001_a_failed_download_is_reported_as_unavailable_download() {
         "a 404 is not retried"
     );
 }
+
+/// REQ-MAIN-002, REQ-PERS-012 (handoff 004b): a task records the decision, event and action
+/// schema versions in force at creation, and `task show` gives them back.
+#[test]
+fn req_main_002_a_task_records_the_three_schema_versions_in_the_cli() {
+    let env = Env::new("");
+    let scope = scope();
+    let (code, created) = env.json(&[
+        "task",
+        "new",
+        "versions",
+        "--scope",
+        scope.path().to_str().unwrap(),
+        "--hold",
+    ]);
+    assert_eq!(code, 0, "{created}");
+    let id = created["task"]["task_id"].as_str().unwrap().to_owned();
+    for value in [
+        created["task"].clone(),
+        env.json(&["task", "show", &id]).1["task"].clone(),
+    ] {
+        let versions = &value["versions"];
+        assert_eq!(versions["decision_schema_version"], 1, "{versions}");
+        assert_eq!(
+            versions["event_schema_version"],
+            mimlys_core::event::EVENT_SCHEMA_VERSION,
+            "{versions}"
+        );
+        assert_eq!(
+            versions["action_schema_version"],
+            mimlys_core::action::ACTION_SCHEMA_VERSION,
+            "{versions}"
+        );
+    }
+}

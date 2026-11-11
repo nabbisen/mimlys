@@ -228,13 +228,23 @@ impl ScopeSpec {
     }
 }
 
-/// The versions in force when a task was created (REQ-PERS-012).
+/// The versions in force when a task was created (REQ-PERS-012, REQ-MAIN-002).
+/// A record written before the event and action schema versions were
+/// recorded (0.9.0 and earlier) reads with the values of its era, taken from
+/// its `runtime_version`: see [`event_schema_version_of`] and
+/// [`action_schema_version_of`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "TaskVersionsRecord")]
 pub struct TaskVersions {
     /// Hash of the policy.
     pub policy_hash: crate::hash::Hash,
     /// The decision schema version.
     pub decision_schema_version: u32,
+    /// The event schema version ([`crate::event::EVENT_SCHEMA_VERSION`]).
+    pub event_schema_version: u32,
+    /// The action, execution and observation schema version
+    /// ([`crate::action::ACTION_SCHEMA_VERSION`]).
+    pub action_schema_version: u32,
     /// Hash of each tool definition visible at creation, by tool name.
     pub tool_definition_hashes: std::collections::BTreeMap<String, crate::hash::Hash>,
     /// The runtime's version.
@@ -245,6 +255,76 @@ pub struct TaskVersions {
     /// The external tools imported at creation, by `server.tool` (RFC 009 §2).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub tool_imports: std::collections::BTreeMap<String, crate::tool::ImportRecord>,
+}
+
+/// `TaskVersions` as stored: the two schema versions are absent from records
+/// written by 0.9.0 and earlier.
+#[derive(Deserialize)]
+struct TaskVersionsRecord {
+    policy_hash: crate::hash::Hash,
+    decision_schema_version: u32,
+    #[serde(default)]
+    event_schema_version: Option<u32>,
+    #[serde(default)]
+    action_schema_version: Option<u32>,
+    tool_definition_hashes: std::collections::BTreeMap<String, crate::hash::Hash>,
+    runtime_version: String,
+    #[serde(default)]
+    backend: Option<crate::spi::BackendDescriptor>,
+    #[serde(default)]
+    tool_imports: std::collections::BTreeMap<String, crate::tool::ImportRecord>,
+}
+
+impl From<TaskVersionsRecord> for TaskVersions {
+    fn from(r: TaskVersionsRecord) -> Self {
+        TaskVersions {
+            event_schema_version: r
+                .event_schema_version
+                .unwrap_or_else(|| event_schema_version_of(&r.runtime_version)),
+            action_schema_version: r
+                .action_schema_version
+                .unwrap_or_else(|| action_schema_version_of(&r.runtime_version)),
+            policy_hash: r.policy_hash,
+            decision_schema_version: r.decision_schema_version,
+            tool_definition_hashes: r.tool_definition_hashes,
+            runtime_version: r.runtime_version,
+            backend: r.backend,
+            tool_imports: r.tool_imports,
+        }
+    }
+}
+
+/// The `major.minor.patch` of a released runtime version. A pre-release (a
+/// development or test build: `0.10.0-dev`, `0.0.0-test`) is no release and
+/// has none: it is built from the code that writes the current schemas.
+fn release_of(runtime_version: &str) -> Option<(u32, u32, u32)> {
+    // Strict: a pre-release suffix makes the patch part not a number.
+    let core = runtime_version.split('+').next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((major, minor, patch))
+}
+
+/// The event schema version of the release that wrote a task: 1 before 0.9.0,
+/// 2 from it. A version that is not a release (`major.minor.patch`) reads as
+/// the current one.
+pub fn event_schema_version_of(runtime_version: &str) -> u32 {
+    match release_of(runtime_version) {
+        Some(release) if release < (0, 9, 0) => 1,
+        _ => crate::event::EVENT_SCHEMA_VERSION,
+    }
+}
+
+/// The action schema version of the release that wrote a task: 1 before
+/// 0.8.0, 2 from it. A version that is not a release (`major.minor.patch`)
+/// reads as the current one.
+pub fn action_schema_version_of(runtime_version: &str) -> u32 {
+    match release_of(runtime_version) {
+        Some(release) if release < (0, 8, 0) => 1,
+        _ => crate::action::ACTION_SCHEMA_VERSION,
+    }
 }
 
 /// One immutable version of a task's plan (external design §6.2, REQ-DEC-011).
@@ -648,6 +728,8 @@ pub fn test_versions() -> TaskVersions {
     TaskVersions {
         policy_hash: crate::hash::hash_bytes(b"policy"),
         decision_schema_version: 1,
+        event_schema_version: crate::event::EVENT_SCHEMA_VERSION,
+        action_schema_version: crate::action::ACTION_SCHEMA_VERSION,
         tool_definition_hashes: std::collections::BTreeMap::new(),
         runtime_version: "0.0.0-test".into(),
         backend: None,
