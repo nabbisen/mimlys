@@ -1,6 +1,6 @@
 # Handoff 009d — What rypsok's reply changes in mimlys (release 0.10)
 
-**RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) · **Specification.** REQ-MCP-005 and REQ-MCP-001 (amended 2026-11-11), external design §11.1; limits LIM-O16 (new) · **From.** rypsok's reply of 2026-11-11 (`.git-exclude/upstream/rypsok/receive/2026-11-11-to-mimlys-team-reply.md`), checked by the rypsok team against their 0.8.0 and 0.9.0 binaries. This handoff runs beside 009c: 009c measures 0.9.0; this one changes what the letter showed to be wrong in mimlys whatever 0.9.0 measures.
+**RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) · **Specification.** REQ-MCP-005 and REQ-MCP-001 (amended 2026-11-11), external design §11.1; limits LIM-O16 (new) · **From.** rypsok's reply of 2026-11-11 (`.git-exclude/upstream/rypsok/receive/2026-11-11-revisions-changes-and-limits.md`), checked by the rypsok team against their 0.8.0 and 0.9.0 binaries. This handoff runs beside 009c: 009c measures 0.9.0; this one changes what the letter showed to be wrong in mimlys whatever 0.9.0 measures.
 
 ## Status (2026-11-11): approved; three small corrections, then the merge
 
