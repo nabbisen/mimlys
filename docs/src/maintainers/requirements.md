@@ -871,6 +871,9 @@ Tests shall replay recorded tasks through the fakes and verify identical transit
 ### REQ-TEST-017 Security regression corpus — M1 · T
 The hostile corpus of REQ-SEC-013 shall run on every change.
 
+### REQ-TEST-018 Formal proofs, kept narrow — All · T
+A Verus proof shall be written only for a pure function whose property is a stated requirement or threat control. Its specifications sit in the production file under `cfg_attr(verus_keep_ghost, …)` or `#[cfg(verus_keep_ghost)]` only, the checker reads that file itself (never a copy), and no published crate gains a dependency. Each proof records the mutations that fail it, those that survive with what holds them instead, its run time and what it does not prove (`repository-guards.md`). A required CI job checks the proof with a pinned, hash-checked Verus and its named toolchain, and runs at least one recorded mutation that must fail. (RFC 016)
+
 ---
 
 ## 24. Maintainability and versioning

@@ -15,7 +15,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Priority |
 |----|-------|----------|
-| 016 | [Formal proofs with Verus, kept narrow](./proposed/016-formal-proofs-with-verus.md) | for 0.10: the first proof (the permission-lock decision) and the rules for any other |
+| — | none at the moment | |
 
 ## Accepted
 
@@ -24,6 +24,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 | 013 | [Operation on one machine](./accepted/013-operation-on-one-machine.md) | 2026-11-10 (part one, M7a, in 0.10; part two, M7b, after) |
 | 015 | [Adaptive effort, part one](./accepted/015-adaptive-effort.md) | 2026-11-10 (M8, after 0.10) |
 | 014 | [The local daemon](./accepted/014-local-daemon.md) | 2026-11-10 (M9, decided at 0.10's disposition) |
+| 016 | [Formal proofs with Verus, kept narrow](./accepted/016-formal-proofs-with-verus.md) | 2026-11-11 (0.10: the permission-lock decision; rules for any other proof) |
 
 ## Implemented
 
