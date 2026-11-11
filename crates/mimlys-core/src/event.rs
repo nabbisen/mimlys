@@ -67,6 +67,18 @@ pub enum Tier {
     Full,
 }
 
+/// The event schema version this code writes (REQ-MAIN-002), recorded on
+/// every task at creation (`task.versions`).
+///
+/// The first values describe the shapes by release: **1** is the shape of
+/// 0.7.0 to 0.8.0; **2** is 0.9.0's, in which `decision.received` gained
+/// `transport` and `text_chars`. A task recorded before this version existed
+/// reads with the value of its release (see `TaskVersions`). From here on: an
+/// additive field raises nothing; a renamed or removed field or event, or a
+/// changed meaning, raises it by one, and the change is announced in the
+/// changelog (REQ-MAIN-001; external design §22).
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
+
 /// An event (external design §17.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event")]

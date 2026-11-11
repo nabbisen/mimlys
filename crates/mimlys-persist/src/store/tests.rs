@@ -70,6 +70,8 @@ impl Fx {
                 versions: TaskVersions {
                     policy_hash: hash_bytes(b"policy"),
                     decision_schema_version: 1,
+                    event_schema_version: mimlys_core::event::EVENT_SCHEMA_VERSION,
+                    action_schema_version: mimlys_core::action::ACTION_SCHEMA_VERSION,
                     tool_definition_hashes: Default::default(),
                     runtime_version: "0.0.0-test".into(),
                     backend: None,
@@ -1277,4 +1279,62 @@ fn req_pers_006_a_store_written_by_0_9_0_opens_and_verifies() {
                 .unwrap()
         )
     );
+}
+
+/// REQ-MAIN-002, REQ-PERS-012 (handoff 004b): the tasks of a store written before the event and
+/// action schema versions were recorded read with the values of their era. The stored records
+/// are 0.9.0's fixture, whose `versions` hold neither value; its tasks were made by a test
+/// helper and say `0.0.0-test`, which is no release and reads as the current schemas. The
+/// release a record names is then rewritten in a copy of the database (the only thing changed),
+/// and the same records read with that release's values.
+#[test]
+fn req_main_002_the_tasks_of_an_old_store_read_with_the_values_of_their_era() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v0_9_0");
+    let read = |release: Option<&str>| -> Vec<(u32, u32)> {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        for sub in ["snapshots/objects", "snapshots/manifests"] {
+            std::fs::create_dir_all(data.join(sub)).unwrap();
+        }
+        for name in ["mimlys.db", "mimlys.db-wal"] {
+            std::fs::copy(fixture.join(name), data.join(name)).unwrap();
+        }
+        let raw = rusqlite::Connection::open(data.join("mimlys.db")).unwrap();
+        let before: String = raw
+            .query_row("SELECT record FROM tasks LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            !before.contains("event_schema_version") && !before.contains("action_schema_version"),
+            "the fixture predates both versions"
+        );
+        if let Some(release) = release {
+            raw.execute(
+                "UPDATE tasks SET record = json_set(record, '$.versions.runtime_version', ?1)",
+                [release],
+            )
+            .unwrap();
+        }
+        drop(raw);
+        let store = open(&data).unwrap();
+        store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                let task = store.load_task(t.task_id).unwrap().unwrap();
+                (
+                    task.versions.event_schema_version,
+                    task.versions.action_schema_version,
+                )
+            })
+            .collect()
+    };
+    let current = (
+        mimlys_core::event::EVENT_SCHEMA_VERSION,
+        mimlys_core::action::ACTION_SCHEMA_VERSION,
+    );
+    assert_eq!(read(None), [current], "a test build reads as the current");
+    assert_eq!(read(Some("0.9.0")), [(2, 2)]);
+    assert_eq!(read(Some("0.8.0")), [(1, 2)]);
+    assert_eq!(read(Some("0.7.1")), [(1, 1)]);
 }
