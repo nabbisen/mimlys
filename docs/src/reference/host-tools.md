@@ -214,10 +214,18 @@ refused it by the profile.
 Only the paths you declare in `read_paths` and the system's directories
 (on Linux `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin` and a few devices, and
 **not `/etc` and not `/opt`**; on macOS the shorter list above). On Linux the
-dependency step's worker adds two files of `/etc`, and no other worker does:
-`/etc/resolv.conf` (without it a name does not resolve) and
-`/etc/ssl/certs/ca-certificates.crt` (without it the TLS handshake has no
-trust anchors).
+dependency step's worker adds files of `/etc`, and no other worker does, each
+only where it exists. Two were **measured** (the step failed without them, on
+Ubuntu and on Arch): `/etc/resolv.conf` (without it a name does not resolve)
+and `/etc/ssl/certs/ca-certificates.crt` (without it the TLS handshake has no
+trust anchors). Two are **not measured**: `/etc/pki/tls/certs/ca-bundle.crt`
+(the Fedora and RHEL families) and `/etc/ssl/ca-bundle.pem` (openSUSE). They
+are the certificate bundles of those families' documented layout, public data,
+added so that the dependency step keeps working there; no failure on such a
+machine has been seen, and a report from one is welcome. `mimlys status` lists
+both sets: `read_set` (the offline worker's) and
+`dependency_step_read_set_extra` (what the step's worker adds, those that exist
+on the machine).
 The home directory is not among them, and neither is any file of another
 process: `/proc` is not readable by a host tool, which keeps the command
 lines and network tables of your other programs from project code.

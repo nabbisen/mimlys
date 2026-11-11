@@ -30,6 +30,8 @@ struct Status<'a> {
     host_tools: Vec<HostToolView>,
     /// The worker's read set (REQ-CONF-008).
     read_set: Vec<String>,
+    /// What the dependency step's worker reads beyond `read_set` (empty off Linux).
+    dependency_step_read_set_extra: Vec<String>,
     /// The store as a reader finds it: free, in use by another runtime (and
     /// which), needing recovery, or not created yet (REQ-PERS-013).
     store: StoreView,
@@ -199,6 +201,10 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             out.line(messages::server_undeclared(tool));
         }
     }
+    let extra = app.dependency_step_read_set_extra();
+    if !extra.is_empty() {
+        out.line(messages::dependency_step_reads(&extra));
+    }
     out.line(messages::status_running(status.running.len()));
     for (id, kind) in &status.pending {
         out.line(messages::status_pending(&id.to_string(), *kind));
@@ -227,6 +233,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             })
             .collect(),
         read_set: app.read_set(),
+        dependency_step_read_set_extra: app.dependency_step_read_set_extra(),
         store,
         interpreters: app
             .interpreters
