@@ -37,7 +37,7 @@ the model may change:
 
 A `denied` rejection names its reason (`path_outside_workspace`,
 `path_excluded`, `grant_missing`, `destination_not_granted`,
-`effect_not_allowed`, `promote_not_allowed`, `argument_not_allowed`) and
+`scheme_not_https` (only `https` addresses are admitted), `effect_not_allowed`, `promote_not_allowed`, `argument_not_allowed`) and
 its hint follows the reason. Authorization comes before any filesystem
 access: a path outside the workspace is `denied` with the same bytes
 whether it exists or not.
