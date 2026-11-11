@@ -212,8 +212,12 @@ refused it by the profile.
 ## What a host tool can read
 
 Only the paths you declare in `read_paths` and the system's directories
-(on Linux `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/opt`, a few
-devices; on macOS the shorter list above).
+(on Linux `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin` and a few devices, and
+**not `/etc` and not `/opt`**; on macOS the shorter list above). On Linux the
+dependency step's worker adds two files of `/etc`, and no other worker does:
+`/etc/resolv.conf` (without it a name does not resolve) and
+`/etc/ssl/certs/ca-certificates.crt` (without it the TLS handshake has no
+trust anchors).
 The home directory is not among them, and neither is any file of another
 process: `/proc` is not readable by a host tool, which keeps the command
 lines and network tables of your other programs from project code.
@@ -239,7 +243,17 @@ and the secret patterns of the workspace exclusions: `.env`, `*.pem`, `*.key`,
 is on the declaration, before anything is granted. It is a guard on what the
 administrator wrote, looking one level down: it is not a proof that a
 declared directory holds no credentials further in, so declare the narrowest
-directory the tool needs. `/etc` and `/opt` stay readable as a whole.
+directory the tool needs.
+
+**On Linux, `/etc` and `/opt` are not in the set.** A tool that needs a file
+of `/etc` fails with the file's name (`Permission denied`); declare that file
+in `read_paths` (a file is accepted; the directory `/etc` may be refused,
+since it can hold files whose names are of the credential patterns). The user and group names are not
+looked up, so `id` shows numbers and says it cannot find the names; the
+system's Git configuration is not read, and `git` says so once, as a warning.
+A tool installed under `/opt` needs its directory declared: `command =
+"/opt/tool/bin/tool"` is refused at load with `declare /opt/tool/bin in
+read_paths` until it is.
 
 **When the toolchain needs a file outside the set**, it fails with the
 file's name; the remedy is to declare the directory that holds it. With

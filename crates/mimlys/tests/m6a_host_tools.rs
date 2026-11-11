@@ -68,8 +68,8 @@ effect = "workspace_write"
 timeout_ms = 20000
 [host_tools.fetch]
 command = {tool:?}
-allowed_args = ["connect"]
-arg_pattern = "[A-Za-z0-9_.:]+"
+allowed_args = ["connect", "read"]
+arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 2
 effect = "external_read"
 timeout_ms = 20000
@@ -1248,6 +1248,143 @@ fn req_conf_012_landlock_net_layer_is_reported() {
         common::skip(
             test,
             "kernel Landlock below ABI 4: the TCP layer is not testable here",
+        );
+    }
+}
+
+/// The files of `/etc` the dependency step's worker reads, as the final list
+/// of handoff 011j: each is one the step failed without (measured with
+/// `cargo fetch` and `curl`; the request records the failures).
+const NETWORK_ETC: [&str; 2] = ["/etc/resolv.conf", "/etc/ssl/certs/ca-certificates.crt"];
+
+/// A path is under `dir` as a path component, not as a string prefix
+/// (`/etcetera` is not under `/etc`).
+fn under(path: &Path, dir: &str) -> bool {
+    path.starts_with(dir)
+}
+
+/// REQ-CONF-011 (handoff 011j): the Linux read set holds neither `/etc` nor
+/// `/opt`. The worker's offline set has no entry under either; the dependency
+/// step's worker adds exactly the two files of `NETWORK_ETC` and nothing
+/// else; a toolchain under `/opt` is in the set only when a declaration names
+/// it.
+#[test]
+fn req_conf_011_the_read_set_holds_no_etc_and_no_opt() {
+    let data = tempfile::tempdir().unwrap();
+    let offline = mimlys::app::confinement_spec(data.path(), &[], &[], true).read_paths;
+    for p in &offline {
+        assert!(!under(p, "/etc") && !under(p, "/opt"), "{}", p.display());
+    }
+    for must in ["/usr", "/lib", "/bin", "/dev/urandom"] {
+        assert!(offline.iter().any(|p| p == Path::new(must)), "{must} stays");
+    }
+    let online = mimlys::app::confinement_spec(data.path(), &[], &[], false).read_paths;
+    let added: Vec<String> = online
+        .iter()
+        .filter(|p| !offline.contains(p))
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        added, NETWORK_ETC,
+        "the dependency step's worker adds exactly these files"
+    );
+    assert!(
+        !offline.iter().any(|p| p.starts_with("/opt")),
+        "no /opt unless declared"
+    );
+    let mut declaration = mimlys_core::host_tool::HostToolDeclaration {
+        name: "opt-tool".into(),
+        command: "/opt/tool/bin/tool".into(),
+        args: vec![],
+        allowed_args: vec![],
+        arg_pattern: None,
+        max_args: 0,
+        effect: mimlys_core::action::EffectKind::WorkspaceWrite,
+        reversible: true,
+        timeout_ms: 1000,
+        read_paths: vec!["/opt/tool".into()],
+        env: Default::default(),
+        env_allow: vec![],
+        network: false,
+    };
+    let declared =
+        mimlys::app::confinement_spec(data.path(), &[], std::slice::from_ref(&declaration), true)
+            .read_paths;
+    assert!(
+        declared.iter().any(|p| p == Path::new("/opt/tool")),
+        "a declaration names it"
+    );
+    declaration.read_paths.clear();
+    let undeclared =
+        mimlys::app::confinement_spec(data.path(), &[], &[declaration], true).read_paths;
+    assert!(!undeclared.iter().any(|p| p.starts_with("/opt")));
+}
+
+/// REQ-CONF-011 (handoff 011j): inside a confined host tool `/etc` is not
+/// readable (a file that is world-readable on the machine is refused), and the
+/// dependency step's worker reads the files of `NETWORK_ETC` that exist on
+/// the machine and nothing else of `/etc`. The offline tool is refused those
+/// files too.
+#[test]
+fn req_conf_011_etc_is_unreadable_but_for_the_dependency_steps_files() {
+    let present: Vec<&str> = NETWORK_ETC
+        .iter()
+        .copied()
+        .filter(|f| std::fs::File::open(f).is_ok())
+        .collect();
+    let fetch = |path: &str| json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "fetch", "args": ["read", path]}});
+    let mut script = vec![
+        probe(&["read", "/etc/passwd"]),
+        fetch("/etc/passwd"),
+        fetch("/etc/hosts"),
+    ];
+    for f in &present {
+        script.push(probe(&["read", f]));
+        script.push(fetch(f));
+    }
+    script.push(complete());
+    let env = Env::new(&script, "");
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        eprintln!("skipped: tier {tier}");
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "read etc",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+        "--grant",
+        "host_tool:fetch",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 3 + 2 * present.len(), "{obs:?}");
+    for (i, what) in ["probe /etc/passwd", "fetch /etc/passwd", "fetch /etc/hosts"]
+        .iter()
+        .enumerate()
+    {
+        assert!(
+            stdout_of(&obs[i]).contains("read failed: permission denied"),
+            "{what}: {}",
+            stdout_of(&obs[i])
+        );
+    }
+    for (n, f) in present.iter().enumerate() {
+        assert!(
+            stdout_of(&obs[3 + 2 * n]).contains("read failed: permission denied"),
+            "the offline tool must not read {f}: {}",
+            stdout_of(&obs[3 + 2 * n])
+        );
+        assert!(
+            stdout_of(&obs[4 + 2 * n]).starts_with("read ")
+                && !stdout_of(&obs[4 + 2 * n]).contains("failed"),
+            "the dependency step must read {f}: {}",
+            stdout_of(&obs[4 + 2 * n])
         );
     }
 }
