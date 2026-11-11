@@ -10,7 +10,6 @@ use mimlys_core::spi::Cancellation;
 use rmcp::ClientHandler;
 use rmcp::model::{CallToolRequestParams, ClientRequest, ServerResult};
 use rmcp::service::{NotificationContext, PeerRequestOptions, RoleClient, RunningService};
-use rmcp::transport::TokioChildProcess;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,9 +68,33 @@ pub enum CallOutcome {
     },
 }
 
+/// The child process, owned by the connection. While it is here, dropping
+/// the connection kills its whole group (or Job Object); a child that has
+/// ended by itself is released first. The SDK's own stdio transport is not
+/// used for the child, because its shutdown (standard input closed, 3 s, then
+/// SIGTERM, 3 s, then the kill) cannot be given the server's own grace
+/// (LIM-O16).
+struct ChildGuard {
+    child: Option<Box<dyn process_wrap::tokio::ChildWrapper>>,
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            // `kill` reaches the group, and waits for the leader (no zombie).
+            tokio::spawn(async move {
+                if let Err(e) = Box::into_pin(child.kill()).await {
+                    tracing::warn!("Error killing child process: {e}");
+                }
+            });
+        }
+    }
+}
+
 /// One live connection.
 pub struct Connection {
     service: RunningService<RoleClient, Handler>,
+    child: ChildGuard,
     process_id: Option<u32>,
     info: ServerInfo,
     dirty: Arc<AtomicBool>,
@@ -101,11 +124,15 @@ impl Connection {
         #[cfg(windows)]
         wrapped.wrap(process_wrap::tokio::JobObject);
         wrapped.wrap(process_wrap::tokio::KillOnDrop);
-        let (transport, stderr) = TokioChildProcess::builder(wrapped)
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("spawn:{}", e.kind()))?;
-        let process_id = transport.id();
+        let mut child = wrapped.spawn().map_err(|e| format!("spawn:{}", e.kind()))?;
+        let process_id = child.id();
+        let stdin = child.stdin().take();
+        let stdout = child.stdout().take();
+        let stderr = child.stderr().take();
+        let mut guard = ChildGuard { child: Some(child) };
+        let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
+            return Err("spawn:no_stdio".into());
+        };
         if let Some(stderr) = stderr {
             let server = config.name.clone();
             tokio::spawn(async move {
@@ -119,9 +146,10 @@ impl Connection {
         let handler = Handler {
             dirty: Arc::clone(&dirty),
         };
-        let service = rmcp::ServiceExt::serve(handler, transport)
+        let service = rmcp::ServiceExt::serve(handler, (stdout, stdin))
             .await
             .map_err(|e| format!("initialize:{}", kind_of_init(&e)))?;
+        let child = std::mem::replace(&mut guard, ChildGuard { child: None });
         let peer_info = service.peer().peer_info();
         let info = ServerInfo {
             revision: peer_info.as_ref().map(|i| i.protocol_version.to_string()),
@@ -135,6 +163,7 @@ impl Connection {
         };
         Ok(Self {
             service,
+            child,
             process_id,
             info,
             dirty,
@@ -265,8 +294,8 @@ impl Connection {
         }
     }
 
-    /// Ends the service task; dropping the transport kills the process
-    /// group or Job Object (clause K, through the process wrapper).
+    /// Ends the service task; dropping the connection kills the process
+    /// group or Job Object (clause K, through the child guard).
     fn kill(&self) {
         self.service.cancellation_token().cancel();
     }
@@ -275,7 +304,17 @@ impl Connection {
     /// for the process to exit by itself; what remains is killed with the
     /// group when the connection drops (REQ-MCP-001).
     pub async fn shutdown(mut self, grace: Duration) {
+        let deadline = tokio::time::Instant::now() + grace;
+        // Closing the service drops the child's standard input.
         let _ = self.service.close_with_timeout(grace).await;
+        if let Some(child) = self.child.child.as_mut() {
+            let ended = tokio::time::timeout_at(deadline, child.wait()).await;
+            if matches!(ended, Ok(Ok(_))) {
+                // It ended by itself: nothing to kill.
+                self.child.child = None;
+            }
+            // Otherwise the guard kills the group as `self` drops.
+        }
     }
 }
 

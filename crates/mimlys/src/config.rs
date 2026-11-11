@@ -8,10 +8,11 @@ use mimlys_core::limits::{
     LIM_C1_CONTEXT_CHARS, LIM_C1_CONTEXT_CHARS_RANGE, LIM_H1_HOST_DEADLINE_MS,
     LIM_H1_HOST_DEADLINE_MS_RANGE, LIM_M1_REQUEST_MS, LIM_M1_REQUEST_MS_RANGE, LIM_M2_MAX_TOKENS,
     LIM_M2_MAX_TOKENS_RANGE, LIM_O5_EXTERNAL_DEADLINE_MS, LIM_O5_EXTERNAL_DEADLINE_MS_RANGE,
-    LIM_O6_SERVER_STARTUP_MS, LIM_O6_SERVER_STARTUP_MS_RANGE, LIM_S1_FUEL, LIM_S1_FUEL_RANGE,
-    LIM_S2_DEADLINE_MS, LIM_S2_DEADLINE_MS_RANGE, LIM_S3_MEMORY_MIB, LIM_S3_MEMORY_MIB_RANGE,
-    LIM_S4_OUTPUT_BYTES, LIM_S4_OUTPUT_BYTES_RANGE, LIM_W1_WORKSPACE_BYTES,
-    LIM_W1_WORKSPACE_BYTES_RANGE, LIM_W2_WORKSPACE_FILES,
+    LIM_O6_SERVER_STARTUP_MS, LIM_O6_SERVER_STARTUP_MS_RANGE, LIM_O16_SERVER_SHUTDOWN_MS,
+    LIM_O16_SERVER_SHUTDOWN_MS_RANGE, LIM_O16_SERVER_SHUTDOWN_WARN_BELOW_MS, LIM_S1_FUEL,
+    LIM_S1_FUEL_RANGE, LIM_S2_DEADLINE_MS, LIM_S2_DEADLINE_MS_RANGE, LIM_S3_MEMORY_MIB,
+    LIM_S3_MEMORY_MIB_RANGE, LIM_S4_OUTPUT_BYTES, LIM_S4_OUTPUT_BYTES_RANGE,
+    LIM_W1_WORKSPACE_BYTES, LIM_W1_WORKSPACE_BYTES_RANGE, LIM_W2_WORKSPACE_FILES,
 };
 use mimlys_core::policy::{OnCancel, OnReject, Policy, Profile, Recovery};
 use mimlys_core::spi::Locality;
@@ -324,6 +325,9 @@ pub struct ServerSection {
     /// Startup deadline (LIM-O6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_ms: Option<i64>,
+    /// The grace after its standard input closes, before its group is killed (LIM-O16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown_ms: Option<i64>,
     /// The server's declared maximum call time; no tool deadline falls below it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_call_ms: Option<i64>,
@@ -386,6 +390,7 @@ impl Config {
                     .collect();
                 config.current_dir = Some(data_dir.to_path_buf());
                 config.startup_ms = s.startup_ms.unwrap_or(LIM_O6_SERVER_STARTUP_MS);
+                config.shutdown_ms = s.shutdown_ms.unwrap_or(LIM_O16_SERVER_SHUTDOWN_MS);
                 config.max_call_ms = s.max_call_ms;
                 config.tools = s
                     .tools
@@ -441,6 +446,19 @@ impl Config {
             policy.host_tools.insert(d.name.clone(), d);
         }
         Ok(policy)
+    }
+
+    /// Servers whose configured `shutdown_ms` is below LIM-O16's warning
+    /// bound (`check` warns), with the value.
+    pub fn short_shutdown_servers(&self) -> Vec<(String, i64)> {
+        self.servers
+            .iter()
+            .filter_map(|(name, s)| {
+                s.shutdown_ms
+                    .filter(|v| *v < LIM_O16_SERVER_SHUTDOWN_WARN_BELOW_MS)
+                    .map(|v| (name.clone(), v))
+            })
+            .collect()
     }
 
     /// External tools named in `policy.ceiling.tools` without a declaration:
@@ -1216,6 +1234,13 @@ impl Config {
                     &format!("servers.{name}.startup_ms"),
                     v,
                     LIM_O6_SERVER_STARTUP_MS_RANGE,
+                )?;
+            }
+            if let Some(v) = s.shutdown_ms {
+                range(
+                    &format!("servers.{name}.shutdown_ms"),
+                    v,
+                    LIM_O16_SERVER_SHUTDOWN_MS_RANGE,
                 )?;
             }
             if let Some(v) = s.max_call_ms {

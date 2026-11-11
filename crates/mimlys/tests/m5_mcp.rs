@@ -675,6 +675,154 @@ fn m5_cancellation_deadline_death_and_restarts() {
     });
 }
 
+/// REQ-MCP-001, LIM-O16: at runtime exit a server's standard input is closed
+/// and the server is given `shutdown_ms` to end by itself (5 000 ms by
+/// default, not LIM-O2's 2 000): one that needs 3 s ends on its own and is
+/// not killed; one still running after `shutdown_ms` is killed. Both are read
+/// from state (a marker the server creates only if it ends by itself), not
+/// from a short elapsed time.
+#[test]
+fn req_mcp_001_a_server_gets_shutdown_ms_to_end_by_itself() {
+    assert_eq!(mimlys_core::limits::LIM_O16_SERVER_SHUTDOWN_MS, 5_000);
+    assert_eq!(
+        ServerConfig::new("t", testserver(), vec![]).shutdown_ms,
+        5_000
+    );
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let configured = |exit_delay_ms: u64, marker: &std::path::Path, shutdown_ms: i64| {
+        let mut config = ServerConfig::new("t", testserver(), vec![]);
+        config.env_allow = vec!["PATH".into()];
+        config.env_secrets = vec![
+            (
+                "MIMLYS_TESTSERVER_EXIT_DELAY_MS".into(),
+                exit_delay_ms.to_string(),
+            ),
+            (
+                "MIMLYS_TESTSERVER_EXIT_MARKER".into(),
+                marker.to_string_lossy().into_owned(),
+            ),
+        ];
+        config.shutdown_ms = shutdown_ms;
+        config
+    };
+
+    // A graceful shutdown of 4.5 s (longer than the 3 s after which the SDK's own
+    // stdio shutdown sends SIGTERM), well inside the grace: it ends by itself,
+    // and `shutdown` returns only after it has.
+    let graceful = dir.path().join("graceful");
+    rt.block_on(async {
+        let server = Server::new(configured(4_500, &graceful, 20_000));
+        server.list().await.unwrap();
+        server.shutdown().await;
+    });
+    assert!(
+        graceful.exists(),
+        "a server that needed 4.5 s was killed before it ended by itself"
+    );
+
+    // One that outlasts the grace is killed: it never creates its marker,
+    // even after the time it would have taken.
+    let outlasting = dir.path().join("outlasting");
+    rt.block_on(async {
+        let server = Server::new(configured(4_000, &outlasting, 500));
+        server.list().await.unwrap();
+        server.shutdown().await;
+    });
+    std::thread::sleep(std::time::Duration::from_millis(6_000));
+    assert!(
+        !outlasting.exists(),
+        "a server that outlasted shutdown_ms was not killed"
+    );
+}
+
+/// REQ-MCP-007 (K-05): a server that is abandoned (it ignored the cancellation
+/// and the ping, so the call is `Killed`) is dead, not merely forgotten, and
+/// so is every process it started (the kill reaches the group): both stop
+/// writing their heartbeat. The check is made on state, files that no longer
+/// grow.
+#[test]
+fn req_mcp_007_a_killed_server_is_gone() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let beat = dir.path().join("heartbeat");
+    let grand = dir.path().join("grandchild");
+    rt.block_on(async {
+        let mut config = ServerConfig::new("t", testserver(), vec![]);
+        config.env_allow = vec!["PATH".into()];
+        config.env_secrets = vec![
+            ("MIMLYS_TESTSERVER_IGNORE_CANCEL".into(), "1".into()),
+            (
+                "MIMLYS_TESTSERVER_HEARTBEAT".into(),
+                beat.to_string_lossy().into_owned(),
+            ),
+            (
+                "MIMLYS_TESTSERVER_GRANDCHILD".into(),
+                grand.to_string_lossy().into_owned(),
+            ),
+        ];
+        let server = Server::new(config);
+        let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let cancel = Cancellation::new();
+        cancel.cancel();
+        let outcome = server
+            .call(
+                task,
+                "slow",
+                json!({"ms": 60000}).as_object().unwrap().clone(),
+                120_000,
+                &cancel,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, CallOutcome::Killed);
+        let len = |p: &std::path::Path| std::fs::metadata(p).map_or(0, |m| m.len());
+        assert!(len(&beat) > 0, "the server never beat");
+        assert!(len(&grand) > 0, "the server's child never beat");
+        // Give the kill time to land, then see whether anything still beats.
+        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+        let before = (len(&beat), len(&grand));
+        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+        let after = (len(&beat), len(&grand));
+        assert_eq!(before.0, after.0, "the killed server is still running");
+        assert_eq!(
+            before.1, after.1,
+            "a process the killed server started is still running"
+        );
+    });
+}
+
+/// REQ-MCP-001, LIM-O16: `check` warns when a server's `shutdown_ms` is below
+/// 1 000 ms (its group is killed before most servers finish ending), names the
+/// server and the value, and says nothing at 1 000 ms or when it is unset.
+#[test]
+fn req_mcp_001_check_warns_of_a_short_shutdown_ms() {
+    let short = Env::new(&[], "shutdown_ms = 900", &[]);
+    let (code, stdout, _) = short.run(&["check"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("warning: servers.rypsok.shutdown_ms is 900"),
+        "{stdout}"
+    );
+    let (_, check) = short.json(&["check"]);
+    assert_eq!(
+        check["short_shutdown_servers"],
+        json!([{"server": "rypsok", "shutdown_ms": 900}])
+    );
+    for ok in ["shutdown_ms = 1000", ""] {
+        let env = Env::new(&[], ok, &[]);
+        let (code, stdout, _) = env.run(&["check"]);
+        assert_eq!(code, 0, "{stdout}");
+        assert!(!stdout.contains("shutdown_ms is"), "{ok}: {stdout}");
+    }
+}
+
 /// RFC 009 §4 and the configuration surface: a declaration admits the tool
 /// to the ceiling and `check` says by what; an undeclared tool in the
 /// ceiling is warned about; invalid keys are refused by name.
@@ -711,6 +859,14 @@ fn m5_configuration_and_check() {
         (
             "[servers.s]\ncommand = \"x\"\nstartup_ms = 10\n",
             "servers.s.startup_ms",
+        ),
+        (
+            "[servers.s]\ncommand = \"x\"\nshutdown_ms = 499\n",
+            "servers.s.shutdown_ms",
+        ),
+        (
+            "[servers.s]\ncommand = \"x\"\nshutdown_ms = 30001\n",
+            "servers.s.shutdown_ms",
         ),
         (
             "[servers.s]\ncommand = \"x\"\n[servers.s.tools.t]\neffect = \"workspace_write\"\n",

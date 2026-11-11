@@ -16,7 +16,16 @@
 //! lists an extra tool whose input schema uses `anyOf`;
 //! `MIMLYS_TESTSERVER_WIDE=1` lists a tool with nine parameters;
 //! `MIMLYS_TESTSERVER_IGNORE_CANCEL=1` makes `slow` hang the whole server
-//! (no cancellation and no ping is read until it ends).
+//! (no cancellation and no ping is read until it ends);
+//! `MIMLYS_TESTSERVER_EXIT_DELAY_MS=<n>` with `MIMLYS_TESTSERVER_EXIT_MARKER=<path>`
+//! makes the server, once its standard input is closed, wait `n` milliseconds
+//! and then create the marker file before it exits (a graceful shutdown that
+//! takes time: a server killed meanwhile never creates it);
+//! `MIMLYS_TESTSERVER_HEARTBEAT=<path>` appends a byte to the file every
+//! 50 ms for as long as the process lives (a killed process stops writing);
+//! `MIMLYS_TESTSERVER_GRANDCHILD=<path>` starts, at start-up, a child of the
+//! server that only beats into that file and never reads anything (to see
+//! whether a kill reaches the whole group).
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -244,6 +253,25 @@ fn call(name: &str, arguments: &Map<String, Value>) -> Value {
 
 /// Runs the server on this process's stdin and stdout until end of file.
 pub fn main() {
+    if std::env::var("MIMLYS_TESTSERVER_ROLE").is_ok_and(|v| v == "beat") {
+        // The grandchild: the heartbeat thread below, and nothing else.
+        beat_forever();
+    }
+    if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_GRANDCHILD")
+        && let Ok(exe) = std::env::current_exe()
+    {
+        let _ = std::process::Command::new(exe)
+            .env_clear()
+            .env("MIMLYS_TESTSERVER_ROLE", "beat")
+            .env("MIMLYS_TESTSERVER_HEARTBEAT", path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_HEARTBEAT") {
+        std::thread::spawn(move || beat(&path));
+    }
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let changed = Arc::new(AtomicBool::new(false));
     let cancelled: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -392,6 +420,40 @@ pub fn main() {
                 }
             }
         }
+    }
+    // Standard input is closed: a slow graceful shutdown, when asked for.
+    if let (Some(ms), Some(marker)) = (
+        std::env::var("MIMLYS_TESTSERVER_EXIT_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok()),
+        std::env::var_os("MIMLYS_TESTSERVER_EXIT_MARKER"),
+    ) {
+        std::thread::sleep(Duration::from_millis(ms));
+        let _ = std::fs::write(marker, b"exited by itself");
+    }
+}
+
+/// Appends a byte to `path` every 50 ms, for ever.
+fn beat(path: &std::ffi::OsStr) -> ! {
+    loop {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = f.write_all(b".");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The grandchild's whole life.
+fn beat_forever() -> ! {
+    match std::env::var_os("MIMLYS_TESTSERVER_HEARTBEAT") {
+        Some(path) => beat(&path),
+        None => loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        },
     }
 }
 

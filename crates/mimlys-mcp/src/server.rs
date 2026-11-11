@@ -9,7 +9,8 @@ use mimlys_core::event::Event;
 use mimlys_core::hash::Hash;
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::{
-    LIM_O2_CANCEL_MS, LIM_O5_EXTERNAL_DEADLINE_MS, LIM_O6_SERVER_STARTUP_MS, LIM_X3_RESTARTS,
+    LIM_O2_CANCEL_MS, LIM_O5_EXTERNAL_DEADLINE_MS, LIM_O6_SERVER_STARTUP_MS,
+    LIM_O16_SERVER_SHUTDOWN_MS, LIM_X3_RESTARTS,
 };
 use mimlys_core::spi::Cancellation;
 use serde_json::{Map, Value};
@@ -60,6 +61,8 @@ pub struct ServerConfig {
     pub current_dir: Option<PathBuf>,
     /// LIM-O6.
     pub startup_ms: i64,
+    /// LIM-O16: the grace after the standard input closes, before the group is killed.
+    pub shutdown_ms: i64,
     /// The server's declared maximum call time, below which no deadline may fall.
     pub max_call_ms: Option<i64>,
     /// The declared tools, by tool name (without the server prefix).
@@ -77,6 +80,7 @@ impl ServerConfig {
             env_secrets: vec![],
             current_dir: None,
             startup_ms: LIM_O6_SERVER_STARTUP_MS,
+            shutdown_ms: LIM_O16_SERVER_SHUTDOWN_MS,
             max_call_ms: None,
             tools: BTreeMap::new(),
         }
@@ -357,12 +361,13 @@ impl Server {
         Ok(outcome)
     }
 
-    /// Ends the process: stdin closed, then the group killed after LIM-O2 (REQ-MCP-001).
+    /// Ends the process: stdin closed, then the group killed after LIM-O16,
+    /// the server's `shutdown_ms` (REQ-MCP-001).
     pub async fn shutdown(&self) {
         let mut live = self.live.lock().await;
         if let Some(l) = live.take() {
             l.connection
-                .shutdown(Duration::from_millis(LIM_O2_CANCEL_MS))
+                .shutdown(Duration::from_millis(self.config.shutdown_ms.max(1) as u64))
                 .await;
             self.push_event(Event::ServerStopped {
                 server: self.config.name.clone(),
