@@ -30,6 +30,7 @@ announced here under "Changed".
 
 ### Documentation
 
+- External tools (handoff 009e): rypsok **0.10.0** is the version mimlys is tested with (it was 0.9.0): the import, a search, a fetch, an `isError`, `redirected`, an ungranted `engine_status` and the negotiated revision (still 2025-11-25 on stdio) behave as with 0.9.0, the three tool definitions and so the pins are unchanged, and the M5 suite passes against the real binary. rypsok 0.10.0 also ends an unused server on `SIGTERM` and prints its call maxima.
 - External tools and the configuration chapter (handoff 009d): rypsok is started with a configuration file the user owns, `fetch.follow_cross_host_redirects = false` written down with the reason, the call limits read from `rypsok check`, `max_call_ms = 11000`, `shutdown_ms`, the `https`-only note and the version the book is tested with (0.9.0, was "0.7.0 or later"); the `status` example shows revision 2025-11-25, what `rmcp` 3.9 and rypsok 0.9.0 agree on.
 - A "Storage" page (what lives where, reflinks per filesystem, what grows, how to reclaim), a section "Several projects, several jobs" in Getting started (one store per user; a second terminal can watch; two runtimes on two data directories do not know each other; the two reasons a task waits), and the command-line reference for `status --storage`, `task prune` and the read commands (REQ-CLI-007). The commands in the tested blocks of those pages run in the test suite.
 
