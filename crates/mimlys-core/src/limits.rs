@@ -168,6 +168,16 @@ pub const LIM_O5_EXTERNAL_DEADLINE_MS_RANGE: (i64, i64) = (1000, 600_000);
 pub const LIM_O6_SERVER_STARTUP_MS: i64 = 15_000;
 /// LIM-O6: configurable range in milliseconds.
 pub const LIM_O6_SERVER_STARTUP_MS_RANGE: (i64, i64) = (1000, 120_000);
+/// LIM-O16: grace for an MCP server to end by itself after its standard
+/// input is closed, before its process group is killed (REQ-MCP-001), in
+/// milliseconds. rypsok's graceful shutdown takes up to 3 s by default; LIM-O2
+/// (2 s) cut it short. A call's cancellation keeps LIM-O2 (REQ-MCP-007).
+pub const LIM_O16_SERVER_SHUTDOWN_MS: i64 = 5_000;
+/// LIM-O16: configurable range in milliseconds (`[servers.<name>] shutdown_ms`).
+pub const LIM_O16_SERVER_SHUTDOWN_MS_RANGE: (i64, i64) = (500, 30_000);
+/// LIM-O16: `check` warns when a configured `shutdown_ms` is below this, in
+/// milliseconds: few servers finish their own shutdown that fast.
+pub const LIM_O16_SERVER_SHUTDOWN_WARN_BELOW_MS: i64 = 1_000;
 /// LIM-O8: the wait for each `xcrun --find <tool>` of the warming (one call
 /// per listed tool) to fill the cache before the worker starts (macOS, an
 /// Xcode selected, the cache absent), in milliseconds. Past it the start goes

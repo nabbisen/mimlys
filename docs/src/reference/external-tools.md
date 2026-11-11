@@ -8,15 +8,42 @@ several engines, one clean answer. This chapter sets it up.
 ## Install and declare
 
 ```sh
-cargo install rypsok        # 0.7.0 or later
-rypsok serve                # answers on stdin and stdout; Ctrl-C to stop
+cargo install rypsok --locked --version 0.9.0   # the version mimlys is tested with
+rypsok serve --help                              # serve answers on stdin and stdout
 ```
+
+Start rypsok with a configuration file that you own, and keep it next to
+mimlys's own. Without one, rypsok runs on its defaults, which are fine to try
+but are not yours to rely on. `~/.config/mimlys/rypsok.toml`:
+
+```toml
+config_version = 1
+
+[fetch]
+# Keep this false (rypsok's default, written down so that it is yours). When it
+# is true, rypsok follows a redirect to another host by itself, past mimlys's
+# check of the destination against the task's network grants.
+follow_cross_host_redirects = false
+```
+
+```sh
+rypsok check --config ~/.config/mimlys/rypsok.toml
+```
+
+`rypsok check` prints the limits the file gives. Two lines matter to mimlys:
+`search: ... deadline_ms=2500` and `fetch: ... deadline_ms=10000`. A search
+call lasts at most about its deadline and a fetch call at most its deadline
+plus one second (11 s with these values; if you raise `fetch.deadline_ms`,
+raise the number below by the same amount). mimlys never gives a call less
+time than the server's `max_call_ms`.
 
 ```toml
 [servers.rypsok]
 command = "rypsok"
-args = ["serve"]
+args = ["serve", "--config", "/home/you/.config/mimlys/rypsok.toml"]
 env_allow = ["PATH"]
+max_call_ms = 11000        # the fetch deadline (10 s) plus one second
+shutdown_ms = 5000         # rypsok ends within 3 s of its input closing; mimlys waits longer
 
 [servers.rypsok.tools.web_search]
 effect = "external_read"
@@ -32,7 +59,17 @@ tools = ["read_file", "list_dir", "search_files", "rypsok.web_search", "rypsok.w
 ```
 
 mimlys starts `rypsok serve` as a child process the first time a task needs
-it, with only the environment you listed. A keyed engine takes its key by
+it, with only the environment you listed, and ends it when the runtime exits:
+its input is closed, it is given `shutdown_ms` to finish by itself
+(rypsok's own graceful shutdown takes up to 3 s, `service.shutdown_ms`), and
+what is still running after that is killed with everything it started.
+Keep `shutdown_ms` longer than rypsok's.
+
+rypsok checks pages over TLS with the operating system's certificate store
+when its environment is only `PATH`. On Linux, `SSL_CERT_FILE` and
+`SSL_CERT_DIR`, if you list them in `env_allow`, replace that store; if no
+root certificate can be loaded, rypsok does not start and says why (see
+"Which certificates the fetches trust" on rypsok's deployment page). A keyed engine takes its key by
 reference: `env_secrets = { BRAVE_API_KEY = "env:BRAVE_API_KEY" }` puts the
 variable in the child's environment and redacts its value from every
 observation and log line.
@@ -57,6 +94,11 @@ leaves the host; a `network` grant can only name a domain the ceiling
 allows (`policy.ceiling.network_domains`). A page on another host is refused as `denied` without a
 call; the model is told so and may ask you for the grant.
 
+Only `https` addresses are admitted. rypsok reads an `http` address over
+`https` on port 443 by default, so an `http` address would reach a connection
+that your grant for port 80 never named; mimlys refuses it as `denied` with the reason `scheme_not_https`, and
+the hint tells the model to propose the `https` form of the page.
+
 What the model receives is rypsok's response as data: `outcome` (`ok`,
 `partial`, `empty`), `notices`, and `results` whose `title`, `url` and
 `snippet` are external text, bounded and cleaned twice (once by rypsok,
@@ -79,7 +121,7 @@ kind in the detail, and the model sees the whole object:
 ## What `status` shows
 
 ```text
-server          rypsok (running); rypsok 0.7.0; revision 2026-07-28; tools: rypsok.web_fetch, rypsok.web_search
+server          rypsok (running); rypsok 0.9.0; revision 2025-11-25; tools: rypsok.web_fetch, rypsok.web_search
   unavailable   rypsok.odd: schema_unsupported:x:anyOf
 ```
 

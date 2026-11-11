@@ -253,6 +253,13 @@ impl GrantSet {
         })
     }
 
+    /// Whether a destination URL is an `http` URL. Such a URL is refused
+    /// whatever is granted (REQ-MCP-005): the scheme is judged before the
+    /// grants, so that the model is told to propose the `https` form.
+    pub fn is_plain_http(url: &str) -> bool {
+        url::Url::parse(url).is_ok_and(|u| u.scheme() == "http")
+    }
+
     /// Whether a destination URL is covered by a `network` grant: scheme
     /// `https`, host equal to a domain or under a `*.` domain, port allowed.
     pub fn permits_destination(&self, url: &str, now: Instant) -> bool {

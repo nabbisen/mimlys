@@ -134,6 +134,8 @@ pub enum DeniedReason {
     GrantMissing,
     /// A destination argument is not covered by a network grant.
     DestinationNotGranted,
+    /// A destination argument is an `http` URL; only `https` is admitted (REQ-MCP-005).
+    SchemeNotHttps,
     /// The profile does not allow the effect.
     EffectNotAllowed,
     /// Promotion is not allowed here.
@@ -144,11 +146,12 @@ pub enum DeniedReason {
 
 impl DeniedReason {
     /// Every reason, in the order of external design §6.4.
-    pub const ALL: [DeniedReason; 7] = [
+    pub const ALL: [DeniedReason; 8] = [
         DeniedReason::PathOutsideWorkspace,
         DeniedReason::PathExcluded,
         DeniedReason::GrantMissing,
         DeniedReason::DestinationNotGranted,
+        DeniedReason::SchemeNotHttps,
         DeniedReason::EffectNotAllowed,
         DeniedReason::PromoteNotAllowed,
         DeniedReason::ArgumentNotAllowed,
@@ -168,6 +171,9 @@ impl DeniedReason {
             }
             DeniedReason::DestinationNotGranted => {
                 "The destination is not covered by a `network` grant; use a granted domain, or ask the user to grant this one."
+            }
+            DeniedReason::SchemeNotHttps => {
+                "Only `https` addresses are admitted; propose the `https` form of this URL (the same host and path), or ask the user."
             }
             DeniedReason::EffectNotAllowed => {
                 "The profile does not allow this effect; choose another approach, or ask the user."
