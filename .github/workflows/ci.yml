@@ -1,7 +1,8 @@
 # CI gate (REQ-TEST-014): format, lints, tests and build on Linux (x86_64 and
 # aarch64), Windows and macOS; the build and tests on the minimum Rust version; the packaging
 # dry-run; dependency audit, license check, core-dependency rule, RFC
-# invariants and documentation checks on Linux. What each job verifies is
+# invariants and documentation checks on Linux; the Verus proof of the
+# permission-lock decision on Linux (REQ-TEST-018). What each job verifies is
 # written in docs/src/maintainers/repository-guards.md.
 #
 # Rules for this file: actions are pinned by commit hash with the release in
@@ -237,3 +238,38 @@ jobs:
       - if: steps.mdbook-cache.outputs.cache-hit != 'true'
         run: cargo install mdbook --version 0.5.4 --locked
       - run: mdbook build docs
+
+  # REQ-TEST-018 (RFC 016, handoff 016): the Verus proof of the permission-lock
+  # decision. Linux only; the Verus release is pinned and its archive's SHA-256
+  # compared (scripts/fetch-verus.sh, the download rules of handoff 005b), the
+  # unpacked directory cached by that script's hash; the Rust toolchain is the
+  # one Verus names (1.99.1) and moves only with a Verus upgrade, not with
+  # `stable`. After the proof passes, the vacuity guard maps a second `Held`
+  # to `Write` and requires the proof to FAIL.
+  verus:
+    name: Verus proof (permission-lock decision)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: 1.99.1
+      - id: verus-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/verus
+          key: verus-${{ hashFiles('scripts/fetch-verus.sh') }}
+      - if: steps.verus-cache.outputs.cache-hit != 'true'
+        run: scripts/fetch-verus.sh "$RUNNER_TEMP/verus"
+      - run: echo "$RUNNER_TEMP/verus" >> "$GITHUB_PATH"
+      - run: verus --version
+      - name: the proof
+        run: |
+          set -o pipefail
+          sh verify/run.sh --time | tee "$RUNNER_TEMP/verus-run.txt"
+          grep -q 'verification results:: [0-9]* verified, 0 errors' "$RUNNER_TEMP/verus-run.txt"
+      - name: the vacuity guard (mutation m1 must fail the proof)
+        run: sh verify/guard.sh
+      - name: the production file is untouched
+        run: git diff --exit-code

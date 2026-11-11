@@ -56,6 +56,8 @@ tempfile = "3"
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
+# `verus_keep_ghost` is set by the Verus checker only (the proof in `verify/`, RFC 016).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

@@ -4,3 +4,4 @@ REQ-TEST-014 the CI gate itself is the verification: .github/workflows/ci.yml, d
 REQ-ENG-002 "See REQ-TEST-014": the CI gate
 REQ-ENG-001 scripts/check-unsafe.sh, run by the `rules` job on every change
 REQ-SEC-012 the `deny` job runs `cargo deny check advisories licenses bans sources` on every change
+REQ-TEST-018 the `verus` job runs the proof and the vacuity guard (verify/run.sh, verify/guard.sh) on every change: .github/workflows/ci.yml, docs/src/maintainers/repository-guards.md §3b
