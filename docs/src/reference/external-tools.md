@@ -8,7 +8,7 @@ several engines, one clean answer. This chapter sets it up.
 ## Install and declare
 
 ```sh
-cargo install rypsok --locked --version 0.9.0   # the version mimlys is tested with
+cargo install rypsok --locked --version 0.10.0   # the version mimlys is tested with
 rypsok serve --help                              # serve answers on stdin and stdout
 ```
 
@@ -36,8 +36,9 @@ documents a search call as lasting at most its deadline plus 0.3 s, and a
 fetch call its deadline plus one second (11 s with these values; if you raise
 `fetch.deadline_ms`, raise the number below by the same amount). In rypsok
 0.9.0 these maxima held by the way each pipeline is built; from 0.10.0 they
-are also enforced over the whole call, tested, and printed by `check`
-(rypsok's letters of 2026-11-11). Either way, mimlys ends every call at its own per-tool
+are also enforced over the whole call, tested, and printed by `check` as
+`tool call maxima in ms: web_search=2800 web_fetch=11000` (mimlys does not read
+that text: it is for people; rypsok's letters of 2026-11-11). Either way, mimlys ends every call at its own per-tool
 deadline (`timeout_ms`), and never gives a call less time than the server's
 `max_call_ms`.
 
@@ -125,7 +126,7 @@ kind in the detail, and the model sees the whole object:
 ## What `status` shows
 
 ```text
-server          rypsok (running); rypsok 0.9.0; revision 2025-11-25; tools: rypsok.web_fetch, rypsok.web_search
+server          rypsok (running); rypsok 0.10.0; revision 2025-11-25; tools: rypsok.web_fetch, rypsok.web_search
   unavailable   rypsok.odd: schema_unsupported:x:anyOf
 ```
 
