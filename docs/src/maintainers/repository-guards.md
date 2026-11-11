@@ -72,6 +72,15 @@ The corpus is the set of tests that feed hostile input to the runtime and whose 
 
 **The pin** (`scripts/fetch-verus.sh` is the only place that names them): Verus release `0.2026.11.02.8bf68ee`, `verus-0.2026.11.02.8bf68ee-x86-linux.zip`, SHA-256 `f3a0119292df8855e4435da8130bee1873b0e6a60c306accf81a08ea687bba3c`, **compared** before unpacking (a mismatch fails; the download is retried as in handoff 005b); the unpacked directory is cached by the hash of that script. The Rust toolchain is the one Verus names, `1.99.1`, pinned in the job; it moves only with a Verus upgrade, which is its own change and re-runs the proof and the mutations above. A change to `decide` or `decide_from` re-runs both in the same job; a change of meaning is a change to the `ensures` lines beside the code.
 
+**How the job is watched (the owner's decision of 2026-11-11).** No job is a required status check on `main`: the architect lands commits by fast-forward, often as rebuilt linear series that have no run of their own yet, and a required check would block those pushes. Instead, at no extra cost:
+- **Before landing**, the architect checks the `verus` job's result on the run being landed, as for every job. A red `verus` job stops the merge.
+- **After every push to `main`**, the architect checks `main`'s run, `verus` included. A red `verus` job is fixed or reverted before the next landing.
+- **At each release review**, the candidate's `verus` result and the pin's age are part of the readiness check.
+- **Upgrades** of Verus and its toolchain are deliberate: at most one per release, as their own change, never to fix a red job.
+- **Developers** need nothing. Only a change to `crates/mimlys-exec/src/confine/dacl_wait.rs` or `verify/` asks for `sh verify/run.sh` locally, and CI runs it either way.
+
+If merging ever moves to pull requests, every job becomes a required check together, as one decision.
+
 ## 4. Other scripts
 
 `check-core-deps.sh` (the core depends on no I/O or protocol crate), `check-unsafe.sh` (`unsafe` only under `crates/mimlys-exec/src/confine/`, each block with a `SAFETY:` line), `check-doc-refs.sh` (every `REQ-`, `LIM-` and `THR-` cited is defined, except in `rfcs/proposed/`, where an RFC may cite the identifiers it proposes and which must resolve from its acceptance on; every requirement appears in the external design's coverage table).
