@@ -77,7 +77,7 @@ contract (REQ-CLI-004):
 
 | Command | Value |
 |---|---|
-| `run`, `task new|show|resume|pause|cancel`, `approve`, `reject`, `answer` | `{task, pending_approval, pending_question, plan, grants}`: the task record with its `state` (`created`, `running`, `waiting_user` + `wait_kind`, `paused`, `halted` + `halt_reason`, `recovering`, `completed` + `completion`, `failed` + `reason`, `cancelled`), `counters`, `budgets`, `versions`, `scope`, `profile` |
+| `run`, `task new|show|resume|pause|cancel`, `approve`, `reject`, `answer` | `{task, pending_approval, pending_question, plan, grants}`: the task record with its `state` (`created`, `running`, `waiting_user` + `wait_kind`, `paused`, `halted` + `halt_reason`, `recovering`, `completed` + `completion`, `failed` + `reason`, `cancelled`), `counters`, `budgets`, `versions` (the policy hash, `decision_schema_version`, `event_schema_version`, `action_schema_version`, the tool-definition hashes, `runtime_version`, the backend, the imported tools), `scope`, `profile` |
 | `task list` | `[{task_id, goal, state, created_at, updated_at}]` |
 | `grant`, `revoke` | the grant: `{grant_id, task_id, kind, issued_by, issued_at, expires_at, status}` |
 | `events` | `[{position, record: {event_id, at, actor, …, task_id, step_id, action_id, policy_hash, event, …}}]` |

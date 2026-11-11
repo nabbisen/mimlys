@@ -11,6 +11,20 @@ use crate::task::HaltReason;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The action, execution and observation schema version this code writes
+/// (REQ-MAIN-002), recorded on every task at creation (`task.versions`).
+///
+/// The first values describe the shapes by release: **1** is the shape of
+/// 0.7.0 and 0.7.1; **2** is 0.8.0's, which added the termination
+/// `process_limit` (the macOS count watchdog), and 0.9.0 has the same shape.
+/// A task recorded before this version existed reads with the value of its
+/// release (see `TaskVersions`). From here on: an additive field, or a value
+/// added where a reader may ignore what it does not know, raises nothing; a
+/// renamed or removed field, or a changed meaning, raises it by one, and
+/// the change is announced in the changelog (REQ-MAIN-001; external design
+/// §22).
+pub const ACTION_SCHEMA_VERSION: u32 = 2;
+
 /// The side-effect class of a tool and of its actions (external design §7.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
