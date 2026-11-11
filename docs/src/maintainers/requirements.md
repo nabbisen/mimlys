@@ -716,7 +716,7 @@ Descriptions shall be sanitized (REQ-CTX-008) and bounded by LIM-I2; schemas abo
 The administrator declares, per external tool, the effect, `idempotent`, destination arguments and deadline (`reversible` is always false for external effects, RFC 003). An undeclared tool is `external_write`, non-idempotent. A declaration admits the tool to the ceiling (RFC 009 §4). (K-06)
 
 ### REQ-MCP-005 Destination validation — M5 · T
-Destination arguments shall be validated against the task's `network` grants (scheme, domain, port) before the call and again on a `redirected` result. An `http` destination is judged in both of its forms: the grant must also cover its `https` form on port 443, because a server may read it over HTTPS (rypsok does by default), so a grant for port 80 alone does not admit it. (K-02; amended 2026-11-11 from rypsok's letter)
+Destination arguments shall be validated against the task's `network` grants (scheme, domain, port) before the call and again on a `redirected` result. Only `https` destinations are admitted. An `http` destination is refused with the reason `scheme_not_https`, whose hint says to propose its `https` form (rypsok reads an `http` URL over `https` in any case). (K-02; amended 2026-11-11. An earlier wording of the same day assumed that mimlys admitted `http`; it never did, as handoff 009d found.)
 
 ### REQ-MCP-006 Results — M5 · T
 Structured content is validated against the declared output schema; `isError` becomes the cause `tool_error`; content is bounded and labelled external. (K-10)
