@@ -63,7 +63,13 @@ it, with only the environment you listed, and ends it when the runtime exits:
 its input is closed, it is given `shutdown_ms` to finish by itself
 (rypsok's own graceful shutdown takes up to 3 s, `service.shutdown_ms`), and
 what is still running after that is killed with everything it started.
-Keep `shutdown_ms` longer than rypsok's. A keyed engine takes its key by
+Keep `shutdown_ms` longer than rypsok's.
+
+rypsok checks pages over TLS with the operating system's certificate store
+when its environment is only `PATH`. On Linux, `SSL_CERT_FILE` and
+`SSL_CERT_DIR`, if you list them in `env_allow`, replace that store; if no
+root certificate can be loaded, rypsok does not start and says why (see
+"Which certificates the fetches trust" on rypsok's deployment page). A keyed engine takes its key by
 reference: `env_secrets = { BRAVE_API_KEY = "env:BRAVE_API_KEY" }` puts the
 variable in the child's environment and redacts its value from every
 observation and log line.
@@ -90,8 +96,8 @@ call; the model is told so and may ask you for the grant.
 
 Only `https` addresses are admitted. rypsok reads an `http` address over
 `https` on port 443 by default, so an `http` address would reach a connection
-that your grant for port 80 never named; mimlys refuses it as `denied`, and
-the model proposes the `https` form of the page.
+that your grant for port 80 never named; mimlys refuses it as `denied` with the reason `scheme_not_https`, and
+the hint tells the model to propose the `https` form of the page.
 
 What the model receives is rypsok's response as data: `outcome` (`ok`,
 `partial`, `empty`), `notices`, and `results` whose `title`, `url` and
