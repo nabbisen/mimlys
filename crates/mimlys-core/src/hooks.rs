@@ -59,6 +59,11 @@ impl GrantCheck for PolicyHooks<'_> {
         }
         for name in &tool.destination_arguments {
             if let Some(Value::String(url)) = args.get(name)
+                && crate::grant::GrantSet::is_plain_http(url)
+            {
+                return Err(Denial::new(DeniedReason::SchemeNotHttps));
+            }
+            if let Some(Value::String(url)) = args.get(name)
                 && !self.grants.permits_destination(url, self.task.now)
             {
                 return Err(Denial::grant(
