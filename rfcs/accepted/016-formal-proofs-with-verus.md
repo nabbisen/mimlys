@@ -1,6 +1,6 @@
 # RFC 016 — Formal proofs with Verus, kept narrow
 
-**Status.** Accepted (2026-11-11, by the owner, on condition of the corrections C1 to C4 of their review, made with C5 to C8 in this text; `.git-exclude/reviewed/owner-review-rfc-016/README.md`). Release 0.10. Normative text: REQ-TEST-018.
+**Status.** Accepted (2026-11-11, by the owner, on condition of the corrections C1 to C4 of their review, made with C5 to C8 in this text; `.git-exclude/reviewed/owner-review-rfc-016/README.md`). Release 0.10. Normative text: REQ-TEST-018. Decisions 1 to 4 and 6 implemented on 2026-11-11 (handoff 016, `9efd124`); it moves to `done/` with the release that ships it.
 **Tracks.** The owner's rule of 2026-11-10: start Verus from the minimum and widen it only on evidence. Spike S3 (handoff 011k, `.git-exclude/review-requests/S3-verus-spike/README.md`), reproduced by the architect.
 **Touches.** `crates/mimlys-exec/src/confine/dacl_wait.rs` (the first proof), a new `verify/` directory outside the workspace's members, `crates/mimlys-exec/Cargo.toml` (one lint line), `.github/workflows/ci.yml` (one new job), `docs/src/maintainers/repository-guards.md`; requirements §23 (new REQ-TEST-018); external design §13.5.
 **Release.** 0.10.

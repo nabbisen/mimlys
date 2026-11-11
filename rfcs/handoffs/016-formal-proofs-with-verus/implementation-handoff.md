@@ -2,6 +2,8 @@
 
 **RFC.** [RFC 016](../../accepted/016-formal-proofs-with-verus.md) (accepted 2026-11-11, with the owner's corrections C1 to C8) · **Specification.** REQ-TEST-018 (new), REQ-CONF-008, external design §13.5; threat THR-36 · **From.** Spike S3 (handoff 011k; branch `S3-verus-spike`, PR #40).
 
+**Status (2026-11-11): merged** (`9efd124`; CI `43001772426`, 10 of 10 with the new `verus` job). The proof passes; the vacuity guard requires m1 to fail and it does; the archive's hash is compared before unpacking; y1 and x5 survive the proof and fail the named tests, as recorded in `repository-guards.md` §3b. Two additions beyond the handoff are accepted: the `req-test-map.txt` line and the CHANGELOG entry. Making the `verus` job a required status check on `main` is a repository setting: the owner's. Nothing else is open here.
+
 ## 1. What lands (from the spike's branch, on a fresh branch from `main`)
 
 - The production edits in `crates/mimlys-exec/src/confine/dacl_wait.rs`: `wait_ms`, `decide_from`, `if let` for the `Held` test, and the specifications under `cfg_attr(verus_keep_ghost, …)` / `#[cfg(verus_keep_ghost)]`. The comments say what the proof is and what it does not prove, as RFC 016 decision 4 words it, without "spike S3".
