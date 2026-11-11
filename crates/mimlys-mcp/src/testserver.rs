@@ -25,7 +25,15 @@
 //! 50 ms for as long as the process lives (a killed process stops writing);
 //! `MIMLYS_TESTSERVER_GRANDCHILD=<path>` starts, at start-up, a child of the
 //! server that only beats into that file and never reads anything (to see
-//! whether a kill reaches the whole group).
+//! whether a kill reaches the whole group);
+//! `MIMLYS_TESTSERVER_LIST_TTL_MS=<n>` adds `ttlMs: n` and `cacheScope:
+//! "private"` beside `tools` in every `tools/list` answer (the cache hints of
+//! the 2026-07-28 revision, which the SDK's client cache reads);
+//! `MIMLYS_TESTSERVER_LIST_LOG=<path>` appends a line to the file for every
+//! `tools/list` request that reaches the server (to see whether a listing was
+//! answered by the client's cache instead); `MIMLYS_TESTSERVER_FAIL_LIST_AFTER=<n>`
+//! answers every `tools/list` request after the first `n` with a JSON-RPC
+//! error (a server that listed once and then cannot).
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -274,6 +282,7 @@ pub fn main() {
     }
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let changed = Arc::new(AtomicBool::new(false));
+    let list_requests = std::sync::atomic::AtomicUsize::new(0);
     let cancelled: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
@@ -330,7 +339,39 @@ pub fn main() {
             }
             "notifications/initialized" => {}
             "ping" => reply(json!({})),
-            "tools/list" => reply(json!({"tools": tool_list(changed.load(Ordering::SeqCst))})),
+            "tools/list" => {
+                let seen = list_requests.fetch_add(1, Ordering::SeqCst);
+                if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_LIST_LOG")
+                    && let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(file, "tools/list {}", seen + 1);
+                }
+                let fail_after = std::env::var("MIMLYS_TESTSERVER_FAIL_LIST_AFTER")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok());
+                if fail_after.is_some_and(|n| seen >= n) {
+                    if let Some(id) = &id {
+                        write(
+                            &stdout,
+                            &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "cannot list now"}}),
+                        );
+                    }
+                } else {
+                    let mut result = json!({"tools": tool_list(changed.load(Ordering::SeqCst))});
+                    if let Some(ttl) = std::env::var("MIMLYS_TESTSERVER_LIST_TTL_MS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                    {
+                        result["ttlMs"] = json!(ttl);
+                        result["cacheScope"] = json!("private");
+                    }
+                    reply(result);
+                }
+            }
             "tools/call" => {
                 let name = params
                     .get("name")
