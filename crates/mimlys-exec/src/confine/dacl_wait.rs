@@ -13,6 +13,22 @@
 
 use mimlys_core::limits::LIM_O7_PERMISSION_WRITE_WAIT_MS;
 
+// The proof of `decide` (spike S3, `verify/`). Everything below with
+// `verus_keep_ghost` is read by the Verus checker only; the compiler of the
+// product does not see it, and the product does not depend on Verus.
+#[cfg(verus_keep_ghost)]
+use vstd::pervasive::FnWithRequiresEnsures;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+
+// The wait of the second attempt, as the proof states it.
+#[cfg(verus_keep_ghost)]
+verus_builtin_macros::verus! {
+    pub open spec fn wait_ms_spec(limit_ms: u64) -> u32 {
+        if limit_ms > 0xFFFF_FFFFu64 { 0xFFFF_FFFFu32 } else { limit_ms as u32 }
+    }
+}
+
 /// What one attempt on the lock came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attempt {
@@ -99,27 +115,79 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-/// Decides from the attempts. `attempt(timeout_ms)` waits at most that long
-/// for the lock; it is first called with 0, which tells a free lock from a
-/// held one. `on_wait` is called once, when the lock is found held, before
-/// the wait. `limit_ms` is LIM-O7 in production. A failed attempt, first or
-/// after the wait, refuses: there is no lock to hold.
-pub fn decide(
-    mut attempt: impl FnMut(u32) -> Attempt,
-    on_wait: impl FnOnce(),
-    limit_ms: u64,
-) -> Decision {
-    let mut result = attempt(0);
-    if result == Attempt::Held {
-        on_wait();
-        result = attempt(u32::try_from(limit_ms).unwrap_or(u32::MAX));
+/// The wait of the second attempt: `limit_ms`, saturating at `u32::MAX`.
+#[cfg_attr(verus_keep_ghost, verus_builtin_macros::verus_spec(r =>
+    ensures r == wait_ms_spec(limit_ms),
+))]
+fn wait_ms(limit_ms: u64) -> u32 {
+    if limit_ms > u64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        limit_ms as u32
     }
+}
+
+/// Decides from the results of the attempts: `first` is the attempt without
+/// waiting; `second` is the attempt after the wait, made when `first` was
+/// `Held`. A `Held` first attempt with no second one refuses as `Held`.
+#[cfg_attr(verus_keep_ghost, verus_builtin_macros::verus_spec(r =>
+    ensures
+        // P1: no write without an attempt that gave the lock.
+        r == Decision::Write ==> (first == Attempt::Acquired
+            || (first == Attempt::Held && second == Some(Attempt::Acquired))),
+        r == Decision::WriteAfterAbandoned ==> (first == Attempt::Abandoned
+            || (first == Attempt::Held && second == Some(Attempt::Abandoned))),
+        // P2: held twice is a refusal as held.
+        (first == Attempt::Held && second == Some(Attempt::Held))
+            ==> r == Decision::Refuse(Cause::Held),
+        // P3: a failed attempt that decides is a refusal as unavailable.
+        (first == Attempt::Failed || (first == Attempt::Held && second == Some(Attempt::Failed)))
+            ==> r == Decision::Refuse(Cause::LockUnavailable),
+))]
+fn decide_from(first: Attempt, second: Option<Attempt>) -> Decision {
+    let result = match first {
+        Attempt::Held => match second {
+            Some(second) => second,
+            None => Attempt::Held,
+        },
+        other => other,
+    };
     match result {
         Attempt::Acquired => Decision::Write,
         Attempt::Abandoned => Decision::WriteAfterAbandoned,
         Attempt::Held => Decision::Refuse(Cause::Held),
         Attempt::Failed => Decision::Refuse(Cause::LockUnavailable),
     }
+}
+
+/// Decides from the attempts. `attempt(timeout_ms)` waits at most that long
+/// for the lock; it is first called with 0, which tells a free lock from a
+/// held one. `on_wait` is called once, when the lock is found held, before
+/// the wait. `limit_ms` is LIM-O7 in production. A failed attempt, first or
+/// after the wait, refuses: there is no lock to hold.
+#[cfg_attr(verus_keep_ghost, verus_builtin_macros::verus_spec(r =>
+    requires
+        on_wait.requires(()),
+        // P4: the attempt is called with 0, or with the wait, and with nothing else.
+        attempt.requires((0u32,)),
+        attempt.requires((wait_ms_spec(limit_ms),)),
+        forall|t: u32| attempt.requires((t,)) ==> (t == 0u32 || t == wait_ms_spec(limit_ms)),
+))]
+pub fn decide(
+    mut attempt: impl FnMut(u32) -> Attempt,
+    on_wait: impl FnOnce(),
+    limit_ms: u64,
+) -> Decision {
+    let first = attempt(0);
+    let second = if let Attempt::Held = first {
+        on_wait();
+        #[cfg(verus_keep_ghost)]
+        verus_builtin_macros::proof! { assert(first == Attempt::Held); }
+        Some(attempt(wait_ms(limit_ms)))
+    } else {
+        None
+    };
+    decide_from(first, second)
 }
 
 /// [`decide`] with LIM-O7.

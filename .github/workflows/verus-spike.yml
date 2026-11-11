@@ -1,0 +1,65 @@
+# Spike S3 (handoff 011k): THROWAWAY, on the branch S3-verus-spike only. It
+# measures what a Verus check would need in CI: the installation, the time per
+# run, the proof, and one mutation that must fail. It is not part of the gate.
+name: Verus spike (throwaway)
+
+on:
+  push:
+    branches: [S3-verus-spike]
+
+permissions:
+  contents: read
+
+jobs:
+  verus:
+    name: Verus proof of the permission-lock decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERUS_RELEASE: 0.2026.11.02.8bf68ee
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The toolchain Verus 0.2026.11.02.8bf68ee reports (1.99.1), exactly.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: 1.99.1
+      - name: Install Verus (timed)
+        run: |
+          set -eux
+          start=$(date +%s)
+          curl --fail --location --retry 3 --silent --show-error \
+            -o "$RUNNER_TEMP/verus.zip" \
+            "https://github.com/verus-lang/verus/releases/download/release/${VERUS_RELEASE}/verus-${VERUS_RELEASE}-x86-linux.zip"
+          sha256sum "$RUNNER_TEMP/verus.zip"
+          mkdir "$RUNNER_TEMP/verus-dl"
+          unzip -q "$RUNNER_TEMP/verus.zip" -d "$RUNNER_TEMP/verus-dl"
+          dir=$(dirname "$(find "$RUNNER_TEMP/verus-dl" -name verus -type f | head -n1)")
+          chmod +x "$dir"/verus "$dir"/rust_verify "$dir"/z3 "$dir"/cargo-verus || true
+          echo "$dir" >> "$GITHUB_PATH"
+          ls -la "$dir"
+          du -sh "$dir"
+          echo "install seconds: $(( $(date +%s) - start ))"
+      - name: Version
+        run: verus --version
+      - name: Proof, first run (includes building mimlys-core)
+        run: |
+          set -eux
+          start=$(date +%s)
+          sh verify/run.sh --time
+          echo "first run seconds: $(( $(date +%s) - start ))"
+      - name: Proof, second run
+        run: |
+          set -eux
+          start=$(date +%s)
+          sh verify/run.sh
+          echo "second run seconds: $(( $(date +%s) - start ))"
+      - name: Mutation, the second Held mapped to Write (must fail)
+        run: |
+          set -eux
+          f=crates/mimlys-exec/src/confine/dacl_wait.rs
+          sed -i 's/Attempt::Held => Decision::Refuse(Cause::Held),/Attempt::Held => Decision::Write,/' "$f"
+          git diff --stat
+          if sh verify/run.sh; then echo "THE MUTATION SURVIVED"; exit 1; fi
+          git checkout -- "$f"
+      - name: The file is the production file again
+        run: git diff --exit-code
