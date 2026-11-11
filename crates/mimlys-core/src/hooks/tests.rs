@@ -339,6 +339,28 @@ fn k_02_destination_needs_network_grant() {
     assert_eq!(denied_reason(&o), DeniedReason::DestinationNotGranted);
 }
 
+/// REQ-MCP-005 (stage 7, and again on a `redirected` result, whose location the
+/// model proposes as a new decision): an `http` URL is denied as
+/// `destination_not_granted` even for a host the task may reach over `https`.
+#[test]
+fn req_mcp_005_an_http_destination_is_denied_at_stage_7() {
+    let net = Fixture::new(true);
+    for url in ["http://example.org/x", "http://example.org:443/x"] {
+        let o = net.run(
+            &format!(
+                r#"{{"decision":"act","tool":"rypsok.web_fetch","arguments":{{"url":"{url}"}}}}"#
+            ),
+            1000,
+            None,
+        );
+        assert_eq!(
+            denied_reason(&o),
+            DeniedReason::DestinationNotGranted,
+            "{url}"
+        );
+    }
+}
+
 /// REQ-APR-001 (stage 9) and REQ-TOOL-006 / REQ-WS-008 (stage 10): approval from the profile, deadline and quota.
 /// INV-04 (external design §21.2): every authorized action carries a deadline
 /// (the smaller of the tool's default and the task's remaining time), and an

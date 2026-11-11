@@ -215,6 +215,40 @@ fn req_cap_001_destination_matching() {
     assert!(!p.permits_destination("https://api.test/", now));
 }
 
+/// REQ-MCP-005 (K-02): an `http` destination is never admitted, whatever the
+/// ports granted: its other form, `https` on 443, is what a server may read
+/// (rypsok does), and the grant must cover that form too, so a grant for port
+/// 80 alone cannot admit it; and no grant admits the plain-text form itself.
+#[test]
+fn req_mcp_005_an_http_destination_is_not_admitted_by_any_ports() {
+    for ports in [vec![], vec![80], vec![443], vec![80, 443]] {
+        let (s, clock, _) = set(vec![GrantKind::Network {
+            domains: vec!["d.test".into()],
+            ports: ports.clone(),
+        }]);
+        let now = clock.now();
+        for url in [
+            "http://d.test/",
+            "http://d.test:80/",
+            "http://d.test:443/",
+            "HTTP://D.TEST/a?b=c",
+        ] {
+            assert!(
+                !s.permits_destination(url, now),
+                "{url} with ports {ports:?}"
+            );
+        }
+    }
+    // Only the `https` form of a granted port is admitted, as before.
+    let (s, clock, _) = set(vec![GrantKind::Network {
+        domains: vec!["d.test".into()],
+        ports: vec![80],
+    }]);
+    let now = clock.now();
+    assert!(s.permits_destination("https://d.test:80/", now));
+    assert!(!s.permits_destination("https://d.test/", now));
+}
+
 /// REQ-CAP-010: reconciliation names the grants a reduced ceiling no longer permits, and never widens anything.
 /// INV-11 (external design §21.2), grants never exceed the ceiling: a grant
 /// the ceiling does not permit (an unlisted tool, a host tool) is named for
