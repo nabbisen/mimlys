@@ -93,10 +93,11 @@ env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 
 [servers.rypsok]                # an MCP server as a child process; see External tools
 command = "rypsok"
-args = ["serve"]
+args = ["serve", "--config", "/home/you/.config/mimlys/rypsok.toml"]   # a file you own; see External tools
 env_allow = ["PATH"]            # copied from mimlys's environment; nothing else is inherited
 env_secrets = { BRAVE_API_KEY = "env:BRAVE_API_KEY" }   # by reference, at least 8 characters, redacted everywhere
 startup_ms = 15000              # LIM-O6, 1000–120000
+shutdown_ms = 5000              # LIM-O16, 500–30000: the time to end by itself after its input closes, before it is killed with its group; `check` warns below 1000
 # max_call_ms = 11000           # the server's declared maximum call time; no tool deadline falls below it
 [servers.rypsok.tools.web_search]   # a declaration admits the tool to the ceiling
 effect = "external_read"        # external_read | external_write; an undeclared tool is external_write
