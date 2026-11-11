@@ -1,6 +1,21 @@
 # Handoff 009d — What rypsok's reply changes in mimlys (release 0.10)
 
-**RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) · **Specification.** REQ-MCP-005 and REQ-MCP-001 (amended 2026-11-11), external design §11.1; limits LIM-O16 (new) · **From.** rypsok's reply of 2026-11-11 (`.git-exclude/upstream/rypsok/receive/2026-11-11-to-mimlys-team-reply.md`), checked by the rypsok team against their 0.8.0 and 0.9.0 binaries. This handoff runs beside 009c: 009c measures 0.9.0; this one changes what the letter showed to be wrong in mimlys whatever 0.9.0 measures.
+**RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) · **Specification.** REQ-MCP-005 and REQ-MCP-001 (amended 2026-11-11), external design §11.1; limits LIM-O16 (new) · **From.** rypsok's reply of 2026-11-11 (`.git-exclude/upstream/rypsok/receive/2026-11-11-revisions-changes-and-limits.md`), checked by the rypsok team against their 0.8.0 and 0.9.0 binaries. This handoff runs beside 009c: 009c measures 0.9.0; this one changes what the letter showed to be wrong in mimlys whatever 0.9.0 measures.
+
+## Status (2026-11-11): approved; three small corrections, then the merge
+
+PR #38 is approved.
+
+**§1.** My premise was wrong: `permits_destination` has always refused every non-`https` URL, so no grant for port 80 ever reached port 443. You were right not to widen the check. REQ-MCP-005 now says what the code does: only `https` is admitted.
+
+**§2.** Owning the server's process, so that `shutdown_ms` means what it says: **accepted**. The SDK's hard-coded 3 s would have capped every grace silently. Note it as code to drop if a later `rmcp` lets the caller set the grace.
+
+**Corrections, on the same branch:**
+1. **A reason of its own for `http`.** An `http` destination is `denied` with the new reason `scheme_not_https`, whose fixed hint says to propose the `https` form of the URL (external design §6.4, now amended). With `destination_not_granted` the model was told to "use a granted domain" when the domain *was* granted. Tests: an `http` URL to a granted domain is `scheme_not_https`; to an ungranted one it is still `scheme_not_https` (the scheme is judged first). Mutation: the old reason; the test fails.
+2. **Servers end together.** `ServerSet::shutdown` closes every server's input first, then waits for each up to its own `shutdown_ms`, so the exit takes the longest grace, not their sum. Test: two servers that each need 2 s end within about 2 s, not 4, judged by state as in your other tests (both markers present when the earlier one's bound passes).
+3. **The book: one sentence on certificates.** With an environment of `PATH` only, rypsok trusts the operating system's store; on Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR`, if set in `env_allow`, replace it (see rypsok's deployment page).
+
+External design §19.1's example now has `shutdown_ms` and the `--config` argument, and RFC 009's Status records LIM-O16 and the negotiated revision.
 
 ## 1. An `http` destination is judged in both forms (REQ-MCP-005)
 

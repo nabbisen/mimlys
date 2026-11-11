@@ -236,7 +236,7 @@ No filesystem access happens before stage 12. Stage 7 produces the same `denied`
 | `schema` | Missing or unknown field, wrong type, bad enumeration | `path`, `expected`, `allowed` | The field at `path` must be `expected` |
 | `unknown_tool` | Tool not visible | `tool`, `visible_tools` | Use one of `visible_tools` |
 | `invalid_argument` | Out of bounds or invalid | `path`, `min`, `max`, `allowed` | Change the argument at `path` |
-| `denied` | Outside the workspace or grants; excluded path; destination not granted; effect not allowed; promotion proposed; a host-tool argument outside its declaration | `reason` from `path_outside_workspace`, `path_excluded`, `grant_missing`, `destination_not_granted`, `effect_not_allowed`, `promote_not_allowed`, `argument_not_allowed`; `grant_kind`; for `argument_not_allowed` the `argument` position and `value`, or `max` | One fixed hint per reason: a relative path; other files; the grant to ask for; a granted domain; the declared literals and pattern |
+| `denied` | Outside the workspace or grants; excluded path; destination not granted; effect not allowed; promotion proposed; a host-tool argument outside its declaration | `reason` from `path_outside_workspace`, `path_excluded`, `grant_missing`, `destination_not_granted`, `scheme_not_https`, `effect_not_allowed`, `promote_not_allowed`, `argument_not_allowed`; `grant_kind`; for `argument_not_allowed` the `argument` position and `value`, or `max` | One fixed hint per reason: a relative path; other files; the grant to ask for; a granted domain; the `https` form of the URL; the declared literals and pattern |
 | `state` | Decision not allowed now | `reason` from `pending_user_item`, `completion_check_running` | Wait for the pending item |
 | `budget` | Would exceed a budget | `budget` from `steps`, `deadline`, `executions`, `workspace` | Finish or give up |
 | `approval_rejected` | The user rejected the action | `note` (user text, optional) | Choose another approach |
@@ -763,10 +763,11 @@ max_files = 200000                     # LIM-W2
 
 [servers.rypsok]                       # RFC 009; a declaration admits the tool to the ceiling
 command = "rypsok"
-args = ["serve"]                       # MCP over stdio is rypsok's default transport
+args = ["serve", "--config", "/path/to/rypsok.toml"]   # MCP over stdio; a rypsok file the user owns, with follow_cross_host_redirects = false
 env_allow = ["PATH"]                   # copied from mimlys's environment; nothing else is inherited
 env_secrets = { BRAVE_API_KEY = "env:BRAVE_API_KEY" }   # by reference; redacted everywhere
 startup_ms = 15000                     # LIM-O6
+shutdown_ms = 5000                     # LIM-O16: longer than rypsok's own graceful shutdown (3 s by default)
 # max_call_ms = 11000                  # the server's declared maximum; no deadline below it
 [servers.rypsok.tools.web_search]
 effect = "external_read"               # external_read | external_write; undeclared = external_write

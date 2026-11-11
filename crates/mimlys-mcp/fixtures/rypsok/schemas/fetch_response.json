@@ -93,7 +93,7 @@
         },
         {
           "const": "extraction_partial",
-          "description": "A fetched document was malformed and extracted in part (`web_fetch` only).",
+          "description": "A fetched document was larger than rypsok reads, in nodes or in\nlevels of nesting, and was read in part: the content before the cut is\nreturned (`web_fetch` only).",
           "type": "string"
         },
         {
