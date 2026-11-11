@@ -33,7 +33,12 @@
 //! `tools/list` request that reaches the server (to see whether a listing was
 //! answered by the client's cache instead); `MIMLYS_TESTSERVER_FAIL_LIST_AFTER=<n>`
 //! answers every `tools/list` request after the first `n` with a JSON-RPC
-//! error (a server that listed once and then cannot).
+//! error (a server that listed once and then cannot);
+//! `MIMLYS_TESTSERVER_CHANGED_FILE=<path>` makes the list the changed one
+//! whenever that file exists, so that a definition change survives a restart
+//! (`change_definition` creates the file; a test may create it to stand for an
+//! upgrade or another configuration); `MIMLYS_TESTSERVER_FAIL_LIST_FILE=<path>`
+//! answers every `tools/list` with an error while that file exists.
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -353,7 +358,9 @@ pub fn main() {
                 let fail_after = std::env::var("MIMLYS_TESTSERVER_FAIL_LIST_AFTER")
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok());
-                if fail_after.is_some_and(|n| seen >= n) {
+                let fail_file = std::env::var_os("MIMLYS_TESTSERVER_FAIL_LIST_FILE")
+                    .is_some_and(|p| std::path::Path::new(&p).exists());
+                if fail_file || fail_after.is_some_and(|n| seen >= n) {
                     if let Some(id) = &id {
                         write(
                             &stdout,
@@ -361,7 +368,11 @@ pub fn main() {
                         );
                     }
                 } else {
-                    let mut result = json!({"tools": tool_list(changed.load(Ordering::SeqCst))});
+                    let changed_on_disk = std::env::var_os("MIMLYS_TESTSERVER_CHANGED_FILE")
+                        .is_some_and(|p| std::path::Path::new(&p).exists());
+                    let mut result = json!({"tools": tool_list(
+                        changed.load(Ordering::SeqCst) || changed_on_disk
+                    )});
                     if let Some(ttl) = std::env::var("MIMLYS_TESTSERVER_LIST_TTL_MS")
                         .ok()
                         .and_then(|v| v.parse::<u64>().ok())
@@ -390,6 +401,9 @@ pub fn main() {
                     }
                     "change_definition" => {
                         changed.store(true, Ordering::SeqCst);
+                        if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_CHANGED_FILE") {
+                            let _ = std::fs::write(path, b"changed");
+                        }
                         reply(
                             json!({"content": [{"type": "text", "text": "{}"}], "structuredContent": {}}),
                         );

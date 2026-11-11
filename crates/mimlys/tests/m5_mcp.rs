@@ -1340,3 +1340,88 @@ fn req_mcp_002_the_sdks_cache_is_reachable_only_by_a_relist_without_the_notifica
         server.shutdown().await;
     });
 }
+
+/// Makes the stand-in exit (its `die` tool) and waits until mimlys sees the
+/// transport gone.
+async fn kill_server(server: &Server) {
+    let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
+    let _ = server
+        .call(task, "die", Default::default(), 3000, &Cancellation::new())
+        .await;
+    for _ in 0..100 {
+        if !server.is_running().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    panic!("the server did not stop");
+}
+
+/// REQ-MCP-001, REQ-MCP-002, THR-25 (handoff 009f, rypsok's facts): a listing
+/// cached before a server restart is never served after it. The SDK's client
+/// object, and so its cache, is made by `Connection::start` for each start of a
+/// server process and dropped with it; nothing carries over. The stand-in sends
+/// `ttlMs` of ten minutes, so a client that outlived the process would answer the
+/// second listing from its cache, and a failing restarted process would be
+/// answered with the old list. Neither happens: the new process is asked, and
+/// its answer, the new definitions or its refusal, is what mimlys gets.
+#[test]
+fn req_mcp_002_a_listing_cached_before_a_restart_is_not_served_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("lists.log");
+    let changed = dir.path().join("changed");
+    let failing = dir.path().join("failing");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut config = ServerConfig::new("t", testserver(), vec![]);
+        config.env_allow = vec!["PATH".into()];
+        config.env_secrets = vec![
+            ("MIMLYS_TESTSERVER_LIST_TTL_MS".into(), "600000".into()),
+            (
+                "MIMLYS_TESTSERVER_LIST_LOG".into(),
+                log.to_string_lossy().into_owned(),
+            ),
+            (
+                "MIMLYS_TESTSERVER_CHANGED_FILE".into(),
+                changed.to_string_lossy().into_owned(),
+            ),
+            (
+                "MIMLYS_TESTSERVER_FAIL_LIST_FILE".into(),
+                failing.to_string_lossy().into_owned(),
+            ),
+        ];
+        let server = Server::new(config);
+        let (_, _, before) = server.list().await.unwrap();
+        assert_eq!(list_requests_seen(&log), 1);
+
+        // The server dies and comes back with other definitions (an upgrade, or
+        // another configuration): the next listing is the new one.
+        kill_server(&server).await;
+        std::fs::write(&changed, b"upgraded").unwrap();
+        let (_, _, after) = server.list().await.unwrap();
+        assert_ne!(
+            before, after,
+            "the restarted server's definitions, not the cached ones"
+        );
+        assert_eq!(list_requests_seen(&log), 2, "the new process was asked");
+
+        // It dies again and the next process cannot list: unavailable, never the old list.
+        kill_server(&server).await;
+        std::fs::write(&failing, b"no").unwrap();
+        let err = server.list().await.unwrap_err();
+        let mimlys_mcp::server::ServerError::Unavailable { reason, .. } = &err else {
+            panic!("not unavailable: {err:?}");
+        };
+        assert!(reason.starts_with("list:"), "{reason}");
+        assert_eq!(
+            list_requests_seen(&log),
+            3,
+            "the third process was asked and refused"
+        );
+        std::fs::remove_file(&failing).unwrap();
+        server.shutdown().await;
+    });
+}
