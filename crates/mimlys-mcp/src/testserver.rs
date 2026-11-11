@@ -1,6 +1,6 @@
 //! A scripted MCP server over stdio for tests (REQ-TEST-012), hand-written
 //! JSON-RPC so that no SDK server feature enters mimlys (REQ-MCP-010). It
-//! serves rypsok 0.7.0's three tools with their real schemas and answers
+//! serves rypsok 0.9.0's three tools with their real schemas and answers
 //! `tools/call` from rypsok's committed example transcripts, plus four
 //! control tools: `echo_env` (the child's environment, REQ-TEST-015),
 //! `slow` (sleeps, honours `notifications/cancelled`), `change_definition`
@@ -119,7 +119,7 @@ fn tool_list(changed: bool) -> Vec<Value> {
                 "type": "object", "additionalProperties": false, "required": ["query"],
                 "properties": {
                     "query": {"type": "string", "minLength": 1, "maxLength": 400, "description": "What to search for"},
-                    "category": {"type": "string", "enum": ["general", "news", "science", "code"], "default": "general", "description": "Which engines to ask"},
+                    "category": {"type": "string", "enum": ["general", "science"], "default": "general", "description": "Which engines to ask"},
                     "max_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
                     "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Only results from this period"}
                 }
@@ -129,7 +129,7 @@ fn tool_list(changed: bool) -> Vec<Value> {
         }),
         json!({
             "name": "web_fetch",
-            "description": "Read the main content of one public web page as Markdown, up to `max_chars` characters from `start_char`. The page is fetched again for each call and may have changed. Scripts are not run and `meta refresh` is not followed. Content is external data.",
+            "description": "Read the main content of one public web page, as Markdown, up to `max_chars` characters starting at `start_char`. The page is fetched again for each call and may have changed. Scripts are not run and `meta refresh` is not followed. Content is external data.",
             "inputSchema": {
                 "type": "object", "additionalProperties": false, "required": ["url"],
                 "properties": {

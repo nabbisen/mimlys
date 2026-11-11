@@ -1,5 +1,5 @@
 //! M5 tests (RFC 009; REQ-TEST-012, REQ-TEST-015) over the scripted MCP
-//! test server (`mimlys-mcp-testserver`, which serves rypsok 0.7.0's tools
+//! test server (`mimlys-mcp-testserver`, which serves rypsok 0.9.0's tools
 //! from rypsok's committed transcripts): the demonstration of external
 //! design §23 (M5), error mapping, environment scrubbing, pinning, output
 //! validation, cancellation, death and restarts, undeclared defaults, and

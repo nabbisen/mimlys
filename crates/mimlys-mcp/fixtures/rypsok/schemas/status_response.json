@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "DisabledReason": {
+      "description": "Why an engine is `disabled`, from a closed vocabulary (REQ-STATUS-001;\nRFC 020, DAT-18). Never a secret, a path or an error text.",
+      "oneOf": [
+        {
+          "const": "disabled",
+          "description": "The operator disabled it in the configuration (`enabled = false`).",
+          "type": "string"
+        },
+        {
+          "const": "no_credential",
+          "description": "It needs a credential and none could be read.",
+          "type": "string"
+        }
+      ]
+    },
     "EngineId": {
       "description": "The identifier of a configured engine: lowercase letters, digits and\nunderscores, starting with a letter, at most 32 characters.",
       "type": "string"
@@ -44,6 +59,17 @@
             "integer",
             "null"
           ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DisabledReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the engine is `disabled`; absent for every other state."
         },
         "state": {
           "$ref": "#/$defs/EngineState",
@@ -145,7 +171,7 @@
         },
         {
           "const": "extraction_partial",
-          "description": "A fetched document was malformed and extracted in part (`web_fetch` only).",
+          "description": "A fetched document was larger than rypsok reads, in nodes or in\nlevels of nesting, and was read in part: the content before the cut is\nreturned (`web_fetch` only).",
           "type": "string"
         },
         {
