@@ -269,23 +269,46 @@ fn system_read_paths() -> Vec<PathBuf> {
 
 /// What the dependency step's worker (the one with the network) reads of `/etc`
 /// on Linux, and no other worker: the resolver's configuration and the
-/// system's certificate bundle. Each entry is one the step failed without
-/// (handoff 011j, measured with `cargo fetch`, `curl` and `getent` on Ubuntu
-/// x86_64 and aarch64 and on Arch): without `resolv.conf` a name does not
-/// resolve; without the bundle the TLS handshake has no trust anchors.
-/// `nsswitch.conf`, `hosts`, `passwd` and `group` were tried and no failure
-/// asked for them. A link is followed, so a bundle that is a link into
-/// `/etc/ca-certificates` is admitted as the file it points to.
+/// system's certificate bundle, each only where it exists.
+///
+/// **Measured** (handoff 011j, with `cargo fetch`, `curl` and `getent` on
+/// Ubuntu x86_64 and aarch64 and on Arch): `/etc/resolv.conf`, without which a
+/// name does not resolve, and `/etc/ssl/certs/ca-certificates.crt`, without
+/// which the TLS handshake has no trust anchors. `nsswitch.conf`, `hosts`,
+/// `passwd` and `group` were tried and no failure asked for them. A link is
+/// followed, so a bundle that is a link into `/etc/ca-certificates` is
+/// admitted as the file it points to.
+///
+/// **Not measured** (handoff 011l): `/etc/pki/tls/certs/ca-bundle.crt` (the
+/// Fedora and RHEL families) and `/etc/ssl/ca-bundle.pem` (openSUSE), the
+/// bundles of those families' documented layout, added so that the step that
+/// worked there in 0.9.0 keeps working. They are public data and are admitted
+/// to this worker alone. No failure on such a machine has been seen.
 pub fn network_read_paths() -> Vec<PathBuf> {
+    network_read_paths_where(|p| p.exists())
+}
+
+/// [`network_read_paths`] with the test of existence passed in.
+pub fn network_read_paths_where(exists: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     if cfg!(target_os = "linux") {
-        ["/etc/resolv.conf", "/etc/ssl/certs/ca-certificates.crt"]
+        NETWORK_READ_CANDIDATES
             .iter()
             .map(PathBuf::from)
+            .filter(|p| exists(p))
             .collect()
     } else {
         Vec::new()
     }
 }
+
+/// The files the dependency step's worker may read of `/etc`, in the order of
+/// [`network_read_paths`]: the first two measured, the last two not.
+pub const NETWORK_READ_CANDIDATES: [&str; 4] = [
+    "/etc/resolv.conf",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+];
 
 /// The read paths that hold whatever the declarations say: the data
 /// directory's `interpreters` and `tmp`, the worker's own directory and the

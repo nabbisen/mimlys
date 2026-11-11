@@ -102,6 +102,16 @@ impl ReadApp {
             .collect()
     }
 
+    /// What the dependency step's worker reads in addition to
+    /// [`ReadApp::read_set`] (handoff 011l): the files of `/etc` it is given,
+    /// those that exist; empty where the step has none.
+    pub fn dependency_step_read_set_extra(&self) -> Vec<String> {
+        super::network_read_paths()
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
     /// Whether a path of the read set carries the container's entry on
     /// Windows (`Some`), or needs none (`None`).
     pub fn path_applied(&self, path: &str) -> Option<bool> {
