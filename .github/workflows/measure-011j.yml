@@ -1,0 +1,22 @@
+# THROWAWAY (handoff 011j), on the branch 011j-measure only.
+name: measure 011j
+on:
+  push:
+    branches: [011j-measure]
+permissions:
+  contents: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - run: cargo test -p mimlys --all-features --test zz_measure --no-run
+      - run: bash measure/run.sh

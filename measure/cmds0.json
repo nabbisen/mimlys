@@ -1,0 +1,10 @@
+[["true",false,"/usr/bin/true && echo ok"],
+ ["id",false,"id"],
+ ["date",false,"date +%Z"],
+ ["ls",false,"ls /usr/bin | head -n1"],
+ ["getent",false,"getent passwd $(id -u)"],
+ ["etc",false,"cat /etc/hostname"],
+ ["git",false,"git --version"],
+ ["cc",false,"cc --version | head -n1"],
+ ["dns",true,"getent hosts index.crates.io"],
+ ["tls",true,"curl -sS -o /dev/null -w '%{http_code}' https://index.crates.io/config.json"]]

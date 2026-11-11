@@ -246,11 +246,9 @@ fn system_read_paths() -> Vec<PathBuf> {
             "/lib64",
             "/bin",
             "/sbin",
-            "/etc",
             "/dev/urandom",
             "/dev/random",
             "/dev/zero",
-            "/opt",
         ]
         .iter()
         .map(PathBuf::from)

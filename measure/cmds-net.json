@@ -1,0 +1,2 @@
+[["dns",true,"getent hosts index.crates.io"],
+ ["tls",true,"curl -sS -o /dev/null -w '%{http_code}' https://index.crates.io/config.json"]]
