@@ -739,6 +739,64 @@ fn req_mcp_001_a_server_gets_shutdown_ms_to_end_by_itself() {
     );
 }
 
+/// REQ-MCP-001: the servers end together. Two servers that each need 2 s after
+/// their input closes end at about the same time, not one after the other: the
+/// exit takes the longest grace, not the sum. Judged by state: the two markers
+/// are created within a second of each other (one after the other they would be
+/// 2 s apart, because the second one's input would close only when the first had
+/// ended), and both are there when `shutdown` returns.
+#[test]
+fn req_mcp_001_servers_end_together() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let markers = [dir.path().join("first"), dir.path().join("second")];
+    rt.block_on(async {
+        let servers = mimlys_mcp::tools::Servers::new(
+            markers
+                .iter()
+                .enumerate()
+                .map(|(i, marker)| {
+                    let mut config = ServerConfig::new(&format!("t{i}"), testserver(), vec![]);
+                    config.env_allow = vec!["PATH".into()];
+                    config.env_secrets = vec![
+                        ("MIMLYS_TESTSERVER_EXIT_DELAY_MS".into(), "2000".into()),
+                        (
+                            "MIMLYS_TESTSERVER_EXIT_MARKER".into(),
+                            marker.to_string_lossy().into_owned(),
+                        ),
+                    ];
+                    config.shutdown_ms = 20_000;
+                    Server::new(config)
+                })
+                .collect(),
+        );
+        for server in servers.all() {
+            server.list().await.unwrap();
+        }
+        servers.shutdown().await;
+    });
+    let modified: Vec<std::time::SystemTime> = markers
+        .iter()
+        .map(|m| {
+            std::fs::metadata(m)
+                .unwrap_or_else(|_| panic!("{} was killed or never ended", m.display()))
+                .modified()
+                .unwrap()
+        })
+        .collect();
+    let apart = modified[0]
+        .duration_since(modified[1])
+        .or_else(|e| Ok::<_, ()>(e.duration()))
+        .unwrap();
+    assert!(
+        apart < std::time::Duration::from_secs(1),
+        "the servers ended {apart:?} apart: one after the other"
+    );
+}
+
 /// REQ-MCP-007 (K-05): a server that is abandoned (it ignored the cancellation
 /// and the ping, so the call is `Killed`) is dead, not merely forgotten, and
 /// so is every process it started (the kill reaches the group): both stop

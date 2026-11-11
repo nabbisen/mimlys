@@ -155,11 +155,16 @@ impl Servers {
         out
     }
 
-    /// Ends every server (REQ-MCP-001).
+    /// Ends every server (REQ-MCP-001). Every server's input is closed at
+    /// once and each is waited for up to its own `shutdown_ms`, so the exit
+    /// takes the longest grace, not their sum.
     pub async fn shutdown(&self) {
+        let mut ending = tokio::task::JoinSet::new();
         for server in &self.servers {
-            server.shutdown().await;
+            let server = Arc::clone(server);
+            ending.spawn(async move { server.shutdown().await });
         }
+        while ending.join_next().await.is_some() {}
     }
 
     /// Server events produced since the last call.
