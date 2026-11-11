@@ -15,7 +15,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Priority |
 |----|-------|----------|
-| — | none at the moment | |
+| 016 | [Formal proofs with Verus, kept narrow](./proposed/016-formal-proofs-with-verus.md) | for 0.10: the first proof (the permission-lock decision) and the rules for any other |
 
 ## Accepted
 

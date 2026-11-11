@@ -2,6 +2,8 @@
 
 **RFC.** [RFC 011](../../done/011-confinement-backends.md) §7, the permission lock of handoff 011f · **Specification.** REQ-CONF-008, external design §13.5, limits LIM-O7; threat THR-36 · **Kind.** Spike: a measured answer, not a feature. The owner's rule (2026-11-10): start Verus from the minimum, and widen it only on evidence. This spike is the minimum. Whether Verus is used anywhere else, and under which rules, is decided afterwards, in a short RFC written from your report.
 
+**Status (2026-11-11): done.** The report is accepted and its result reproduced by the architect: the proof passes (3 verified, 0 errors) and mutation m1 fails it. P1 to P3 are proved and P4 in part. Build, publish and `cargo deny` are unchanged. RFC 016 (proposed) decides adoption from it; nothing is open in this handoff, and branch `S3-verus-spike` and PR #40 stay until RFC 016 is decided.
+
 ## 1. The function and the properties
 
 `crates/mimlys-exec/src/confine/dacl_wait.rs`, `decide`: two attempts at the named mutex (the first without waiting; if held, a second within LIM-O7) become a `Decision`. Prove, for every input the function can receive:
