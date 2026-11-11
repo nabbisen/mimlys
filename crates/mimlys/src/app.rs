@@ -212,6 +212,9 @@ pub fn confinement_spec(
         read_paths.push(dir.to_path_buf());
     }
     read_paths.extend(system_read_paths());
+    if !deny_network {
+        read_paths.extend(network_read_paths());
+    }
     for d in host_tools {
         read_paths.extend(d.read_paths.iter().map(PathBuf::from));
     }
@@ -235,7 +238,10 @@ pub fn confinement_spec(
 /// external design §13.3). On Windows they are readable by every application
 /// package already, so the set names only what mimlys adds (none). macOS has
 /// a list of its own, the measured minimum of RFC 011 Amendment 2 (settled),
-/// point 8; not `/opt`, which is Homebrew's.
+/// point 8; not `/opt`, which is Homebrew's. Linux has none of `/etc` or `/opt`
+/// either (handoff 011j): what a tool needs of `/etc` was measured, and the
+/// only entries it asked for are the dependency step's ([`network_read_paths`]);
+/// a toolchain under `/opt` is declared in its tool's `read_paths`.
 fn system_read_paths() -> Vec<PathBuf> {
     if cfg!(target_os = "macos") {
         mimlys_exec::confine::macos::system_read_paths()
@@ -246,15 +252,33 @@ fn system_read_paths() -> Vec<PathBuf> {
             "/lib64",
             "/bin",
             "/sbin",
-            "/etc",
             "/dev/urandom",
             "/dev/random",
             "/dev/zero",
-            "/opt",
         ]
         .iter()
         .map(PathBuf::from)
         .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// What the dependency step's worker (the one with the network) reads of `/etc`
+/// on Linux, and no other worker: the resolver's configuration and the
+/// system's certificate bundle. Each entry is one the step failed without
+/// (handoff 011j, measured with `cargo fetch`, `curl` and `getent` on Ubuntu
+/// x86_64 and aarch64 and on Arch): without `resolv.conf` a name does not
+/// resolve; without the bundle the TLS handshake has no trust anchors.
+/// `nsswitch.conf`, `hosts`, `passwd` and `group` were tried and no failure
+/// asked for them. A link is followed, so a bundle that is a link into
+/// `/etc/ca-certificates` is admitted as the file it points to.
+pub fn network_read_paths() -> Vec<PathBuf> {
+    if cfg!(target_os = "linux") {
+        ["/etc/resolv.conf", "/etc/ssl/certs/ca-certificates.crt"]
+            .iter()
+            .map(PathBuf::from)
+            .collect()
     } else {
         Vec::new()
     }
