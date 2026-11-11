@@ -149,6 +149,15 @@ impl Connection {
         let service = rmcp::ServiceExt::serve(handler, (stdout, stdin))
             .await
             .map_err(|e| format!("initialize:{}", kind_of_init(&e)))?;
+        // The SDK's client keeps `tools/list` answers that carry a `ttlMs`, and by
+        // default serves an expired one when a later listing fails. mimlys pins what
+        // a server offers (REQ-MCP-002) and must never believe it listed when it did
+        // not (THR-25): the cache is off, so the server is always asked and a failed
+        // listing is `unavailable` with its reason, never an old list.
+        service
+            .peer()
+            .set_response_cache_config(rmcp::service::ClientCacheConfig::disabled())
+            .await;
         let child = std::mem::replace(&mut guard, ChildGuard { child: None });
         let peer_info = service.peer().peer_info();
         let info = ServerInfo {

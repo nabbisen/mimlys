@@ -315,8 +315,12 @@ impl Server {
         Ok(())
     }
 
-    /// Marks the list stale (the connection's `list_changed` handler).
-    pub fn mark_dirty(&self) {
+    /// Makes the next listing a relist without the server's `list_changed`
+    /// notification, which only the connection's handler sets in the product
+    /// (handoff 009f). For tests of that edge: with the SDK's response cache
+    /// off, such a relist still reaches the server.
+    #[cfg(feature = "test-server")]
+    pub fn force_relist(&self) {
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 

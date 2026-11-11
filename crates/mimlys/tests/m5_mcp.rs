@@ -1286,57 +1286,52 @@ fn req_mcp_002_a_relist_after_list_changed_reaches_the_server_despite_ttl() {
     });
 }
 
-/// Handoff 009f, the edge of the finding: the SDK's cache can answer a second
-/// listing on one connection only when mimlys relists **without** the
-/// server's notification, and no product code does (`Server::mark_dirty` has
-/// no caller). With `ttlMs` above zero the second listing is then answered
-/// by the cache and the server is never asked; with `ttlMs: 0`, which is what
-/// rypsok 0.10.0 sends on 2026-07-28 and the SDK assumes when a server omits
-/// the hint, nothing is kept and the server is asked. If this test fails after
-/// a change, the cache has become reachable or the SDK changed (or someone
-/// disabled the SDK's cache, which is the way to close this edge): read
-/// `docs/src/reference/external-tools.md` and the request of handoff 009f
-/// before changing the expectation.
+/// REQ-MCP-002, THR-25 (handoff 009f, the edge): the SDK's client cache is off
+/// (`Connection::start`), so even a relist **without** the server's
+/// notification, which no product code makes, reaches the server. With `ttlMs`
+/// above zero the second listing is not answered from a cache, and a server that
+/// then fails is `unavailable`: the expired list the SDK would have served on
+/// error never reaches mimlys. With `ttlMs: 0` (rypsok 0.10.0, and the SDK's
+/// assumption when the hint is absent) the result is the same.
 #[test]
-fn req_mcp_002_the_sdks_cache_is_reachable_only_by_a_relist_without_the_notification() {
+fn req_mcp_002_a_relist_without_the_notification_still_reaches_the_server() {
     let dir = tempfile::tempdir().unwrap();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     rt.block_on(async {
-        for (ttl, asked_again) in [(600_000_u64, false), (0, true)] {
+        for ttl in [600_000_u64, 0] {
             let log = dir.path().join(format!("lists-{ttl}.log"));
             let server = listing_server(ttl, None, &log);
             server.list().await.unwrap();
-            server.mark_dirty();
+            server.force_relist();
             server.list().await.unwrap();
             assert_eq!(
                 list_requests_seen(&log),
-                if asked_again { 2 } else { 1 },
-                "ttlMs {ttl}"
+                2,
+                "ttlMs {ttl}: the second listing was not answered from a cache"
             );
             server.shutdown().await;
         }
-        // The stale-on-error branch itself: `ttlMs` 50, a listing that fails after
-        // the entry expired. The SDK serves the expired list, mimlys believes it
-        // listed, and the server was asked and said no. Only a relist without the
-        // notification gets here.
+        // What the SDK's stale-on-error branch would have done: `ttlMs` 50, a listing that
+        // fails after the entry expired. mimlys gets `unavailable`, not the expired list.
         let log = dir.path().join("lists-stale.log");
         let server = listing_server(50, Some(1), &log);
-        let (_, first, _) = server.list().await.unwrap();
+        server.list().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        server.mark_dirty();
-        let (_, second, _) = server
-            .list()
-            .await
-            .expect("served from the SDK's stale entry");
+        server.force_relist();
+        let err = server.list().await.unwrap_err();
+        let mimlys_mcp::server::ServerError::Unavailable { reason, .. } = &err else {
+            panic!("not unavailable: {err:?}");
+        };
+        assert!(reason.starts_with("list:"), "{reason}");
         assert_eq!(
             list_requests_seen(&log),
             2,
-            "the server was asked and failed"
+            "the server was asked and refused"
         );
-        assert_eq!(first.len(), second.len());
+        assert!(server.is_dirty());
         server.shutdown().await;
     });
 }
