@@ -60,6 +60,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 7 | [010b A book page on the request-to-response flow](./010b-request-to-response-page/implementation-handoff.md) | RFC 010 | 013 (its storage words) |
 | 8 | [009c rypsok 0.9.0, compatibility measured](./009c-rypsok-0.9.0/implementation-handoff.md) | RFC 009 | — |
 | 9 | [009d What rypsok's reply changes in mimlys](./009d-rypsok-letter-changes/implementation-handoff.md) | RFC 009 | — |
+| 10 | [011k Spike S3: one Verus proof of the permission-lock decision](./011k-verus-spike/implementation-handoff.md) | RFC 011 | — |
 
 ## Milestone M5
 
