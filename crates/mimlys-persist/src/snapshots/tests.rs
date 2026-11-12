@@ -63,7 +63,7 @@ fn rfc_006_journal_finish_or_undo() {
     f.put_manifest(crashed, &Manifest::default()).unwrap();
     // A crash here: no row. The next start undoes the journal.
     assert_eq!(f.pending().unwrap(), [crashed]);
-    assert_eq!(f.undo(crashed).unwrap(), 1);
+    assert_eq!(f.undo(crashed, &|_| Ok(false)).unwrap(), 1);
     assert!(!f.has_object(&new));
     assert!(
         f.has_object(&kept),
