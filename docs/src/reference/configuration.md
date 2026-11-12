@@ -240,6 +240,21 @@ This is what run B measured: the GGUF file with its own chat template. `FROM qwe
 llama.cpp takes the context length when it starts (`-c 16384`) and needs its chat
 template with tools, which current builds enable by default (`--jinja`).
 
+`mimlys status` checks this for you. Within the same probe and its bound (5 000 ms) it reads
+the engine's context length where the engine reports it, llama.cpp's `GET /props` (the
+per-slot `n_ctx`) and Ollama's `POST /api/show` (the model's `num_ctx`, else Ollama's
+default of 4096), and compares it with what a request can need: `context_chars` at the
+lowest characters per token measured for the decision transport in force (3.35 for
+`tool_calls`, 4.32 for `envelope`; the M4 report, sections 6 and 7), plus `max_tokens`.
+With the defaults that is about 13 649 tokens in `tool_calls` and 11 504 in `envelope`.
+`status` shows `context: <n> tokens (needs about <m>)`, or `context: unknown` where the
+engine reports nothing (it is never guessed), and when the length is below the need it
+adds one `warning:` line with what to set: `PARAMETER num_ctx` in the Modelfile for Ollama,
+`-c` for llama-server. It is a warning only: a task still runs, and a request that does not
+fit makes the engine truncate it or fail. Ollama's own default can differ from 4096 when the
+server was started with `OLLAMA_CONTEXT_LENGTH`; that is not reported by the model, so set
+`num_ctx` in the Modelfile to make the length the model's own.
+
 One request is sent per step, with the whole context (`context_chars`
 characters at most; `mimlys metrics` reports characters per prompt token so
 you can set it from the model's window), the completion bound and the

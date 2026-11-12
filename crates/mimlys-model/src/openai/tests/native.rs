@@ -109,7 +109,13 @@ fn req_mdl_009_probe_200_resolves_auto_to_tool_calls() {
     assert!(!probe.fell_back);
     assert_eq!(probe.detail, None);
     assert_eq!(server.remaining(), 1, "the probe consumes no script");
-    let seen = server.requests();
+    // The engine-context reads (`GET /props`, `POST /api/show`) run beside the
+    // transport probe; only the chat completions are counted here.
+    let seen: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.line.contains("/chat/completions"))
+        .collect();
     let probe_request = seen.last().unwrap();
     assert_eq!(
         probe_request.body["tools"].as_array().map(Vec::len),

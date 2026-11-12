@@ -135,6 +135,25 @@ pub struct BackendProbe {
     /// Whether the engine accepts `parallel_tool_calls: false`; under `tool_calls` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+    /// The engine's context length in tokens, as the engine reports it; null when
+    /// it reports none (REQ-MDL-003). Not applicable to the fake backend.
+    pub context_tokens: Option<u64>,
+    /// The engine that reported it (`llama_cpp`, `ollama`); absent when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_engine: Option<mimlys_model::openai::context::Engine>,
+    /// The tokens a request can need: the budget at the lowest characters per
+    /// token measured for the transport in force, plus the completion bound; null
+    /// for the fake backend.
+    pub context_needed_tokens: Option<u64>,
+}
+
+impl BackendProbe {
+    /// The engine reports a context length below the need (REQ-MDL-003).
+    pub fn context_too_small(&self) -> bool {
+        self.context_needed_tokens.is_some_and(|need| {
+            mimlys_model::openai::context::is_too_small(self.context_tokens, need)
+        })
+    }
 }
 
 /// The running process.
@@ -446,7 +465,10 @@ pub(crate) async fn probe_backend_of(
                 decision_transport,
                 transport_reason,
                 parallel_tool_calls,
+                context_tokens,
+                context_engine,
             } = adapter.probe().await;
+            let b = &loaded.config.backend;
             BackendProbe {
                 reachable,
                 model_listed,
@@ -456,6 +478,13 @@ pub(crate) async fn probe_backend_of(
                 decision_transport,
                 transport_reason,
                 parallel_tool_calls,
+                context_tokens,
+                context_engine,
+                context_needed_tokens: Some(mimlys_model::openai::context::need_tokens(
+                    b.context_chars,
+                    b.max_tokens,
+                    decision_transport,
+                )),
             }
         }
         None => {
@@ -470,6 +499,9 @@ pub(crate) async fn probe_backend_of(
                 decision_transport: Some(mimlys_core::native::DecisionTransport::Envelope),
                 transport_reason: None,
                 parallel_tool_calls: None,
+                context_tokens: None,
+                context_engine: None,
+                context_needed_tokens: None,
             }
         }
     };
