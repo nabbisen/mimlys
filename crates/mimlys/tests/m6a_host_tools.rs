@@ -297,6 +297,8 @@ fn m6a_clauses_hold_inside_a_host_tool() {
 
 /// REQ-CONF-009 / RFC 011 §2 (K): a tool that `setsid`s a child and sleeps
 /// is terminated with its whole tree when the task is cancelled, within LIM-O2.
+/// REQ-CLI-005 (second signal): two stop signals to `mimlys run` cancel the task
+/// (`cancelled`), the process exits and no process of the worker's tree is left.
 #[test]
 fn m6a_cancel_kills_the_whole_tree() {
     cancel_kills_the_whole_tree(false, "1234", None);
@@ -307,6 +309,7 @@ fn m6a_cancel_kills_the_whole_tree() {
 /// (REQ-CONF-011), so the descendants a cancelled tool left re-parented to
 /// the worker are swept by the runtime. A different sleep length keeps the
 /// two tests' processes apart when they run side by side.
+/// REQ-CLI-005 (second signal): as above, on this rung.
 #[test]
 fn m6a_cancel_kills_the_whole_tree_on_the_subreaper_rung() {
     cancel_kills_the_whole_tree(true, "1235", Some("subreaper"));
@@ -384,6 +387,89 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
     assert_eq!(task["task"]["state"], "cancelled");
 }
 
+/// REQ-CLI-005 (first signal): one stop signal to `mimlys run` while a step runs pauses
+/// the task at the next boundary. The running step is not interrupted (its action
+/// finishes), the next step does not start, the process exits by itself with the task
+/// `paused`, and the signal is acknowledged on standard error. The step takes about
+/// three seconds, less than the grace after which a pause that has not taken effect
+/// becomes a cancellation (LIM-O1 less one second), so the pause is the outcome; the
+/// test decides by the task's recorded state and the process's exit, and the one wait
+/// it bounds is far longer than anything it waits for.
+#[test]
+fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
+    let secs = "2.718";
+    let env = Env::new(
+        &[probe(&["setsid-sleep", secs]), probe(&["ok"]), complete()],
+        "",
+    );
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(
+            "req_cli_005_one_stop_signal_pauses_at_the_next_boundary",
+            &format!("tier {tier}"),
+        );
+        return;
+    }
+    let scope = env.scope();
+    let mut run = env
+        .command(&[
+            "--json",
+            "run",
+            "pause me",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let wait = std::time::Duration::from_secs(120);
+    let started = std::time::Instant::now();
+    while sleepers(secs) < 1 && started.elapsed() < wait {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(sleepers(secs) >= 1, "the host tool's step is running");
+    let _ = Command::new("kill")
+        .args(["-INT", &run.id().to_string()])
+        .status();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = run.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > wait {
+            let _ = run.kill();
+            let _ = run.wait();
+            panic!("`mimlys run` did not exit after the stop signal");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let out = run.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("pausing at the next step"),
+        "{status:?} {stderr}"
+    );
+    let value: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+        .unwrap_or_else(|_| panic!("{stderr}"));
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (_, task) = env.json(&["task", "show", &id]);
+    assert_eq!(task["task"]["state"], "paused", "{task}");
+    let finished: Vec<String> = env
+        .events(&id)
+        .iter()
+        .filter(|e| e["event"] == "action.finished")
+        .map(|e| e["status"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        finished,
+        ["succeeded"],
+        "the running step finished and no further action began"
+    );
+}
+
 /// Live `sleep <secs>` processes of this user.
 fn sleepers(secs: &str) -> usize {
     let out = Command::new("pgrep")
@@ -399,6 +485,8 @@ fn sleepers(secs: &str) -> usize {
 /// REQ-CONF-003 / REQ-CONF-004: an injected failure of a mandatory clause
 /// makes the tier `core` with the reason, and `run_host_tool` is neither
 /// listed nor accepted.
+/// REQ-CLI-006: `status` shows the tier (`core`) and names the clause the platform cannot
+/// enforce, in `clauses` (state `unavailable`, with the reason) and in `unavailable_clauses`.
 /// REQ-SEC-003 (external design §13.4, §21), the confinement clause: a
 /// confinement error (clause F failing) results in no execution: the model's
 /// proposal of the host tool, granted at creation, is rejected `unknown_tool`

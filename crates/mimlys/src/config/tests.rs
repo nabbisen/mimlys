@@ -109,6 +109,8 @@ fn req_cfg_001_ranges_stated() {
 }
 
 /// REQ-SEC-010: a remote backend needs the administrator's permission.
+/// REQ-MDL-005 ("Locality": see REQ-SEC-010): a configured `locality = "remote"` is refused
+/// unless `policy.remote_backend_allowed` is set.
 #[test]
 fn req_sec_010_remote_needs_permission() {
     let text = "config_version = 1\n[backend]\nkind = \"openai_compatible\"\nurl = \"https://api\"\nmodel = \"m\"\nlocality = \"remote\"\n";

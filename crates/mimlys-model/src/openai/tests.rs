@@ -46,6 +46,9 @@ fn rt() -> tokio::runtime::Runtime {
 /// REQ-MDL-003 / REQ-MDL-004 (`schema`): the body carries the messages
 /// unchanged, `max_tokens`, `temperature`, `stream: false` and the schema;
 /// the content comes back as bytes and usage is recorded.
+/// REQ-MDL-001: through the `ModelBackend` interface, `generate` carries the request's
+/// messages, the decision schema and the limit (`max_tokens`) to the model and returns the
+/// text as bytes, and `last_usage` reports the prompt, completion and cached tokens.
 #[test]
 fn req_mdl_003_request_and_response_shape() {
     let server = MockServer::start(
@@ -344,6 +347,8 @@ fn req_mdl_003_failures_are_unavailable() {
 
 /// LIM-M1 and REQ-SCHED-004: a slow server is `timeout` at the deadline;
 /// cancellation ends the request within a poll interval.
+/// REQ-MDL-001: `generate` ends with an error (`Timeout`, `Cancelled`), never a decision,
+/// and the `Cancellation` it is given stops the request in flight (the interface's `cancel`).
 #[test]
 fn lim_m1_deadline_and_cancellation() {
     let rt = rt();
@@ -385,6 +390,7 @@ fn lim_m1_deadline_and_cancellation() {
 /// REQ-MDL-007 / REQ-SEC-009: the body is read through a bound; content
 /// beyond LIM-D1 comes back cut at LIM-D1 + 1 bytes so the strict parser
 /// rejects it; an oversized envelope likewise.
+/// REQ-MDL-001: the request's `max_bytes` limit bounds the text `generate` returns.
 #[test]
 fn req_mdl_007_output_is_bounded() {
     let rt = rt();
@@ -418,6 +424,8 @@ fn req_mdl_007_output_is_bounded() {
 }
 
 /// REQ-MDL-006: usage in llama-server's `timings` form, and none at all.
+/// REQ-MDL-001: usage and cache information are optional: `last_usage` is `Some` with the
+/// prompt and cached tokens when the server reports them and `None` when it reports nothing.
 #[test]
 fn req_mdl_006_usage_forms() {
     let rt = rt();
