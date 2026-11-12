@@ -117,6 +117,7 @@ fn req_task_001_create_sets_state_deadline_and_budgets() {
 }
 
 /// REQ-TASK-002: every row of external design §5.1 is a legal transition with the expected result.
+/// REQ-TEST-003 (tasks, legal): the nineteen rows of the table are all asserted, with the resulting state.
 #[test]
 fn req_task_002_legal_transitions_of_ed_5_1() {
     let (task, clock) = fixture();
@@ -242,6 +243,7 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
 }
 
 /// REQ-TASK-002: every (state, input) pair not in external design §5.1 is refused with `StateError`.
+/// REQ-TEST-003 (tasks, illegal): all ten states against all thirteen inputs; every pair outside the table is refused.
 #[test]
 fn req_task_002_illegal_transitions_are_refused() {
     let (task, clock) = fixture();

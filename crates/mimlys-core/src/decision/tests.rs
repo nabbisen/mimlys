@@ -35,6 +35,7 @@ fn req_dec_002_five_decision_kinds_parse() {
 
 /// REQ-DEC-003 / REQ-SEC-009: malformed inputs are rejected with the matching problem and never repaired.
 /// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile decisions: malformed model output.
+/// REQ-TEST-004 (the rejection code, at the parser): trailing text, a second value, duplicated keys (top level and in the arguments) and an oversized body are `malformed` with their `problem`. That nothing executed is asserted through the loop by `req_test_004_hostile_decisions_get_their_code_and_execute_nothing`.
 #[test]
 fn req_dec_003_malformed_inputs() {
     let m = |input: &str| match reject(input).detail {
@@ -82,6 +83,7 @@ fn req_dec_003_malformed_inputs() {
 }
 
 /// REQ-DEC-002: unknown fields, wrong types and bad kinds are `schema` rejections with a path.
+/// REQ-TEST-004 (wrong-type decisions, the rejection code at the parser): a wrong type is `schema` and names the path. That nothing executed is asserted through the loop by `req_test_004_hostile_decisions_get_their_code_and_execute_nothing`.
 #[test]
 fn req_dec_002_schema_rejections_carry_paths() {
     let p = |input: &str| {

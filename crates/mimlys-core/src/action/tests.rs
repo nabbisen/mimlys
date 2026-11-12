@@ -89,6 +89,7 @@ fn req_dec_012_action_hash_is_canonical() {
 }
 
 /// External design §7.1: every legal action transition, including cancellation before execution.
+/// REQ-TEST-003 (actions, legal): every edge of the lifecycle of §7.1 is asserted, with the resulting status.
 #[test]
 fn ed_7_1_legal_action_transitions() {
     let now = FakeClock::default().now();
@@ -163,6 +164,7 @@ fn ed_7_1_legal_action_transitions() {
 }
 
 /// External design §7.1: every other pair is refused; terminal statuses refuse everything.
+/// REQ-TEST-003 (actions, illegal): all nine statuses against all eight inputs; every pair outside the table is an error.
 #[test]
 fn ed_7_1_illegal_action_transitions_are_refused() {
     let now = FakeClock::default().now();
