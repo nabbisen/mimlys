@@ -156,6 +156,8 @@ pub struct Worker {
     probe_cache: Mutex<Option<Probe>>,
     restarts: Mutex<BTreeMap<TaskId, u32>>,
     facts: Mutex<WorkerFacts>,
+    /// The execution in flight, for the span of the log thread's lines.
+    reader_span: mimlys_core::log_span::ReaderSpan,
 }
 
 impl Worker {
@@ -167,6 +169,7 @@ impl Worker {
             probe_cache: Mutex::new(None),
             restarts: Mutex::new(BTreeMap::new()),
             facts: Mutex::new(WorkerFacts::default()),
+            reader_span: mimlys_core::log_span::ReaderSpan::new(),
         })
     }
 
@@ -342,14 +345,22 @@ impl Worker {
                 }
             })
             .map_err(|e| e.to_string())?;
+        // This thread outlives the step that started the worker, which serves
+        // many: each line is written in the span of the execution in flight
+        // when it is read (none between executions), not in a span captured here.
+        let reader_span = self.reader_span.clone();
         std::thread::Builder::new()
             .name("mimlys-worker-log".into())
             .spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    match line.strip_prefix(crate::trace::PREFIX) {
-                        Some(t) => tracing::debug!(target: "mimlys_worker", "worker trace: {t}"),
-                        None => tracing::info!(target: "mimlys_worker", "{line}"),
-                    }
+                    reader_span.current().in_scope(|| {
+                        match line.strip_prefix(crate::trace::PREFIX) {
+                            Some(t) => {
+                                tracing::debug!(target: "mimlys_worker", "worker trace: {t}")
+                            }
+                            None => tracing::info!(target: "mimlys_worker", "{line}"),
+                        }
+                    });
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -407,6 +418,9 @@ impl Worker {
         let started = Instant::now();
         let mut live = self.live.lock().expect("worker");
         let _ = started;
+        // The lock makes this the one execution in flight; the log thread
+        // writes the worker's lines in the span current here (the step's).
+        let _in_flight = self.reader_span.begin();
         if live.is_none() {
             let count = *self
                 .restarts
