@@ -929,6 +929,8 @@ fn wait_until(limit: std::time::Duration, mut done: impl FnMut() -> bool) -> boo
 /// the membership kill loop with NO accepted clause (the config names none).
 /// The control inside the test: before the cancel the orphan exists and its
 /// parent is `launchd` (a process group walk could not find it).
+/// REQ-CLI-005 (second signal): two stop signals to `mimlys run` cancel the task
+/// (`cancelled`), the process exits and the tool's whole tree is gone.
 #[test]
 fn req_conf_009_cancel_kills_the_whole_tree() {
     let test = "req_conf_009_cancel_kills_the_whole_tree";

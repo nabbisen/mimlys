@@ -1377,6 +1377,70 @@ fn req_task_004_fork() {
     );
 }
 
+/// REQ-DEC-011: a `plan` decision replaces the task's plan with a new version (one
+/// higher), of at most LIM-D3 items (more is rejected `schema` and leaves the plan as it
+/// was); the plan is shown to the user (`get_task`) and to the model (the plan segment of
+/// the next request, the latest version only); and it has no execution semantics: a plan
+/// naming a destructive tool proposes no action and calls no tool.
+#[test]
+fn req_dec_011_a_plan_replaces_the_plan_and_runs_nothing() {
+    let items = |n: usize| -> Vec<String> { (0..n).map(|i| format!("item {i}")).collect() };
+    let h = Harness::new(vec![
+        json!({"decision": "plan", "steps": ["read a.rs", "delete_path a.rs"]}),
+        json!({"decision": "plan", "steps": items(crate::limits::LIM_D3_PLAN_ITEMS)}),
+        json!({"decision": "plan", "steps": items(crate::limits::LIM_D3_PLAN_ITEMS + 1)}),
+        act("read_file", "a"),
+    ]);
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create_with(|r| r.profile = Some("read_only".into()));
+    assert!(h.runtime.get_task(id).unwrap().plan.is_none());
+
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    let v1 = h
+        .runtime
+        .get_task(id)
+        .unwrap()
+        .plan
+        .expect("shown to the user");
+    assert_eq!((v1.version, v1.steps.len()), (1, 2));
+    assert_eq!(v1.steps[1], "delete_path a.rs");
+
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    let v2 = h.runtime.get_task(id).unwrap().plan.unwrap();
+    assert_eq!(v2.version, 2, "a new version, not an edit of the first");
+    assert_eq!(v2.steps, items(crate::limits::LIM_D3_PLAN_ITEMS));
+
+    assert_eq!(h.step(id).outcome, StepOutcome::Rejected);
+    assert_eq!(
+        h.runtime.get_task(id).unwrap().plan.unwrap(),
+        v2,
+        "a plan above LIM-D3 changes nothing"
+    );
+
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    assert!(
+        h.persistence.load_actions(id).unwrap().len() == 1,
+        "only the act decision proposed an action: the plans proposed none"
+    );
+    assert_eq!(
+        h.tools.calls(),
+        vec![("read_file".to_owned(), json!({"path": "a"}))],
+        "no tool was called for a plan item"
+    );
+    let shown = &h.backend.requests()[3].messages;
+    let plan = shown
+        .iter()
+        .find(|m| m.content.starts_with("<<plan"))
+        .expect("the model is shown the plan");
+    assert!(plan.content.starts_with("<<plan version=\"2\">>"));
+    assert!(plan.content.contains("item 19"));
+    assert!(
+        !plan.content.contains("delete_path a.rs"),
+        "the old version is gone"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Context assembly (RFC 007; REQ-CTX-001, 003, 004, 007, 010; REQ-TEST-010).
 // ---------------------------------------------------------------------------
@@ -1703,6 +1767,164 @@ fn req_ctx_007_secrets_redacted_before_persistence() {
     assert!(request.contains("[redacted:backend.api_key]"));
 }
 
+/// REQ-CTX-009: a tool's structured result is kept as JSON and shown to the model as
+/// JSON, never flattened to prose. The result has an object, an array, a number, a
+/// boolean and a null; the stored observation holds the same value, and the segment the
+/// next request carries has a body line that parses to it (its `payload` is a JSON
+/// object, not a string). Whether a result is valid against its output schema is
+/// REQ-TOOL-005's.
+#[test]
+fn req_ctx_009_a_structured_result_reaches_the_model_as_json() {
+    let payload = json!({
+        "entries": [{"name": "a.rs", "size": 12, "dir": false}, {"name": "src", "size": null, "dir": true}],
+        "count": 2,
+    });
+    let h = Harness::new(vec![act("list_dir", "."), act("list_dir", ".")]);
+    h.tools
+        .script("list_dir", ExecutionOutcome::succeeded(payload.clone(), 1));
+    h.tools
+        .script("list_dir", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create_with(|r| r.profile = Some("read_only".into()));
+    h.step(id);
+    h.step(id);
+    let stored = h.persistence.load_observations(id).unwrap();
+    assert_eq!(stored[0].payload, payload, "kept as the JSON value");
+    let request = &h.backend.requests()[1];
+    let segment = request
+        .messages
+        .iter()
+        .find(|m| m.content.starts_with("<<observation tool=\"list_dir\""))
+        .expect("the observation is in the next request");
+    let body = segment.content.lines().nth(1).expect("a body line");
+    let shown: Value = serde_json::from_str(body).expect("the body line is JSON");
+    assert_eq!(shown["payload"], payload, "shown as the JSON value: {body}");
+    assert!(shown["payload"].is_object(), "not flattened to prose");
+}
+
+/// REQ-OBS-007: a task's persisted decisions and tool results replay through the fake
+/// backend and fake tools and reproduce its transitions. A task runs (a plan, a read that
+/// succeeds, a read that fails, a completion); the script of a second runtime is built
+/// from the first one's persisted records alone (the steps, the actions' tool and
+/// arguments, the plan, the observations); the replay has the same step outcomes, action
+/// statuses, observations, final state, and the same events, field for field. What the
+/// store does not keep is the text of a `complete` decision (only its hash), so the
+/// replay's completion carries another summary, and that one event's hash is the one
+/// field left out of the comparison; every other decision's hash is compared.
+#[test]
+fn req_obs_007_a_persisted_task_replays_through_the_fakes() {
+    let recorded = Harness::new(vec![
+        json!({"decision": "plan", "steps": ["read a", "read b"]}),
+        act("read_file", "a"),
+        act("read_file", "b"),
+        json!({"decision": "complete", "summary": "done"}),
+    ]);
+    let mut first = ExecutionOutcome::succeeded(json!({"content": "fn a() {}\n"}), 3);
+    first.stdout = b"note\n".to_vec();
+    recorded.tools.script("read_file", first);
+    recorded.tools.script(
+        "read_file",
+        ExecutionOutcome::tool_error("no_match", json!({"error": "no_match"}), 2),
+    );
+    let id = recorded.create_with(|r| r.profile = Some("read_only".into()));
+    for _ in 0..4 {
+        recorded.step(id);
+    }
+    assert!(matches!(recorded.state(id), TaskState::Completed { .. }));
+
+    // The replay script, from the persisted records only.
+    let mut steps = recorded.persistence.load_steps(id).unwrap();
+    steps.sort_by_key(|s| s.index);
+    let actions = recorded.persistence.load_actions(id).unwrap();
+    let plan = recorded.persistence.load_plan(id).unwrap().expect("a plan");
+    let decisions: Vec<Value> = steps
+        .iter()
+        .map(|s| match (s.action_id, s.outcome) {
+            (Some(action_id), _) => {
+                let a = actions.iter().find(|a| a.action_id == action_id).unwrap();
+                json!({"decision": "act", "tool": a.content().tool(), "arguments": a.content().arguments()})
+            }
+            (None, Some(StepOutcome::Continued)) => json!({"decision": "plan", "steps": plan.steps}),
+            (None, Some(StepOutcome::Completed)) => {
+                json!({"decision": "complete", "summary": "replayed"})
+            }
+            other => panic!("a step this replay does not rebuild: {other:?}"),
+        })
+        .collect();
+    let replay = Harness::new(decisions);
+    for o in recorded.persistence.load_observations(id).unwrap() {
+        let mut outcome = match &o.cause {
+            None => ExecutionOutcome::succeeded(o.payload.clone(), o.metrics.wall_ms),
+            Some(crate::action::FailureCause::ToolError { detail }) => {
+                ExecutionOutcome::tool_error(detail, o.payload.clone(), o.metrics.wall_ms)
+            }
+            other => panic!("a result this replay does not rebuild: {other:?}"),
+        };
+        outcome.stdout = o.stdout.clone().into_bytes();
+        outcome.stderr = o.stderr.clone().into_bytes();
+        replay.tools.script(&o.tool, outcome);
+    }
+    let replayed = replay.create_with(|r| r.profile = Some("read_only".into()));
+    for _ in 0..4 {
+        replay.step(replayed);
+    }
+
+    assert_eq!(replay.state(replayed), recorded.state(id));
+    let outcomes = |h: &Harness, id| -> Vec<_> {
+        h.persistence
+            .load_steps(id)
+            .unwrap()
+            .iter()
+            .map(|s| (s.index, s.outcome, s.rejection))
+            .collect()
+    };
+    assert_eq!(outcomes(&replay, replayed), outcomes(&recorded, id));
+    let results = |h: &Harness, id| -> Vec<Value> {
+        let actions = h.persistence.load_actions(id).unwrap();
+        let observations = h.persistence.load_observations(id).unwrap();
+        assert_eq!(actions.len(), 2);
+        actions
+            .iter()
+            .zip(&observations)
+            .map(|(a, o)| {
+                json!({
+                    "tool": a.content().tool(), "arguments": a.content().arguments(), "status": a.status,
+                    "observation": {
+                        "status": o.status, "cause": o.cause, "payload": o.payload,
+                        "stdout": o.stdout, "stderr": o.stderr, "notices": o.notices,
+                    },
+                })
+            })
+            .collect()
+    };
+    assert_eq!(results(&replay, replayed), results(&recorded, id));
+    let events = |h: &Harness, id| -> Vec<Value> {
+        let mut out: Vec<Value> = h
+            .persistence
+            .events()
+            .into_iter()
+            .filter(|e| e.task_id == Some(id))
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect();
+        let last = out
+            .iter()
+            .rposition(|e| e["event"] == "decision.received")
+            .expect("a decision was received");
+        out[last].as_object_mut().unwrap().remove("hash");
+        out
+    };
+    assert_eq!(events(&replay, replayed), events(&recorded, id));
+    for (a, b) in recorded
+        .persistence
+        .load_steps(id)
+        .unwrap()
+        .iter()
+        .zip(&replay.persistence.load_steps(replayed).unwrap())
+        .take(3)
+    {
+        assert_eq!(a.decision_hash, b.decision_hash, "step {}", a.index);
+    }
+}
+
 /// REQ-TEST-016: the same history assembles the same bytes.
 #[test]
 fn req_test_016_assembly_is_pure() {
@@ -1726,6 +1948,9 @@ fn req_test_016_assembly_is_pure() {
 /// REQ-SEC-010 / D-21: a remote backend is refused for a profile whose
 /// `external` is false, by name; a profile with `external = true` admits
 /// it; the backend is recorded at start and on the task's versions.
+/// REQ-MDL-005 ("Locality": see REQ-SEC-010): the backend's locality (`remote`) is what
+/// the refusal turns on, and it is shown in the runtime status, the task's versions and
+/// `runtime.started`.
 #[test]
 fn req_sec_010_remote_backend_needs_external_profile() {
     let mut policy = Policy::shipped();

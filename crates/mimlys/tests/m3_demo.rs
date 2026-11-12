@@ -273,6 +273,8 @@ fn req_ws_012_task_delete_removes_the_promotion_backup() {
 /// RFC 006 §6: deletion needs a terminal task, shows what goes, keeps the audit unless asked.
 /// REQ-WS-009 (end to end, `deleted` only by the user's `task delete`, never for a task that is not terminal): the held task refuses the delete with the `state` error, the cancelled one is removed only with `--yes`.
 /// REQ-WS-012 (end to end): deletion needs a terminal task, shows the footprint and asks (nothing goes without `--yes`), removes the tree, every manifest and every object, keeps the audit (`task.deleted`) unless `--audit`, and `--audit` removes the task.
+/// REQ-OBS-005: after `task delete --yes` the task's events are still listed (`task.deleted`
+/// among them); only `task delete --audit` removes the task's record.
 #[test]
 fn m3_delete_with_footprint() {
     let env = Env::new("edit.json");

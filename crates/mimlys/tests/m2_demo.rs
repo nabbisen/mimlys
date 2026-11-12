@@ -405,6 +405,8 @@ fn m2_read_write_stays_in_the_workspace() {
 }
 
 /// REQ-CONF-003 / REQ-OBS-006: `status` shows the tier, every clause and the engine.
+/// REQ-CLI-006: `mimlys status` shows the tier and the state of every clause; with an
+/// injected failure of clause K (`MIMLYS_PROBE_FAIL`) the clause is shown `unavailable`.
 #[test]
 fn m2_status_shows_tier_and_clauses() {
     let data = tempfile::tempdir().unwrap();
