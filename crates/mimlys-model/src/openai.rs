@@ -138,10 +138,20 @@ pub struct Probe {
     /// Whether the engine accepts `parallel_tool_calls: false`, when the transport is `tool_calls`.
     pub parallel_tool_calls: Option<bool>,
     /// The engine's context length in tokens, as the engine reports it
-    /// (llama.cpp's `/props`, Ollama's `/api/show`); `None` is unknown (REQ-MDL-003).
+    /// (llama.cpp's `/props`, Ollama's `/api/ps` and `/api/show`) per request;
+    /// `None` is unknown (REQ-MDL-003).
     pub context_tokens: Option<u64>,
-    /// The engine that reported it.
+    /// The engine that answered, when an answer was shaped as its own (so
+    /// Ollama with an unknown context is still Ollama).
     pub context_engine: Option<context::Engine>,
+    /// llama.cpp: the parallel slots the context is shared among.
+    pub context_slots: Option<u64>,
+}
+
+/// A read of the engine's context after its first reply, asked for once.
+struct ContextRecheck {
+    need_tokens: u64,
+    warn: Box<dyn FnOnce(u64) + Send>,
 }
 
 /// The adapter.
@@ -152,6 +162,7 @@ pub struct OpenAiBackend {
     transport: Mutex<Option<TransportState>>,
     last_usage: Mutex<Option<Usage>>,
     last_text_chars: Mutex<Option<u64>>,
+    context_recheck: Mutex<Option<ContextRecheck>>,
 }
 
 /// One HTTP exchange's outcome.
@@ -202,6 +213,7 @@ impl OpenAiBackend {
             transport: Mutex::new(None),
             last_usage: Mutex::new(None),
             last_text_chars: Mutex::new(None),
+            context_recheck: Mutex::new(None),
         }
     }
 
@@ -501,54 +513,169 @@ impl OpenAiBackend {
     /// The engine's context length is read beside the rest, inside the same
     /// bound, and kept only where the engine is reachable.
     pub async fn probe_within(&self, deadline: Duration) -> Probe {
-        let (mut probe, context) =
+        let started = tokio::time::Instant::now();
+        let (mut probe, mut context) =
             tokio::join!(self.probe_core(deadline), self.read_context(deadline));
+        // The probe's own completion request loads the model in Ollama, which
+        // then reports the context in force: read it again, inside the bound.
         if probe.reachable
-            && let Some((tokens, engine)) = context
+            && context.engine == Some(context::Engine::Ollama)
+            && context.tokens.is_none()
         {
-            probe.context_tokens = Some(tokens);
-            probe.context_engine = Some(engine);
+            let left = deadline.saturating_sub(started.elapsed());
+            if !left.is_zero()
+                && let Some(Some(tokens)) =
+                    self.ollama_loaded_context(left, &Cancellation::new()).await
+            {
+                context.tokens = Some(tokens);
+            }
+        }
+        if probe.reachable {
+            probe.context_tokens = context.tokens;
+            probe.context_engine = context.engine;
+            probe.context_slots = context.slots;
         }
         probe
     }
 
-    /// The engine's context length (REQ-MDL-003), within `deadline`: llama.cpp's
-    /// `GET /props`, then Ollama's `POST /api/show`, both beside the API prefix.
-    /// Whatever fails, is oversized, or is not shaped as an engine's answer is `None`.
-    async fn read_context(&self, deadline: Duration) -> Option<(u64, context::Engine)> {
-        let started = tokio::time::Instant::now();
-        let cancel = Cancellation::new();
+    /// The engine's endpoint outside the API prefix: the configured URL
+    /// without its trailing `/v1` (a prefix before it is kept).
+    fn engine_endpoint(&self, path: &str) -> String {
         let base = self.config.url.trim_end_matches('/');
         let base = base.strip_suffix("/v1").unwrap_or(base);
-        let request = self.with_auth(self.client.get(format!("{base}/props")));
-        if let Ok(Exchange::Response { status, body, .. }) = self
-            .exchange(request, deadline, ENVELOPE_BYTES, &cancel)
-            .await
-            && (200..300).contains(&status)
-            && let Some(n) = serde_json::from_slice::<Value>(&body)
-                .ok()
-                .and_then(|v| context::from_llama_cpp_props(&v))
-        {
-            return Some((n, context::Engine::LlamaCpp));
-        }
-        let remaining = deadline.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return None;
-        }
-        let request = self
-            .with_auth(self.client.post(format!("{base}/api/show")))
-            .json(&json!({"model": self.config.model}));
+        format!("{base}/{path}")
+    }
+
+    /// One engine request read as JSON: only a 2xx answer within `deadline` and
+    /// the bound counts; anything else is `None`.
+    async fn engine_json(
+        &self,
+        request: reqwest::RequestBuilder,
+        deadline: Duration,
+        cancel: &Cancellation,
+    ) -> Option<Value> {
         match self
-            .exchange(request, remaining, ENVELOPE_BYTES, &cancel)
+            .exchange(self.with_auth(request), deadline, ENVELOPE_BYTES, cancel)
             .await
         {
             Ok(Exchange::Response { status, body, .. }) if (200..300).contains(&status) => {
-                serde_json::from_slice::<Value>(&body)
-                    .ok()
-                    .and_then(|v| context::from_ollama_show(&v))
-                    .map(|n| (n, context::Engine::Ollama))
+                serde_json::from_slice(&body).ok()
             }
             _ => None,
+        }
+    }
+
+    /// The context Ollama runs the configured model with, from `GET /api/ps`
+    /// (the models in memory). The outer `None` is "not Ollama's answer".
+    async fn ollama_loaded_context(
+        &self,
+        deadline: Duration,
+        cancel: &Cancellation,
+    ) -> Option<Option<u64>> {
+        let body = self
+            .engine_json(
+                self.client.get(self.engine_endpoint("api/ps")),
+                deadline,
+                cancel,
+            )
+            .await?;
+        context::from_ollama_ps(&body, |name| model_matches(name, &self.config.model))
+    }
+
+    /// The engine's context length (REQ-MDL-003), within `deadline`: llama.cpp's
+    /// `GET /props`; else Ollama's `GET /api/ps` (the value in force of the
+    /// loaded model) and `POST /api/show` (`num_ctx`); else unknown, with the
+    /// engine named where an answer was shaped as Ollama's. Whatever fails, is
+    /// oversized, or is not shaped as an engine's answer says nothing.
+    async fn read_context(&self, deadline: Duration) -> context::EngineContext {
+        use context::{Engine, EngineContext};
+        let started = tokio::time::Instant::now();
+        let cancel = Cancellation::new();
+        let left = || deadline.saturating_sub(started.elapsed());
+        if let Some(body) = self
+            .engine_json(
+                self.client.get(self.engine_endpoint("props")),
+                deadline,
+                &cancel,
+            )
+            .await
+            && let Some((tokens, slots)) = context::from_llama_cpp_props(&body)
+        {
+            return EngineContext {
+                engine: Some(Engine::LlamaCpp),
+                tokens: Some(tokens),
+                slots: Some(slots),
+            };
+        }
+        let mut ollama = false;
+        if !left().is_zero() {
+            match self.ollama_loaded_context(left(), &cancel).await {
+                Some(Some(tokens)) => {
+                    return EngineContext {
+                        engine: Some(Engine::Ollama),
+                        tokens: Some(tokens),
+                        slots: None,
+                    };
+                }
+                Some(None) => ollama = true,
+                None => {}
+            }
+        }
+        if !left().is_zero()
+            && let Some(body) = self
+                .engine_json(
+                    self.client
+                        .post(self.engine_endpoint("api/show"))
+                        .json(&json!({"model": self.config.model})),
+                    left(),
+                    &cancel,
+                )
+                .await
+            && let Some(num_ctx) = context::from_ollama_show(&body)
+        {
+            ollama = true;
+            if num_ctx.is_some() {
+                return EngineContext {
+                    engine: Some(Engine::Ollama),
+                    tokens: num_ctx,
+                    slots: None,
+                };
+            }
+        }
+        EngineContext {
+            engine: ollama.then_some(Engine::Ollama),
+            tokens: None,
+            slots: None,
+        }
+    }
+
+    /// Asks for `warn` to be called once, after the first reply the engine
+    /// gives to a decision request, with the context Ollama then reports for
+    /// the configured model, if it is below `need_tokens` (REQ-MDL-003). Ollama
+    /// chooses the context when it loads the model, so at the probe it may not
+    /// be known; after the first reply it is. The read is bounded by LIM-M4.
+    pub fn warn_if_loaded_context_is_small(
+        &self,
+        need_tokens: u64,
+        warn: impl FnOnce(u64) + Send + 'static,
+    ) {
+        *self.context_recheck.lock().expect("recheck lock") = Some(ContextRecheck {
+            need_tokens,
+            warn: Box::new(warn),
+        });
+    }
+
+    async fn recheck_context(&self) {
+        let Some(recheck) = self.context_recheck.lock().expect("recheck lock").take() else {
+            return;
+        };
+        let deadline = Duration::from_millis(LIM_M4_PROBE_MS.max(1) as u64);
+        if let Some(Some(tokens)) = self
+            .ollama_loaded_context(deadline, &Cancellation::new())
+            .await
+            && context::is_too_small(Some(tokens), recheck.need_tokens)
+        {
+            (recheck.warn)(tokens);
         }
     }
 
@@ -595,6 +722,7 @@ impl OpenAiBackend {
             parallel_tool_calls: None,
             context_tokens: None,
             context_engine: None,
+            context_slots: None,
         };
         if !reachable {
             probe.detail = detail;
@@ -809,6 +937,44 @@ impl ModelBackend for OpenAiBackend {
         cancel: Cancellation,
     ) -> BoxFuture<'a, Result<Vec<u8>, BackendError>> {
         Box::pin(async move {
+            let reply = self.generate_once(request, cancel).await;
+            if reply.is_ok() {
+                self.recheck_context().await;
+            }
+            reply
+        })
+    }
+
+    fn last_usage(&self) -> Option<Usage> {
+        *self.last_usage.lock().expect("usage lock")
+    }
+
+    fn decision_transport<'a>(
+        &'a self,
+        cancel: Cancellation,
+    ) -> BoxFuture<'a, Result<DecisionTransport, BackendError>> {
+        Box::pin(async move {
+            let deadline = Duration::from_millis(self.config.timeout_ms.max(1) as u64);
+            match self.settle_transport(deadline, &cancel).await? {
+                Settled::Resolved(state) => Ok(state.transport),
+                Settled::ConfiguredRefused(reason) => Err(tool_calls_refused(&reason)),
+            }
+        })
+    }
+
+    fn last_text_chars(&self) -> Option<u64> {
+        *self.last_text_chars.lock().expect("text lock")
+    }
+}
+
+impl OpenAiBackend {
+    /// One decision request and its reply, as the adapter sends it.
+    async fn generate_once(
+        &self,
+        request: GenerateRequest,
+        cancel: Cancellation,
+    ) -> Result<Vec<u8>, BackendError> {
+        {
             *self.last_usage.lock().expect("usage lock") = None;
             *self.last_text_chars.lock().expect("text lock") = None;
             let deadline = Duration::from_millis(
@@ -923,28 +1089,7 @@ impl ModelBackend for OpenAiBackend {
                     Ok(bytes)
                 }
             }
-        })
-    }
-
-    fn last_usage(&self) -> Option<Usage> {
-        *self.last_usage.lock().expect("usage lock")
-    }
-
-    fn decision_transport<'a>(
-        &'a self,
-        cancel: Cancellation,
-    ) -> BoxFuture<'a, Result<DecisionTransport, BackendError>> {
-        Box::pin(async move {
-            let deadline = Duration::from_millis(self.config.timeout_ms.max(1) as u64);
-            match self.settle_transport(deadline, &cancel).await? {
-                Settled::Resolved(state) => Ok(state.transport),
-                Settled::ConfiguredRefused(reason) => Err(tool_calls_refused(&reason)),
-            }
-        })
-    }
-
-    fn last_text_chars(&self) -> Option<u64> {
-        *self.last_text_chars.lock().expect("text lock")
+        }
     }
 }
 
