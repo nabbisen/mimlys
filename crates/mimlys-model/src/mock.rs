@@ -126,6 +126,13 @@ pub struct MockConfig {
     pub props: Option<Value>,
     /// The body of `POST /api/show`, as Ollama answers it; `None` is a 404.
     pub api_show: Option<Value>,
+    /// The body of `GET /api/ps` (the models in memory), as Ollama answers it;
+    /// `None` is a 404. Before the first decision request is received, and
+    /// after it too unless `ps_after_decision` is set.
+    pub ps: Option<Value>,
+    /// The body of `GET /api/ps` once a decision request has been received
+    /// (Ollama loads the model on the first request, and then reports it).
+    pub ps_after_decision: Option<Value>,
 }
 
 impl Default for MockConfig {
@@ -143,6 +150,8 @@ impl Default for MockConfig {
             tools_probe_delay_ms: 0,
             props: None,
             api_show: None,
+            ps: None,
+            ps_after_decision: None,
         }
     }
 }
@@ -306,6 +315,20 @@ impl State {
             self.config.props.as_ref()
         } else if line.starts_with("POST /api/show") {
             self.config.api_show.as_ref()
+        } else if line.starts_with("GET /api/ps") {
+            let decided = self.requests.lock().expect("mock lock").iter().any(|r| {
+                r.line.starts_with("POST")
+                    && r.line.contains("/chat/completions")
+                    && !is_probe(&r.body)
+            });
+            if decided {
+                self.config
+                    .ps_after_decision
+                    .as_ref()
+                    .or(self.config.ps.as_ref())
+            } else {
+                self.config.ps.as_ref()
+            }
         } else {
             None
         };

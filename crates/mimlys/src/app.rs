@@ -141,6 +141,9 @@ pub struct BackendProbe {
     /// The engine that reported it (`llama_cpp`, `ollama`); absent when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_engine: Option<mimlys_model::openai::context::Engine>,
+    /// llama.cpp: the parallel slots its `-c` is shared among; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_slots: Option<u64>,
     /// The tokens a request can need: the budget at the lowest characters per
     /// token measured for the transport in force, plus the completion bound; null
     /// for the fake backend.
@@ -148,6 +151,21 @@ pub struct BackendProbe {
 }
 
 impl BackendProbe {
+    /// The warning line for a context below the need; `None` when it is
+    /// sufficient or unknown (REQ-MDL-003).
+    pub fn context_warning(&self) -> Option<String> {
+        if !self.context_too_small() {
+            return None;
+        }
+        let (tokens, needed) = (self.context_tokens?, self.context_needed_tokens?);
+        Some(crate::messages::context_too_small_warning(
+            self.context_engine,
+            tokens,
+            needed,
+            self.context_slots,
+        ))
+    }
+
     /// The engine reports a context length below the need (REQ-MDL-003).
     pub fn context_too_small(&self) -> bool {
         self.context_needed_tokens.is_some_and(|need| {
@@ -467,6 +485,7 @@ pub(crate) async fn probe_backend_of(
                 parallel_tool_calls,
                 context_tokens,
                 context_engine,
+                context_slots,
             } = adapter.probe().await;
             let b = &loaded.config.backend;
             BackendProbe {
@@ -480,6 +499,7 @@ pub(crate) async fn probe_backend_of(
                 parallel_tool_calls,
                 context_tokens,
                 context_engine,
+                context_slots,
                 context_needed_tokens: Some(mimlys_model::openai::context::need_tokens(
                     b.context_chars,
                     b.max_tokens,
@@ -501,6 +521,7 @@ pub(crate) async fn probe_backend_of(
                 parallel_tool_calls: None,
                 context_tokens: None,
                 context_engine: None,
+                context_slots: None,
                 context_needed_tokens: None,
             }
         }
@@ -771,8 +792,33 @@ impl App {
             return Ok(None);
         }
         let (probe, notice) = probe_backend_of(&self.loaded, self.openai.as_ref()).await?;
+        // Ollama chooses its context when it loads the model: where the probe could not
+        // read it, it is read once more after the first reply (REQ-MDL-003).
+        if let (Some(adapter), Some(needed)) = (&self.openai, probe.context_needed_tokens)
+            && probe.context_engine == Some(mimlys_model::openai::context::Engine::Ollama)
+            && probe.context_tokens.is_none()
+        {
+            adapter.warn_if_loaded_context_is_small(needed, move |tokens| {
+                eprintln!(
+                    "{}",
+                    crate::messages::context_too_small_warning(
+                        Some(mimlys_model::openai::context::Engine::Ollama),
+                        tokens,
+                        needed,
+                        None,
+                    )
+                );
+            });
+        }
         *self.backend_probe.lock().expect("probe lock") = Some(probe);
         Ok(notice)
+    }
+
+    /// The warning for the probe's finding, when the engine's context is below
+    /// the need (REQ-MDL-003): one line, for standard error. The run goes on.
+    pub fn context_warning(&self) -> Option<String> {
+        let probe = self.backend_probe()?;
+        probe.context_warning()
     }
 
     /// Whether the configured backend can produce decisions at all: the fake
