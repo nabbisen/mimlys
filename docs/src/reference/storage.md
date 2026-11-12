@@ -15,6 +15,7 @@ your project until you delete the task.
 | `workspaces/<task>/tmp` | Scratch space of the task's executions | What a running tool leaves there |
 | `snapshots/objects/<hash>` | Every version of every file a task has snapshotted, each content stored once | Each write action adds a snapshot before and after it; identical files, across snapshots and across tasks, share one object |
 | `snapshots/manifests/<id>` | The list of files of one snapshot (small) | The number of snapshots |
+| `snapshots/pending/<id>` | The note of a snapshot being written; it exists only while the snapshot is written, and the next command that writes finishes or undoes one a crash left | Nothing (empty when no process is writing a snapshot) |
 | `blobs/<id>` | Captured outputs of tools (at most 1 MiB each) | The output of tool runs |
 | `interpreters/` | Installed interpreters (`mimlys interpreters install`) | Once per language |
 | `mimlys.db`, `mimlys.db-wal` | The database: tasks, steps, actions, events | Every event; it is the audit |

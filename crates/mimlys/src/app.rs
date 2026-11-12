@@ -11,7 +11,9 @@ use mimlys_core::runtime::{Runtime, RuntimeDeps, RuntimeError, Session};
 use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_model::fake::FakeBackend;
 use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved, TransportMode};
-use mimlys_persist::recovery::{Recovered, RecoveryContext, recover_all};
+use mimlys_persist::recovery::{
+    Recovered, RecoveryContext, recover_all, recover_snapshot_journals,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -696,6 +698,20 @@ impl App {
                 recovery: policy.recovery,
             },
             &*workspaces,
+        )?;
+        // The last recovery step (external design 16.3, REQ-WS-012): the
+        // snapshot journals a crash left, before the integrity check reads
+        // the snapshots. Nothing is printed; the event records what was done.
+        let recovery_ctx = RecoveryContext {
+            ids: &ids,
+            now,
+            policy_hash: policy.hash(),
+            recovery: policy.recovery,
+        };
+        recover_snapshot_journals(
+            &store,
+            &mimlys_persist::snapshots::SnapshotFiles::open(&data_dir)?,
+            &recovery_ctx,
         )?;
         mimlys_persist::integrity::check(&store, now)?;
         let (backend, openai) = make_backend(&config, &loaded, backend)?;

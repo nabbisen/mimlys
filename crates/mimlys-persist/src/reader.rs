@@ -179,13 +179,21 @@ impl ReadStore {
     }
 
     /// Whether the store needs recovery: nobody holds the lock and a task is
-    /// still `running`, which the next command that writes recovers
-    /// (external design §16.3). What is committed is read as it stands.
+    /// still `running` or a snapshot journal is pending, which the next
+    /// command that writes recovers (external design §16.3; REQ-WS-012).
+    /// What is committed is read as it stands; nothing is removed.
     pub fn recovery_pending(&self) -> Result<bool, PersistenceError> {
         if self.lock != LockState::Free {
             return Ok(false);
         }
-        Ok(!self.tasks_in_state("running")?.is_empty())
+        if !self.tasks_in_state("running")?.is_empty() {
+            return Ok(true);
+        }
+        Ok(
+            !crate::snapshots::SnapshotFiles::open_for_reading(&self.data_dir)
+                .pending()?
+                .is_empty(),
+        )
     }
 
     /// The schema version in the database.

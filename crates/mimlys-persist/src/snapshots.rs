@@ -11,7 +11,7 @@ use crate::sqlite::{create_private_dir, io, restrict_file};
 use mimlys_core::hash::{Hash, hash_bytes};
 use mimlys_core::ids::SnapshotId;
 use mimlys_core::snapshot::Manifest;
-use mimlys_core::spi::PersistenceError;
+use mimlys_core::spi::{PersistenceError, PersistenceRead};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -193,18 +193,30 @@ impl SnapshotFiles {
         Ok(())
     }
 
-    /// Undoes a journal without a row: its new objects and its manifest go.
-    pub fn undo(&self, snapshot_id: SnapshotId) -> Result<usize, PersistenceError> {
+    /// Undoes a journal without a row: its manifest goes, and so do those of
+    /// its listed objects that `referenced` says no snapshot row references (a
+    /// journal left by a release that never recovered may list an object a
+    /// later snapshot reused: that object stays, REQ-WS-012); the temporary
+    /// files of an interrupted write go. Returns the objects removed.
+    pub fn undo(
+        &self,
+        snapshot_id: SnapshotId,
+        referenced: &dyn Fn(&Hash) -> Result<bool, PersistenceError>,
+    ) -> Result<usize, PersistenceError> {
         let path = self.journal_path(snapshot_id);
         let text = std::fs::read_to_string(&path).map_err(io("journal_read"))?;
         let mut removed = 0;
         for line in text.lines().filter(|l| !l.is_empty()) {
-            if let Some(hash) = Hash::from_hex(line) {
+            if let Some(hash) = Hash::from_hex(line)
+                && self.has_object(&hash)
+                && !referenced(&hash)?
+            {
                 self.remove_object(&hash)?;
                 removed += 1;
             }
         }
         self.remove_manifest(snapshot_id)?;
+        let _ = std::fs::remove_file(self.manifest_path(snapshot_id).with_extension("json.tmp"));
         for entry in std::fs::read_dir(self.root.join("objects"))
             .map_err(io("objects_dir"))?
             .flatten()
@@ -218,13 +230,45 @@ impl SnapshotFiles {
         Ok(removed)
     }
 
-    /// The pending journals, as snapshot ids.
+    /// The startup step over the pending journals (external design 16.3,
+    /// REQ-WS-012): a journal whose snapshot row exists is finished; one
+    /// without a row is undone, keeping every object a row references. The
+    /// check is against the rows (their reference counts, written in the same
+    /// transaction as the row), never against the journal alone.
+    pub fn recover_journals(
+        &self,
+        rows: &dyn PersistenceRead,
+    ) -> Result<JournalReport, PersistenceError> {
+        let mut report = JournalReport::default();
+        let mut pending = self.pending()?;
+        pending.sort_by_key(ToString::to_string);
+        for snapshot_id in pending {
+            if rows.load_snapshot(snapshot_id)?.is_some() {
+                self.finish(snapshot_id)?;
+                report.finished += 1;
+            } else {
+                report.objects_removed += self.undo(snapshot_id, &|hash| {
+                    Ok(rows
+                        .object_references(std::slice::from_ref(hash))?
+                        .iter()
+                        .any(|(_, _, refs)| *refs > 0))
+                })?;
+                report.undone += 1;
+            }
+        }
+        Ok(report)
+    }
+
+    /// The pending journals, as snapshot ids. A directory that is not there
+    /// reads as none.
     pub fn pending(&self) -> Result<Vec<SnapshotId>, PersistenceError> {
         let mut out = Vec::new();
-        for entry in std::fs::read_dir(self.root.join("pending"))
-            .map_err(io("pending_dir"))?
-            .flatten()
-        {
+        let dir = match std::fs::read_dir(self.root.join("pending")) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(io("pending_dir")(e)),
+        };
+        for entry in dir.flatten() {
             if let Ok(uuid) = uuid::Uuid::parse_str(&entry.file_name().to_string_lossy()) {
                 out.push(SnapshotId::from_uuid(uuid));
             }

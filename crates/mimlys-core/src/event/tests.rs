@@ -98,10 +98,15 @@ fn every_event() -> Vec<Event> {
         },
         Event::RuntimeStopped,
         Event::RuntimeOrphansKilled { count: 2 },
+        Event::SnapshotJournalsRecovered {
+            finished: 1,
+            undone: 2,
+            objects_removed: 3,
+        },
     ]
 }
 
-/// REQ-OBS-001 / external design §17.1: the thirty-two event names in dotted form, round-tripping through serde.
+/// REQ-OBS-001 / external design §17.1: the thirty-three event names in dotted form, round-tripping through serde.
 #[test]
 fn req_obs_001_event_vocabulary_matches_ed_17_1() {
     let events = every_event();
@@ -141,6 +146,7 @@ fn req_obs_001_event_vocabulary_matches_ed_17_1() {
             "runtime.started",
             "runtime.stopped",
             "runtime.orphans_killed",
+            "snapshot.journals_recovered",
         ]
     );
     for event in events {
