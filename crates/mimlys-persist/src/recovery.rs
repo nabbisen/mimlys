@@ -4,6 +4,7 @@
 //! decides whether the task halts or, by policy, runs again. Expired
 //! approvals and questions halt their tasks.
 
+use crate::snapshots::{JournalReport, SnapshotFiles};
 use crate::sqlite::Store;
 use mimlys_core::action::ActionInput;
 use mimlys_core::approval::ApprovalRequest;
@@ -159,6 +160,35 @@ pub fn recover_all(
     Ok(out)
 }
 
+/// The last recovery step (external design §16.3; REQ-WS-012): the snapshot
+/// journals a crash left are finished (their row exists) or undone (it does
+/// not), keeping every object a snapshot row references. The event
+/// `snapshot.journals_recovered` is recorded only when something was done.
+pub fn recover_snapshot_journals(
+    store: &Store,
+    files: &SnapshotFiles,
+    ctx: &RecoveryContext<'_>,
+) -> Result<JournalReport, PersistenceError> {
+    let report = files.recover_journals(store)?;
+    if report != JournalReport::default() {
+        store.append_event(&EventRecord {
+            event_id: EventId::new(ctx.ids),
+            at: ctx.now,
+            actor: Actor::Runtime,
+            task_id: None,
+            step_id: None,
+            action_id: None,
+            policy_hash: ctx.policy_hash.clone(),
+            event: Event::SnapshotJournalsRecovered {
+                finished: u32::try_from(report.finished).unwrap_or(u32::MAX),
+                undone: u32::try_from(report.undone).unwrap_or(u32::MAX),
+                objects_removed: u32::try_from(report.objects_removed).unwrap_or(u32::MAX),
+            },
+        })?;
+    }
+    Ok(report)
+}
+
 fn expire_waiting(store: &Store, ctx: &RecoveryContext<'_>) -> Result<(), PersistenceError> {
     for task_id in store.tasks_in_state("waiting_user")? {
         let Some(task) = store.load_task(task_id)? else {
@@ -216,3 +246,6 @@ fn state_error(e: mimlys_core::task::StateError) -> PersistenceError {
 
 /// Exposed for tests: an approval request type path.
 pub type Approval = ApprovalRequest;
+
+#[cfg(test)]
+mod tests;

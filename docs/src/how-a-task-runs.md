@@ -256,7 +256,12 @@ transition ([Storage](./reference/storage.md) says where and how much). A
 task that waits, pauses or halts keeps its state across a restart, and so do
 its counters and its deadline. If a process ends in the middle of a task, the
 next command that writes restores the workspace to the snapshot before an
-interrupted write and the task halts with `recovered`.
+interrupted write and the task halts with `recovered`. The same step takes a
+snapshot that was being written when the process ended: if its record was
+stored the snapshot is kept, otherwise its files are removed (only those no
+stored snapshot uses), so an interrupted snapshot leaves nothing behind. It
+prints nothing; the event `snapshot.journals_recovered` records it. Until then
+`status` says `recovery pending`.
 
 You see all of it from any terminal, and none of these commands changes
 anything:

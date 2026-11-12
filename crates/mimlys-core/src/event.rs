@@ -283,6 +283,16 @@ pub enum Event {
         /// How many.
         count: u32,
     },
+    /// The start finished or undid snapshot journals a crash left (REQ-WS-012).
+    #[serde(rename = "snapshot.journals_recovered")]
+    SnapshotJournalsRecovered {
+        /// Journals whose snapshot row existed: removed.
+        finished: u32,
+        /// Journals without a row: their manifest and unreferenced objects removed.
+        undone: u32,
+        /// Objects removed by the undone journals.
+        objects_removed: u32,
+    },
 }
 
 impl Event {
@@ -321,6 +331,7 @@ impl Event {
             Event::RuntimeStarted { .. } => "runtime.started",
             Event::RuntimeStopped => "runtime.stopped",
             Event::RuntimeOrphansKilled { .. } => "runtime.orphans_killed",
+            Event::SnapshotJournalsRecovered { .. } => "snapshot.journals_recovered",
         }
     }
 }
