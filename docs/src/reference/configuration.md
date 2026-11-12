@@ -126,20 +126,19 @@ max_files = 200000              # LIM-W2
 
 [logging]
 level = "info"                  # error | warn | info | debug | trace
-debug_prompts = false           # true logs requests and replies at level debug, and warns at start
+debug_prompts = false           # true logs requests and replies (redacted) at any level, and warns at start
 ```
 
 The log is one JSON object per line on standard error. A line written while a
 task's step runs carries that step's ids in `span`: `task_id`, `step_id` and,
 once the step has an action, `action_id`; a line written outside a step (at
-start, say) has no `span`. With `debug_prompts = true` and `level` set to
-`debug` or `trace`, each model request's messages and each model reply are
-written as lines of their own ("model request message" and "model reply"),
-after the same redaction as every line: the backend key and every `env:`
-secret never appear. With `level` at `info` or above, nothing of a prompt is
-written, whatever the option; with the option off, nothing is, at any level.
-The option warns at start because the goal, file content and the model's
-output are then in the log.
+start, say) has no `span`. With `debug_prompts = true`, each model request's
+messages and each model reply are written as lines of their own ("model
+request message" and "model reply"), whatever `level` is: the switch is the
+request. They pass the same redaction as every line: the backend key and every
+`env:` secret never appear. With the option off, nothing of a prompt, a file or
+a reply is written, at any level. The option warns at start because the goal,
+file content and the model's output are then in the log.
 
 ## A local model
 

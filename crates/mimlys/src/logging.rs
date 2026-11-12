@@ -4,8 +4,9 @@
 //! there is an action, `action_id`, as `span` (the current span only: the
 //! step is the one span there is). Prompt content, file content and secrets
 //! never reach the log at the default level; `debug_prompts` is the only way
-//! to log prompts and replies (at `debug`, on the prompt target, which is
-//! switched off here unless the option is on) and it warns at start. Every
+//! to log prompts and replies (`debug` lines on the prompt target, which is
+//! off unless the option is on, and then on whatever `logging.level` is:
+//! the switch is the request) and it warns at start. Every
 //! line passes through the redactor built from the configured secrets
 //! (REQ-CTX-007).
 
@@ -18,10 +19,11 @@ use tracing_subscriber::EnvFilter;
 
 /// Installs the subscriber once. Returns the warning to print when prompts are logged.
 pub fn init(section: &LoggingSection, secrets: &[(String, String)]) -> Option<&'static str> {
-    // The lines that carry a prompt or a reply have a target of their own,
-    // off unless `debug_prompts` is on: nothing else decides it.
+    // The lines that carry a prompt or a reply have a target of their own:
+    // off unless `debug_prompts` is on, and then on at `debug` whatever the
+    // level is (the switch is the request). Nothing else decides it.
     let filter = if section.debug_prompts {
-        EnvFilter::new(section.level.as_str())
+        EnvFilter::new(format!("{},{PROMPT_LOG_TARGET}=debug", section.level))
     } else {
         EnvFilter::new(format!("{},{PROMPT_LOG_TARGET}=off", section.level))
     };
