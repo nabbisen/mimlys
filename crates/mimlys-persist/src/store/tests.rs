@@ -42,6 +42,14 @@ impl Fx {
         }
     }
 
+    /// A source whose identifiers start at `start`, above those a stored fixture holds.
+    pub(crate) fn starting_at(start: u64) -> Self {
+        Self {
+            ids: ScriptedIds::starting_at(start),
+            clock: FakeClock::default(),
+        }
+    }
+
     pub(crate) fn now(&self) -> Instant {
         self.clock.now()
     }
@@ -389,7 +397,7 @@ fn req_pers_001_open_pragmas_permissions_lock() {
     let data = dir.path().join("data");
     let store = open(&data).unwrap();
     assert_eq!(store.pragmas().unwrap(), ("wal".to_owned(), 2), "FULL is 2");
-    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(store.schema_version().unwrap(), 3);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -423,7 +431,7 @@ fn req_pers_001_open_pragmas_permissions_lock() {
     assert!(started.elapsed() >= std::time::Duration::from_millis(LIM_O3_LOCK_WAIT_MS - 50));
     drop(store);
     let reopened = open(&data).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 2);
+    assert_eq!(reopened.schema_version().unwrap(), 3);
 }
 
 /// REQ-PERS-002: a newer schema is refused naming both versions.
@@ -444,7 +452,7 @@ fn req_pers_002_newer_schema_refused() {
         open(&data).err(),
         Some(PersistenceError::NewerSchema {
             found: 99,
-            supported: 2
+            supported: 3
         })
     );
 }
@@ -1200,7 +1208,7 @@ mod snapshots_m3 {
 }
 
 /// REQ-PERS-006 (handoff 009b): a store written by 0.8.0 (bundled SQLite of `rusqlite` 0.38, its
-/// data in an uncheckpointed `-wal`) opens under the current `rusqlite`, keeps schema version 2,
+/// data in an uncheckpointed `-wal`) opens under the current `rusqlite`, migrates to the current schema version,
 /// passes the integrity check, lists its tasks and recovers.
 #[test]
 fn req_pers_006_a_store_written_by_0_8_0_opens_checks_lists_and_recovers() {
@@ -1217,8 +1225,12 @@ fn req_pers_006_a_store_written_by_0_8_0_opens_checks_lists_and_recovers() {
     );
     let fx = Fx::new();
     let store = open(&data).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 2, "SCHEMA_VERSION stays 2");
-    assert_eq!(crate::SCHEMA_VERSION, 2);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        3,
+        "a schema version 2 store is migrated"
+    );
+    assert_eq!(crate::SCHEMA_VERSION, 3);
     integrity::check(&store, fx.now()).unwrap();
     let mut tasks = store.list_tasks().unwrap();
     tasks.sort_by_key(|t| t.task_id.to_string());
@@ -1284,7 +1296,11 @@ fn req_pers_006_a_store_written_by_0_9_0_opens_and_verifies() {
     );
     let fx = Fx::new();
     let store = open(&data).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        3,
+        "migrated from 2 on open"
+    );
     integrity::check(&store, fx.now()).unwrap();
     let tasks = store.list_tasks().unwrap();
     assert_eq!(tasks.len(), 1);

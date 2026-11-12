@@ -5,12 +5,12 @@
 
 use crate::clock::Instant;
 use crate::hash::Hash;
-use crate::ids::{ActionId, ObservationId, SnapshotId, StepId, TaskId};
+use crate::ids::{ActionId, ObservationId, StepId, TaskId};
 use crate::limits::{
     LIM_T1_STEPS, LIM_T2_CONSECUTIVE_REJECTIONS, LIM_T3_EXECUTIONS_PER_ACTION,
     LIM_T4_IDENTICAL_DECISIONS, LIM_T6_CONSECUTIVE_FAILURES,
 };
-use crate::rejection::RejectionCode;
+use crate::rejection::{Detail, RejectionCode};
 use crate::task::HaltReason;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +81,12 @@ pub struct Step {
     pub decision_hash: Option<Hash>,
     /// Rejection code when the decision was rejected.
     pub rejection: Option<RejectionCode>,
+    /// The rejection's typed detail, as the model read it (REQ-DEC-008,
+    /// REQ-DEC-009). It is not part of the step's JSON record: the store keeps
+    /// it in its own column (schema version 3), so a step recorded before has
+    /// the code only and reads with `None`.
+    #[serde(skip)]
+    pub rejection_detail: Option<Detail>,
     /// The action, when the decision produced one.
     pub action_id: Option<ActionId>,
     /// The observation, when the action produced one.
@@ -139,6 +145,7 @@ impl Step {
             phase: StepPhase::Assemble,
             decision_hash: None,
             rejection: None,
+            rejection_detail: None,
             action_id: None,
             observation_id: None,
             outcome: None,
@@ -196,8 +203,9 @@ pub struct Counters {
     pub identical_decisions: u32,
     /// The previous step's decision hash, for the identical-decision rule.
     pub previous_decision: Option<Hash>,
-    /// The workspace snapshot in force at the previous decision.
-    pub previous_snapshot: Option<SnapshotId>,
+    /// The workspace's content identity in force at the previous decision: the
+    /// manifest hash of the task's latest snapshot (REQ-DEC-010).
+    pub previous_snapshot: Option<Hash>,
 }
 
 /// What a finished step contributes to the counters.
@@ -209,8 +217,10 @@ pub struct StepResult {
     pub action: Option<ActionOutcome>,
     /// The decision's hash, if one was received.
     pub decision_hash: Option<Hash>,
-    /// The workspace snapshot in force when the decision was made.
-    pub snapshot: Option<SnapshotId>,
+    /// The workspace's content identity in force when the decision was made:
+    /// the manifest hash of the task's latest snapshot, not its id, so that a
+    /// snapshot of an unchanged tree is the same identity (REQ-DEC-010).
+    pub snapshot: Option<Hash>,
 }
 
 impl Counters {
@@ -244,12 +254,12 @@ impl Counters {
                     self.identical_decisions = 1;
                 }
                 self.previous_decision = Some(hash.clone());
-                self.previous_snapshot = result.snapshot;
+                self.previous_snapshot = result.snapshot.clone();
             }
             None => {
                 self.identical_decisions = 0;
                 self.previous_decision = None;
-                self.previous_snapshot = result.snapshot;
+                self.previous_snapshot = result.snapshot.clone();
             }
         }
 
