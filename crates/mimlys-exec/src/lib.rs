@@ -17,3 +17,7 @@ pub mod tools;
 pub mod trace;
 pub mod worker;
 pub mod worker_main;
+
+/// The skip helper of the unit tests (test code only, never shipped).
+#[cfg(test)]
+mod test_skip;
