@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "The Windows forbidden characters are ordinary under the POSIX rules.",
+  "origin": "mimlys-core path/tests.rs req_ws_011_windows_name_rules",
+  "input": "a?b",
+  "rules": "posix",
+  "expect": {
+    "ok": "a?b"
+  }
+}

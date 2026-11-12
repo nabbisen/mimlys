@@ -1,0 +1,10 @@
+{
+  "check": "result.sanitize",
+  "note": "A zero-width space, a right-to-left override, a tag character, a byte-order mark and ANSI escapes are removed and counted; the tab and the newline stay.",
+  "origin": "mimlys-core observation/tests.rs req_ctx_008_sanitize_removes_invisible_characters",
+  "input": "ok\u200b\u202e\udb40\udc41\ufeff\u001b[31mred\u001b[0m\tline\nnext",
+  "expect": {
+    "clean": "ok[31mred[0m\tline\nnext",
+    "removed": 6
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "check": "path.relation",
+  "note": "The decomposed and the composed spelling of one name are the same path.",
+  "origin": "mimlys-core path/tests.rs req_dec_006_nfc_and_case_modes",
+  "a": "cafe\u0301.txt",
+  "b": "caf\u00e9.txt",
+  "rules": "posix",
+  "expect": {
+    "equal": true,
+    "same_as": {
+      "sensitive": true,
+      "insensitive": true
+    },
+    "starts_with": {
+      "sensitive": true,
+      "insensitive": true
+    }
+  }
+}

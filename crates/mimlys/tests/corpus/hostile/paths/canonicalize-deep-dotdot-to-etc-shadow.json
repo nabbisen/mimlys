@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "Three `..` after two directories reach /etc/shadow.",
+  "origin": "mimlys-core path/tests.rs req_dec_007_escapes_and_absolute_paths",
+  "input": "a/b/../../../etc/shadow",
+  "rules": "posix",
+  "expect": {
+    "error": "escapes"
+  }
+}

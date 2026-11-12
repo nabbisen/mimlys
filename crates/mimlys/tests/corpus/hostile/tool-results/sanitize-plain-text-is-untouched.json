@@ -1,0 +1,10 @@
+{
+  "check": "result.sanitize",
+  "note": "Plain text passes unchanged with nothing counted: the sanitizer is not a blanket deletion.",
+  "origin": "mimlys-core observation/tests.rs req_ctx_008_sanitize_removes_invisible_characters",
+  "input": "plain",
+  "expect": {
+    "clean": "plain",
+    "removed": 0
+  }
+}

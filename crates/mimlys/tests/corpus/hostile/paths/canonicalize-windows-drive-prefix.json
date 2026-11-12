@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "A drive-letter prefix is absolute under the Windows rules.",
+  "origin": "mimlys-core path/tests.rs req_ws_011_windows_name_rules",
+  "input": "a:b",
+  "rules": "windows",
+  "expect": {
+    "error": "absolute"
+  }
+}

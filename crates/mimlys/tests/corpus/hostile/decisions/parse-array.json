@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "A JSON array is not a decision.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "[1]",
+  "expect": {
+    "malformed": "not_object"
+  }
+}

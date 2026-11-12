@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "A reserved device name with an extension. Refused under the Windows rules.",
+  "origin": "mimlys-core path/tests.rs req_ws_011_windows_name_rules",
+  "input": "nul.txt",
+  "rules": "windows",
+  "expect": {
+    "error": "invalid_name"
+  }
+}

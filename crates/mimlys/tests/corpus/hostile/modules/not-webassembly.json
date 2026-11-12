@@ -1,0 +1,9 @@
+{
+  "check": "sandbox.module",
+  "note": "Bytes that are not WebAssembly are refused at compile time: no execution, no process failure.",
+  "origin": "mimlys-exec sandbox/tests.rs req_sbx_006_malformed_module",
+  "module": "not wasm at all",
+  "expect": {
+    "compile": "rejected"
+  }
+}

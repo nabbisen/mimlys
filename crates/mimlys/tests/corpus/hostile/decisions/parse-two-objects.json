@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "Two objects are refused, not the first taken.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "{\"decision\":\"complete\",\"summary\":\"x\"}{\"decision\":\"complete\",\"summary\":\"y\"}",
+  "expect": {
+    "malformed": "multiple_values"
+  }
+}

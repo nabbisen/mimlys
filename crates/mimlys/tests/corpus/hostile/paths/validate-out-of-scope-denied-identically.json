@@ -1,0 +1,38 @@
+{
+  "check": "decision.validate",
+  "note": "An escaping path that exists, one that does not and an absolute one are denied with the same rejection, and the rejection holds no path content (no existence leak).",
+  "origin": "mimlys-core validate/tests.rs req_dec_007_out_of_scope_denied_identically",
+  "inputs": [
+    {
+      "decision": "act",
+      "tool": "read_file",
+      "arguments": {
+        "path": "../../etc/shadow"
+      }
+    },
+    {
+      "decision": "act",
+      "tool": "read_file",
+      "arguments": {
+        "path": "../../does-not-exist-anywhere"
+      }
+    },
+    {
+      "decision": "act",
+      "tool": "read_file",
+      "arguments": {
+        "path": "/etc/shadow"
+      }
+    }
+  ],
+  "expect": {
+    "code": "denied",
+    "identical": true,
+    "contains": [
+      "path_outside_workspace"
+    ],
+    "lacks": [
+      "shadow"
+    ]
+  }
+}
