@@ -3,7 +3,7 @@
 //! replay determinism.
 
 use super::*;
-use mimlys_core::action::Termination;
+use mimlys_core::action::{HostFaultDetail, Termination};
 use mimlys_core::limits::LIM_S2_DEADLINE_MS;
 
 fn sandbox() -> Sandbox {
