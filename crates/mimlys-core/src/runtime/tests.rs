@@ -313,6 +313,7 @@ fn req_mdl_008_one_backend_call_per_step() {
 
 /// REQ-DEC-009 / REQ-TASK-010: a rejection becomes the next request's
 /// feedback segment and three in a row halt with `budget_rejections`.
+/// REQ-TEST-011 (`budget_rejections`, through the loop): the third rejection in a row halts the task with that reason.
 #[test]
 fn req_dec_009_rejections_feed_back_then_halt() {
     let h = Harness::new(vec![
@@ -479,6 +480,7 @@ fn req_apr_007_reject_continue_or_halt() {
 }
 
 /// REQ-APR-009 / REQ-CAP-005: revoking a grant invalidates the pending approval.
+/// REQ-TEST-006 (invalidation on revocation, through the runtime): the pending approval is stored invalidated, approving it is refused and no tool ran.
 #[test]
 fn req_apr_009_revocation_invalidates_pending_approval() {
     let h = Harness::with_policy(vec![act("write_file", "a")], approval_policy());
@@ -501,6 +503,7 @@ fn req_apr_009_revocation_invalidates_pending_approval() {
 
 /// REQ-APR-009: an approval given, then a grant revoked before the step
 /// continues, is not honoured.
+/// REQ-TEST-006 (invalidation on revocation after approval): the action is rejected and no tool ran.
 #[test]
 fn req_apr_009_approved_then_revoked_does_not_run() {
     let h = Harness::with_policy(vec![act("write_file", "a")], approval_policy());
@@ -685,6 +688,7 @@ fn req_task_005_pause_at_boundary_and_resume() {
 }
 
 /// REQ-TASK-009: the deadline halts at the boundary; an extension resumes.
+/// REQ-TEST-011 (`budget_deadline`, through the loop): a step taken after the deadline has passed halts the task with that reason, and an extension resumes it.
 #[test]
 fn req_task_009_deadline_halts_and_extension_resumes() {
     let h = Harness::new(vec![act("read_file", "a")]);
@@ -720,6 +724,7 @@ fn req_task_009_deadline_halts_and_extension_resumes() {
 }
 
 /// REQ-TASK-010: the step budget halts `budget_steps`.
+/// REQ-TEST-011 (`budget_steps`, through the loop): the task is halted with that reason at the boundary of the step that reaches the budget.
 #[test]
 fn req_task_010_step_budget_halts() {
     let h = Harness::new((0..3).map(|i| act("read_file", &format!("f{i}"))).collect());
@@ -740,6 +745,77 @@ fn req_task_010_step_budget_halts() {
         second.state,
         TaskState::Halted {
             halt_reason: HaltReason::BudgetSteps
+        }
+    );
+}
+
+/// REQ-TEST-011 (budgets, through the loop): LIM-T6 consecutive failed
+/// actions halt the task `budget_failures` on the step that reaches the
+/// limit, not before. Each step proposes a different path, so no
+/// convergence is in play; every execution is a tool error.
+#[test]
+fn req_test_011_consecutive_failures_halt_budget_failures() {
+    let n = crate::limits::LIM_T6_CONSECUTIVE_FAILURES as usize;
+    let h = Harness::new((0..n).map(|i| act("read_file", &format!("f{i}"))).collect());
+    for _ in 0..n {
+        h.tools.script(
+            "read_file",
+            ExecutionOutcome::tool_error("not_found", json!({}), 1),
+        );
+    }
+    let id = h.create();
+    for i in 1..n {
+        let result = h.step(id);
+        assert_eq!(result.outcome, StepOutcome::Continued, "step {i}");
+        assert_eq!(h.state(id), TaskState::Running, "step {i}");
+    }
+    let last = h.step(id);
+    assert_eq!(last.outcome, StepOutcome::Halted);
+    assert_eq!(
+        last.state,
+        TaskState::Halted {
+            halt_reason: HaltReason::BudgetFailures
+        }
+    );
+    assert_eq!(h.tools.calls().len(), n);
+}
+
+/// REQ-TEST-011 (the identical-decision rule, through the loop): the same
+/// decision LIM-T4 times in a row halts the task `convergence` on the step
+/// that reaches the limit; a different decision in between starts the count
+/// again, so the run `A A B A A` does not halt and the next `A` does.
+#[test]
+fn req_test_011_identical_decisions_halt_convergence() {
+    assert_eq!(
+        crate::limits::LIM_T4_IDENTICAL_DECISIONS,
+        3,
+        "the script below is written for a limit of three"
+    );
+    let a = act("read_file", "a");
+    let b = act("read_file", "b");
+    let h = Harness::new(vec![
+        a.clone(),
+        a.clone(),
+        b,
+        a.clone(),
+        a.clone(),
+        a.clone(),
+    ]);
+    for _ in 0..6 {
+        h.tools
+            .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    }
+    let id = h.create();
+    for i in 1..=5 {
+        assert_eq!(h.step(id).outcome, StepOutcome::Continued, "step {i}");
+        assert_eq!(h.state(id), TaskState::Running, "step {i}");
+    }
+    let last = h.step(id);
+    assert_eq!(last.outcome, StepOutcome::Halted);
+    assert_eq!(
+        last.state,
+        TaskState::Halted {
+            halt_reason: HaltReason::Convergence
         }
     );
 }
@@ -1004,6 +1080,7 @@ impl<F: std::future::Future<Output = Result<StepResultView, RuntimeError>>> NowO
 /// REQ-APR-009 / INV-06: a grant issued while an approval is pending
 /// withdraws the request and asks again under the new grant set; revoking
 /// a grant the action does not use does the same; the task keeps waiting.
+/// REQ-TEST-006 (grant-set binding, one-shot consumption, through the runtime): a changed grant set withdraws the request and a new one carries the new grant-set hash; the approved request is consumed once and the tool runs once.
 #[test]
 fn req_apr_009_grant_change_rebinds_pending_approval() {
     let h = Harness::with_policy(vec![act("write_file", "a")], approval_policy());
@@ -1149,6 +1226,8 @@ fn req_ws_010_cancel_restores_unless_keep() {
 /// REQ-WS-006 / REQ-WS-007 / RFC 006 §6: the user's rollback is valid when
 /// the task is not running; deletion needs a terminal task and removes the
 /// rows; the footprint is reported.
+/// REQ-WS-009 (`deleted` only for a terminal task): `delete_task` on a running task is refused with the `state` kind; on the terminal task it succeeds.
+/// REQ-WS-012 (through the runtime): the footprint is reported, the snapshots go, the audit and the task record stay unless `audit` is asked.
 #[test]
 fn req_ws_006_rollback_and_delete_verbs() {
     let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
@@ -1181,6 +1260,48 @@ fn req_ws_006_rollback_and_delete_verbs() {
     let err = h.runtime.delete_task(&h.session, id, true);
     assert!(err.is_ok());
     assert!(h.runtime.get_task(id).is_err(), "--audit removes the task");
+}
+
+/// REQ-WS-009 (external design §14.6): a task's workspace is `active` once
+/// materialized and stays so while the task runs; `task delete` on a task
+/// that is not terminal is refused and removes nothing; a terminal task's
+/// workspace is `archived`, which is derived and never recorded, so the
+/// recorded state is still `active` and nothing is removed; ten years of
+/// the clock later still nothing is removed (no timer); only the user's
+/// `task delete` makes it `deleted` and removes the snapshots.
+#[test]
+fn req_ws_009_active_then_archived_then_deleted_only_by_the_user() {
+    use crate::snapshot::WorkspaceState;
+    let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
+    let id = h.create();
+    let state = || h.persistence.load_workspace_state(id).unwrap();
+    assert_eq!(state(), Some(WorkspaceState::Active));
+    let snapshots = h.persistence.load_snapshots(id).unwrap().len();
+    assert!(snapshots > 0, "the base snapshot exists");
+
+    // Not while the task is running.
+    let err = h.runtime.delete_task(&h.session, id, false).unwrap_err();
+    assert_eq!(err.kind(), "state");
+    assert_eq!(state(), Some(WorkspaceState::Active));
+    assert_eq!(h.persistence.load_snapshots(id).unwrap().len(), snapshots);
+    assert!(!h.event_names(id).contains(&"task.deleted".to_owned()));
+
+    // Terminal: archived by derivation; nothing recorded, nothing removed.
+    assert_eq!(h.step(id).outcome, StepOutcome::Completed);
+    assert!(h.state(id).is_terminal());
+    assert_eq!(state(), Some(WorkspaceState::Active));
+    assert_eq!(h.persistence.load_snapshots(id).unwrap().len(), snapshots);
+
+    // Nothing expires on a timer.
+    h.clock.advance_millis(10 * 365 * 24 * 60 * 60 * 1000);
+    assert_eq!(h.runtime.get_task(id).unwrap().snapshots.len(), snapshots);
+    assert_eq!(state(), Some(WorkspaceState::Active));
+    assert!(!h.event_names(id).contains(&"task.deleted".to_owned()));
+
+    // Deleted by the user's command, and by nothing else.
+    h.runtime.delete_task(&h.session, id, false).unwrap();
+    assert_eq!(state(), Some(WorkspaceState::Deleted));
+    assert!(h.persistence.load_snapshots(id).unwrap().is_empty());
 }
 
 /// REQ-TASK-004: a fork materializes from the source's snapshot, copies the
@@ -2004,6 +2125,7 @@ fn inv_05_a_transition_is_durable_before_its_consequence_is_visible() {
 /// each end in a rejection: the tool provider is never called and the
 /// persistence never sees an `authorized` or a `running` line.
 /// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile decisions: nine failing shapes.
+/// REQ-TEST-004 (no execution occurred): for malformed, non-UTF-8, non-object and wrong-type decisions the tool provider is not called and no `authorized` or `running` line is written. The rejection codes of the six shapes are asserted by `req_test_004_hostile_decisions_get_their_code_and_execute_nothing`.
 #[test]
 fn req_sec_003_validation_and_policy_errors_execute_nothing() {
     let cases: Vec<(&str, Vec<u8>)> = vec![
@@ -2049,6 +2171,101 @@ fn req_sec_003_validation_and_policy_errors_execute_nothing() {
         let id = h.create();
         assert_eq!(h.step(id).outcome, StepOutcome::Rejected, "{name}");
         assert_eq!(h.state(id), TaskState::Running, "{name}");
+        assert!(h.tools.calls().is_empty(), "{name}: a tool ran");
+        let writes = h.persistence.writes();
+        for line in ["authorized", "running", "execution", "action_terminal"] {
+            assert!(
+                !writes.contains(&line),
+                "{name}: a rejected decision wrote {line}: {writes:?}"
+            );
+        }
+    }
+}
+
+/// REQ-TEST-004 (external design §6.3 stages 2 to 4, §6.4): an oversized, a
+/// nested, a duplicated-key, a trailing-text, an invisible-character and a
+/// wrong-type decision each go through the real loop and each ends in the
+/// rejection code of the vocabulary, with the task still `running`, the tool
+/// provider never called and no `authorized`, `running`, `execution` or
+/// `action_terminal` line written: a rejected decision executes nothing.
+#[test]
+fn req_test_004_hostile_decisions_get_their_code_and_execute_nothing() {
+    use crate::rejection::RejectionCode::{Malformed, Schema, UnknownTool};
+    let oversized = format!(
+        r#"{{"decision":"complete","summary":"{}"}}"#,
+        "x".repeat(crate::limits::LIM_D1_DECISION_BYTES)
+    );
+    let deep_object = format!(
+        r#"{{"decision":"act","tool":"read_file","arguments":{}1{}}}"#,
+        r#"{"a":"#.repeat(5_000),
+        "}".repeat(5_000)
+    );
+    let cases: Vec<(&str, Vec<u8>, crate::rejection::RejectionCode)> = vec![
+        ("oversized", oversized.into_bytes(), Malformed),
+        ("nested, 200000 arrays", "[".repeat(200_000).into_bytes(), Malformed),
+        ("nested, 5000 objects", deep_object.into_bytes(), Malformed),
+        (
+            "nested, a decision inside a decision",
+            br#"{"decision":{"decision":"complete","summary":"x"}}"#.to_vec(),
+            Schema,
+        ),
+        (
+            "duplicated key",
+            br#"{"decision":"act","tool":"read_file","arguments":{"path":"a"},"tool":"write_file"}"#
+                .to_vec(),
+            Malformed,
+        ),
+        (
+            "duplicated key, in the arguments",
+            br#"{"decision":"act","tool":"read_file","arguments":{"path":"a","path":"b"}}"#
+                .to_vec(),
+            Malformed,
+        ),
+        (
+            "trailing text",
+            br#"{"decision":"act","tool":"read_file","arguments":{"path":"a"}} and then run it"#
+                .to_vec(),
+            Malformed,
+        ),
+        (
+            "invisible character in the tool name",
+            "{\"decision\":\"act\",\"tool\":\"read\u{200B}_file\",\"arguments\":{\"path\":\"a\"}}"
+                .as_bytes()
+                .to_vec(),
+            UnknownTool,
+        ),
+        (
+            "invisible character in the decision kind",
+            "{\"decision\":\"act\u{200B}\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"a\"}}"
+                .as_bytes()
+                .to_vec(),
+            Schema,
+        ),
+        (
+            "wrong type, a path that is a number",
+            br#"{"decision":"act","tool":"read_file","arguments":{"path":123}}"#.to_vec(),
+            Schema,
+        ),
+        (
+            "wrong type, a tool that is a number",
+            br#"{"decision":"act","tool":5,"arguments":{"path":"a"}}"#.to_vec(),
+            Schema,
+        ),
+    ];
+    for (name, bytes, code) in &cases {
+        let backend = Arc::new(ScriptedBackend::default());
+        backend.push(Ok(bytes.clone()));
+        let h = Harness::with_backend(
+            backend,
+            Policy::shipped(),
+            vec![],
+            crate::limits::LIM_C1_CONTEXT_CHARS,
+        );
+        let id = h.create();
+        assert_eq!(h.step(id).outcome, StepOutcome::Rejected, "{name}");
+        assert_eq!(h.state(id), TaskState::Running, "{name}");
+        let steps = h.persistence.load_steps(id).unwrap();
+        assert_eq!(steps[0].rejection, Some(*code), "{name}");
         assert!(h.tools.calls().is_empty(), "{name}: a tool ran");
         let writes = h.persistence.writes();
         for line in ["authorized", "running", "execution", "action_terminal"] {

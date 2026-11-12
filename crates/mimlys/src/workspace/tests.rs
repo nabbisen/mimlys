@@ -561,6 +561,7 @@ mod snapshots {
     }
 
     /// RFC 006 §6: deleting removes the tree, the manifests and the released objects, nothing else.
+    /// REQ-WS-012 (the files): the working tree and the manifest are removed and the workspace can no longer be opened (the blob and object files are covered by `req_ws_012_task_delete_removes_the_task_and_what_only_it_held`).
     #[test]
     fn rfc_006_delete_files() {
         let fx = Fx::new();
