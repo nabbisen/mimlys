@@ -2,6 +2,7 @@
 //! §6.3 stages 7, 9 and 10; handoff 003 §3.4). The validator calls them in
 //! order; they never touch the filesystem.
 
+use crate::action::{EffectKind, EffectView};
 use crate::clock::Instant;
 use crate::effect;
 use crate::grant::GrantSet;
@@ -9,7 +10,7 @@ use crate::host_tool::ArgViolation;
 use crate::path::{CaseMode, WorkspacePath};
 use crate::policy::{ExclusionMatcher, Profile};
 use crate::rejection::{BudgetKind, Denial, DeniedReason};
-use crate::tool::{ParamType, ToolDefinition};
+use crate::tool::{ParamType, Provider, ToolDefinition};
 use crate::validate::{BudgetReservation, Derived, EffectDerivation, GrantCheck};
 use serde_json::{Map, Value};
 
@@ -102,16 +103,42 @@ impl GrantCheck for PolicyHooks<'_> {
     }
 }
 
+/// The script tools whose `mode` argument derives their effect (RFC 005 §5).
+const MODE_TOOLS: [&str; 2] = ["run_script", "run_wasm"];
+
+/// Whether the arguments of a script tool ask for `mode = read_only`: the one
+/// reading of the argument, shared by the effect derivation here and by the
+/// executor that opens the workspace read-only, so that what is classified a
+/// read is what is enforced as one. Any other value, or none, is `read_write`
+/// (the schema admits no other value, and the default is the safe side).
+pub fn is_read_only_mode(args: &Map<String, Value>) -> bool {
+    args.get("mode").and_then(Value::as_str) == Some("read_only")
+}
+
 impl EffectDerivation for PolicyHooks<'_> {
-    /// Stage 9: the tool's declared effect; approval per `effect::derive`.
+    /// Stage 9: the effect in force, and approval per `effect::derive`. The
+    /// effect is the tool's declared one, except that a host tool's is its
+    /// declaration's (RFC 011 §6, §8) and a built-in script tool's in
+    /// `read_only` mode is `workspace_read` (RFC 005 §5: `read_only` derives
+    /// `workspace_read`, `read_write` derives `workspace_write`); the sandbox
+    /// opens the workspace read-only in that mode.
     fn derive(&self, tool: &ToolDefinition, args: &Map<String, Value>) -> Derived {
-        // A host tool's effect is its declaration's (RFC 011 §6, §8).
         let effect = match (tool.name.as_str(), args.get("tool").and_then(Value::as_str)) {
             ("run_host_tool", Some(name)) => self
                 .host_tools
                 .get(name)
                 .map(|d| d.effect_view())
                 .unwrap_or(tool.effect),
+            (name, _)
+                if MODE_TOOLS.contains(&name)
+                    && tool.provider == Provider::Builtin
+                    && is_read_only_mode(args) =>
+            {
+                EffectView {
+                    kind: EffectKind::WorkspaceRead,
+                    ..tool.effect
+                }
+            }
             _ => tool.effect,
         };
         let implications = effect::derive(&tool.name, effect, self.profile);

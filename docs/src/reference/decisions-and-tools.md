@@ -110,6 +110,13 @@ is `javascript` (QuickJS-NG, which reads stdin and args and prints; it has no
 file modules, the file tools are for files). `run_wasm` runs a wasip1 module
 from the workspace of at most LIM-S5 bytes.
 
+The `mode` also sets the action's effect: `read_only` is `workspace_read` (the
+workspace is opened read-only, so nothing in it can change: the action takes no
+snapshot and has nothing to roll back), `read_write`, the default, is
+`workspace_write` (a snapshot before, one after when it succeeds, and a
+rollback when it fails or is cancelled). Whether the profile lists the tool in
+`approval_tools` decides approval in both modes.
+
 ## What the model sees
 
 The request is built in a fixed order: a short system text, the tool

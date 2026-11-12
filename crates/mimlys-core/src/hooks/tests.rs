@@ -436,3 +436,83 @@ fn req_apr_001_tool_006_ws_008_effect_and_budget_hooks() {
         "a tool the profile lists needs approval"
     );
 }
+
+/// RFC 005 §5, REQ-TOOL-002 (stage 9): a built-in `run_script` or `run_wasm` in
+/// `read_only` mode derives `workspace_read`; in `read_write` mode, with no
+/// `mode`, or with a value that is not `read_only`, the definition's
+/// `workspace_write`. The flags other than the kind stay the definition's.
+/// Approval by effect is the same; the profile's list is by tool name. A tool
+/// of the same name from another provider, and any other tool with a `mode`
+/// argument, keep their declared effect.
+#[test]
+fn rfc_005_mode_derives_the_effect_of_the_built_in_script_tools() {
+    let f = Fixture::new(false);
+    let hooks = PolicyHooks {
+        grants: &f.grants,
+        profile: f.policy.profile("workspace").unwrap(),
+        exclusions: &f.exclusions,
+        case: CaseMode::Sensitive,
+        task: TaskView {
+            now: f.clock.now(),
+            remaining_ms: 1000,
+            workspace_remaining_bytes: None,
+        },
+        host_tools: &f.policy.host_tools,
+    };
+    let write = EffectView {
+        kind: EffectKind::WorkspaceWrite,
+        reversible: true,
+        idempotent: false,
+    };
+    let definition = |name: &str, provider: Provider| ToolDefinition {
+        name: name.into(),
+        description: "s".into(),
+        input: ParamSchema { params: vec![] },
+        output: None,
+        effect: write,
+        deadline_ms: 1000,
+        profile: ResourceProfile::Sandbox,
+        destination_arguments: vec![],
+        provider,
+    };
+    let args = |mode: Option<serde_json::Value>| {
+        let mut a = serde_json::Map::new();
+        if let Some(m) = mode {
+            a.insert("mode".into(), m);
+        }
+        a
+    };
+    for name in ["run_script", "run_wasm"] {
+        let tool = definition(name, Provider::Builtin);
+        let read = hooks.derive(&tool, &args(Some("read_only".into())));
+        assert_eq!(read.effect.kind, EffectKind::WorkspaceRead, "{name}");
+        assert!(read.effect.reversible && !read.effect.idempotent, "{name}");
+        assert!(!read.approval_required, "{name}: not by effect");
+        for mode in [
+            Some("read_write".into()),
+            None,
+            Some("READ_ONLY".into()),
+            Some("".into()),
+            Some(serde_json::Value::Null),
+            Some(true.into()),
+        ] {
+            let derived = hooks.derive(&tool, &args(mode.clone()));
+            assert_eq!(derived.effect, write, "{name} {mode:?}");
+        }
+        // The same name from another provider is not the built-in tool.
+        let foreign = definition(name, Provider::Mcp { server: "s".into() });
+        assert_eq!(
+            hooks
+                .derive(&foreign, &args(Some("read_only".into())))
+                .effect,
+            write,
+            "{name} from an MCP server"
+        );
+    }
+    let other = definition("write_file", Provider::Builtin);
+    assert_eq!(
+        hooks.derive(&other, &args(Some("read_only".into()))).effect,
+        write,
+        "another tool's `mode` argument derives nothing"
+    );
+}
