@@ -1551,6 +1551,10 @@ impl Runtime {
                 state_changed(&before, &after),
             ))?;
         }
+        if after.state.is_terminal() {
+            // completed, failed or (a step ended after a cancel) cancelled: REQ-SCHED-005.
+            self.forget_task(after.task_id);
+        }
         Ok(StepResultView {
             outcome,
             state: after.state,
