@@ -13,6 +13,7 @@ use mimlys_core::grant::Grant;
 use mimlys_core::ids::{ActionId, BlobId, SnapshotId, TaskId};
 use mimlys_core::observation::Observation;
 use mimlys_core::question::Question;
+use mimlys_core::rejection::Detail;
 use mimlys_core::snapshot::{Promotion, SnapshotRecord, WorkspaceState};
 use mimlys_core::spi::DeletedRows;
 use mimlys_core::spi::{
@@ -106,8 +107,9 @@ fn upsert_task(tx: &Transaction<'_>, task: &Task) -> Result<(), PersistenceError
 
 fn upsert_step(tx: &Transaction<'_>, step: &Step) -> Result<(), PersistenceError> {
     tx.execute(
-        "INSERT INTO steps (step_id, task_id, idx, outcome, record, record_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (step_id) DO UPDATE SET outcome = excluded.outcome, record = excluded.record",
+        "INSERT INTO steps (step_id, task_id, idx, outcome, record, record_version, rejection_detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT (step_id) DO UPDATE SET outcome = excluded.outcome, record = excluded.record,
+             rejection_detail = COALESCE(excluded.rejection_detail, steps.rejection_detail)",
         params![
             step.step_id.to_string(),
             step.task_id.to_string(),
@@ -115,6 +117,7 @@ fn upsert_step(tx: &Transaction<'_>, step: &Step) -> Result<(), PersistenceError
             step.outcome.and_then(|o| serde_json::to_value(o).ok().and_then(|v| v.as_str().map(str::to_owned))),
             json(step)?,
             RECORD_VERSION,
+            step.rejection_detail.as_ref().map(json).transpose()?,
         ],
     )
     .map_err(storage("upsert_step"))?;
@@ -307,10 +310,28 @@ macro_rules! persistence_read {
         }
 
         fn load_steps(&self, task_id: TaskId) -> Result<Vec<Step>, PersistenceError> {
-            self.query(
-                "SELECT record FROM steps WHERE task_id = ?1 ORDER BY idx",
-                &[&task_id.to_string()],
-            )
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn
+                .prepare("SELECT record, rejection_detail FROM steps WHERE task_id = ?1 ORDER BY idx")
+                .map_err(storage("prepare"))?;
+            let rows = stmt
+                .query_map([task_id.to_string()], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })
+                .map_err(storage("query"))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (record, detail) = row.map_err(storage("row"))?;
+                let mut step: Step = parse(record)?;
+                // A step recorded before schema version 3 has no detail: the code's hint is its feedback.
+                if let (Some(code), Some(text)) = (step.rejection, detail) {
+                    step.rejection_detail = serde_json::from_str::<serde_json::Value>(&text)
+                        .ok()
+                        .and_then(|value| Detail::from_value(code, &value));
+                }
+                out.push(step);
+            }
+            Ok(out)
         }
 
         fn load_actions(&self, task_id: TaskId) -> Result<Vec<Action>, PersistenceError> {
@@ -1052,3 +1073,6 @@ impl Store {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod rejection_detail_tests;

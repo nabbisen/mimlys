@@ -3,8 +3,9 @@
 //! LIM-I5 characters from a fixed table that says what the model may
 //! change. A rejection never carries filesystem contents or policy internals.
 
-use crate::limits::LIM_I5_MESSAGE_CHARS;
+use crate::limits::{LIM_I5_MESSAGE_CHARS, LIM_I9_DETAIL_CHARS, LIM_I9_DETAIL_ITEMS};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::fmt;
 
 /// Why the runtime refused a decision before any execution.
@@ -167,7 +168,7 @@ impl DeniedReason {
                 "The path is excluded by policy (secrets, build outputs, version control); work with other files."
             }
             DeniedReason::GrantMissing => {
-                "No grant covers this; use the tools and grants you have, or ask the user for the grant named in `grant_kind` with `ask_user`."
+                "No grant covers this; use the tools and grants you have, or ask the user for the missing grant with `ask_user`."
             }
             DeniedReason::DestinationNotGranted => {
                 "The destination is not covered by a `network` grant; use a granted domain, or ask the user to grant this one."
@@ -182,7 +183,7 @@ impl DeniedReason {
                 "Promotion is the user's operation; finish the task and leave the promotion to the user."
             }
             DeniedReason::ArgumentNotAllowed => {
-                "Pass only the declared literals or values matching the declared pattern, at most `max` arguments; no paths, no other flags."
+                "Pass only the declared literals or values matching the declared pattern, and no more arguments than declared; no paths, no other flags."
             }
         }
     }
@@ -200,18 +201,54 @@ pub enum StateReason {
     NotRunning,
 }
 
-/// Which budget an action would exceed.
+/// Which budget an action would exceed at stage 10 (external design §6.3,
+/// §6.4): the deadline, and the workspace quota for a write. The step budget
+/// halts at the step boundary (LIM-T1) and LIM-T3 bounds an action's
+/// retries; neither is a rejection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BudgetKind {
-    /// LIM-T1.
-    Steps,
     /// The deadline.
     Deadline,
-    /// LIM-T3.
-    Executions,
     /// LIM-W1, LIM-W2, LIM-W3.
     Workspace,
+}
+
+impl BudgetKind {
+    /// The snake_case name used on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BudgetKind::Deadline => "deadline",
+            BudgetKind::Workspace => "workspace",
+        }
+    }
+}
+
+impl DeniedReason {
+    /// The snake_case name used on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeniedReason::PathOutsideWorkspace => "path_outside_workspace",
+            DeniedReason::PathExcluded => "path_excluded",
+            DeniedReason::GrantMissing => "grant_missing",
+            DeniedReason::DestinationNotGranted => "destination_not_granted",
+            DeniedReason::SchemeNotHttps => "scheme_not_https",
+            DeniedReason::EffectNotAllowed => "effect_not_allowed",
+            DeniedReason::PromoteNotAllowed => "promote_not_allowed",
+            DeniedReason::ArgumentNotAllowed => "argument_not_allowed",
+        }
+    }
+}
+
+impl StateReason {
+    /// The snake_case name used on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StateReason::PendingUserItem => "pending_user_item",
+            StateReason::CompletionCheckRunning => "completion_check_running",
+            StateReason::NotRunning => "not_running",
+        }
+    }
 }
 
 /// The typed detail of a rejection, with the fixed keys of external design §6.4.
@@ -292,6 +329,194 @@ pub enum Detail {
     },
 }
 
+fn cut(text: String) -> String {
+    if text.chars().count() <= LIM_I9_DETAIL_CHARS {
+        text
+    } else {
+        text.chars().take(LIM_I9_DETAIL_CHARS).collect()
+    }
+}
+
+fn cut_list(items: Vec<String>) -> Vec<String> {
+    items
+        .into_iter()
+        .take(LIM_I9_DETAIL_ITEMS)
+        .map(cut)
+        .collect()
+}
+
+fn text_of(value: &Value, key: &str) -> Option<String> {
+    value.get(key)?.as_str().map(str::to_owned)
+}
+
+fn list_of(value: &Value, key: &str) -> Option<Vec<String>> {
+    Some(
+        value
+            .get(key)?
+            .as_array()?
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
+fn named<T: serde::de::DeserializeOwned>(value: &Value, key: &str) -> Option<T> {
+    serde_json::from_value(value.get(key)?.clone()).ok()
+}
+
+fn count_of(value: &Value, key: &str) -> Option<usize> {
+    value
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+}
+
+impl Detail {
+    /// The detail with every string cut to LIM-I9 and every list to LIM-I9's
+    /// entries: what is stored, counted and sent to the model is bounded
+    /// whatever the model wrote.
+    pub fn bounded(self) -> Self {
+        match self {
+            Detail::Schema {
+                path,
+                expected,
+                allowed,
+            } => Detail::Schema {
+                path: cut(path),
+                expected: cut(expected),
+                allowed: allowed.map(cut_list),
+            },
+            Detail::UnknownTool {
+                tool,
+                visible_tools,
+            } => Detail::UnknownTool {
+                tool: cut(tool),
+                visible_tools: cut_list(visible_tools),
+            },
+            Detail::InvalidArgument {
+                path,
+                min,
+                max,
+                allowed,
+            } => Detail::InvalidArgument {
+                path: cut(path),
+                min,
+                max,
+                allowed: allowed.map(cut_list),
+            },
+            Detail::Denied {
+                reason,
+                grant_kind,
+                argument,
+                value,
+                max,
+            } => Detail::Denied {
+                reason,
+                grant_kind: grant_kind.map(cut),
+                argument,
+                value: value.map(cut),
+                max,
+            },
+            Detail::ApprovalRejected { note } => Detail::ApprovalRejected {
+                note: note.map(cut),
+            },
+            other => other,
+        }
+    }
+
+    /// Reads a detail back from its stored JSON, for the rejection `code`
+    /// that was stored with it. Only the fixed keys of the code are read,
+    /// whatever else the text holds, and the result is bounded again. `None`
+    /// when the text does not hold the code's mandatory keys.
+    pub fn from_value(code: RejectionCode, value: &Value) -> Option<Self> {
+        let detail = match code {
+            RejectionCode::Malformed => Detail::Malformed {
+                problem: named(value, "problem")?,
+                limit: count_of(value, "limit"),
+            },
+            RejectionCode::Schema => Detail::Schema {
+                path: text_of(value, "path")?,
+                expected: text_of(value, "expected")?,
+                allowed: list_of(value, "allowed"),
+            },
+            RejectionCode::UnknownTool => Detail::UnknownTool {
+                tool: text_of(value, "tool")?,
+                visible_tools: list_of(value, "visible_tools")?,
+            },
+            RejectionCode::InvalidArgument => Detail::InvalidArgument {
+                path: text_of(value, "path")?,
+                min: value.get("min").and_then(Value::as_i64),
+                max: value.get("max").and_then(Value::as_i64),
+                allowed: list_of(value, "allowed"),
+            },
+            RejectionCode::Denied => Detail::Denied {
+                reason: named(value, "reason")?,
+                grant_kind: text_of(value, "grant_kind"),
+                argument: count_of(value, "argument"),
+                value: text_of(value, "value"),
+                max: count_of(value, "max"),
+            },
+            RejectionCode::State => Detail::State {
+                reason: named(value, "reason")?,
+            },
+            RejectionCode::Budget => Detail::Budget {
+                budget: named(value, "budget")?,
+            },
+            RejectionCode::ApprovalRejected => Detail::ApprovalRejected {
+                note: text_of(value, "note"),
+            },
+        };
+        Some(detail.bounded())
+    }
+
+    /// The `reason` the event records (`denied`: the denial's; `state`: the
+    /// state's; `budget`: the budget's), when the detail has one.
+    pub fn reason_name(&self) -> Option<&'static str> {
+        match self {
+            Detail::Denied { reason, .. } => Some(reason.as_str()),
+            Detail::State { reason } => Some(reason.as_str()),
+            Detail::Budget { budget } => Some(budget.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The grant kind that would allow a denied decision, when any.
+    pub fn grant_kind(&self) -> Option<&str> {
+        match self {
+            Detail::Denied { grant_kind, .. } => grant_kind.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The detail as the JSON that is stored and sent: the fixed keys only.
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).expect("a detail serializes")
+    }
+}
+
+/// What the model reads of a rejection (REQ-DEC-008, REQ-DEC-009; external
+/// design §6.4): `{"code", "hint", "detail"}`. The hint is the rejection's
+/// own, by reason for `denied`, as the `transport` describes the decision
+/// (`malformed` and `unknown_tool` differ in `tool_calls`). The detail has
+/// the fixed keys of the code and is bounded; a step stored without one
+/// (written before schema version 3, or `approval_rejected`, whose note
+/// travels as the user's own words) has `{"code", "hint"}` and the code's
+/// hint. The rejected decision itself is never in it.
+pub fn feedback_body(
+    code: RejectionCode,
+    detail: Option<&Detail>,
+    transport: crate::native::DecisionTransport,
+) -> Value {
+    let hint = match detail {
+        Some(Detail::Denied { reason, .. }) => reason.hint(),
+        _ => code.hint_for(transport),
+    };
+    match detail {
+        Some(detail) => json!({"code": code.as_str(), "hint": hint, "detail": detail.to_value()}),
+        None => json!({"code": code.as_str(), "hint": hint}),
+    }
+}
+
 /// What a stage-7 denial says (external design §6.4): the reason, the grant
 /// kind that would allow it, and for `argument_not_allowed` the argument's
 /// position, its value and the bound.
@@ -361,11 +586,18 @@ pub struct Rejection {
 impl Rejection {
     /// Builds a rejection; the hint comes from the fixed table.
     pub fn new(code: RejectionCode, detail: Detail) -> Self {
+        let detail = detail.bounded();
         let hint = match &detail {
             Detail::Denied { reason, .. } => reason.hint(),
             _ => code.hint(),
         };
         Self { code, detail, hint }
+    }
+
+    /// What the model reads of this rejection in `transport`
+    /// ([`feedback_body`]).
+    pub fn feedback(&self, transport: crate::native::DecisionTransport) -> Value {
+        feedback_body(self.code, Some(&self.detail), transport)
     }
 
     /// A `malformed` rejection.

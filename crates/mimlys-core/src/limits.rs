@@ -51,6 +51,14 @@ pub const LIM_I5_MESSAGE_CHARS: usize = 200;
 pub const LIM_I6_APPROVAL_CHARS: usize = 4000;
 /// LIM-I7: entries returned by `list_dir` or `search_files`.
 pub const LIM_I7_ENTRIES: usize = 500;
+/// LIM-I9: a string of a rejection's `detail` (a path, an expected value, a
+/// tool name, a refused argument), in characters; a longer one is cut. Proposed
+/// by handoff 002c; the limits register does not list it yet.
+pub const LIM_I9_DETAIL_CHARS: usize = LIM_I5_MESSAGE_CHARS;
+/// LIM-I9: entries of a list in a rejection's `detail` (`allowed`,
+/// `visible_tools`); a longer list is cut. Proposed by handoff 002c; the
+/// limits register does not list it yet.
+pub const LIM_I9_DETAIL_ITEMS: usize = 32;
 /// LIM-C1: context budget per model request, in characters.
 pub const LIM_C1_CONTEXT_CHARS: usize = 32_000;
 /// LIM-C1: configurable range in characters.

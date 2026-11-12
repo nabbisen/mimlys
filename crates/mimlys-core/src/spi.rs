@@ -588,6 +588,12 @@ pub struct Metrics {
     pub events_by_name: std::collections::BTreeMap<String, u64>,
     /// Rejections by code.
     pub rejections_by_code: std::collections::BTreeMap<String, u64>,
+    /// Denials by reason (REQ-OBS-008); the events of 0.10 on carry it.
+    #[serde(default)]
+    pub denials_by_reason: std::collections::BTreeMap<String, u64>,
+    /// Denials by the grant kind that would allow them (REQ-OBS-008).
+    #[serde(default)]
+    pub denials_by_grant_kind: std::collections::BTreeMap<String, u64>,
     /// Halts by reason.
     pub halts_by_reason: std::collections::BTreeMap<String, u64>,
     /// Approvals by decision.
@@ -1033,6 +1039,7 @@ pub mod fake {
         remaining: Mutex<Option<u64>>,
         snapshots: Mutex<Vec<SnapshotRecord>>,
         restores: Mutex<Vec<SnapshotId>>,
+        tree: Mutex<Option<String>>,
     }
 
     impl FakeWorkspaces {
@@ -1043,7 +1050,14 @@ pub mod fake {
                 remaining: Mutex::new(None),
                 snapshots: Mutex::new(Vec::new()),
                 restores: Mutex::new(Vec::new()),
+                tree: Mutex::new(None),
             }
+        }
+
+        /// Sets the content of the fake tree: a snapshot taken from now on has a
+        /// manifest hash that depends on `content` alone (the default tree is empty).
+        pub fn set_tree(&self, content: &str) {
+            *self.tree.lock().expect("fake lock") = Some(content.to_owned());
         }
 
         /// Sets the remaining workspace bytes reported.
@@ -1115,7 +1129,10 @@ pub mod fake {
             previous: Option<&SnapshotRecord>,
             now: crate::clock::Instant,
         ) -> Result<PreparedSnapshot, WorkspaceError> {
-            let manifest_hash = Manifest::default().hash();
+            let manifest_hash = match self.tree.lock().expect("fake lock").as_deref() {
+                Some(content) => crate::hash::hash_bytes(content.as_bytes()),
+                None => Manifest::default().hash(),
+            };
             if let Some(p) = previous
                 && p.manifest_hash == manifest_hash
             {
@@ -1279,6 +1296,16 @@ pub mod fake {
         /// The write methods called so far, in order.
         pub fn writes(&self) -> Vec<&'static str> {
             self.inner.lock().expect("fake lock").writes.clone()
+        }
+
+        /// Drops the stored rejection details of the task's steps, as a store written before
+        /// schema version 3 holds them: the code stays, the detail is gone.
+        pub fn forget_rejection_details(&self, task_id: TaskId) {
+            for step in &mut self.inner.lock().expect("fake lock").steps {
+                if step.task_id == task_id {
+                    step.rejection_detail = None;
+                }
+            }
         }
 
         /// Every event so far.

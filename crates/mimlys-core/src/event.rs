@@ -134,6 +134,12 @@ pub enum Event {
     DecisionRejected {
         /// The code.
         code: RejectionCode,
+        /// For `denied`, `state` and `budget`: the reason (from 0.10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// For `denied`: the grant kind that would allow it, when any (from 0.10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant_kind: Option<String>,
     },
     /// An action was proposed.
     #[serde(rename = "action.proposed")]

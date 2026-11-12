@@ -25,6 +25,8 @@ fn every_event() -> Vec<Event> {
         },
         Event::DecisionRejected {
             code: RejectionCode::Malformed,
+            reason: None,
+            grant_kind: None,
         },
         Event::ActionProposed,
         Event::ActionAuthorized,

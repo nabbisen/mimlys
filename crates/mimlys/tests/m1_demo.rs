@@ -275,6 +275,16 @@ fn m1_existence_leak() {
         first_rejection, second_rejection,
         "the feedback must not reveal whether the path exists"
     );
+    // Handoff 002c: the model is told the reason and what to change, and the path is not repeated.
+    assert!(
+        first_rejection.contains("\"reason\":\"path_outside_workspace\"")
+            && first_rejection.contains("relative to the workspace root"),
+        "{first_rejection}"
+    );
+    assert!(
+        !first_rejection.contains("shadow") && !first_rejection.contains("does-not-exist"),
+        "{first_rejection}"
+    );
     assert!(
         report["actions"].as_array().unwrap().is_empty(),
         "nothing was proposed, nothing ran"
