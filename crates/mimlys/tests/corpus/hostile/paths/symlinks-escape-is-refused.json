@@ -28,9 +28,15 @@
       },
       "expect": {
         "failed": true,
+        "payload_equals": {},
         "payload_differs": {
           "/content": "top secret"
-        }
+        },
+        "notices_include": [],
+        "entries_include": [],
+        "entries_lack_prefix": [],
+        "outside_absent": [],
+        "outside_present": []
       }
     },
     {
@@ -39,7 +45,14 @@
         "path": "linkdir/secret.txt"
       },
       "expect": {
-        "failed": true
+        "failed": true,
+        "payload_equals": {},
+        "payload_differs": {},
+        "notices_include": [],
+        "entries_include": [],
+        "entries_lack_prefix": [],
+        "outside_absent": [],
+        "outside_present": []
       }
     },
     {
@@ -50,9 +63,15 @@
       },
       "expect": {
         "failed": true,
+        "payload_equals": {},
+        "payload_differs": {},
+        "notices_include": [],
+        "entries_include": [],
+        "entries_lack_prefix": [],
         "outside_absent": [
           "planted.txt"
-        ]
+        ],
+        "outside_present": []
       }
     },
     {
@@ -63,6 +82,9 @@
       },
       "expect": {
         "failed": false,
+        "payload_equals": {},
+        "payload_differs": {},
+        "notices_include": [],
         "entries_include": [
           {
             "path": "link.txt",
@@ -72,7 +94,9 @@
         ],
         "entries_lack_prefix": [
           "linkdir/"
-        ]
+        ],
+        "outside_absent": [],
+        "outside_present": []
       }
     },
     {
@@ -85,13 +109,18 @@
         "payload_equals": {
           "/matches": []
         },
+        "payload_differs": {},
         "notices_include": [
           {
             "code": "entries_skipped",
             "reason": "symlink",
             "count": 2
           }
-        ]
+        ],
+        "entries_include": [],
+        "entries_lack_prefix": [],
+        "outside_absent": [],
+        "outside_present": []
       }
     },
     {
@@ -104,6 +133,11 @@
         "payload_equals": {
           "/deleted": 1
         },
+        "payload_differs": {},
+        "notices_include": [],
+        "entries_include": [],
+        "entries_lack_prefix": [],
+        "outside_absent": [],
         "outside_present": [
           "secret.txt"
         ]

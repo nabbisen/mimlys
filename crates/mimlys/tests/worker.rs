@@ -335,3 +335,155 @@ fn req_arch_008_worker_death_and_restart_budget() {
     );
     assert_eq!(out.termination, Termination::Exited { exit_code: 7 });
 }
+
+/// A worker process spoken to in the protocol's own frames, killed when the
+/// test ends however it ends.
+struct RawWorker {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    frames: std::sync::mpsc::Receiver<Result<mimlys_exec::protocol::Response, String>>,
+}
+
+impl RawWorker {
+    fn start() -> Self {
+        let mut cmd = std::process::Command::new(worker_bin());
+        cmd.args([
+            "--serve",
+            "--fuel",
+            "10000000000",
+            "--memory-bytes",
+            "268435456",
+            "--output-bytes",
+            "1048576",
+        ])
+        .env_clear()
+        .env("MIMLYS_WORKER", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            cmd.env("SystemRoot", root);
+        }
+        let mut child = cmd.spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let (tx, frames) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            loop {
+                let frame =
+                    mimlys_exec::protocol::read_frame(&mut stdout).map_err(|e| e.to_string());
+                let end = frame.is_err();
+                if tx.send(frame).is_err() || end {
+                    return;
+                }
+            }
+        });
+        Self {
+            child,
+            stdin,
+            frames,
+        }
+    }
+
+    fn send(&mut self, request: &mimlys_exec::protocol::Request) {
+        mimlys_exec::protocol::write_frame(&mut self.stdin, request).unwrap();
+    }
+
+    /// The next response; a bound far longer than anything it waits for.
+    fn next(&self) -> mimlys_exec::protocol::Response {
+        self.frames
+            .recv_timeout(std::time::Duration::from_secs(180))
+            .expect("the worker answered within the bound")
+            .expect("a well-formed frame")
+    }
+}
+
+impl Drop for RawWorker {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// REQ-SCHED-002 (one execution at a time per task, LIM-X2), at the worker: a
+/// second `execute` request that arrives while one is in flight is refused
+/// with an error, without running, and the first execution is undisturbed:
+/// it ends `cancelled` by its own cancel and its record is the first to
+/// arrive after the refusal; the slot is then free, and the next execution
+/// runs to its end. The test decides by the order of the worker's replies
+/// (the first loops until it is cancelled), never by a time.
+#[test]
+fn req_sched_002_a_worker_refuses_a_second_execution_while_one_is_in_flight() {
+    use mimlys_exec::protocol::{Request, Response};
+    let fx = fx();
+    write_module(&fx, "loop.wasm", LOOP);
+    write_module(&fx, "hello.wasm", HELLO);
+    let execute = |module: &str, execution_id: ExecutionId| {
+        let e = execution(
+            &fx,
+            "run_wasm",
+            serde_json::json!({"module": module}),
+            600_000,
+        );
+        Request::Execute {
+            execution_id,
+            action_id: e.action_id,
+            tool: e.tool,
+            arguments: e.arguments,
+            effect: e.effect,
+            deadline_ms: e.deadline_ms,
+            workspace_root: e.workspace_root,
+            read_only: false,
+            replay: None,
+        }
+    };
+    let (first, second, third) = (
+        ExecutionId::new(&fx.ids),
+        ExecutionId::new(&fx.ids),
+        ExecutionId::new(&fx.ids),
+    );
+    let mut worker = RawWorker::start();
+    worker.send(&Request::Probe);
+    assert!(matches!(worker.next(), Response::ProbeResult { .. }));
+
+    worker.send(&execute("loop.wasm", first));
+    worker.send(&execute("hello.wasm", second));
+    // The first loops for ten minutes unless cancelled, so the first reply
+    // to arrive is the refusal of the second.
+    match worker.next() {
+        Response::Error { detail } => assert!(
+            detail.contains("already in flight"),
+            "the refusal says why: {detail}"
+        ),
+        other => panic!("the second execution was not refused: {other:?}"),
+    }
+    worker.send(&Request::Cancel {
+        execution_id: first,
+    });
+    match worker.next() {
+        Response::ExecutionRecord {
+            execution_id,
+            termination,
+            ..
+        } => {
+            assert_eq!(execution_id, first, "the record is the first execution's");
+            assert_eq!(termination, Termination::Cancelled);
+        }
+        other => panic!("the first execution's record was expected: {other:?}"),
+    }
+
+    // The slot is free again.
+    worker.send(&execute("hello.wasm", third));
+    match worker.next() {
+        Response::ExecutionRecord {
+            execution_id,
+            termination,
+            ..
+        } => {
+            assert_eq!(execution_id, third);
+            assert_eq!(termination, Termination::Exited { exit_code: 7 });
+        }
+        other => panic!("the third execution should have run: {other:?}"),
+    }
+    worker.send(&Request::Shutdown);
+}
