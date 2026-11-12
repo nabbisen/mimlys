@@ -946,3 +946,39 @@ fn rfc_011_a2_xcrun_cache_is_never_writable() {
         "{p}"
     );
 }
+
+/// REQ-CONF-011, RFC 017 (handoff 017): the worker binary and an interpreter module are
+/// admitted as the files they are. The generator writes every read path as a `subpath`; a
+/// `subpath` of a file's path matches that file and what lies beneath it, which for a file is
+/// nothing, so it is exact and a `literal` would add nothing: the rule is kept. What the
+/// profile must never hold is the file's directory.
+#[test]
+fn req_conf_011_a_file_in_the_read_set_is_admitted_as_that_file_only() {
+    let p = text(
+        &[
+            "/usr",
+            "/opt/mimlys/bin/mimlys-worker",
+            "/opt/modules/qjs.wasm",
+        ],
+        &["/data/workspaces"],
+    );
+    for file in ["/opt/mimlys/bin/mimlys-worker", "/opt/modules/qjs.wasm"] {
+        assert!(
+            p.contains(&format!("(subpath \"{file}\")")),
+            "{file} is admitted:\n{p}"
+        );
+    }
+    for directory in ["/opt/mimlys/bin", "/opt/mimlys", "/opt/modules", "/opt"] {
+        assert!(
+            !p.contains(&format!("(subpath \"{directory}\")")),
+            "{directory} is not:\n{p}"
+        );
+    }
+    // And the file may be executed (the worker's own start is the runtime's, but a host tool is
+    // started from the worker, whose profile it inherits).
+    let exec = p
+        .lines()
+        .find(|l| l.starts_with("(allow process-exec*"))
+        .expect("an exec rule");
+    assert!(exec.contains("/opt/mimlys/bin/mimlys-worker"), "{exec}");
+}

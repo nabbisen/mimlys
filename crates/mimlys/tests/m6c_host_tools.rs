@@ -99,11 +99,13 @@ effect = "workspace_write"
 timeout_ms = 20000
 env = {{ PROBE_OK = "1" }}
 env_allow = ["MIMLYS_TEST_RUNTIME_PID", "MIMLYS_TEST_OWNER_PID"]
+read_paths = [{tooldir:?}]
 "#,
             data = data.path().join("data").to_string_lossy(),
             script = script_path.to_string_lossy(),
             builtin = BUILTIN,
             tool = probe_tool().to_string_lossy(),
+            tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         );
         std::fs::write(&config, text).unwrap();
         Self {
@@ -129,8 +131,10 @@ max_args = 2
 effect = "external_read"
 timeout_ms = 30000
 network = true
+read_paths = [{tooldir:?}]
 "#,
             tool = probe_tool().to_string_lossy(),
+            tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         ));
         std::fs::write(&self.config, text).unwrap();
         self.fetch = true;

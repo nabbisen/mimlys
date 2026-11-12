@@ -313,9 +313,28 @@ host tool       cargo_test: /home/me/.cargo/bin/cargo (offline)
   /home/me/.rustup
 ```
 
-The read set is the union of the declared paths, the interpreters, the
-worker's own directory and the system directories; a host tool sees
-nothing else, your home directory included.
+The read set is the union of the declared paths, mimlys's own `interpreters`
+directory, **the worker binary and each configured interpreter module as
+files** (not the folders that hold them), and the system directories; a host
+tool sees nothing else, your home directory included, and nothing that happens
+to lie beside mimlys.
+
+**A tool beside mimlys needs its directory declared.** Before 0.10 the worker's
+directory was in every read set, so a tool installed next to mimlys, such as
+`~/.cargo/bin/cargo` after `cargo install mimlys`, was readable and runnable
+without a word, and what a tool could read depended on where mimlys was
+installed. Now a `command` is judged against what you declared. A command that
+lies beside mimlys and is not declared is refused at load, naming the
+directory:
+
+```text
+the command ~/.cargo/bin/cargo resolves to /home/me/.cargo/bin/cargo, which is
+outside the read paths; declare /home/me/.cargo/bin in read_paths
+```
+
+The remedy is one line: add that directory to the tool's `read_paths`. A
+configuration that already declares it (as the examples in this chapter do)
+changes nothing.
 
 ## Windows
 
@@ -323,8 +342,10 @@ On Windows the worker runs in an AppContainer named after the data
 directory, inside a Job Object with the memory and process limits, under a
 restricted low-integrity token where the system accepts one with the
 container. A container reaches only what its SID is allowed to: mimlys
-grants it the workspaces, its temporary directory, the interpreters and the
-worker's own directory at startup, and you grant the toolchain:
+grants it the workspaces, its temporary directory, the interpreters directory,
+and the worker binary and each interpreter module as files at startup (one
+entry on each file, which nothing inherits: the folder that holds the worker
+is not written), and you grant the toolchain:
 
 ```text
 mimlys toolchain grant %USERPROFILE%\.cargo\bin

@@ -316,7 +316,12 @@ hash. A section
 `[interpreters.<language>]` overrides the path or the hash; a language mimlys
 does not ship needs both `module` and `sha256` (and `script_name` for the
 file the source is written to under `/tmp`). The worker refuses a module
-whose hash is not the configured one, and `status` says so.
+whose hash is not the configured one, and `status` says so. A module is
+admitted to the confinement as **the file it is** (RFC 017), never as the
+folder that holds it: a module kept in `~/Downloads` does not make
+`~/Downloads` readable to the worker or to a host tool. The same holds for the
+worker binary, so a host tool installed beside mimlys declares its directory
+in its own `read_paths` (see [host tools](./host-tools.md)).
 
 ## Logs
 
