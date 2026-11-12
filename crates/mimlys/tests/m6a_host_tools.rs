@@ -226,7 +226,10 @@ fn m6a_clauses_hold_inside_a_host_tool() {
     let (tier, table) = clauses(&env);
     eprintln!("tier {tier}; clauses {table:?}");
     if tier != "full" {
-        eprintln!("skipped: this machine is tier {tier} ({table:?})");
+        common::skip(
+            "m6a_clauses_hold_inside_a_host_tool",
+            &format!("this machine is tier {tier} ({table:?})"),
+        );
         return;
     }
     let scope = env.scope();
@@ -342,7 +345,8 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
     }
     let scope = env.scope();
     let err_path = env.data.path().join("run.stderr");
-    let run = env
+    let out_path = env.data.path().join("run.stdout");
+    let mut run = env
         .command(&[
             "--json",
             "run",
@@ -352,7 +356,7 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
             "--grant",
             "host_tool:probe",
         ])
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::fs::File::create(&out_path).unwrap())
         .stderr(std::fs::File::create(&err_path).unwrap())
         .spawn()
         .unwrap();
@@ -381,7 +385,25 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
     );
     let cancel_at = std::time::Instant::now();
     signal();
-    let out = run.wait_with_output().unwrap();
+    // The runtime's exit is waited for with a bound, as `run_bounded` does,
+    // and the bound is far longer than the cancellation it waits for (the
+    // stream files are read after, whatever a grandchild still holds): a hung
+    // runtime fails this test with its output instead of hanging the binary.
+    let mut exited = false;
+    wait_for(common::BOUND, || {
+        exited = run.try_wait().unwrap().is_some();
+        exited
+    });
+    if !exited {
+        let _ = run.kill();
+        let _ = run.wait();
+        panic!(
+            "the run did not exit within {} s of the second signal\nstdout: {}\nstderr: {}",
+            common::BOUND.as_secs(),
+            std::fs::read_to_string(&out_path).unwrap_or_default(),
+            std::fs::read_to_string(&err_path).unwrap_or_default()
+        );
+    }
     assert!(
         wait_for(std::time::Duration::from_secs(60), || sleepers(secs) == 0),
         "every sleeper, the setsid one included, is gone"
@@ -389,7 +411,8 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
     // Within LIM-O2 and the runtime's own grace (five times the limit): a
     // margin no stall of a slow machine reaches.
     assert!(cancel_at.elapsed() < std::time::Duration::from_secs(10));
-    let value: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+    let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
+    let value: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("{}", std::fs::read_to_string(&err_path).unwrap_or_default()));
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let (_, task) = env.json(&["task", "show", &id]);
@@ -597,7 +620,10 @@ fn m6a_host_tool_approval_shows_the_tier() {
     .env("MIMLYS_PROBE_BEST_EFFORT", "K");
     let (tier, _) = clauses(&env);
     if !tier.starts_with("full") {
-        eprintln!("skipped: this machine is tier {tier}");
+        common::skip(
+            "m6a_host_tool_approval_shows_the_tier",
+            &format!("this machine is tier {tier}"),
+        );
         return;
     }
     let scope = env.scope();
@@ -679,7 +705,7 @@ fn m6a_argument_rules_are_enforced() {
     );
     let (tier, _) = clauses(&env);
     if tier != "full" {
-        eprintln!("skipped: tier {tier}");
+        common::skip("m6a_argument_rules_are_enforced", &format!("tier {tier}"));
         return;
     }
     let scope = env.scope();
@@ -733,7 +759,7 @@ fn m6a_dependency_step_has_network() {
     );
     let (tier, _) = clauses(&env);
     if tier != "full" {
-        eprintln!("skipped: tier {tier}");
+        common::skip("m6a_dependency_step_has_network", &format!("tier {tier}"));
         return;
     }
     let scope = env.scope();
@@ -1490,7 +1516,10 @@ fn req_conf_011_etc_is_unreadable_but_for_the_dependency_steps_files() {
     let env = Env::new(&script, "");
     let (tier, _) = clauses(&env);
     if tier != "full" {
-        eprintln!("skipped: tier {tier}");
+        common::skip(
+            "req_conf_011_etc_is_unreadable_but_for_the_dependency_steps_files",
+            &format!("tier {tier}"),
+        );
         return;
     }
     let scope = env.scope();

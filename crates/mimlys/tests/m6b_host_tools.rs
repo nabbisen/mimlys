@@ -708,7 +708,10 @@ fn m6b_demonstration_cargo_test_offline() {
         .unwrap();
     let cargo = home.join(".cargo").join("bin").join("cargo.exe");
     if !cargo.is_file() || !home.join(".rustup").is_dir() {
-        eprintln!("skipped: no rustup toolchain under {}", home.display());
+        common::skip(
+            "m6b_demonstration_cargo_test_offline",
+            &format!("no rustup toolchain under {}", home.display()),
+        );
         return;
     }
     let data = tempfile::tempdir().unwrap();
@@ -818,9 +821,12 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
             .is_some_and(|s| s.contains("NUL device"))
     });
     if let Some(o) = nul {
-        eprintln!(
-            "m6b demonstration: not run on this Windows: cargo cannot open the NUL device inside the AppContainer: {}",
-            o["stderr"]
+        common::skip(
+            "m6b_demonstration_cargo_test_offline",
+            &format!(
+                "cargo cannot open the NUL device inside the AppContainer on this Windows: {}",
+                o["stderr"]
+            ),
         );
     } else {
         assert_eq!(
