@@ -219,6 +219,9 @@ pub const SIGNAL_INTERRUPTED: &str =
 pub const LIST_HEADER: &str = "task id                               state                 updated                   footprint     goal";
 /// Nothing to list.
 pub const LIST_EMPTY: &str = "no tasks";
+/// `events --follow`: the task is `running` and no runtime holds the store (yet): the follower waits for one.
+pub const FOLLOW_WAITING_FOR_RUNTIME: &str =
+    "no runtime holds this task yet; waiting for one to take the store";
 /// `events --follow`: the runtime that ran the task is gone and nothing has recovered the store.
 pub const FOLLOW_RUNTIME_GONE: &str = "the runtime that ran this task is gone; recovery pending: the next command that writes recovers it";
 /// `events`: nothing.

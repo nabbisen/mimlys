@@ -622,7 +622,10 @@ pub fn after_unknown(effect: EffectView) -> AfterUnknown {
 pub struct ExecutionMetrics {
     /// Wall-clock milliseconds.
     pub wall_ms: i64,
-    /// Fuel consumed, when fuel accounting applies.
+    /// Fuel consumed, when fuel accounting applies. `None` (unknown, never `0`)
+    /// when the engine cannot give it: a run ended by a deadline, a cancel or a
+    /// trap raised inside guest code leaves the engine's counter unsaved
+    /// (REQ-SBX-011, external design §7.4).
     pub fuel: Option<u64>,
     /// Peak memory in bytes, when measured.
     pub memory_peak_bytes: Option<u64>,

@@ -467,6 +467,80 @@ fn req_pers_013_follow_reads_the_events_of_a_task_another_process_runs() {
     drop(writer);
 }
 
+/// REQ-PERS-013 (handoff 002d item 2): a follower of a task that is `running`
+/// and that no runtime holds yet does not end at once. A user who starts
+/// `events --follow` while a runtime is about to take the store (it recovers a
+/// task a previous runtime left `running`, or it has not yet taken the lock
+/// after its task row was committed) sees the follower say that it waits, and
+/// the events of the runtime that then takes the store, to the task's end. It
+/// decides by state only: the test starts the runtime when the follower has said
+/// that it waits (the state the defect never reaches: it ends first), and the
+/// follower ends when the task does, with the task's last event and without
+/// `recovery pending`.
+#[test]
+fn req_pers_013_follow_waits_for_a_runtime_that_has_not_taken_the_store_yet() {
+    let env = Env::new();
+    let id = env.new_task();
+    let task = env.task(&id);
+    let running = {
+        let writer = mimlys_persist::open(&env.data).unwrap();
+        apply(&writer, &task, resume())
+    };
+
+    let out_path = env.dir.path().join("follow.stdout");
+    let err_path = env.dir.path().join("follow.stderr");
+    let mut follow = env.command(&["events", &id, "--follow"]);
+    follow
+        .stdin(std::process::Stdio::null())
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(std::fs::File::create(&err_path).unwrap());
+    let mut child = follow.spawn().unwrap();
+    let mut wait_for = |needle: &str| {
+        let started = std::time::Instant::now();
+        loop {
+            let text = std::fs::read_to_string(&out_path).unwrap_or_default();
+            if text.contains(needle) {
+                return text;
+            }
+            assert!(
+                started.elapsed() < common::BOUND,
+                "the follower never printed {needle:?}: {text}\n{}",
+                std::fs::read_to_string(&err_path).unwrap_or_default()
+            );
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("the follower ended early ({status}): {text}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    // The task is `running` and nobody holds the store: the follower says that it waits.
+    let text = wait_for("no runtime holds this task yet");
+    assert!(text.contains("to=running"), "{text}");
+    // A runtime takes the store and ends the task: the follower sees it through.
+    let writer = mimlys_persist::open(&env.data).unwrap();
+    let cancelled = apply(&writer, &running, TaskInput::Cancel);
+    let text = wait_for("to=cancelled");
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(
+            started.elapsed() < common::BOUND,
+            "the follower did not end"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let text = std::fs::read_to_string(&out_path).unwrap_or(text);
+    assert!(status.success(), "{status}\n{text}");
+    assert!(
+        !text.contains("recovery pending"),
+        "the runtime came: nothing was gone\n{text}"
+    );
+    assert!(cancelled.state.is_terminal());
+    drop(writer);
+}
+
 /// REQ-PERS-013: following a task whose runtime is gone ends with the reason
 /// instead of waiting for ever: nothing moves a task `running` that nobody runs
 /// until a command that writes recovers the store.
@@ -481,8 +555,11 @@ fn req_pers_013_follow_of_a_task_nobody_runs_says_recovery_pending() {
     }
     let (code, stdout, stderr) = env.run(&["events", &id, "--follow"]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let waited = stdout.find("no runtime holds this task yet");
+    let gone = stdout.find("recovery pending: the next command that writes recovers it");
+    // It waited for a runtime first (LIM-O17, a refusal never before the wait) and then said why it ended.
     assert!(
-        stdout.contains("recovery pending: the next command that writes recovers it"),
+        waited.is_some() && gone.is_some() && waited < gone,
         "{stdout}"
     );
 }
