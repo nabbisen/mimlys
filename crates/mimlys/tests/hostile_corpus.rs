@@ -894,26 +894,20 @@ struct EntryExpect {
 #[serde(deny_unknown_fields)]
 struct StepExpect {
     failed: bool,
+    // Every field below is required, with an empty list or object when the step expects nothing of it: a deleted field fails the case instead of weakening it.
     /// JSON pointers into the payload and the values they must equal.
-    #[serde(default)]
     payload_equals: BTreeMap<String, Value>,
     /// JSON pointers into the payload and the values they must not equal.
-    #[serde(default)]
     payload_differs: BTreeMap<String, Value>,
     /// Notices, as serialized, that must be among the outcome's.
-    #[serde(default)]
     notices_include: Vec<Value>,
     /// Entries of a listing that must be there.
-    #[serde(default)]
     entries_include: Vec<EntryExpect>,
     /// Path prefixes no entry of a listing may have.
-    #[serde(default)]
     entries_lack_prefix: Vec<String>,
     /// Files outside the workspace that must not exist after the step.
-    #[serde(default)]
     outside_absent: Vec<String>,
     /// Files outside the workspace that must exist after the step.
-    #[serde(default)]
     outside_present: Vec<String>,
 }
 
