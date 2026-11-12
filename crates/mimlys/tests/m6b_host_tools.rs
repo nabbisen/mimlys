@@ -62,6 +62,9 @@ struct Env {
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
+    /// A folder of its own holding a copy of the probe tool: the tools are not
+    /// beside the worker, so (RFC 017) their folder is declared and granted.
+    tools: tempfile::TempDir,
 }
 
 impl Env {
@@ -70,6 +73,10 @@ impl Env {
     /// (the dependency step); `run_host_tool` is visible through the tasks'
     /// `host_tool` grants.
     fn new(script: &[Value], extra: &str) -> Self {
+        let tools = tempfile::tempdir().unwrap();
+        let tools_dir = plain(tools.path());
+        let tool = PathBuf::from(&tools_dir).join(probe_tool().file_name().unwrap());
+        std::fs::copy(probe_tool(), &tool).unwrap();
         let data = tempfile::tempdir().unwrap();
         let config = data.path().join("config.toml");
         let script_path = data.path().join("script.json");
@@ -88,6 +95,7 @@ level = "debug"
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
+read_paths = [{tools_dir:?}]
 allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
 arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
 max_args = 3
@@ -96,6 +104,7 @@ timeout_ms = 10000
 env = {{ PROBE_OK = "1" }}
 [host_tools.strict]
 command = {tool:?}
+read_paths = [{tools_dir:?}]
 allowed_args = ["ok"]
 arg_pattern = "[a-z]+"
 max_args = 3
@@ -103,6 +112,7 @@ effect = "workspace_write"
 timeout_ms = 20000
 [host_tools.fetch]
 command = {tool:?}
+read_paths = [{tools_dir:?}]
 allowed_args = ["ok", "connect"]
 arg_pattern = "[A-Za-z0-9_.:]+"
 max_args = 2
@@ -113,14 +123,31 @@ network = true
             data = data.path().join("data").to_string_lossy(),
             script = script_path.to_string_lossy(),
             builtin = BUILTIN,
-            tool = probe_tool().to_string_lossy(),
+            tool = tool.to_string_lossy(),
+            tools_dir = tools_dir,
         );
         std::fs::write(&config, text).unwrap();
         Self {
             data,
             config,
             extra_env: vec![],
+            tools,
         }
+    }
+
+    /// Grants the container the folder of the tools (`toolchain grant`), as a
+    /// user does for a declared toolchain directory: until then the tools are
+    /// unavailable (REQ-CONF-008). The folder is small and the grant cheap.
+    fn ready(self) -> Self {
+        self.grant_tools();
+        self
+    }
+
+    /// [`Env::ready`] without consuming the environment.
+    fn grant_tools(&self) {
+        let dir = plain(self.tools.path());
+        let (code, granted) = self.json(&["toolchain", "grant", &dir, "--yes"]);
+        assert_eq!(code, 0, "{granted}");
     }
 
     fn env(mut self, key: &str, value: &str) -> Self {
@@ -266,7 +293,8 @@ fn m6b_clauses_hold_inside_a_host_tool() {
             complete(),
         ],
         "",
-    );
+    )
+    .ready();
     let (tier, table) = clauses(&env);
     eprintln!("tier {tier}; clauses {table:?}");
     assert_eq!(
@@ -365,7 +393,7 @@ fn m6b_clauses_hold_inside_a_host_tool() {
 /// deadline passes; the job forbids breakaway, so the child dies with it.
 #[test]
 fn m6b_deadline_kills_the_whole_tree() {
-    let env = Env::new(&[probe(&["setsid-sleep", "60"]), complete()], "");
+    let env = Env::new(&[probe(&["setsid-sleep", "60"]), complete()], "").ready();
     let (tier, _) = clauses(&env);
     assert_eq!(tier, "full");
     let scope = env.scope();
@@ -416,7 +444,9 @@ fn m6b_deadline_kills_the_whole_tree() {
 /// listed nor accepted.
 #[test]
 fn m6b_probe_is_honest_and_fails_closed() {
-    let env = Env::new(&[probe(&["ok"]), complete()], "").env("MIMLYS_PROBE_FAIL", "F");
+    let env = Env::new(&[probe(&["ok"]), complete()], "")
+        .env("MIMLYS_PROBE_FAIL", "F")
+        .ready();
     let (tier, table) = clauses(&env);
     assert_eq!(tier, "core");
     assert_eq!(table["filesystem"]["state"], "unavailable");
@@ -464,7 +494,7 @@ fn m6b_argument_rules_are_enforced() {
             complete(),
         ],
         "",
-    );
+    ).ready();
     let (tier, _) = clauses(&env);
     assert_eq!(tier, "full");
     let scope = env.scope();
@@ -510,7 +540,7 @@ fn m6b_dependency_step_is_external_read() {
             complete(),
         ],
         "",
-    );
+    ).ready();
     let (tier, _) = clauses(&env);
     assert_eq!(tier, "full");
     let scope = env.scope();
@@ -566,11 +596,17 @@ fn m6b_toolchain_permissions_are_reversible_and_gate_tools() {
     std::fs::create_dir_all(toolchain.path().join("bin")).unwrap();
     let dir = toolchain.path().canonicalize().unwrap();
     let dir_text = dir.to_string_lossy().trim_start_matches(r"\\?\").to_owned();
+    // The tool lies in the toolchain directory, which is what gates it (RFC 017: a
+    // command is judged against the declarations, not against where mimlys lives).
+    let gated_tool = Path::new(&dir_text)
+        .join("bin")
+        .join(probe_tool().file_name().unwrap());
+    std::fs::copy(probe_tool(), &gated_tool).unwrap();
     let env = Env::new(
         &[probe(&["ok"]), complete()],
         &format!(
             "[host_tools.gated]\ncommand = {:?}\nallowed_args = [\"ok\"]\nmax_args = 1\neffect = \"workspace_write\"\nread_paths = [{:?}]\n",
-            probe_tool().to_string_lossy(),
+            gated_tool.to_string_lossy(),
             dir_text
         ),
     );
@@ -835,7 +871,15 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     let tc_a = tempfile::tempdir().unwrap();
     let tc_b = tempfile::tempdir().unwrap();
     let (a, b) = (plain(tc_a.path()), plain(tc_b.path()));
-    let env = Env::new(&[], "");
+    // The worker is a private copy: the suite's shared `mimlys-worker.exe` has the entries
+    // of every test running at the same moment, so its list could not be compared.
+    let install = tempfile::tempdir().unwrap();
+    let folder = PathBuf::from(plain(install.path())).join("mimlys");
+    std::fs::create_dir_all(&folder).unwrap();
+    let worker = folder.join("mimlys-worker.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_mimlys-worker"), &worker).unwrap();
+    let worker_dir = folder.as_path();
+    let env = Env::new(&[], "").env("MIMLYS_WORKER_BIN", worker.to_str().unwrap());
     let data = env.data.path().join("data");
     let own = ["workspaces", "tmp", "interpreters"].map(|d| data.join(d));
     // The data directory is owner-only before anything is in it (REQ-WS-001):
@@ -852,6 +896,10 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     dirs.push(PathBuf::from(&a));
     dirs.push(PathBuf::from(&b));
     let before: Vec<String> = dirs.iter().map(|d| icacls(d)).collect();
+    // The worker is admitted as a file (RFC 017): the file's list and its
+    // directory's list, as they are before mimlys has run.
+    let worker_before = icacls(&worker);
+    let worker_dir_before = icacls(worker_dir);
     // The first start applies mimlys's own entries and creates the profile.
     let (code, listed) = env.json(&["toolchain", "list"]);
     assert_eq!(code, 0, "{listed}");
@@ -863,12 +911,20 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     }
     assert_ne!(icacls(&own[0]), before[0], "mimlys's own entry is in force");
     assert_ne!(icacls(Path::new(&a)), before[3], "the grant is in force");
-    let worker_dir = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"))
-        .parent()
-        .unwrap();
+    let on_worker = icacls(&worker);
     assert!(
-        icacls(worker_dir).contains(&sid),
-        "the worker's directory carries the container"
+        on_worker.contains(&sid),
+        "the worker's file carries the container:\n{on_worker}"
+    );
+    for line in on_worker.lines().filter(|l| l.contains(&sid)) {
+        assert!(
+            !line.contains("(OI)") && !line.contains("(CI)"),
+            "the file's entry is not inherited by anything: {line}"
+        );
+    }
+    assert!(
+        !icacls(worker_dir).contains(&sid),
+        "the worker's directory carries no entry of the container (RFC 017)"
     );
     let packages = std::env::var("LOCALAPPDATA")
         .map(|l| PathBuf::from(l).join("Packages").join(&profile))
@@ -889,7 +945,7 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     for dir in dirs
         .iter()
         .map(|d| plain(d))
-        .chain(std::iter::once(plain(worker_dir)))
+        .chain(std::iter::once(plain(&worker)))
     {
         assert!(
             removed.iter().any(|r| same(r, &dir)),
@@ -905,9 +961,15 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
             dir.display()
         );
     }
-    assert!(
-        !icacls(worker_dir).contains(&sid),
-        "the worker's directory no longer mentions the container"
+    assert_eq!(
+        icacls(&worker),
+        worker_before,
+        "the worker's file is as it was before mimlys"
+    );
+    assert_eq!(
+        icacls(worker_dir),
+        worker_dir_before,
+        "and so is its directory, which mimlys never wrote"
     );
     assert!(
         !data.join("toolchain-acls.json").exists(),
@@ -928,11 +990,13 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
 fn req_conf_008_revoke_all_finds_entries_without_a_record() {
     let toolchain = tempfile::tempdir().unwrap();
     let a = plain(toolchain.path());
+    let gated_tool = Path::new(&a).join(probe_tool().file_name().unwrap());
+    std::fs::copy(probe_tool(), &gated_tool).unwrap();
     let env = Env::new(
         &[],
         &format!(
             "[host_tools.gated]\ncommand = {:?}\nallowed_args = [\"ok\"]\nmax_args = 1\neffect = \"workspace_write\"\nread_paths = [{:?}]\n",
-            probe_tool().to_string_lossy(),
+            gated_tool.to_string_lossy(),
             a
         ),
     );
@@ -1029,11 +1093,9 @@ fn req_conf_008_concurrent_grants_keep_both_entries() {
         assert_eq!(*code, 0, "{v}");
         assert_eq!(v["applied"], true, "{v}");
     }
-    let worker_dir = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"))
-        .parent()
-        .unwrap();
+    let worker = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"));
     let on_shared = icacls(Path::new(&shared_text));
-    let on_worker = icacls(worker_dir);
+    let on_worker = icacls(worker);
     for env in &envs {
         let (code, listed) = env.json(&["toolchain", "list"]);
         assert_eq!(code, 0, "{listed}");
@@ -1044,11 +1106,12 @@ fn req_conf_008_concurrent_grants_keep_both_entries() {
         );
         assert!(
             on_worker.contains(&sid),
-            "{sid} is on the worker's directory:\n{on_worker}"
+            "{sid} is on the worker's file:\n{on_worker}"
         );
     }
     // Each container still runs the probe tool: its entries are in force.
     for env in &envs {
+        env.grant_tools();
         let scope = env.scope();
         let (code, value) = env.json(&[
             "run",
@@ -1066,4 +1129,152 @@ fn req_conf_008_concurrent_grants_keep_both_entries() {
         assert_eq!(exit_code_of(&obs[0]), 0, "{}", account(&obs));
         assert_eq!(stdout_of(&obs[0]).trim(), "ok");
     }
+}
+
+// ---------------------------------------------------------------------
+// Handoff 017 (RFC 017; REQ-CONF-008, REQ-CONF-011): the worker is admitted
+// by its file, with an entry that nothing inherits.
+// ---------------------------------------------------------------------
+
+/// REQ-CONF-008, RFC 017: the worker's file entry is first-class. It is on
+/// record as mimlys's own (`runtime`), listed by `toolchain list` as applied
+/// (read back from the file), its directory is neither listed nor written, and
+/// `toolchain revoke` refuses it by hand with the reason, as it does mimlys's
+/// own directories.
+#[test]
+fn req_conf_008_the_worker_file_entry_is_recorded_listed_and_kept() {
+    // A command that writes applies mimlys's own entries; `toolchain list` only reads (REQ-PERS-013).
+    let env = Env::new(&[], "").ready();
+    let worker_path = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"));
+    let worker = plain(worker_path);
+    let worker_dir = plain(worker_path.parent().unwrap());
+    let dir_before = icacls(worker_path.parent().unwrap());
+    let (code, listed) = env.json(&["toolchain", "list"]);
+    assert_eq!(code, 0, "{listed}");
+    let entries = listed["container"]["entries"].as_array().unwrap();
+    let recorded = entries
+        .iter()
+        .find(|e| same(e["path"].as_str().unwrap(), &worker))
+        .unwrap_or_else(|| panic!("the worker's file is not on record: {listed}"));
+    assert_eq!(recorded["source"], "runtime", "{recorded}");
+    assert_eq!(recorded["access"], "read", "{recorded}");
+    assert!(
+        !entries
+            .iter()
+            .any(|e| same(e["path"].as_str().unwrap(), &worker_dir)),
+        "the worker's directory is not on record: {listed}"
+    );
+    let read_set = listed["read_set"].as_array().unwrap();
+    let in_set = read_set
+        .iter()
+        .find(|e| same(e["path"].as_str().unwrap(), &worker))
+        .unwrap_or_else(|| panic!("the worker's file is not in the read set: {listed}"));
+    assert_eq!(in_set["applied"], true, "read back from the file: {in_set}");
+    assert!(
+        !read_set
+            .iter()
+            .any(|e| same(e["path"].as_str().unwrap(), &worker_dir)),
+        "the worker's directory is not in the read set: {listed}"
+    );
+    assert_eq!(
+        icacls(worker_path.parent().unwrap()),
+        dir_before,
+        "mimlys wrote nothing on the worker's directory"
+    );
+    let (code, refused) = env.json(&["toolchain", "revoke", &worker, "--yes"]);
+    assert_eq!(code, 1, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("one of mimlys's own"),
+        "{refused}"
+    );
+    let (_, again) = env.json(&["toolchain", "list"]);
+    let still = again["read_set"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| same(e["path"].as_str().unwrap(), &worker))
+        .unwrap();
+    assert_eq!(still["applied"], true, "the refused revoke changed nothing");
+}
+
+/// REQ-CONF-011, RFC 017, measurement 2: an install whose folder is private to
+/// the user (a folder under the user's profile, not the runner's `target`),
+/// with a file beside the worker. Only the worker's file carries the
+/// container's entry: the container starts the worker from it and runs a
+/// tool, the folder has no entry, and the neighbouring file is refused inside
+/// the container.
+#[test]
+fn req_conf_011_a_worker_in_a_private_folder_runs_with_only_its_file_admitted() {
+    let install = tempfile::tempdir().unwrap();
+    let folder = PathBuf::from(plain(install.path())).join("mimlys");
+    std::fs::create_dir_all(&folder).unwrap();
+    let worker = folder.join("mimlys-worker.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_mimlys-worker"), &worker).unwrap();
+    let neighbour = folder.join("neighbour.txt");
+    std::fs::write(&neighbour, "a file beside the worker").unwrap();
+    let read = |p: &Path| probe(&["read", p.to_str().unwrap()]);
+    let env = Env::new(&[read(&worker), read(&neighbour), complete()], "")
+        .env("MIMLYS_WORKER_BIN", worker.to_str().unwrap())
+        .ready();
+    let before = icacls(&folder);
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "read the neighbour",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 2, "{}", account(&obs));
+    assert!(
+        stdout_of(&obs[0]).starts_with("read ") && !stdout_of(&obs[0]).contains("failed"),
+        "the worker's file is readable: {}",
+        account(&obs)
+    );
+    assert!(
+        stdout_of(&obs[1]).contains("read failed"),
+        "the neighbour is refused: {}",
+        account(&obs)
+    );
+    let (_, listed) = env.json(&["toolchain", "list"]);
+    let sid = listed["container"]["sid"].as_str().unwrap().to_owned();
+    assert!(
+        icacls(&worker).contains(&sid),
+        "the worker's file carries the container"
+    );
+    assert!(
+        !icacls(&folder).contains(&sid),
+        "its folder does not:\n{}",
+        icacls(&folder)
+    );
+    assert_eq!(icacls(&folder), before, "the folder was not written");
+}
+
+/// Handoff 017, measurement 4 (a report, not a gate): how long mimlys's first
+/// writing command takes on this runner, which applies its own entries (the
+/// profile, the data directories, the worker) and one `toolchain grant` of a
+/// small folder. (`toolchain list` only reads and applies nothing: REQ-PERS-013.)
+/// Before RFC 017 the entry on the worker's directory propagated over the shared
+/// `target\debug`; now the worker's file takes one entry that nothing inherits.
+/// The number goes to the log (`FIRST_START_MS`); the bound is only a guard
+/// against a hang.
+#[test]
+fn req_conf_008_first_start_time_is_reported() {
+    let env = Env::new(&[], "");
+    let small = tempfile::tempdir().unwrap();
+    let dir = plain(small.path());
+    let started = std::time::Instant::now();
+    let (code, granted) = env.json(&["toolchain", "grant", &dir, "--yes"]);
+    let elapsed = started.elapsed();
+    assert_eq!(code, 0, "{granted}");
+    eprintln!("FIRST_START_MS={}", elapsed.as_millis());
+    assert!(elapsed < std::time::Duration::from_secs(120), "{elapsed:?}");
 }

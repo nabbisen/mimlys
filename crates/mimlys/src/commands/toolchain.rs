@@ -95,12 +95,20 @@ pub fn revoke(
         out.value(&serde_json::json!({"applied": false, "reason": "not_needed"}));
         return Ok(());
     };
-    let dir = existing_dir(path)?;
+    // A file is accepted here only to be refused when it is one of mimlys's own
+    // (the worker binary, an interpreter module: RFC 017); a user's entry is on a
+    // directory, which is what `grant` makes.
+    let dir = existing_path(path)?;
     if container.record.entries.iter().any(|e| {
         e.source == crate::toolchain::Source::Runtime && crate::toolchain::same_path(&e.path, &dir)
     }) {
         return Err(AppError::Io {
             detail: messages::toolchain_revoke_runtime_path(&dir),
+        });
+    }
+    if !Path::new(&dir).is_dir() {
+        return Err(AppError::Io {
+            detail: format!("{path} is not a directory"),
         });
     }
     if !yes && !interaction.confirm(&messages::toolchain_revoke_confirm(&dir)) {
@@ -138,14 +146,9 @@ pub fn revoke_all(
         app.data_dir.join("tmp"),
         app.data_dir.join("interpreters"),
     ];
-    own.extend(
-        app.interpreters
-            .iter()
-            .filter_map(|i| i.module.parent().map(Path::to_path_buf)),
-    );
-    if let Some(dir) = crate::app::worker_binary().parent() {
-        own.push(dir.to_path_buf());
-    }
+    // The worker binary and each module are entries on the files (RFC 017).
+    own.extend(app.interpreters.iter().map(|i| i.module.clone()));
+    own.push(crate::app::worker_binary());
     for p in own {
         candidates.push((
             crate::toolchain::normalized(&p),
@@ -216,6 +219,14 @@ pub fn revoke_all(
 }
 
 /// The directory as the record names it: canonical, without the verbatim prefix.
+fn existing_path(path: &str) -> Result<String, AppError> {
+    let expanded = crate::config::expand_home(path);
+    let found = std::fs::canonicalize(&expanded).map_err(|_| AppError::Io {
+        detail: format!("{path} does not exist"),
+    })?;
+    Ok(crate::toolchain::normalized(&found))
+}
+
 fn existing_dir(path: &str) -> Result<String, AppError> {
     let expanded = crate::config::expand_home(path);
     let dir = std::fs::canonicalize(&expanded).map_err(|_| AppError::Io {

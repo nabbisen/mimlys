@@ -13,7 +13,7 @@ met, §4).
 
 | Clause | Primitive | How |
 |---|---|---|
-| F | `appcontainer` | one AppContainer per installation (`mimlys-<hash>`); the container SID holds entries on the workspaces and `<data>/tmp` (full), the interpreters and the worker's directory (read), applied at startup and recorded; the toolchain paths by `toolchain grant` |
+| F | `appcontainer` | one AppContainer per installation (`mimlys-<hash>`); the container SID holds entries on the workspaces and `<data>/tmp` (full), the interpreters and the worker's directory (read), applied at startup and recorded (since RFC 017, 0.10: the worker's file and the modules' files, not their directories); the toolchain paths by `toolchain grant` |
 | N | `appcontainer` | no network capability; the dependency step's worker carries `internetClient` |
 | E | `explicit_environment` | the worker's and every host tool's environment built from nothing; the profile paths inside the workspace's temporary directory |
 | K | `job_object` | the worker in a job with kill-on-close and breakaway forbidden, joined while suspended; every host tool in a nested job of its own, killed as one on cancel or deadline |
