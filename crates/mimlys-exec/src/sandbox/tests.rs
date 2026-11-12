@@ -185,6 +185,135 @@ fn req_sbx_011_resource_accounting_per_execution() {
     );
     assert_eq!(ended.termination, Termination::Deadline);
     assert!(ended.metrics.wall_ms >= 90, "{}", ended.metrics.wall_ms);
+    // The fuel of a run ended in guest code by an epoch interruption is not the
+    // engine's to give (its counter is saved on a call, a return, `unreachable` and
+    // when the fuel is out, not in a loop): unknown, never the stale `0`.
+    assert_eq!(ended.metrics.fuel, None, "a deadline: fuel unknown");
+}
+
+/// A counting loop of `n` iterations, then `then` (a wat instruction).
+fn count_then(n: u32, then: &str) -> String {
+    format!(
+        r#"(module (memory 1) (export "memory" (memory 0)) (func (export "_start") (local $i i32)
+        (loop $count
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br_if $count (i32.lt_u (local.get $i) (i32.const {n}))))
+        {then}))"#
+    )
+}
+
+/// REQ-SBX-011, the runs that end before they finish (handoff 002d item 1):
+/// the fuel is recorded where the engine has it and is unknown (`None`), never
+/// `0` and never a stale figure, where it has not. Known: a run that ends
+/// `unreachable` after a counting loop (the true count), the fuel running out
+/// (the whole budget), and an output limit (raised by a host call, after
+/// the loop's writes). Unknown: a deadline (also after calls, when the counter
+/// held a small stale figure), a cancel, a trap in guest code (an out-of-bounds
+/// store after a loop), and a memory growth the limiter refused.
+#[test]
+fn req_sbx_011_the_fuel_of_an_interrupted_run_is_unknown_not_zero() {
+    let sb = sandbox();
+    let d = dirs();
+    let roomy = |deadline_ms| Limits {
+        fuel: 1_000_000_000_000,
+        deadline_ms,
+        ..Limits::default()
+    };
+
+    // Known: the counter was saved by `unreachable`; it holds the loop's count.
+    let trapped = run(
+        &sb,
+        &count_then(5_000, "unreachable"),
+        &request(&d, Limits::default()),
+    );
+    assert!(matches!(trapped.termination, Termination::Trapped { .. }));
+    assert!(
+        trapped.metrics.fuel.unwrap() >= 5_000,
+        "at least one unit per iteration: {:?}",
+        trapped.metrics.fuel
+    );
+    // Known: the fuel ran out; the budget was consumed.
+    let spent = run(
+        &sb,
+        LOOP,
+        &request(
+            &d,
+            Limits {
+                fuel: 1_000_000,
+                ..Limits::default()
+            },
+        ),
+    );
+    assert_eq!(spent.termination, Termination::FuelExhausted);
+    assert!(spent.metrics.fuel.unwrap() >= 1_000_000);
+    // Known: an output limit is raised from inside the host call, after the
+    // counter was saved for it; the figure is neither `0` nor unknown.
+    let flooded = run(
+        &sb,
+        &flood(1000),
+        &request(
+            &d,
+            Limits {
+                output_bytes: 10_000,
+                ..Limits::default()
+            },
+        ),
+    );
+    assert_eq!(flooded.termination, Termination::OutputLimit);
+    assert!(
+        flooded.metrics.fuel.is_some_and(|f| f > 0),
+        "{:?}",
+        flooded.metrics.fuel
+    );
+
+    // Unknown: a deadline after two calls (the counter was saved, small and stale).
+    let after_calls = r#"(module (memory 1) (export "memory" (memory 0)) (func $f (nop))
+        (func (export "_start") (call $f) (call $f) (loop br 0)))"#;
+    let deadline = run(&sb, after_calls, &request(&d, roomy(100)));
+    assert_eq!(deadline.termination, Termination::Deadline);
+    assert_eq!(deadline.metrics.fuel, None, "a deadline after calls");
+    // Unknown: a trap in guest code, after a loop that spent fuel the store never saw.
+    let oob = run(
+        &sb,
+        &count_then(5_000, "(i32.store (i32.const 70000) (i32.const 1))"),
+        &request(&d, Limits::default()),
+    );
+    assert_eq!(
+        oob.termination,
+        Termination::Trapped {
+            trap: "memory_out_of_bounds".into()
+        }
+    );
+    assert_eq!(oob.metrics.fuel, None, "an out-of-bounds store");
+    // Unknown: a growth the limiter refused, after a loop.
+    let grown = run(
+        &sb,
+        &count_then(5_000, "(drop (memory.grow (i32.const 1000))) (loop br 0)"),
+        &request(
+            &d,
+            Limits {
+                memory_bytes: 8 * 1024 * 1024,
+                ..roomy(30_000)
+            },
+        ),
+    );
+    assert_eq!(grown.termination, Termination::MemoryLimit);
+    assert_eq!(grown.metrics.fuel, None, "a refused growth");
+
+    // Unknown: a cancel of a running loop. Neither the fuel nor the deadline is
+    // in reach, so only the cancel ends the run, whenever it is seen.
+    let module = sb.compile(LOOP.as_bytes()).unwrap();
+    let req = request(&d, roomy(300_000));
+    let interrupt = sb.interrupt(req.limits.deadline_ms);
+    let canceller = interrupt.clone();
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        canceller.fire(InterruptReason::Cancelled);
+    });
+    let cancelled = sb.run(&module, &req, &interrupt);
+    t.join().unwrap();
+    assert_eq!(cancelled.termination, Termination::Cancelled);
+    assert_eq!(cancelled.metrics.fuel, None, "a cancel");
 }
 
 /// REQ-SBX-012 (external design §12, §7.4), fail closed: when the sandbox's
