@@ -5,9 +5,11 @@
 # in its doc comment (`REQ-TASK-002`); the search covers the test files only
 # (`tests.rs` beside a module, and everything under a crate's `tests/`).
 #
-# REPORT ONLY (docs/src/maintainers/repository-guards.md §3): it prints and
-# exits 0. It exits 1 for a malformed `scripts/req-test-map.txt`, and with
-# `--strict` also when the list is not empty (the switch for the day it is).
+# The invariants line FAILS (docs/src/maintainers/repository-guards.md §3): an
+# invariant that no test names exits 1 (REQ-SEC-004; the `rules` job). The
+# requirements list is REPORT ONLY: it prints and exits 0; with `--strict` it
+# also fails when that list is not empty (the switch for the day it is). A
+# malformed `scripts/req-test-map.txt` exits 1 as well.
 #
 # `scripts/req-test-map.txt` holds the requirements met structurally, one per
 # line, `ID reason`; a mapped requirement is not listed. A line without a
@@ -84,8 +86,15 @@ report() { # report <title> <file of identifiers>
 
 count_unnamed=0
 report "requirements marked T" "$tmp/t-requirements"
+requirements_unnamed=$count_unnamed
+count_unnamed=0
 report "invariants" "$tmp/invariants"
+invariants_unnamed=$count_unnamed
 
 if [ "$bad" -ne 0 ]; then exit 1; fi
-if [ "$strict" -eq 1 ] && [ "$count_unnamed" -ne 0 ]; then exit 1; fi
+if [ "$invariants_unnamed" -ne 0 ]; then
+  echo "FAIL: $invariants_unnamed invariant(s) named by no test (REQ-SEC-004)" >&2
+  exit 1
+fi
+if [ "$strict" -eq 1 ] && [ "$requirements_unnamed" -ne 0 ]; then exit 1; fi
 exit 0
