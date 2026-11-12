@@ -871,7 +871,15 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     let tc_a = tempfile::tempdir().unwrap();
     let tc_b = tempfile::tempdir().unwrap();
     let (a, b) = (plain(tc_a.path()), plain(tc_b.path()));
-    let env = Env::new(&[], "");
+    // The worker is a private copy: the suite's shared `mimlys-worker.exe` has the entries
+    // of every test running at the same moment, so its list could not be compared.
+    let install = tempfile::tempdir().unwrap();
+    let folder = PathBuf::from(plain(install.path())).join("mimlys");
+    std::fs::create_dir_all(&folder).unwrap();
+    let worker = folder.join("mimlys-worker.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_mimlys-worker"), &worker).unwrap();
+    let worker_dir = folder.as_path();
+    let env = Env::new(&[], "").env("MIMLYS_WORKER_BIN", worker.to_str().unwrap());
     let data = env.data.path().join("data");
     let own = ["workspaces", "tmp", "interpreters"].map(|d| data.join(d));
     // The data directory is owner-only before anything is in it (REQ-WS-001):
@@ -890,9 +898,7 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     let before: Vec<String> = dirs.iter().map(|d| icacls(d)).collect();
     // The worker is admitted as a file (RFC 017): the file's list and its
     // directory's list, as they are before mimlys has run.
-    let worker = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"));
-    let worker_dir = worker.parent().unwrap();
-    let worker_before = icacls(worker);
+    let worker_before = icacls(&worker);
     let worker_dir_before = icacls(worker_dir);
     // The first start applies mimlys's own entries and creates the profile.
     let (code, listed) = env.json(&["toolchain", "list"]);
@@ -905,7 +911,7 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     }
     assert_ne!(icacls(&own[0]), before[0], "mimlys's own entry is in force");
     assert_ne!(icacls(Path::new(&a)), before[3], "the grant is in force");
-    let on_worker = icacls(worker);
+    let on_worker = icacls(&worker);
     assert!(
         on_worker.contains(&sid),
         "the worker's file carries the container:\n{on_worker}"
@@ -939,7 +945,7 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
     for dir in dirs
         .iter()
         .map(|d| plain(d))
-        .chain(std::iter::once(plain(worker)))
+        .chain(std::iter::once(plain(&worker)))
     {
         assert!(
             removed.iter().any(|r| same(r, &dir)),
@@ -956,7 +962,7 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
         );
     }
     assert_eq!(
-        icacls(worker),
+        icacls(&worker),
         worker_before,
         "the worker's file is as it was before mimlys"
     );
@@ -1137,7 +1143,8 @@ fn req_conf_008_concurrent_grants_keep_both_entries() {
 /// own directories.
 #[test]
 fn req_conf_008_the_worker_file_entry_is_recorded_listed_and_kept() {
-    let env = Env::new(&[], "");
+    // A command that writes applies mimlys's own entries; `toolchain list` only reads (REQ-PERS-013).
+    let env = Env::new(&[], "").ready();
     let worker_path = Path::new(env!("CARGO_BIN_EXE_mimlys-worker"));
     let worker = plain(worker_path);
     let worker_dir = plain(worker_path.parent().unwrap());
@@ -1251,19 +1258,23 @@ fn req_conf_011_a_worker_in_a_private_folder_runs_with_only_its_file_admitted() 
     assert_eq!(icacls(&folder), before, "the folder was not written");
 }
 
-/// Handoff 017, measurement 4 (a report, not a gate): how long mimlys's own
-/// first start takes on this runner, when its entries are applied. Before
-/// RFC 017 the entry on the worker's directory propagated over the shared
-/// `target\debug`; now the worker's file takes one non-inherited entry. The
-/// number goes to the log (`FIRST_START_MS`); the bound is only a guard against
-/// a hang.
+/// Handoff 017, measurement 4 (a report, not a gate): how long mimlys's first
+/// writing command takes on this runner, which applies its own entries (the
+/// profile, the data directories, the worker) and one `toolchain grant` of a
+/// small folder. (`toolchain list` only reads and applies nothing: REQ-PERS-013.)
+/// Before RFC 017 the entry on the worker's directory propagated over the shared
+/// `target\debug`; now the worker's file takes one entry that nothing inherits.
+/// The number goes to the log (`FIRST_START_MS`); the bound is only a guard
+/// against a hang.
 #[test]
 fn req_conf_008_first_start_time_is_reported() {
     let env = Env::new(&[], "");
+    let small = tempfile::tempdir().unwrap();
+    let dir = plain(small.path());
     let started = std::time::Instant::now();
-    let (code, listed) = env.json(&["toolchain", "list"]);
+    let (code, granted) = env.json(&["toolchain", "grant", &dir, "--yes"]);
     let elapsed = started.elapsed();
-    assert_eq!(code, 0, "{listed}");
+    assert_eq!(code, 0, "{granted}");
     eprintln!("FIRST_START_MS={}", elapsed.as_millis());
     assert!(elapsed < std::time::Duration::from_secs(120), "{elapsed:?}");
 }
