@@ -45,6 +45,11 @@ use std::sync::Arc;
 /// The component name of a contained panic in a tool provider.
 pub(super) const PROVIDER: &str = "tool_provider";
 
+/// The `tracing` target of the lines that carry a prompt or a reply
+/// (`logging.debug_prompts`, REQ-PRIV-004). They are written at `debug`; the
+/// log setup of the binary enables this target only when the option is on.
+pub const PROMPT_LOG_TARGET: &str = "mimlys_prompt";
+
 /// What a step did, for callers of the loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepResultView {
@@ -128,8 +133,24 @@ impl Runtime {
         }
     }
 
-    /// Runs one step of a `running` task (external design §6.1).
+    /// Runs one step of a `running` task (external design §6.1), inside the
+    /// `step` span: every log line written meanwhile carries the span's
+    /// `task_id`, `step_id` and, once there is an action, `action_id`
+    /// (REQ-OBS-004). The span is `error` level so that no log filter drops it
+    /// and with it the ids of an `error` line; `step_id` and `action_id` are
+    /// recorded when they exist.
     pub async fn run_step(&self, task_id: TaskId) -> Result<StepResultView, RuntimeError> {
+        use tracing::Instrument;
+        let span = tracing::error_span!(
+            "step",
+            task_id = %task_id,
+            step_id = tracing::field::Empty,
+            action_id = tracing::field::Empty
+        );
+        self.run_step_in_span(task_id).instrument(span).await
+    }
+
+    async fn run_step_in_span(&self, task_id: TaskId) -> Result<StepResultView, RuntimeError> {
         let task = self.load(task_id)?;
         if task.state != TaskState::Running {
             return Err(RuntimeError::State(StateError::Illegal {
@@ -426,6 +447,14 @@ impl Runtime {
             // A panic in the adapter is contained here (REQ-SEC-011): that
             // request is `backend_unavailable`, and it is not repeated, since
             // the adapter's state after a panic is unknown.
+            for message in &request.messages {
+                tracing::debug!(
+                    target: PROMPT_LOG_TARGET,
+                    role = ?message.role,
+                    content = %message.content,
+                    "model request message"
+                );
+            }
             let call = contained(
                 || self.deps.backend.generate(request.clone(), cancel.clone()),
                 |panicked| self.log_contained_panic("model_backend", panicked),
@@ -443,6 +472,13 @@ impl Runtime {
                 Ok(other) => break other,
             }
         };
+        if let Ok(reply) = &result {
+            tracing::debug!(
+                target: PROMPT_LOG_TARGET,
+                reply = %String::from_utf8_lossy(reply),
+                "model reply"
+            );
+        }
         if result.is_ok() {
             measures.model_ms = Some(started.millis_until(self.deps.clock.now()).max(0));
             measures.usage = match contained_call(|| self.deps.backend.last_usage()) {
@@ -517,6 +553,7 @@ impl Runtime {
             index,
             now,
         );
+        tracing::Span::current().record("step_id", tracing::field::display(step.step_id));
         persistence.record_step_started(
             &step,
             &self.event(
@@ -606,6 +643,8 @@ impl Runtime {
                     now,
                 );
                 step.action_id = Some(action.action_id);
+                tracing::Span::current()
+                    .record("action_id", tracing::field::display(action.action_id));
                 persistence.record_proposed(
                     &step,
                     &action,
@@ -810,6 +849,9 @@ impl Runtime {
             .ok_or(RuntimeError::NotFound {
                 what: "step".into(),
             })?;
+        let span = tracing::Span::current();
+        span.record("step_id", tracing::field::display(step.step_id));
+        span.record("action_id", tracing::field::display(action.action_id));
         let raw = serde_json::to_vec(&serde_json::json!({
             "decision": "act", "tool": action.content().tool(), "arguments": action.content().arguments(),
         }))
@@ -1007,6 +1049,7 @@ impl Runtime {
         let persistence = &self.deps.persistence;
         let action = self.propose(&task, &step, &authorized, env, false, now);
         step.action_id = Some(action.action_id);
+        tracing::Span::current().record("action_id", tracing::field::display(action.action_id));
         persistence.record_proposed(
             &step,
             &action,
