@@ -226,6 +226,8 @@ fn m3_promotion() {
 }
 
 /// RFC 006 §6: deletion needs a terminal task, shows what goes, keeps the audit unless asked.
+/// REQ-OBS-005: after `task delete --yes` the task's events are still listed (`task.deleted`
+/// among them); only `task delete --audit` removes the task's record.
 #[test]
 fn m3_delete_with_footprint() {
     let env = Env::new("edit.json");
