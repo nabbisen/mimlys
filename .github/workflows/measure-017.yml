@@ -1,0 +1,22 @@
+# THROWAWAY (handoff 017, measurement 4): the time of mimlys's own first start on Windows.
+name: measure 017
+on:
+  push:
+    branches: [017-measure-b2, 017-measure-a2]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - run: cargo test -p mimlys --all-features --test m6b_host_tools --no-run
+      - shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            cargo test -p mimlys --all-features --test m6b_host_tools req_conf_008_first_start_time_is_reported -- --nocapture 2>&1 | grep -E "FIRST_START_MS|test result"
+          done
