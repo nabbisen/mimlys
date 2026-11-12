@@ -22,6 +22,7 @@ use std::sync::Arc;
 mod native;
 mod native_context;
 mod rejection_feedback;
+mod script_mode;
 
 fn tool(name: &str, kind: EffectKind) -> ToolDefinition {
     ToolDefinition {
@@ -177,6 +178,24 @@ impl Harness {
 
     fn state(&self, task_id: TaskId) -> TaskState {
         self.runtime.get_task(task_id).unwrap().task.state
+    }
+
+    /// Whether the runtime holds an entry of the task in each of its three
+    /// per-task maps: `(cancellations, last_requests, unpinned)` (REQ-SCHED-005).
+    fn per_task_entries(&self, task_id: TaskId) -> (bool, bool, bool) {
+        (
+            self.runtime
+                .cancellations
+                .lock()
+                .unwrap()
+                .contains_key(&task_id),
+            self.runtime
+                .last_requests
+                .lock()
+                .unwrap()
+                .contains_key(&task_id),
+            self.runtime.unpinned.lock().unwrap().contains_key(&task_id),
+        )
     }
 
     fn event_names(&self, task_id: TaskId) -> Vec<String> {
@@ -1157,20 +1176,38 @@ fn req_sched_002_one_step_and_one_execution_at_a_time_per_task() {
 /// (`crates/mimlys/tests/sched.rs`) holds them.
 #[test]
 fn req_sched_005_a_terminal_task_holds_no_scheduler_slot() {
+    // Each route reads a file first (a step that ends `running`), so that the
+    // runtime's per-task entries exist before the terminal step.
     let routes: [(&str, Vec<Value>); 3] = [
         (
             "completed",
-            vec![json!({"decision": "complete", "summary": "done"})],
+            vec![
+                act("read_file", "a"),
+                json!({"decision": "complete", "summary": "done"}),
+            ],
         ),
         (
             "failed",
-            vec![json!({"decision": "give_up", "reason": "no such test"})],
+            vec![
+                act("read_file", "a"),
+                json!({"decision": "give_up", "reason": "no such test"}),
+            ],
         ),
-        ("cancelled", vec![act("write_file", "a")]),
+        (
+            "cancelled",
+            vec![act("read_file", "a"), act("write_file", "a")],
+        ),
     ];
     for (route, decisions) in routes {
         let h = Harness::with_policy(decisions, approval_policy());
         let first = h.create();
+        assert_eq!(h.step(first).state, TaskState::Running);
+        // The step left its entries: the check below is not vacuous.
+        assert_eq!(
+            h.per_task_entries(first),
+            (true, true, true),
+            "{route}: (cancellations, last_requests, unpinned) of a task with a step behind it"
+        );
         h.step(first);
         if route == "cancelled" {
             assert_eq!(
@@ -1191,6 +1228,13 @@ fn req_sched_005_a_terminal_task_holds_no_scheduler_slot() {
         assert!(task.state.is_terminal(), "{route}: {:?}", task.state);
         assert_eq!(task.state.name(), route);
         assert!(task.pending.is_none(), "{route}: no pending user item");
+        // The runtime holds nothing of it: the cancellation token, the previous
+        // request and the unpinned tools (a daemon keeps the runtime alive).
+        assert_eq!(
+            h.per_task_entries(first),
+            (false, false, false),
+            "{route}: (cancellations, last_requests, unpinned) of a terminal task"
+        );
         assert!(
             h.persistence
                 .load_pending_approval(first)

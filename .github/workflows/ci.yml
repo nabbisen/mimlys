@@ -70,6 +70,13 @@ jobs:
             echo "skipped tests on ${{ matrix.os }}: $n"
             if [ "$n" -gt 0 ]; then cat "$f"; fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
+      # The Linux full tier is asserted (REQ-PLAT-003, handoff 002d item 11): a
+      # Linux job fails when a skip's reason is the tier. The rule, and what it
+      # allows by name, is scripts/check-skip-tier.sh (repository-guards.md §1).
+      - name: the Linux full tier holds (no skip on the tier)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: sh scripts/check-skip-tier.sh target/tmp/skips.log
 
   # REQ-PLAT-002 (macOS x86_64): the Intel build and tests under Rosetta on the
   # arm runner. A job of its own, so a Rosetta problem never hides the native

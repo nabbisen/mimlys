@@ -557,7 +557,7 @@ impl Runtime {
             ),
         )?;
         self.deps.workspaces.delete_files(task_id, &rows)?;
-        self.clear_cancellation(task_id);
+        self.forget_task(task_id);
         Ok(footprint)
     }
 
@@ -680,7 +680,7 @@ impl Runtime {
                 state_changed(&task, &next),
             ),
         )?;
-        self.clear_cancellation(task_id);
+        self.forget_task(task_id);
         Ok(next)
     }
 

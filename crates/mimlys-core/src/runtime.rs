@@ -216,10 +216,23 @@ impl Runtime {
         self.cancellation(task_id).cancel();
     }
 
-    fn clear_cancellation(&self, task_id: TaskId) {
+    /// A terminal task leaves nothing behind in the runtime (REQ-SCHED-005):
+    /// its cancellation token, its previous request and its unpinned tools are
+    /// dropped. Called where a task becomes terminal and where it is deleted;
+    /// a daemon keeps the runtime alive, so an entry left here would be a leak
+    /// for every finished task.
+    pub(crate) fn forget_task(&self, task_id: TaskId) {
         self.cancellations
             .lock()
             .expect("cancellation registry")
+            .remove(&task_id);
+        self.last_requests
+            .lock()
+            .expect("last requests lock")
+            .remove(&task_id);
+        self.unpinned
+            .lock()
+            .expect("unpinned lock")
             .remove(&task_id);
     }
 

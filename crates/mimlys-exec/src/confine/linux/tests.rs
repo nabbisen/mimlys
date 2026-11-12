@@ -116,11 +116,17 @@ fn spec_denying_network(tmp: &Path) -> ConfinementSpec {
 #[test]
 fn req_conf_012_landlock_tcp_layer_denies_connect_and_bind() {
     let Some(abi) = detect_abi() else {
-        eprintln!("SKIPPED req_conf_012_landlock_tcp_layer: no Landlock on this kernel");
+        crate::test_skip::skip(
+            "req_conf_012_landlock_tcp_layer_denies_connect_and_bind",
+            "no Landlock on this kernel",
+        );
         return;
     };
     if abi < ABI::V4 {
-        eprintln!("SKIPPED req_conf_012_landlock_tcp_layer: Landlock ABI below 4");
+        crate::test_skip::skip(
+            "req_conf_012_landlock_tcp_layer_denies_connect_and_bind",
+            "Landlock ABI below 4",
+        );
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
