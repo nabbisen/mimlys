@@ -3,6 +3,7 @@
 use crate::sqlite::{poisoned, storage};
 use mimlys_core::event::{Event, EventRecord};
 use mimlys_core::ids::TaskId;
+use mimlys_core::rejection::RejectionCode;
 use mimlys_core::spi::{ContextSums, Metrics, PersistenceError};
 use mimlys_core::step::Step;
 use rusqlite::params;
@@ -47,10 +48,23 @@ pub fn metrics(
                 .entry(record.event.name().to_owned())
                 .or_default() += 1;
             match &record.event {
-                Event::DecisionRejected { code } => {
+                Event::DecisionRejected {
+                    code,
+                    reason,
+                    grant_kind,
+                } => {
                     *m.rejections_by_code
                         .entry(code.as_str().to_owned())
-                        .or_default() += 1
+                        .or_default() += 1;
+                    // REQ-OBS-008: denials by reason and by grant kind.
+                    if *code == RejectionCode::Denied {
+                        if let Some(reason) = reason {
+                            *m.denials_by_reason.entry(reason.clone()).or_default() += 1;
+                        }
+                        if let Some(kind) = grant_kind {
+                            *m.denials_by_grant_kind.entry(kind.clone()).or_default() += 1;
+                        }
+                    }
                 }
                 Event::TaskStateChanged {
                     to,

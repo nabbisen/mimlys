@@ -15,6 +15,8 @@ pub fn run(app: &ReadApp, task: Option<&str>, out: &Output) -> Result<(), AppErr
         ("tasks_by_state", &metrics.tasks_by_state),
         ("events_by_name", &metrics.events_by_name),
         ("rejections_by_code", &metrics.rejections_by_code),
+        ("denials_by_reason", &metrics.denials_by_reason),
+        ("denials_by_grant_kind", &metrics.denials_by_grant_kind),
         ("halts_by_reason", &metrics.halts_by_reason),
         ("approvals_by_decision", &metrics.approvals_by_decision),
         ("actions_by_status", &metrics.actions_by_status),

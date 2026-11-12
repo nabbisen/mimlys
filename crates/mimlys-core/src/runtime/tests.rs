@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod native;
 mod native_context;
+mod rejection_feedback;
 
 fn tool(name: &str, kind: EffectKind) -> ToolDefinition {
     ToolDefinition {

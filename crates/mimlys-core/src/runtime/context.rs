@@ -15,7 +15,7 @@ use crate::limits::{LIM_C3_RECENT_STEPS, LIM_C4_SUMMARY_CHARS};
 use crate::native::{self, DecisionTransport};
 use crate::observation::Observation;
 use crate::question::Question;
-use crate::rejection::RejectionCode;
+use crate::rejection::{Detail, RejectionCode, feedback_body};
 use crate::spi::{Message, Role, ToolCall};
 use crate::step::{ContextMeasures, Step, StepOutcome};
 use crate::task::{PlanVersion, Task};
@@ -478,7 +478,10 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
                 observation_segment_with(observation, collapse),
             ));
         } else if let Some(code) = e.step.rejection {
-            messages.push(Message::text(Role::User, feedback_segment(code)));
+            messages.push(Message::text(
+                Role::User,
+                feedback_segment(code, e.step.rejection_detail.as_ref()),
+            ));
             if let Some(note) = e.note {
                 messages.push(Message::text(
                     Role::User,
@@ -491,7 +494,10 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
             }
         }
     } else if let Some(code) = e.step.rejection {
-        messages.push(Message::text(Role::User, feedback_segment(code)));
+        messages.push(Message::text(
+            Role::User,
+            feedback_segment(code, e.step.rejection_detail.as_ref()),
+        ));
     }
     if let Some(question) = e.question {
         messages.push(Message::text(
@@ -521,7 +527,11 @@ fn full_messages_native(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Messag
     if let Some(action) = e.action {
         let answer = match (e.observation, e.step.rejection) {
             (Some(observation), _) => Some(observation_segment_with(observation, collapse)),
-            (None, Some(code)) => Some(feedback_segment_in(code, transport)),
+            (None, Some(code)) => Some(feedback_segment_in(
+                code,
+                e.step.rejection_detail.as_ref(),
+                transport,
+            )),
             (None, None) => None,
         };
         if let Some(answer) = answer {
@@ -548,7 +558,7 @@ fn full_messages_native(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Messag
     } else if let Some(code) = e.step.rejection {
         messages.push(Message::text(
             Role::User,
-            feedback_segment_in(code, transport),
+            feedback_segment_in(code, e.step.rejection_detail.as_ref(), transport),
         ));
     }
     if let Some(question) = e.question
@@ -705,16 +715,22 @@ fn observation_segment_with(observation: &Observation, collapse: bool) -> String
 }
 
 /// A rejection as runtime feedback (REQ-DEC-009).
-pub fn feedback_segment(code: RejectionCode) -> String {
-    feedback_segment_in(code, DecisionTransport::Envelope)
+pub fn feedback_segment(code: RejectionCode, detail: Option<&Detail>) -> String {
+    feedback_segment_in(code, detail, DecisionTransport::Envelope)
 }
 
-/// A rejection as runtime feedback, with the hint as the model reads it in
-/// `transport` (REQ-DEC-009, REQ-MDL-009).
-pub fn feedback_segment_in(code: RejectionCode, transport: DecisionTransport) -> String {
+/// A rejection as runtime feedback: the rejection's own hint and its detail,
+/// as the model reads them in `transport` (REQ-DEC-008, REQ-DEC-009,
+/// REQ-MDL-009). The rejected decision is not repeated; a step stored
+/// without a detail has the code and its hint.
+pub fn feedback_segment_in(
+    code: RejectionCode,
+    detail: Option<&Detail>,
+    transport: DecisionTransport,
+) -> String {
     write_segment(
         SegmentLabel::Feedback,
         &[("kind", "rejection"), ("code", code.as_str())],
-        &json!({"code": code.as_str(), "hint": code.hint_for(transport)}),
+        &feedback_body(code, detail, transport),
     )
 }

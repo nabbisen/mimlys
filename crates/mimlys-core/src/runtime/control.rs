@@ -177,9 +177,20 @@ impl Runtime {
                 && !other.state.is_terminal()
                 && other.scope.overlaps(&request.scope)
             {
-                return Err(RuntimeError::Conflict {
-                    detail: format!("task {} is active on an overlapping scope", other.task_id),
-                });
+                // A halted source still holds its scope (REQ-TASK-012): its fork on that
+                // scope is refused, and the refusal names both ways on (REQ-TASK-004).
+                let detail = if request.from_task == Some(other.task_id)
+                    && matches!(other.state, TaskState::Halted { .. })
+                {
+                    format!(
+                        "task {source} is halted and still holds this scope, so a fork of it cannot use the same scope; \
+                         fork with another --scope, or run `mimlys task cancel {source}` first",
+                        source = other.task_id
+                    )
+                } else {
+                    format!("task {} is active on an overlapping scope", other.task_id)
+                };
+                return Err(RuntimeError::Conflict { detail });
             }
         }
         let now = self.deps.clock.now();
@@ -1085,7 +1096,7 @@ impl Runtime {
                 outcome,
                 action: None,
                 decision_hash: step.decision_hash.clone(),
-                snapshot: None,
+                snapshot: self.tree_identity(task.task_id, step.action_id)?,
             },
             &after.budgets,
         );

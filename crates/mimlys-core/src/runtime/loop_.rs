@@ -29,7 +29,7 @@ use crate::panic_text::bounded_message;
 use crate::path::CaseMode;
 use crate::policy::Profile;
 use crate::question::Question;
-use crate::rejection::RejectionCode;
+use crate::rejection::{Denial, DeniedReason, Rejection, RejectionCode};
 use crate::snapshot::{SnapshotReason, SnapshotRecord};
 use crate::spi::{BackendError, Cancellation, ExecutionContext, GenerateRequest, ToolProvider};
 use crate::step::StepMeasures;
@@ -576,6 +576,7 @@ impl Runtime {
                     persistence.append_event(&received)?;
                 }
                 step.rejection = Some(rejection.code);
+                step.rejection_detail = Some(rejection.detail.clone());
                 persistence.record_validation(
                     &step,
                     None,
@@ -586,6 +587,8 @@ impl Runtime {
                         None,
                         Event::DecisionRejected {
                             code: rejection.code,
+                            reason: rejection.detail.reason_name().map(str::to_owned),
+                            grant_kind: rejection.detail.grant_kind().map(str::to_owned),
                         },
                     ),
                 )?;
@@ -901,7 +904,10 @@ impl Runtime {
                 },
             ),
         )?;
-        step.rejection = Some(RejectionCode::Denied);
+        // The grants changed under the approval: a denial with no grant kind to name.
+        let denial = Rejection::denied(Denial::new(DeniedReason::GrantMissing));
+        step.rejection = Some(denial.code);
+        step.rejection_detail = Some(denial.detail);
         self.finish_step(task, step, StepOutcome::Rejected, None, now)
     }
 
@@ -1414,6 +1420,27 @@ impl Runtime {
         Ok(())
     }
 
+    /// The workspace's content identity in force when the step's decision was
+    /// made (REQ-DEC-010): the manifest hash of the task's latest workspace
+    /// snapshot, leaving out the snapshots of the step's own action (`own`:
+    /// its `before` and `after`, taken after the decision) and the backups of
+    /// a promotion (they hold the project, not the workspace). A manifest
+    /// equal to the latest reuses its snapshot, so the same tree is the same
+    /// identity.
+    pub(crate) fn tree_identity(
+        &self,
+        task_id: TaskId,
+        own: Option<ActionId>,
+    ) -> Result<Option<crate::hash::Hash>, RuntimeError> {
+        Ok(self
+            .deps
+            .persistence
+            .load_snapshots(task_id)?
+            .into_iter()
+            .rfind(|s| s.reason != SnapshotReason::Backup && (own.is_none() || s.action_id != own))
+            .map(|s| s.manifest_hash))
+    }
+
     /// Line 8: the step outcome, the counters and the task's state; a budget
     /// reached at this boundary halts the task (REQ-TASK-010).
     fn finish_step(
@@ -1430,7 +1457,7 @@ impl Runtime {
                 outcome,
                 action,
                 decision_hash: step.decision_hash.clone(),
-                snapshot: None,
+                snapshot: self.tree_identity(task.task_id, step.action_id)?,
             },
             &after.budgets,
         );

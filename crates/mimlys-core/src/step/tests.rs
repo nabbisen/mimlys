@@ -7,7 +7,7 @@ fn result(
     outcome: StepOutcome,
     action: Option<ActionOutcome>,
     decision: &str,
-    snapshot: Option<SnapshotId>,
+    snapshot: Option<Hash>,
 ) -> StepResult {
     StepResult {
         outcome,
@@ -112,11 +112,10 @@ fn req_dec_010_consecutive_failures_halt_and_reset() {
 #[test]
 fn req_dec_010_identical_decisions_require_an_unchanged_snapshot() {
     let budgets = Budgets::default();
-    let ids = ScriptedIds::default();
-    let s1 = Some(SnapshotId::new(&ids));
-    let s2 = Some(SnapshotId::new(&ids));
+    let s1 = Some(hash_bytes(b"manifest of the first tree"));
+    let s2 = Some(hash_bytes(b"manifest of the second tree"));
     let mut c = Counters::default();
-    let same = |snapshot: Option<SnapshotId>| {
+    let same = |snapshot: Option<Hash>| {
         result(
             StepOutcome::Continued,
             Some(ActionOutcome::Succeeded),
@@ -125,19 +124,22 @@ fn req_dec_010_identical_decisions_require_an_unchanged_snapshot() {
         )
     };
     for _ in 1..LIM_T4_IDENTICAL_DECISIONS {
-        assert_eq!(c.apply(&same(s1), &budgets), None);
+        assert_eq!(c.apply(&same(s1.clone()), &budgets), None);
     }
     // The same decision after the workspace changed is a fresh run.
-    assert_eq!(c.apply(&same(s2), &budgets), None);
+    assert_eq!(c.apply(&same(s2.clone()), &budgets), None);
     assert_eq!(c.identical_decisions, 1);
     for _ in 1..LIM_T4_IDENTICAL_DECISIONS - 1 {
-        assert_eq!(c.apply(&same(s2), &budgets), None);
+        assert_eq!(c.apply(&same(s2.clone()), &budgets), None);
     }
-    assert_eq!(c.apply(&same(s2), &budgets), Some(HaltReason::Convergence));
+    assert_eq!(
+        c.apply(&same(s2.clone()), &budgets),
+        Some(HaltReason::Convergence)
+    );
     // A different decision resets.
     let mut c = Counters::default();
-    assert_eq!(c.apply(&same(s1), &budgets), None);
-    assert_eq!(c.apply(&same(s1), &budgets), None);
+    assert_eq!(c.apply(&same(s1.clone()), &budgets), None);
+    assert_eq!(c.apply(&same(s1.clone()), &budgets), None);
     assert_eq!(c.apply(&continued("other"), &budgets), None);
     assert_eq!(c.identical_decisions, 1);
 }
