@@ -1674,3 +1674,67 @@ fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
         let _ = std::fs::remove_file(&file);
     }
 }
+
+/// REQ-CONF-011, RFC 017 (handoff 017): inside Seatbelt only the worker's and
+/// the module's **files** are admitted, not the folders that hold them. A worker
+/// installed in a folder with another file, and an interpreter module in a folder
+/// with another file: a host tool reads the two files and is refused both
+/// neighbours. (The profile writes each as a `subpath` of the file, which matches
+/// that file and nothing beneath it.)
+#[test]
+fn req_conf_011_only_the_workers_and_the_modules_files_are_admitted() {
+    let test = "req_conf_011_only_the_workers_and_the_modules_files_are_admitted";
+    let install = tempfile::tempdir().unwrap();
+    let bin = install.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let worker = bin.join("mimlys-worker");
+    std::fs::copy(env!("CARGO_BIN_EXE_mimlys-worker"), &worker).unwrap();
+    let worker_neighbour = bin.join("neighbour.txt");
+    std::fs::write(&worker_neighbour, "another file beside the worker").unwrap();
+    let modules = tempfile::tempdir().unwrap();
+    let module = modules.path().join("extra.wasm");
+    std::fs::write(&module, "a module").unwrap();
+    let module_neighbour = modules.path().join("neighbour.txt");
+    std::fs::write(&module_neighbour, "another file beside the module").unwrap();
+    let read = |p: &std::path::Path| probe(&["read", p.to_str().unwrap()]);
+    let env = Env::new(
+        &[
+            read(&worker),
+            read(&worker_neighbour),
+            read(&module),
+            read(&module_neighbour),
+            complete(),
+        ],
+        &format!(
+            "[interpreters.extra]\nmodule = {:?}\nsha256 = {:?}\n",
+            module.to_string_lossy(),
+            "0".repeat(64)
+        ),
+    )
+    .env("MIMLYS_WORKER_BIN", worker.to_str().unwrap());
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    for (i, (what, allowed)) in [
+        ("the worker's file", true),
+        ("a file beside the worker", false),
+        ("the module's file", true),
+        ("a file beside the module", false),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let out = stdout_of(&obs[i]);
+        if *allowed {
+            assert!(
+                out.starts_with("read ") && !out.contains("failed"),
+                "{what} is readable: {out}"
+            );
+        } else {
+            assert!(
+                out.contains("read failed: permission denied"),
+                "{what} is refused: {out}"
+            );
+        }
+    }
+}
