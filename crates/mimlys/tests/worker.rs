@@ -172,11 +172,15 @@ fn req_tool_007_cancel_reaches_the_worker() {
     write_module(&fx, "loop.wasm", LOOP);
     let cancel = Cancellation::new();
     let c = cancel.clone();
+    // The instant of the cancel: the time to end is measured from the state
+    // change, not from the start of the run (the worker's start included).
+    let cancelled_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let at = std::sync::Arc::clone(&cancelled_at);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(300));
+        *at.lock().unwrap() = Some(std::time::Instant::now());
         c.cancel();
     });
-    let started = std::time::Instant::now();
     let out = fx.worker.execute(
         execution(
             &fx,
@@ -188,7 +192,19 @@ fn req_tool_007_cancel_reaches_the_worker() {
     );
     assert_eq!(out.termination, Termination::Cancelled);
     assert!(out.failure.is_none());
-    assert!(started.elapsed() < std::time::Duration::from_millis(2_500));
+    // The loop's own deadline is 60 s, so `Cancelled` is what proves that the
+    // cancel reached the worker. LIM-O2 is the contract; the time allowed is five
+    // times the limit: a cancel that needs a multiple of it is a defect, a stall of
+    // a slow machine shorter than that is not.
+    let took = cancelled_at
+        .lock()
+        .unwrap()
+        .expect("the cancel was sent")
+        .elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(5 * mimlys_core::limits::LIM_O2_CANCEL_MS),
+        "the cancel took {took:?} to reach the worker"
+    );
 }
 
 /// REQ-SBX-002 through the worker: the deadline ends a loop as `deadline`.

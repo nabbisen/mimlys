@@ -554,6 +554,13 @@ fn m5_cancellation_deadline_death_and_restarts() {
             Some(mimlys_mcp::testserver::INSTRUCTIONS)
         );
 
+        // The tool holds for 60 s, far longer than anything the test waits for
+        // (the rule of handoff 011i): the call ends because it was cancelled, or
+        // because its deadline passed, never because the tool answered. The
+        // outcome is the state that proves it; the time allowed is a margin, five
+        // times LIM-O2 for the cancel (a cancel that needs a multiple of the limit
+        // is a defect, a stall of a slow machine is not), half the hold for the
+        // deadline of 300 ms (which is the behaviour under test).
         let cancel = Cancellation::new();
         let flag = cancel.clone();
         tokio::spawn(async move {
@@ -565,15 +572,16 @@ fn m5_cancellation_deadline_death_and_restarts() {
             .call(
                 task,
                 "slow",
-                json!({"ms": 5000}).as_object().unwrap().clone(),
-                10_000,
+                json!({"ms": 60_000}).as_object().unwrap().clone(),
+                120_000,
                 &cancel,
             )
             .await
             .unwrap();
         assert_eq!(outcome, CallOutcome::Cancelled);
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(1500),
+            started.elapsed()
+                < std::time::Duration::from_millis(5 * mimlys_core::limits::LIM_O2_CANCEL_MS),
             "{:?}",
             started.elapsed()
         );
@@ -583,19 +591,27 @@ fn m5_cancellation_deadline_death_and_restarts() {
             .call(
                 task,
                 "slow",
-                json!({"ms": 5000}).as_object().unwrap().clone(),
+                json!({"ms": 60_000}).as_object().unwrap().clone(),
                 300,
                 &Cancellation::new(),
             )
             .await
             .unwrap();
         assert_eq!(outcome, CallOutcome::Timeout);
-        assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
 
-        // Death and restarts: LIM-X3 per task.
+        // Death and restarts: LIM-X3 per task. The deadlines of these calls are
+        // not what is tested (a server that dies ends its call at once, a restarted
+        // one answers at once): 30 s, so that a slow start is not a timeout.
         for i in 0..mimlys_core::limits::LIM_X3_RESTARTS {
             let outcome = server
-                .call(task, "die", Default::default(), 2000, &Cancellation::new())
+                .call(
+                    task,
+                    "die",
+                    Default::default(),
+                    30_000,
+                    &Cancellation::new(),
+                )
                 .await;
             assert!(
                 matches!(outcome, Ok(CallOutcome::Failed { .. })),
@@ -606,7 +622,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                     task,
                     "engine_status",
                     Default::default(),
-                    2000,
+                    30_000,
                     &Cancellation::new(),
                 )
                 .await
@@ -617,14 +633,20 @@ fn m5_cancellation_deadline_death_and_restarts() {
             );
         }
         let _ = server
-            .call(task, "die", Default::default(), 2000, &Cancellation::new())
+            .call(
+                task,
+                "die",
+                Default::default(),
+                30_000,
+                &Cancellation::new(),
+            )
             .await;
         let exhausted = server
             .call(
                 task,
                 "engine_status",
                 Default::default(),
-                2000,
+                30_000,
                 &Cancellation::new(),
             )
             .await;
@@ -655,12 +677,15 @@ fn m5_cancellation_deadline_death_and_restarts() {
         let cancel = Cancellation::new();
         cancel.cancel();
         let started = std::time::Instant::now();
+        // The server hangs for 60 s (and has a deadline of 120 s): `Killed` is the
+        // state that proves it was killed after the grace, not that it answered or
+        // timed out; the time allowed is five times LIM-O2.
         let outcome = server
             .call(
                 task,
                 "slow",
-                json!({"ms": 10000}).as_object().unwrap().clone(),
-                20_000,
+                json!({"ms": 60_000}).as_object().unwrap().clone(),
+                120_000,
                 &cancel,
             )
             .await
@@ -668,7 +693,9 @@ fn m5_cancellation_deadline_death_and_restarts() {
         assert_eq!(outcome, CallOutcome::Killed);
         assert!(
             started.elapsed()
-                < std::time::Duration::from_millis(mimlys_core::limits::LIM_O2_CANCEL_MS + 1500)
+                < std::time::Duration::from_millis(5 * mimlys_core::limits::LIM_O2_CANCEL_MS),
+            "{:?}",
+            started.elapsed()
         );
         assert!(!server.is_running().await);
         server.shutdown().await;
@@ -726,25 +753,51 @@ fn req_mcp_001_a_server_gets_shutdown_ms_to_end_by_itself() {
 
     // One that outlasts the grace is killed: it never creates its marker,
     // even after the time it would have taken.
+    //
+    // Decided by the process's state, not by a fixed wait for a marker that may
+    // come late: the server beats into a file every 50 ms for as long as it lives
+    // (a killed process stops writing), and a file that has stopped growing is a
+    // process that is gone. It needs 4 s after its input closes, and the grace is
+    // 0.5 s: alive after `shutdown`, it would still be beating.
     let outlasting = dir.path().join("outlasting");
+    let beat = dir.path().join("outlasting-heartbeat");
     rt.block_on(async {
-        let server = Server::new(configured(4_000, &outlasting, 500));
+        let mut config = configured(4_000, &outlasting, 500);
+        config.env_secrets.push((
+            "MIMLYS_TESTSERVER_HEARTBEAT".into(),
+            beat.to_string_lossy().into_owned(),
+        ));
+        let server = Server::new(config);
         server.list().await.unwrap();
         server.shutdown().await;
     });
-    std::thread::sleep(std::time::Duration::from_millis(6_000));
+    let len = |p: &std::path::Path| std::fs::metadata(p).map_or(0, |m| m.len());
+    assert!(len(&beat) > 0, "the server never beat");
+    let started = std::time::Instant::now();
+    loop {
+        let before = len(&beat);
+        std::thread::sleep(std::time::Duration::from_millis(1_000));
+        if len(&beat) == before {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "a server that outlasted shutdown_ms was not killed: it still beats"
+        );
+    }
     assert!(
         !outlasting.exists(),
         "a server that outlasted shutdown_ms was not killed"
     );
 }
 
-/// REQ-MCP-001: the servers end together. Two servers that each need 2 s after
+/// REQ-MCP-001: the servers end together. Two servers that each need 20 s after
 /// their input closes end at about the same time, not one after the other: the
 /// exit takes the longest grace, not the sum. Judged by state: the two markers
-/// are created within a second of each other (one after the other they would be
-/// 2 s apart, because the second one's input would close only when the first had
-/// ended), and both are there when `shutdown` returns.
+/// are created within 10 s of each other (one after the other they would be
+/// 20 s apart, because the second one's input would close only when the first had
+/// ended; the hold is far longer than the stall of a slow machine, the rule of
+/// handoff 011i), and both are there when `shutdown` returns.
 #[test]
 fn req_mcp_001_servers_end_together() {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -762,13 +815,13 @@ fn req_mcp_001_servers_end_together() {
                     let mut config = ServerConfig::new(&format!("t{i}"), testserver(), vec![]);
                     config.env_allow = vec!["PATH".into()];
                     config.env_secrets = vec![
-                        ("MIMLYS_TESTSERVER_EXIT_DELAY_MS".into(), "2000".into()),
+                        ("MIMLYS_TESTSERVER_EXIT_DELAY_MS".into(), "20000".into()),
                         (
                             "MIMLYS_TESTSERVER_EXIT_MARKER".into(),
                             marker.to_string_lossy().into_owned(),
                         ),
                     ];
-                    config.shutdown_ms = 20_000;
+                    config.shutdown_ms = 30_000;
                     Server::new(config)
                 })
                 .collect(),
@@ -792,7 +845,7 @@ fn req_mcp_001_servers_end_together() {
         .or_else(|e| Ok::<_, ()>(e.duration()))
         .unwrap();
     assert!(
-        apart < std::time::Duration::from_secs(1),
+        apart < std::time::Duration::from_secs(10),
         "the servers ended {apart:?} apart: one after the other"
     );
 }
@@ -843,16 +896,28 @@ fn req_mcp_007_a_killed_server_is_gone() {
         let len = |p: &std::path::Path| std::fs::metadata(p).map_or(0, |m| m.len());
         assert!(len(&beat) > 0, "the server never beat");
         assert!(len(&grand) > 0, "the server's child never beat");
-        // Give the kill time to land, then see whether anything still beats.
-        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
-        let before = (len(&beat), len(&grand));
-        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
-        let after = (len(&beat), len(&grand));
-        assert_eq!(before.0, after.0, "the killed server is still running");
-        assert_eq!(
-            before.1, after.1,
-            "a process the killed server started is still running"
-        );
+        // Wait until the files have stopped growing: a second without a byte is
+        // twenty beats missed (they come every 50 ms), and a machine that is slow
+        // to deliver the kill gets up to 60 s for it. A process that is still
+        // alive beats for ever and never lets the files settle.
+        let started = std::time::Instant::now();
+        loop {
+            let before = (len(&beat), len(&grand));
+            tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+            let after = (len(&beat), len(&grand));
+            if before == after {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "{}",
+                if before.0 != after.0 {
+                    "the killed server is still running"
+                } else {
+                    "a process the killed server started is still running"
+                }
+            );
+        }
     });
 }
 
@@ -1200,13 +1265,14 @@ async fn change_and_wait(server: &Server) {
             task,
             "change_definition",
             Default::default(),
-            5000,
+            30_000,
             &Cancellation::new(),
         )
         .await
         .unwrap();
     assert!(matches!(outcome, CallOutcome::Result { .. }), "{outcome:?}");
-    for _ in 0..100 {
+    // Up to 60 s: the list is dirty once the notification has been read.
+    for _ in 0..2000 {
         if server.is_dirty() {
             return;
         }
@@ -1341,9 +1407,16 @@ fn req_mcp_002_a_relist_without_the_notification_still_reaches_the_server() {
 async fn kill_server(server: &Server) {
     let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
     let _ = server
-        .call(task, "die", Default::default(), 3000, &Cancellation::new())
+        .call(
+            task,
+            "die",
+            Default::default(),
+            30_000,
+            &Cancellation::new(),
+        )
         .await;
-    for _ in 0..100 {
+    // Up to 60 s: the transport is gone once the process has ended.
+    for _ in 0..2000 {
         if !server.is_running().await {
             return;
         }

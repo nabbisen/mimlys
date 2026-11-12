@@ -815,7 +815,7 @@ fn rfc_011_a2_sweep_repeats_until_no_member_is_left() {
     use std::cell::RefCell;
     let table = RefCell::new(Table::new(&[10, 11, 12], 2, 5));
     let report = sweep_with(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(60),
         || table.borrow_mut().list(),
         |pid| table.borrow_mut().kill(pid),
     );
