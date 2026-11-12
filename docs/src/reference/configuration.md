@@ -238,7 +238,36 @@ ollama create qwen2.5-7b-instruct-16k -f Modelfile
 This is what run B measured: the GGUF file with its own chat template. `FROM qwen2.5:7b-instruct` (the Ollama library's tag) gives the same weights with Ollama's template, which was not measured, and the spike saw a template change what a model returns.
 
 llama.cpp takes the context length when it starts (`-c 16384`) and needs its chat
-template with tools, which current builds enable by default (`--jinja`).
+template with tools, which current builds enable by default (`--jinja`). With
+`--parallel N` the `-c` is shared among the N slots: `-c 8192 --parallel 2` gives
+4096 per request, so a context of 16384 per request is `-c 32768 --parallel 2`, or
+`-c 16384 --parallel 1`.
+
+**What `status` and `run` say about the context.** Inside the same probe and its bound
+(5 000 ms), mimlys reads the engine's context length where the engine states it:
+
+- llama.cpp: `GET /props`, the per-slot `n_ctx` (what one request gets) and `total_slots`.
+- Ollama: `GET /api/ps`, the `context_length` of the configured model when it is loaded (the
+  value in force); else `POST /api/show`, the `num_ctx` of the model's parameters; else it is
+  unknown. Ollama chooses its default context when it loads the model, from the memory of the
+  machine (4096 on a 16 GB GPU, more on a larger one), and `/api/show` does not report it (its
+  `model_info` holds the model's trained maximum, which is not the context in force), so a
+  default is never assumed.
+
+It compares the length with what a request can need: `context_chars` at the lowest
+characters per token measured for the decision transport in force (3.35 for `tool_calls`,
+4.32 for `envelope`; the M4 report, sections 6 and 7), plus `max_tokens`. With the defaults
+that is about 13 649 tokens in `tool_calls` and 11 504 in `envelope`. `status` shows
+`context: <n> tokens per request (needs about <m>)`; where nothing is reported,
+`context: unknown (needs about <m>)`, and for an Ollama that has not yet loaded the model
+`context: unknown (Ollama sets it when it loads the model; needs about <m>)`. When the length
+is below the need, one `warning:` line says what to set: `PARAMETER num_ctx` in the Modelfile
+for Ollama; `-c` for llama-server (with more than one slot, the whole `-c`, or
+`--parallel 1`). `run` and the other commands that start a task print the same line once, on
+standard error, after the probe; and when the probe could not read an Ollama's context, they
+read `/api/ps` once more after the first reply from the model, when it is loaded, and warn
+then. It is a warning only: the task goes on, and a request that does not fit makes the engine
+truncate it or fail.
 
 One request is sent per step, with the whole context (`context_chars`
 characters at most; `mimlys metrics` reports characters per prompt token so

@@ -349,6 +349,13 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     {
         out.line(notice);
     }
+    // A context below the need is a warning on standard error, never an error:
+    // the run goes on (REQ-MDL-003).
+    if needs_backend(&cli.command)
+        && let Some(warning) = app.context_warning()
+    {
+        eprintln!("{warning}");
+    }
     let interactive =
         !cli.json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let stdin = std::io::stdin();

@@ -99,6 +99,10 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     ) {
         out.line(line);
     }
+    // The run goes on: a context below the need is a warning, never an error (REQ-MDL-003).
+    if let Some(warning) = probe.as_ref().and_then(|p| p.context_warning()) {
+        out.line(warning);
+    }
     for line in messages::store_lines(&store) {
         out.line(line);
     }

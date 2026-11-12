@@ -11,6 +11,33 @@ pub const CHECK_OK: &str = "configuration ok";
 pub fn data_dir(path: &str) -> String {
     format!("data directory: {path}")
 }
+/// `status` and the start of a task: the engine's context cannot hold a request
+/// (REQ-MDL-003); one line saying what to do for the engine that reported it.
+/// `tokens` is per request, so with llama.cpp's `slots` the `-c` that gives
+/// every slot enough is the figure times the slots. The run goes on.
+pub fn context_too_small_warning(
+    engine: Option<mimlys_model::openai::context::Engine>,
+    tokens: u64,
+    needed: u64,
+    slots: Option<u64>,
+) -> String {
+    use mimlys_model::openai::context::Engine;
+    let suggested = needed.next_power_of_two();
+    let remedy = match (engine, slots) {
+        (Some(Engine::Ollama), _) => format!(
+            "set `PARAMETER num_ctx {suggested}` in the model's Modelfile and create the model from it (`ollama create`)"
+        ),
+        (Some(Engine::LlamaCpp), Some(slots)) if slots > 1 => format!(
+            "start llama-server with `-c {}` ({suggested} for each of its {slots} parallel slots), or with `--parallel 1 -c {suggested}`",
+            suggested.saturating_mul(slots)
+        ),
+        (Some(Engine::LlamaCpp), _) => format!("start llama-server with `-c {suggested}`"),
+        (None, _) => format!("raise the engine's context length to at least {needed} tokens"),
+    };
+    format!(
+        "warning: the engine's context is {tokens} tokens per request and a request can need about {needed}: {remedy}"
+    )
+}
 /// `check` and `status`: the configured data directory is inside the
 /// temporary directory (REQ-WS-001); one line, naming the key and the risk.
 pub fn data_dir_in_temp_warning(path: &str) -> String {
@@ -247,6 +274,22 @@ pub fn status_lines(
                 backend_line.push_str(&format!("; structured output {mode}"));
             }
             None => {}
+        }
+        // The engine's context length against the need (REQ-MDL-003); never a guess.
+        if let Some(needed) = p.context_needed_tokens {
+            match (p.context_tokens, p.context_engine) {
+                (Some(n), _) => backend_line.push_str(&format!(
+                    "; context: {n} tokens per request (needs about {needed})"
+                )),
+                (None, Some(mimlys_model::openai::context::Engine::Ollama)) => {
+                    backend_line.push_str(&format!(
+                        "; context: unknown (Ollama sets it when it loads the model; needs about {needed})"
+                    ));
+                }
+                (None, _) => {
+                    backend_line.push_str(&format!("; context: unknown (needs about {needed})"));
+                }
+            }
         }
         if let Some(d) = &p.detail {
             backend_line.push_str(&format!(" ({d})"));
