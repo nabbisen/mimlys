@@ -5,6 +5,7 @@
 # For new users
 
 - [Getting started](./getting-started.md)
+- [How a task runs](./how-a-task-runs.md)
 - [Storage](./reference/storage.md)
 
 # For integrators
