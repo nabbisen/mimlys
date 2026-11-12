@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "A name that only resembles a reserved one is accepted under the Windows rules: the refusals are not blanket.",
+  "origin": "mimlys-core path/tests.rs req_ws_011_windows_name_rules",
+  "input": "com10",
+  "rules": "windows",
+  "expect": {
+    "ok": "com10"
+  }
+}

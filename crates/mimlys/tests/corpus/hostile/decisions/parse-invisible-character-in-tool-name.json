@@ -1,0 +1,11 @@
+{
+  "check": "decision.parse",
+  "note": "A zero-width space inside a tool name reaches the validator as the model wrote it; the parser alters no text (stage 4 refuses the name).",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_parser_never_alters_text",
+  "input": "{\"decision\":\"act\",\"tool\":\"read\u200b_file\",\"arguments\":{}}",
+  "expect": {
+    "accepted_act": {
+      "tool": "read\u200b_file"
+    }
+  }
+}

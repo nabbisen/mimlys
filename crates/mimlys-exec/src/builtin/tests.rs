@@ -1,8 +1,6 @@
 use super::*;
 use mimlys_core::action::{FailureCause, Termination};
 use mimlys_core::observation::Notice;
-#[cfg(unix)]
-use mimlys_core::observation::SkipReason;
 use mimlys_core::path::PlatformRules;
 use mimlys_core::spi::ExecutionContext;
 use mimlys_core::validate::permissive::PermissiveHooks;
@@ -356,74 +354,6 @@ async fn req_tool_003_delete_path() {
         detail(&f.call("delete_path", json!({"path": "src"})).await),
         "not_found"
     );
-}
-
-/// REQ-TOOL-004 / THR-03 / THR-27: a symbolic link that leaves the workspace is refused at open time;
-/// listings show links as `symlink` without a target; searches skip them and count the skips.
-/// REQ-SEC-005 (external design §11), symbolic links: reading or writing
-/// through a link to a file or directory outside the workspace fails and the
-/// outside file is neither read nor created. (Unix only: the test creates
-/// links with `std::os::unix`.)
-/// REQ-TEST-005 (external design §6.3), symbolic links.
-/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths: symbolic links.
-#[cfg(unix)]
-#[tokio::test]
-async fn req_tool_004_symlink_escape_is_refused() {
-    let f = Fixture::new();
-    let outside = tempfile::tempdir().unwrap();
-    fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
-    std::os::unix::fs::symlink(
-        outside.path().join("secret.txt"),
-        f.root.path().join("link.txt"),
-    )
-    .unwrap();
-    std::os::unix::fs::symlink(outside.path(), f.root.path().join("linkdir")).unwrap();
-    let o = f.call("read_file", json!({"path": "link.txt"})).await;
-    assert!(
-        o.failure.is_some(),
-        "reading through an escaping link must fail: {o:?}"
-    );
-    assert_ne!(o.payload["content"], "top secret");
-    let o = f
-        .call("read_file", json!({"path": "linkdir/secret.txt"}))
-        .await;
-    assert!(o.failure.is_some());
-    let o = f
-        .call(
-            "write_file",
-            json!({"path": "linkdir/planted.txt", "content": "x"}),
-        )
-        .await;
-    assert!(o.failure.is_some());
-    assert!(!outside.path().join("planted.txt").exists());
-    let o = f.call("list_dir", json!({"path": ".", "depth": 3})).await;
-    let entries = o.payload["entries"].as_array().unwrap();
-    let link = entries.iter().find(|e| e["path"] == "link.txt").unwrap();
-    assert_eq!(
-        link["type"], "symlink",
-        "links are listed as such, without their target"
-    );
-    assert!(link.get("target").is_none());
-    assert!(
-        !paths(&o).iter().any(|p| p.starts_with("linkdir/")),
-        "a link is never descended"
-    );
-    let o = f.call("search_files", json!({"pattern": "secret"})).await;
-    assert!(
-        o.payload["matches"].as_array().unwrap().is_empty(),
-        "a search never follows a link"
-    );
-    assert!(o.notices.iter().any(|n| matches!(
-        n,
-        Notice::EntriesSkipped {
-            reason: SkipReason::Symlink,
-            count: 2
-        }
-    )));
-    // Deleting a link removes the link, not its target.
-    let o = f.call("delete_path", json!({"path": "link.txt"})).await;
-    assert_eq!(o.payload["deleted"], 1);
-    assert!(outside.path().join("secret.txt").exists());
 }
 
 /// REQ-TOOL-006 / REQ-TOOL-007 / INV-04 (external design §21.2): the

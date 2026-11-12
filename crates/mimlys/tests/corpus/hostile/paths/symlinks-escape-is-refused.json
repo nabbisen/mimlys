@@ -1,0 +1,113 @@
+{
+  "check": "fs.symlinks",
+  "note": "A link to a file and a link to a directory outside the workspace: reading or writing through them fails and the outside file is neither read nor created; a listing shows the link as a symlink without its target and does not descend it; a search skips both and counts them; deleting a link removes the link, not its target. (Unix only: a skipped case on Windows is counted by the skip log.)",
+  "origin": "mimlys-exec builtin/tests.rs req_tool_004_symlink_escape_is_refused",
+  "workspace_files": {
+    "src/lib.rs": "fn sum() {}\nfn main() {\n    sum();\n}\n",
+    "src/nested/deep.txt": "needle here\nnothing\nneedle again\n",
+    "README.md": "# readme\n"
+  },
+  "outside_files": {
+    "secret.txt": "top secret"
+  },
+  "links": [
+    {
+      "path": "link.txt",
+      "outside": "secret.txt"
+    },
+    {
+      "path": "linkdir",
+      "outside": ""
+    }
+  ],
+  "steps": [
+    {
+      "tool": "read_file",
+      "arguments": {
+        "path": "link.txt"
+      },
+      "expect": {
+        "failed": true,
+        "payload_differs": {
+          "/content": "top secret"
+        }
+      }
+    },
+    {
+      "tool": "read_file",
+      "arguments": {
+        "path": "linkdir/secret.txt"
+      },
+      "expect": {
+        "failed": true
+      }
+    },
+    {
+      "tool": "write_file",
+      "arguments": {
+        "path": "linkdir/planted.txt",
+        "content": "x"
+      },
+      "expect": {
+        "failed": true,
+        "outside_absent": [
+          "planted.txt"
+        ]
+      }
+    },
+    {
+      "tool": "list_dir",
+      "arguments": {
+        "path": ".",
+        "depth": 3
+      },
+      "expect": {
+        "failed": false,
+        "entries_include": [
+          {
+            "path": "link.txt",
+            "type": "symlink",
+            "lacks_key": "target"
+          }
+        ],
+        "entries_lack_prefix": [
+          "linkdir/"
+        ]
+      }
+    },
+    {
+      "tool": "search_files",
+      "arguments": {
+        "pattern": "secret"
+      },
+      "expect": {
+        "failed": false,
+        "payload_equals": {
+          "/matches": []
+        },
+        "notices_include": [
+          {
+            "code": "entries_skipped",
+            "reason": "symlink",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "tool": "delete_path",
+      "arguments": {
+        "path": "link.txt"
+      },
+      "expect": {
+        "failed": false,
+        "payload_equals": {
+          "/deleted": 1
+        },
+        "outside_present": [
+          "secret.txt"
+        ]
+      }
+    }
+  ]
+}

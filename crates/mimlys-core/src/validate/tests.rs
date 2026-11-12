@@ -174,37 +174,6 @@ fn req_dec_005_unknown_tool() {
     );
 }
 
-/// REQ-DEC-007 / INV-03 (stage 7): out-of-scope paths are denied byte-identically whether or not they exist.
-/// REQ-SEC-005 (external design §6.3), the existence leak: an escaping path
-/// that exists, one that does not and an absolute one produce the same
-/// rejection, with no path content in it.
-/// REQ-TEST-005 (external design §6.3), the same `denied` whether or not the path exists (unit).
-/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths in a decision.
-#[test]
-fn req_dec_007_out_of_scope_denied_identically() {
-    let c = Ctx::new();
-    let a = validate(
-        &c.ctx(),
-        br#"{"decision":"act","tool":"read_file","arguments":{"path":"../../etc/shadow"}}"#,
-    );
-    let b = validate(&c.ctx(), br#"{"decision":"act","tool":"read_file","arguments":{"path":"../../does-not-exist-anywhere"}}"#);
-    let absolute = validate(
-        &c.ctx(),
-        br#"{"decision":"act","tool":"read_file","arguments":{"path":"/etc/shadow"}}"#,
-    );
-    let render = |o: &Outcome| match o {
-        Outcome::Rejected { rejection, .. } => serde_json::to_string(rejection).unwrap(),
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(render(&a), render(&b));
-    assert_eq!(render(&a), render(&absolute));
-    assert!(render(&a).contains("path_outside_workspace"));
-    assert!(
-        !render(&a).contains("shadow"),
-        "no path content in a denial"
-    );
-}
-
 /// ED §6.3 stage 6: an invalid name is `invalid_argument`; stage 5 unknown property is `schema`.
 #[test]
 fn ed_6_3_stages_5_6_shape_and_names() {

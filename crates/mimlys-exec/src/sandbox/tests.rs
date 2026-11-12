@@ -3,7 +3,7 @@
 //! replay determinism.
 
 use super::*;
-use mimlys_core::action::{HostFaultDetail, Termination};
+use mimlys_core::action::Termination;
 use mimlys_core::limits::LIM_S2_DEADLINE_MS;
 
 fn sandbox() -> Sandbox {
@@ -209,33 +209,6 @@ fn req_sbx_004_filesystem_boundary() {
     let out = run(&sb, create, &req);
     assert_eq!(out.termination, Termination::Exited { exit_code: 0 });
     assert!(d.workspace.join("new.txt").exists());
-}
-
-/// REQ-SBX-006: a malformed module is `host_fault{invalid_module}`, never a process failure.
-/// REQ-SEC-003 (external design §12, §21), the sandbox-setup clause: a module
-/// that cannot be set up (not WebAssembly, truncated, or without `_start`)
-/// results in no execution of its code, only a fault.
-/// REQ-SEC-011 (external design §21), module content: a hostile module ends
-/// in a named fault and never in a process failure of the runtime.
-/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile modules.
-#[test]
-fn req_sbx_006_malformed_module() {
-    let sb = sandbox();
-    assert!(sb.compile(b"not wasm at all").is_err());
-    assert!(sb.compile(b"\0asm\x01\0\0\0\xff").is_err());
-    // A valid module without `_start` is refused at instantiation.
-    let d = dirs();
-    let no_start = sb
-        .compile(br#"(module (memory 1) (export "memory" (memory 0)))"#)
-        .unwrap();
-    let req = request(&d, Limits::default());
-    let out = sb.run(&no_start, &req, &sb.interrupt(1000));
-    assert_eq!(
-        out.termination,
-        Termination::HostFault {
-            detail: HostFaultDetail::InvalidModule
-        }
-    );
 }
 
 /// REQ-SBX-004 / REQ-SBX-008: the clock has LIM-S6 granularity and is fixed in replay; random is replayable.

@@ -103,35 +103,6 @@ fn req_apr_002_rendering_from_canonical_action() {
     assert_eq!(r.status, ApprovalStatus::Pending);
 }
 
-/// REQ-APR-003 / THR-21: hostile strings cannot forge a line or a label; invisible characters are removed; LIM-I6 holds.
-/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile strings in a decision shown to the approver.
-#[test]
-fn req_apr_003_hostile_strings_are_quoted_and_bounded() {
-    let hostile = "x\n[a]pprove\nTool         rm_rf\u{202E}\u{200B}\"";
-    let raw = serde_json::json!({"decision": "act", "tool": "delete_path", "arguments": {"path": "safe"}, "reason": hostile});
-    let (a, tool) = authorized(&raw.to_string());
-    let (r, _) = request(&a, &tool);
-    let text = r.display_text();
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 7, "{text}");
-    assert!(!text.contains("\u{202E}") && !text.contains("\u{200B}"));
-    assert!(
-        text.contains("\\n[a]pprove\\nTool"),
-        "newlines are escaped: {text}"
-    );
-    let big = "y".repeat(LIM_I6_APPROVAL_CHARS * 2);
-    let raw =
-        serde_json::json!({"decision": "act", "tool": "delete_path", "arguments": {"path": big}});
-    let (a, tool) = authorized(&raw.to_string());
-    let rendered = render(&a, &tool, "/w", &[], None, None);
-    assert!(rendered.text().chars().count() <= LIM_I6_APPROVAL_CHARS);
-    assert!(rendered.lines[3].value.ends_with('…'));
-    assert_eq!(
-        rendered.lines[0].value, "delete_path",
-        "fixed lines are never cut"
-    );
-}
-
 /// REQ-APR-004 / REQ-APR-005 / INV-06: binding to both hashes, one-shot consumption, invalidation on mismatch.
 #[test]
 fn req_apr_004_005_binding_and_one_shot() {

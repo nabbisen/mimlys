@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "Empty model output is not an object and is not repaired.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "",
+  "expect": {
+    "malformed": "not_object"
+  }
+}

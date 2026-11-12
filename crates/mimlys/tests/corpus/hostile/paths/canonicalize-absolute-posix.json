@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "An absolute POSIX path is refused.",
+  "origin": "mimlys-core path/tests.rs req_dec_007_escapes_and_absolute_paths",
+  "input": "/etc/shadow",
+  "rules": "posix",
+  "expect": {
+    "error": "absolute"
+  }
+}

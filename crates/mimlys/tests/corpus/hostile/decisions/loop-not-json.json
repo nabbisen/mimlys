@@ -1,0 +1,17 @@
+{
+  "check": "loop.reject",
+  "note": "Prose where a decision belongs: rejected, nothing executed, the task goes on.",
+  "origin": "mimlys-core runtime/tests.rs req_sec_003_validation_and_policy_errors_execute_nothing",
+  "input": "this is not json",
+  "expect": {
+    "step_outcome": "rejected",
+    "task_state": "running",
+    "tool_calls": 0,
+    "unwritten": [
+      "authorized",
+      "running",
+      "execution",
+      "action_terminal"
+    ]
+  }
+}
