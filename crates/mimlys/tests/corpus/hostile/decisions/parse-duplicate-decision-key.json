@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "A repeated top-level key cannot let the later value win.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "{\"decision\":\"complete\",\"decision\":\"give_up\",\"summary\":\"x\"}",
+  "expect": {
+    "malformed": "duplicate_key"
+  }
+}

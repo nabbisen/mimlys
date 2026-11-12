@@ -1,0 +1,19 @@
+{
+  "check": "path.relation",
+  "note": "`srcx/a` is not under `src`: ancestry is by component, not by prefix.",
+  "origin": "mimlys-core path/tests.rs req_dec_006_nfc_and_case_modes",
+  "a": "srcx/a",
+  "b": "src",
+  "rules": "posix",
+  "expect": {
+    "equal": false,
+    "same_as": {
+      "sensitive": false,
+      "insensitive": false
+    },
+    "starts_with": {
+      "sensitive": false,
+      "insensitive": false
+    }
+  }
+}

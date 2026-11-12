@@ -1,0 +1,17 @@
+{
+  "check": "loop.reject",
+  "note": "No bytes at all: rejected, the process lives.",
+  "origin": "mimlys-core runtime/tests.rs req_sec_011_hostile_model_output_and_tool_results_do_not_end_the_process",
+  "input": "",
+  "expect": {
+    "step_outcome": "rejected",
+    "task_state": "running",
+    "tool_calls": 0,
+    "unwritten": [
+      "authorized",
+      "running",
+      "execution",
+      "action_terminal"
+    ]
+  }
+}

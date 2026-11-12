@@ -1,0 +1,16 @@
+{
+  "check": "decision.parse",
+  "note": "A body over LIM-D1 is refused as too large (rejection code malformed).",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": [
+    "{\"decision\":\"complete\",\"summary\":\"",
+    {
+      "repeat": "x",
+      "times": "LIM_D1_DECISION_BYTES"
+    },
+    "\"}"
+  ],
+  "expect": {
+    "malformed": "too_large"
+  }
+}

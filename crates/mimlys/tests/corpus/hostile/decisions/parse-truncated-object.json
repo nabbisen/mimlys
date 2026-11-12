@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "A truncated object is never completed for the model.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "{\"decision\":\"complete\",\"summary\":\"x\"",
+  "expect": {
+    "malformed": "not_object"
+  }
+}

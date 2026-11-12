@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "Prose before the object is not stripped.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "Sure! {\"decision\":\"complete\",\"summary\":\"x\"}",
+  "expect": {
+    "malformed": "not_object"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "Text after the object is refused, not ignored.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "{\"decision\":\"complete\",\"summary\":\"x\"} done",
+  "expect": {
+    "malformed": "trailing_text"
+  }
+}

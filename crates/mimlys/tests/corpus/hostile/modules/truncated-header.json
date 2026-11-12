@@ -1,0 +1,14 @@
+{
+  "check": "sandbox.module",
+  "note": "A module that has the magic and the version and then a stray byte is refused at compile time.",
+  "origin": "mimlys-exec sandbox/tests.rs req_sbx_006_malformed_module",
+  "module": [
+    "\u0000asm",
+    {
+      "hex": "01 00 00 00 ff"
+    }
+  ],
+  "expect": {
+    "compile": "rejected"
+  }
+}
