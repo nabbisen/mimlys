@@ -273,6 +273,8 @@ fn alive(pid: &str) -> bool {
 /// REQ-TEST-013 / RFC 011 §3: for every clause the probe reports enforced,
 /// the forbidden thing fails as expected inside a host tool, and the
 /// allowed thing works.
+/// REQ-PLAT-003 (Windows, M6b): the tier is `full` and every mandatory clause
+/// is `enforced` (asserted, not skipped).
 #[test]
 fn m6b_clauses_hold_inside_a_host_tool() {
     let outside = outside();

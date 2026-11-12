@@ -275,6 +275,10 @@ fn req_ws_012_task_delete_removes_the_promotion_backup() {
 /// REQ-WS-012 (end to end): deletion needs a terminal task, shows the footprint and asks (nothing goes without `--yes`), removes the tree, every manifest and every object, keeps the audit (`task.deleted`) unless `--audit`, and `--audit` removes the task.
 /// REQ-OBS-005: after `task delete --yes` the task's events are still listed (`task.deleted`
 /// among them); only `task delete --audit` removes the task's record.
+/// REQ-PERS-010, REQ-PRIV-006 (external design §16.4): through the binary, a task that is
+/// not terminal is refused (`state`) and keeps its workspace, nothing goes without `--yes`,
+/// the audit (`task.deleted` among the events) stays after the deletion, and only
+/// `--audit` removes the task record.
 #[test]
 fn m3_delete_with_footprint() {
     let env = Env::new("edit.json");

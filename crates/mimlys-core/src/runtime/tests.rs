@@ -1228,6 +1228,10 @@ fn req_ws_010_cancel_restores_unless_keep() {
 /// rows; the footprint is reported.
 /// REQ-WS-009 (`deleted` only for a terminal task): `delete_task` on a running task is refused with the `state` kind; on the terminal task it succeeds.
 /// REQ-WS-012 (through the runtime): the footprint is reported, the snapshots go, the audit and the task record stay unless `audit` is asked.
+/// REQ-PERS-010, REQ-PRIV-006 (external design §16.4), in the runtime: deleting a
+/// task that is not terminal is a `state` error; the snapshots go with the
+/// deletion, the audit (the events and the task record) stays, and only `audit =
+/// true` removes the task.
 #[test]
 fn req_ws_006_rollback_and_delete_verbs() {
     let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);

@@ -1124,6 +1124,9 @@ mod snapshots_m3 {
     /// REQ-WS-012 (reference counts in the same transaction as the rows): the objects released by the deleted task's rows are returned, an object another task still references stays with its count, the blob rows and snapshot rows go, the integrity check passes, and `audit` removes the records.
     /// REQ-OBS-005: without `audit` the task and its record stay; with it the task and all
     /// its events are removed.
+    /// REQ-PERS-010, REQ-PRIV-006 (external design §16.4), in the store: without
+    /// `audit` the task record and its events stay and only the task's snapshots,
+    /// blobs and unshared objects go; with `audit` the records go too.
     #[test]
     fn rfc_006_delete_task_data() {
         let dir = tempfile::tempdir().unwrap();
