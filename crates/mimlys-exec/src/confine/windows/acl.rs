@@ -370,11 +370,7 @@ fn merge_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(),
         // files need it: Windows checks the file). A file's entry (the worker, an
         // interpreter module: RFC 017) is on that file alone and inherited by
         // nothing.
-        grfInheritance: if path.is_dir() {
-            SUB_CONTAINERS_AND_OBJECTS_INHERIT
-        } else {
-            NO_INHERITANCE
-        },
+        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
         Trustee: TRUSTEE_W {
             pMultipleTrustee: std::ptr::null_mut(),
             MultipleTrusteeOperation: 0,
