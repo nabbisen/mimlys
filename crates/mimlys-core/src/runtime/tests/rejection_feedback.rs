@@ -601,3 +601,50 @@ fn req_task_004_the_fork_of_a_halted_source_names_both_ways_on() {
     h.runtime.cancel_task(&h.session, source).unwrap();
     assert_eq!(fork("/home/u/project").unwrap().state, TaskState::Running);
 }
+
+/// REQ-DEC-010: a step that ends at the user's rejection of its action counts with the tree's
+/// identity as a step that ends in the loop does (the second place that applies the counters):
+/// approve, reject, approve, reject of one write on one tree is the third identical decision.
+#[test]
+fn req_dec_010_a_rejected_approval_counts_with_the_trees_identity() {
+    let h = Harness::with_policy(
+        (0..4).map(|_| act("write_file", "a")).collect(),
+        approval_policy(),
+    );
+    for _ in 0..2 {
+        h.tools
+            .script("write_file", ExecutionOutcome::succeeded(json!({}), 1));
+    }
+    let id = h.create();
+    h.workspaces.set_tree("written");
+    let identical = || {
+        h.runtime
+            .get_task(id)
+            .unwrap()
+            .task
+            .counters
+            .identical_decisions
+    };
+    // 1: approved and run (the decision saw the base tree).
+    assert_eq!(h.step(id).outcome, StepOutcome::Waited);
+    h.runtime.approve_action(&h.session, id).unwrap();
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    // 2: rejected by the user (the decision saw the written tree: a fresh run).
+    assert_eq!(h.step(id).outcome, StepOutcome::Waited);
+    h.runtime.reject_action(&h.session, id, None, None).unwrap();
+    assert_eq!(identical(), 1);
+    // 3: approved and run on the same tree: the second identical decision.
+    assert_eq!(h.step(id).outcome, StepOutcome::Waited);
+    h.runtime.approve_action(&h.session, id).unwrap();
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    assert_eq!(identical(), 2);
+    // 4: rejected by the user on the same tree: the third, which halts.
+    assert_eq!(h.step(id).outcome, StepOutcome::Waited);
+    let task = h.runtime.reject_action(&h.session, id, None, None).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Halted {
+            halt_reason: HaltReason::Convergence
+        }
+    );
+}
