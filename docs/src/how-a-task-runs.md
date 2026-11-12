@@ -134,30 +134,44 @@ the task, a rejected decision, and a failed action that no later success on
 the same tool and path has superseded. If those alone exceed the budget the
 request is sent anyway and the step records `over_budget`.
 
-**A rejection reaches the model as its code and one fixed sentence.** When a
+**A rejection reaches the model with its reason and its detail.** When a
 decision is rejected, the model's next request holds, in place of an
-observation, a `<<feedback kind="rejection" code="…">>` segment with the code
-and one sentence for that code, which says what it may change. For
-`malformed`: return exactly one JSON object with a `decision` field (in the
-`tool_calls` transport, call exactly one of the provided functions). For
-`unknown_tool`: use one of the tools it was given. For `schema`: fix the field
-so that it matches what is expected. For `invalid_argument`: change the
-argument to a value within the stated bounds. For `denied`: no grant covers
-this; use the tools and grants it has, or ask you for the grant with
-`ask_user`. For `state`: wait for the pending item. For `budget`: finish with
-`complete` or `give_up`. The rejected decision itself is not repeated. Three
-rejections in a row halt the task. When you reject an action, the model gets
-`approval_rejected` and the note you gave, as your own words
-(`<<user kind="rejection_note">>`).
+observation, a `<<feedback kind="rejection" code="…">>` segment whose body is
+the code, one fixed sentence that says what it may change, and the detail of
+that rejection:
 
-> **Today.** The sentence is chosen by the code alone. The reference lists
-> finer reasons of a `denied` (`path_outside_workspace`, `path_excluded`,
-> `grant_missing` …) and details such as `path`, `expected` and
-> `visible_tools`; the validator produces them, but what is stored and sent to
-> the model is the code and its sentence. So every `denied` gets the sentence
-> for a missing grant, whatever the reason, and a sentence that speaks of a
-> `path` or of `visible_tools` does not come with them (the tool names are in
-> the capability note). `mimlys events` shows the code too, not the reason.
+```json
+{"code": "denied", "hint": "Use a path relative to the workspace root; …", "detail": {"reason": "path_outside_workspace"}}
+```
+
+The sentence is the rejection's own, and for `denied` it follows the reason:
+
+| Code | The detail carries | The sentence tells the model to |
+|---|---|---|
+| `malformed` | `problem`, and `limit` for `too_large` | return exactly one JSON object with a `decision` field (in the `tool_calls` transport: call exactly one of the provided functions) |
+| `schema` | `path`, `expected`, and `allowed` for an enumeration | fix the field at `path` so that it matches `expected` |
+| `unknown_tool` | `tool`, `visible_tools` | use one of the tools in `visible_tools`, the tools it was given (in `tool_calls`: call one of the provided functions) |
+| `invalid_argument` | `path`, and the bounds `min`, `max` or `allowed` that apply | change the argument at `path` to a value within the bounds |
+| `denied` | `reason`, and `grant_kind` when a grant of that kind would allow it | by reason: use a relative path (`path_outside_workspace`); work with other files (`path_excluded`); ask you for the grant (`grant_missing`, `destination_not_granted`); propose the `https` form of the address (`scheme_not_https`); choose another approach (`effect_not_allowed`); leave promotion to you (`promote_not_allowed`); pass only the declared arguments (`argument_not_allowed`) |
+| `state` | `reason` | wait for the pending item |
+| `budget` | `budget`: `deadline` or `workspace` | finish with `complete` or `give_up` |
+| `approval_rejected` | nothing: your note comes separately | choose another approach or ask you |
+
+The rejected decision itself is not repeated, and nothing from the file
+system or from the policy comes with the detail: a path outside the
+workspace gets the same segment whether or not the path exists. Every string
+of the detail is cut to 200 characters. The detail is stored with the step, so
+the same decision gets the same segment after a restart and in a fork's
+history; a step stored by a release before 0.10 has the code and its sentence
+only, and reads that way. Three rejections in a row halt the task. When you
+reject an action, the model gets `approval_rejected` and the note you gave, as
+your own words (`<<user kind="rejection_note">>`).
+
+`mimlys events` shows the reason of a `denied`, `state` or `budget` rejection
+(and the grant kind of a `denied`), and `mimlys metrics` counts denials by
+reason and by grant kind. A rising count of rejections is a defect of the
+interface the model is given (its tool definitions, the instructions, the
+transport); it is to be investigated, not tolerated as noise.
 
 Where this is written: [What the model sees](./reference/decisions-and-tools.md#what-the-model-sees),
 [Observations](./reference/decisions-and-tools.md#observations),
@@ -297,8 +311,9 @@ goal, its latest plan, and its last 20 steps as the decision and the outcome
 of each, never file content. It works on the same project directory unless you
 give another `--scope`. Only one unfinished task may work on a project
 directory (or one that contains or lies within it) at a time, so a task that
-only halted, which is not finished, can be forked only into another `--scope`;
-until then, `task resume` it. `--hold` leaves the new task created and not
+only halted, which is not finished, can be forked only into another `--scope`,
+or after `mimlys task cancel <task>` (the refusal names both); until then,
+`task resume` it. `--hold` leaves the new task created and not
 started until you `task resume` it.
 
 **Promote.** The only command that writes to your project is `mimlys promote
@@ -328,7 +343,7 @@ and `task resume` goes on (a step or deadline halt takes an extension).
 | Time from creation to the deadline | 2 hours |
 | Rejected decisions in a row | 3 |
 | Failed actions in a row | 5 |
-| The same decision in a row, with the workspace unchanged | 3 |
+| The same decision in a row, with the workspace unchanged (the same content in the task's latest snapshot) | 3 |
 | Executions of one action (the first, and one retry the runtime may make) | 2 |
 | One decision | 256 KiB |
 | One request to the model | 32 000 characters |
