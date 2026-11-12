@@ -26,7 +26,11 @@
 //! duplicated-key, trailing-text and invisible-character decisions get their
 //! rejection code at the parser; the same shapes through the loop, executing
 //! nothing, are `req_test_004_hostile_decisions_get_their_code_and_execute_nothing`)
-//! and REQ-TEST-006 (a rendered approval escapes hostile strings).
+//! and REQ-TEST-006 (a rendered approval escapes hostile strings). REQ-PRIV-001
+//! (minimization) on the built-in tools' side: a path outside the workspace is
+//! denied before any tool runs, and a link out of it is neither read, nor
+//! listed with its target, nor searched, so nothing from outside the workspace
+//! becomes an observation.
 
 // The symbolic-link scenario runs on Unix only: elsewhere its fields are read by nothing.
 #![cfg_attr(not(unix), allow(dead_code))]
