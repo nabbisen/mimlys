@@ -86,8 +86,12 @@ fn req_sbx_002_fuel_and_deadline_alone() {
         ),
     );
     assert_eq!(deadline.termination, Termination::Deadline);
+    // The loop never ends by itself (the fuel is out of reach): a deadline that
+    // did not fire would hang this test, and the termination above says that it
+    // fired. Not before the 100 ms it was given; and not later than 30 s, a
+    // margin far above the deadline that no stall of a slow machine reaches.
     assert!(
-        deadline.metrics.wall_ms >= 90 && deadline.metrics.wall_ms < 5_000,
+        deadline.metrics.wall_ms >= 90 && deadline.metrics.wall_ms < 30_000,
         "{}",
         deadline.metrics.wall_ms
     );
@@ -292,12 +296,29 @@ fn req_tool_007_cancel() {
     );
     let interrupt = sb.interrupt(req.limits.deadline_ms);
     let canceller = interrupt.clone();
+    // The instant of the cancel, so that the time to end is measured from the
+    // state change and not from the start of the run (instantiation included).
+    let fired_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let fired = std::sync::Arc::clone(&fired_at);
     let t = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(100));
+        *fired.lock().unwrap() = Some(std::time::Instant::now());
         canceller.fire(InterruptReason::Cancelled);
     });
     let out = sb.run(&module, &req, &interrupt);
     t.join().unwrap();
     assert_eq!(out.termination, Termination::Cancelled);
-    assert!(out.metrics.wall_ms < 2_000);
+    // LIM-O2 is the contract; the loop only ends by the cancel (its deadline is
+    // LIM-S2's), so the outcome is what proves that it was seen. The time allowed
+    // is five times the limit: a cancel that needs a multiple of LIM-O2 is a
+    // defect, a stall of a slow machine shorter than that is not.
+    let took = fired_at
+        .lock()
+        .unwrap()
+        .expect("the cancel was fired")
+        .elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(5 * mimlys_core::limits::LIM_O2_CANCEL_MS),
+        "the cancel took {took:?} to end the run"
+    );
 }

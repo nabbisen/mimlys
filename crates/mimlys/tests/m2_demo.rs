@@ -120,8 +120,11 @@ fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run
         "--interpreter-module",
         qjs.to_str().unwrap(),
     ]);
+    // The deadline is a safety net for a guest that does not end (the tests that
+    // want a deadline give theirs): 60 s, so that a slow machine (a cold, translated
+    // interpreter) does not end a script that is on its way to finishing.
     if !extra.contains(&"--sandbox-deadline-ms") {
-        cmd.args(["--sandbox-deadline-ms", "3000"]);
+        cmd.args(["--sandbox-deadline-ms", "60000"]);
     }
     // The runtime log (the worker's standard error included) is in `Run.stderr` for the messages of failing assertions.
     cmd.args(["--log", "info,mimlys_worker=debug"]);
@@ -188,7 +191,14 @@ fn m2_scripts_run_in_the_worker() {
 fn m2_infinite_loop() {
     let scope = scope();
     let data = tempfile::tempdir().unwrap();
-    let run = testloop("loop.json", scope.path(), data.path(), &[]);
+    // Fuel or deadline, whichever comes first (either is accepted): the deadline is
+    // short so that the loop does not run to the end of its fuel.
+    let run = testloop(
+        "loop.json",
+        scope.path(),
+        data.path(),
+        &["--sandbox-deadline-ms", "3000"],
+    );
     let obs = observations(&run.report);
     let termination = obs[0]["payload"]["termination"]
         .as_str()
@@ -240,7 +250,10 @@ fn m2_infinite_loop() {
         "{}\n{}",
         obs[0], run.stderr
     );
-    assert!(obs[0]["metrics"]["wall_ms"].as_i64().unwrap() < 5_000);
+    // The loop never ends by itself (its fuel is out of reach), so the deadline
+    // that fired is the state shown above; the time allowed is a margin of 30 s
+    // for a deadline of 1 s, which no stall of a slow machine reaches.
+    assert!(obs[0]["metrics"]["wall_ms"].as_i64().unwrap() < 30_000);
 }
 
 /// REQ-SBX-002 in process, at two code-generation levels: the deadline

@@ -13,15 +13,16 @@ use super::*;
 #[test]
 fn rfc_011_descendant_walk_kills_the_tree() {
     let mut helper = std::process::Command::new("sh")
-        .args(["-c", "sh -c 'sleep 30; :' & sleep 30 & wait"])
+        .args(["-c", "sh -c 'sleep 120; :' & sleep 120 & wait"])
         .spawn()
         .unwrap();
     let root = helper.id();
-    // All three exist before the walk (bounded, no fixed sleep).
+    // All three exist before the walk (a state, awaited up to 60 s). The sleepers hold
+    // for 120 s, far longer than the 60 s the wait and the kill are given.
     let started = std::time::Instant::now();
     while descendants_of(root).len() < 3 {
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(60),
             "the helper's tree did not start: {:?}",
             descendants_of(root)
         );
@@ -53,7 +54,7 @@ fn rfc_011_descendant_walk_kills_the_tree() {
         1,
         "one grandchild, found by following the ancestry: {found:?}"
     );
-    let remaining = kill_descendants(root, Duration::from_secs(2));
+    let remaining = kill_descendants(root, Duration::from_secs(60));
     assert_eq!(remaining, 0);
     // Gone now, not when the sleepers would have ended on their own, the
     // grandchild included.

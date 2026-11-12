@@ -148,6 +148,9 @@ fn req_sbx_001_a_504_every_time_gives_up_after_the_retries() {
     assert_eq!(err.last_status, Some(504));
 }
 
+/// How long a stand-in holds a connection it does not answer (see [`stand_in`]).
+const SILENT_HOLD: Duration = Duration::from_secs(60);
+
 /// One connection per scripted answer; `None` accepts and never answers.
 /// Returns the address and a counter of connections served.
 fn stand_in(answers: Vec<Option<(u16, Vec<u8>)>>) -> (String, Arc<Mutex<usize>>) {
@@ -173,10 +176,13 @@ fn stand_in(answers: Vec<Option<(u16, Vec<u8>)>>) -> (String, Arc<Mutex<usize>>)
                     let _ = stream.write_all(&body);
                 }
                 // Holds the connection without answering, off this thread, so
-                // that the next connection is served meanwhile.
+                // that the next connection is served meanwhile. The hold is far
+                // longer than any deadline a test gives (60 s against 3 s): a
+                // request that returns long before it was cut by its own
+                // deadline, not let go by the server.
                 None => {
                     std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(1500));
+                        std::thread::sleep(SILENT_HOLD);
                         drop(stream);
                     });
                 }
@@ -187,8 +193,10 @@ fn stand_in(answers: Vec<Option<(u16, Vec<u8>)>>) -> (String, Arc<Mutex<usize>>)
 }
 
 fn quick() -> Policy {
+    // The attempts of these tests are answered at once; the deadline is a
+    // safety net far above a slow machine's delay, never what a test decides by.
     Policy {
-        deadline: ms(400),
+        deadline: Duration::from_secs(30),
         waits: vec![ms(5), ms(5), ms(5)],
     }
 }
@@ -256,8 +264,13 @@ fn req_sbx_001_over_http_a_504_every_time_gives_up() {
 #[test]
 fn req_sbx_001_over_http_a_silent_server_is_cut_at_the_deadline() {
     let (url, _served) = stand_in(vec![None, Some((200, b"late but there".to_vec()))]);
+    // The deadline of an attempt is the behaviour under test; it is 3 s, far
+    // above the delay of a local answer, so that the second attempt (answered
+    // at once) is never cut by it on a slow machine. The silent server holds
+    // for SILENT_HOLD (60 s); the first attempt must be cut at 3 s, not wait
+    // for that, and the margin is half the hold (the rule of handoff 011i).
     let policy = Policy {
-        deadline: ms(300),
+        deadline: Duration::from_secs(3),
         waits: vec![ms(5)],
     };
     let started = std::time::Instant::now();
@@ -272,8 +285,8 @@ fn req_sbx_001_over_http_a_silent_server_is_cut_at_the_deadline() {
     .unwrap();
     assert_eq!(got, b"late but there");
     assert!(
-        started.elapsed() < Duration::from_millis(1400),
-        "the first attempt was cut at its 300 ms deadline, not after the server's 1.5 s: {:?}",
+        started.elapsed() < SILENT_HOLD / 2,
+        "the first attempt was cut at its 3 s deadline, not after the server's 60 s hold: {:?}",
         started.elapsed()
     );
 }

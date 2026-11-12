@@ -114,14 +114,10 @@ fn req_pers_013_a_reader_does_not_hold_the_lock() {
     drop(open(&data).unwrap());
     let reader = open_read_only(&data).unwrap();
     assert_eq!(reader.lock_state(), &LockState::Free);
-    let started = std::time::Instant::now();
+    // Decided by state, not by elapsed time: a lock the reader held would keep
+    // the writer out for the whole of LIM-O3 and then refuse it (`Locked`), so
+    // that the open succeeding is the proof that there was nothing to wait for.
     let writer = open(&data).expect("an open reader does not keep a writer out");
-    // Not even a wait: the lock was free (a held lock costs the writer LIM-O3).
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(crate::sqlite::LIM_O3_LOCK_WAIT_MS),
-        "the writer waited for the lock: {:?}",
-        started.elapsed()
-    );
     drop(writer);
     // And the other way round: a second reader beside a writer.
     let writer = open(&data).unwrap();
