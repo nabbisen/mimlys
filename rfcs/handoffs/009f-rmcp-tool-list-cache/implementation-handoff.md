@@ -2,6 +2,12 @@
 
 **RFC.** [RFC 009](../../done/009-mcp-client-and-tool-pinning.md) (pinning) · **Specification.** REQ-MCP-002 (discovery and pinning), THR-25 (definition drift) · **From.** Handoff 009e §2 point 4: `rmcp` 3.9.0's client keeps a response cache for `tools/list`, keyed on the `ttlMs` and `cacheScope` hints, with `serve_stale_on_error` **on by default**.
 
+**Status (2026-11-12): merged** (`c77e0e5`; CI `43108224719`, 10 of 10; `main`'s own run `43129908227` green).
+- **The answer:** no call mimlys makes could reach the SDK's cache. Each server process gets a fresh client, and the SDK drops its entries on `list_changed` before mimlys relists.
+- **rypsok's facts of 2026-11-12** narrowed the case: one rypsok process never changes its list. The restart test pins it.
+- **The one edge** (a relist without the notification) is closed rather than pinned: the SDK's response cache is off. `Server::mark_dirty` is gone, and a test-only `force_relist` replaces it.
+- Nothing is open here.
+
 **The question, first, before any change.** mimlys pins the definitions it lists at task creation, and re-checks them at step boundaries and at call time (REQ-MCP-002). If `list_tools` can return a cached list when the server's answer failed, mimlys could pin or keep definitions the server no longer serves, while believing it had just listed them. That is the drift THR-25 guards against, entering through the SDK.
 
 1. **Read and measure.** Read the code path mimlys uses to list tools (`crates/mimlys-mcp/src/client.rs` and what it calls in `rmcp` 3.9.0). Say whether that path can reach the cache and the stale-on-error branch, with the evidence. Use a stand-in server that sends `ttlMs` and then fails a later `tools/list`, and see what mimlys receives.
