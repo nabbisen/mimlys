@@ -42,6 +42,24 @@ its hint follows the reason. Authorization comes before any filesystem
 access: a path outside the workspace is `denied` with the same bytes
 whether it exists or not.
 
+What the model reads of a rejection is its code, its own hint and its detail,
+`{"code", "hint", "detail"}`, where the detail has only the fixed keys of the
+code (`problem` and `limit` for `malformed`; `path`, `expected` and `allowed`
+for `schema`; `tool` and `visible_tools` for `unknown_tool`; `path`, `min`,
+`max` and `allowed` for `invalid_argument`; `reason`, `grant_kind` and, for
+`argument_not_allowed`, `argument` with `value`, or `max`, for `denied`;
+`reason` for `state`; `budget` for `budget`), every string cut to 200
+characters. A hint names only keys that its segment carries. The rejected
+decision is not repeated, and the detail holds nothing from the file system
+or the policy. The budgets of a `budget` rejection are the deadline and the
+workspace's size limit; the step budget halts at the step boundary and the
+retries of one action are bounded by `executions_per_action`. The detail is
+stored with the step (schema version 3 of the store), so the same decision
+gets the same segment after a restart; a step stored by an older release has
+the code and its hint only. `mimlys events` shows the `reason` (and
+`grant_kind` of a `denied`) in `decision.rejected`, and `mimlys metrics`
+counts denials by reason and by grant kind.
+
 ## Tools
 
 All paths are relative to the workspace root.
@@ -147,5 +165,6 @@ never recreated.
 
 A task halts, with a reason, when it reaches its step budget, three
 rejections in a row, five failures in a row, the same decision three
-times, or its deadline. `mimlys task resume` continues it; a step or
+times while the workspace's content is unchanged (the manifest of the task's
+latest snapshot), or its deadline. `mimlys task resume` continues it; a step or
 deadline halt takes an extension within the administrator's ceiling.
