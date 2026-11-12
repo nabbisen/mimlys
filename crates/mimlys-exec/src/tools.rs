@@ -84,7 +84,8 @@ pub fn run_script_definition(languages: &[String]) -> ToolDefinition {
             ],
         },
         output: None,
-        // The write effect of the default mode; `read_only` is derived at validation (RFC 005 §5).
+        // The effect of the default mode (`read_write`). `read_only` derives `workspace_read`
+        // at validation, in `mimlys_core::hooks::PolicyHooks::derive` (RFC 005 §5).
         effect: effect(EffectKind::WorkspaceWrite),
         deadline_ms: LIM_S2_DEADLINE_MS,
         profile: ResourceProfile::Sandbox,
@@ -112,6 +113,7 @@ pub fn run_wasm_definition() -> ToolDefinition {
             ],
         },
         output: None,
+        // As `run_script`: the default mode's effect; `read_only` is derived at validation.
         effect: effect(EffectKind::WorkspaceWrite),
         deadline_ms: LIM_S2_DEADLINE_MS,
         profile: ResourceProfile::Sandbox,
@@ -120,9 +122,11 @@ pub fn run_wasm_definition() -> ToolDefinition {
     }
 }
 
-/// Whether the arguments ask for `read_only`.
+/// Whether the arguments ask for `read_only`: the same reading as the policy's
+/// derivation of the effect (`mimlys_core::hooks::is_read_only_mode`), so that
+/// an action classified a read is the one whose workspace is opened read-only.
 pub fn is_read_only(args: &serde_json::Map<String, serde_json::Value>) -> bool {
-    args.get("mode").and_then(|m| m.as_str()) == Some("read_only")
+    mimlys_core::hooks::is_read_only_mode(args)
 }
 
 use crate::builtin::BuiltinTools;
