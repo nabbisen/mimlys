@@ -961,6 +961,263 @@ fn req_sched_004_cancellation_reaches_the_step() {
     );
 }
 
+/// A tool provider that counts the executions in flight and, at each call,
+/// the steps open in the persistence (REQ-SCHED-002).
+struct InFlight {
+    inner: FakeToolProvider,
+    persistence: Arc<FakePersistence>,
+    active: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+    /// Per call: the executions already in flight, and the steps open.
+    at_call: std::sync::Mutex<Vec<(usize, i32)>>,
+}
+
+/// The steps open after each line of the write log: `step_started` opens one,
+/// `step_outcome` closes it.
+fn open_steps(writes: &[&str]) -> Vec<i32> {
+    let mut open = 0;
+    writes
+        .iter()
+        .map(|line| {
+            match *line {
+                "step_started" => open += 1,
+                "step_outcome" => open -= 1,
+                _ => {}
+            }
+            open
+        })
+        .collect()
+}
+
+impl crate::spi::ToolProvider for InFlight {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        self.inner.definitions()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        action: &'a crate::validate::AuthorizedAction,
+        context: crate::spi::ExecutionContext,
+    ) -> crate::spi::BoxFuture<'a, ExecutionOutcome> {
+        use std::sync::atomic::Ordering::SeqCst;
+        Box::pin(async move {
+            let already = self.active.fetch_add(1, SeqCst);
+            self.most.fetch_max(already + 1, SeqCst);
+            let open = open_steps(&self.persistence.writes()).last().copied();
+            self.at_call
+                .lock()
+                .expect("in-flight lock")
+                .push((already, open.unwrap_or(0)));
+            let outcome = self.inner.execute(action, context).await;
+            self.active.fetch_sub(1, SeqCst);
+            outcome
+        })
+    }
+}
+
+/// REQ-SCHED-002 (D-11): one step at a time per task, and one execution at a
+/// time per task. A task runs four steps, one of them held for an approval:
+/// at no point of the write log is a step opened while another is open (also
+/// while the held step waits and after the user approves it: a task that is
+/// not `running` has no step to take, and the approved action ends its own
+/// step); every execution starts with exactly its own step open and none
+/// other in flight; and the model is asked once per step, never for the
+/// approved action's.
+#[test]
+fn req_sched_002_one_step_and_one_execution_at_a_time_per_task() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let persistence = Arc::new(FakePersistence::default());
+    let provider = Arc::new(InFlight {
+        inner: FakeToolProvider::new(vec![
+            tool("read_file", EffectKind::WorkspaceRead),
+            tool("write_file", EffectKind::WorkspaceWrite),
+        ]),
+        persistence: persistence.clone(),
+        active: Default::default(),
+        most: Default::default(),
+        at_call: Default::default(),
+    });
+    for name in ["read_file", "write_file"] {
+        provider
+            .inner
+            .script(name, ExecutionOutcome::succeeded(json!({}), 1));
+    }
+    let backend = Arc::new(ScriptedBackend::with_decisions(vec![
+        act("read_file", "a"),
+        act("write_file", "b"),
+        act("read_file", "c"),
+        json!({"decision": "complete", "summary": "done"}),
+    ]));
+    let runtime = Runtime::new(RuntimeDeps {
+        persistence: persistence.clone(),
+        backend: backend.clone(),
+        workspaces: Arc::new(FakeWorkspaces::new(provider.clone())),
+        policy: approval_policy(),
+        ids: Arc::new(ScriptedIds::default()),
+        clock: Arc::new(FakeClock::default()),
+        runtime_version: "0.1.0-test".into(),
+        rules: PlatformRules::Posix,
+        probe: crate::confine::Probe::unavailable("no backend in tests"),
+        secrets: vec![],
+        context_chars: crate::limits::LIM_C1_CONTEXT_CHARS,
+    })
+    .unwrap();
+    let session = Session {
+        id: "s1".into(),
+        os_user: "tester".into(),
+    };
+    let id = runtime
+        .create_task(
+            &session,
+            CreateTask {
+                goal: "g".into(),
+                scope: ScopeSpec {
+                    root: "/home/u/project".into(),
+                    include: vec![],
+                },
+                profile: None,
+                grants: vec![],
+                budgets: None,
+                deadline_ms: None,
+                completion_check: None,
+                hold: false,
+                from_task: None,
+                from_snapshot: None,
+            },
+        )
+        .unwrap()
+        .task_id;
+
+    // The second step holds for the user's approval; the loop returns there.
+    let state = futures_block(runtime.run_until_wait(id)).unwrap();
+    assert_eq!(
+        state,
+        TaskState::WaitingUser {
+            wait_kind: WaitKind::Approval
+        }
+    );
+    assert_eq!(persistence.load_steps(id).unwrap().len(), 2);
+    let writes = persistence.writes();
+    assert_eq!(
+        open_steps(&writes).last(),
+        Some(&1),
+        "the held step is the one step open"
+    );
+    // A waiting task has no step to take: nothing opens a second one.
+    for _ in 0..3 {
+        assert!(futures_block(runtime.run_step(id)).is_err());
+    }
+    assert_eq!(persistence.load_steps(id).unwrap().len(), 2);
+    assert_eq!(persistence.writes(), writes, "nothing was written");
+    assert_eq!(backend.requests().len(), 2, "no model request while held");
+    assert_eq!(provider.at_call.lock().unwrap().len(), 1, "one execution");
+
+    // Approved, the held step ends its own step before the next one starts.
+    runtime.approve_action(&session, id).unwrap();
+    let state = futures_block(runtime.run_until_wait(id)).unwrap();
+    assert!(
+        matches!(state, TaskState::Completed { .. }),
+        "the task ends: {state:?}"
+    );
+
+    let writes = persistence.writes();
+    let depths = open_steps(&writes);
+    assert!(
+        depths.iter().all(|d| (0..=1).contains(d)),
+        "never two steps open, never a step closed that was not open: {depths:?} of {writes:?}"
+    );
+    assert_eq!(depths.last(), Some(&0), "every step ended");
+    assert_eq!(writes.iter().filter(|w| **w == "step_started").count(), 4);
+    assert_eq!(writes.iter().filter(|w| **w == "step_outcome").count(), 4);
+    assert_eq!(persistence.load_steps(id).unwrap().len(), 4);
+    assert_eq!(
+        backend.requests().len(),
+        4,
+        "one model request per step; the approved action asked none"
+    );
+    let calls = provider.at_call.lock().unwrap().clone();
+    assert_eq!(calls.len(), 3, "three executions");
+    assert!(
+        calls.iter().all(|c| *c == (0, 1)),
+        "each execution began with none other in flight and exactly its own step open: {calls:?}"
+    );
+    assert_eq!(provider.most.load(SeqCst), 1);
+    assert_eq!(provider.active.load(SeqCst), 0);
+}
+
+/// REQ-SCHED-005 (the scheduler slot and the scope, as LIM-X1 and
+/// REQ-TASK-012 count them): a task that is terminal, whichever way it got
+/// there (completed, failed by `give_up`, cancelled while it waits for an
+/// approval), holds no slot: no task is `running`, no step or approval is
+/// open for it, it takes no step and no model request, and a new task on the
+/// very same scope starts at once and is the one that runs. The worker, the
+/// store lock and the model connection of a finished run belong to the
+/// process: `req_sched_005_a_finished_run_leaves_no_worker_and_no_lock`
+/// (`crates/mimlys/tests/sched.rs`) holds them.
+#[test]
+fn req_sched_005_a_terminal_task_holds_no_scheduler_slot() {
+    let routes: [(&str, Vec<Value>); 3] = [
+        (
+            "completed",
+            vec![json!({"decision": "complete", "summary": "done"})],
+        ),
+        (
+            "failed",
+            vec![json!({"decision": "give_up", "reason": "no such test"})],
+        ),
+        ("cancelled", vec![act("write_file", "a")]),
+    ];
+    for (route, decisions) in routes {
+        let h = Harness::with_policy(decisions, approval_policy());
+        let first = h.create();
+        h.step(first);
+        if route == "cancelled" {
+            assert_eq!(
+                h.state(first),
+                TaskState::WaitingUser {
+                    wait_kind: WaitKind::Approval
+                }
+            );
+            assert!(
+                h.persistence
+                    .load_pending_approval(first)
+                    .unwrap()
+                    .is_some()
+            );
+            h.runtime.cancel_task(&h.session, first).unwrap();
+        }
+        let task = h.runtime.get_task(first).unwrap().task;
+        assert!(task.state.is_terminal(), "{route}: {:?}", task.state);
+        assert_eq!(task.state.name(), route);
+        assert!(task.pending.is_none(), "{route}: no pending user item");
+        assert!(
+            h.persistence
+                .load_pending_approval(first)
+                .unwrap()
+                .is_none(),
+            "{route}: no approval is left to answer"
+        );
+        let steps = h.persistence.load_steps(first).unwrap();
+        assert!(
+            steps.iter().all(|s| s.outcome.is_some()),
+            "{route}: no step is left open"
+        );
+        assert!(
+            h.persistence.tasks_in_state("running").unwrap().is_empty(),
+            "{route}: LIM-X1 counts no running task"
+        );
+        // It takes no step, and so no model request.
+        let requests = h.backend.requests().len();
+        assert!(futures_block(h.runtime.run_step(first)).is_err());
+        assert_eq!(h.backend.requests().len(), requests);
+        // The same scope is free (REQ-TASK-012) and the slot is free (LIM-X1).
+        let second = h.create();
+        assert_eq!(h.state(second), TaskState::Running, "{route}");
+        assert_eq!(h.persistence.tasks_in_state("running").unwrap(), [second]);
+        assert_eq!(h.state(first), task.state, "{route}: still terminal");
+    }
+}
+
 /// REQ-TASK-001: invalid requests are refused before anything is written.
 #[test]
 fn req_task_001_invalid_requests() {
