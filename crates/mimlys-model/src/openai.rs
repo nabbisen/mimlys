@@ -16,6 +16,7 @@
 //! decision at all, which stage 1 rejects as `malformed`; a call written into
 //! the text is never read.
 
+pub mod context;
 pub mod schema;
 
 use mimlys_core::limits::LIM_M4_PROBE_MS;
@@ -136,6 +137,11 @@ pub struct Probe {
     pub transport_reason: Option<String>,
     /// Whether the engine accepts `parallel_tool_calls: false`, when the transport is `tool_calls`.
     pub parallel_tool_calls: Option<bool>,
+    /// The engine's context length in tokens, as the engine reports it
+    /// (llama.cpp's `/props`, Ollama's `/api/show`); `None` is unknown (REQ-MDL-003).
+    pub context_tokens: Option<u64>,
+    /// The engine that reported it.
+    pub context_engine: Option<context::Engine>,
 }
 
 /// The adapter.
@@ -492,7 +498,61 @@ impl OpenAiBackend {
     }
 
     /// [`OpenAiBackend::probe`] under `deadline` (LIM-M4 is the value the product uses).
+    /// The engine's context length is read beside the rest, inside the same
+    /// bound, and kept only where the engine is reachable.
     pub async fn probe_within(&self, deadline: Duration) -> Probe {
+        let (mut probe, context) =
+            tokio::join!(self.probe_core(deadline), self.read_context(deadline));
+        if probe.reachable
+            && let Some((tokens, engine)) = context
+        {
+            probe.context_tokens = Some(tokens);
+            probe.context_engine = Some(engine);
+        }
+        probe
+    }
+
+    /// The engine's context length (REQ-MDL-003), within `deadline`: llama.cpp's
+    /// `GET /props`, then Ollama's `POST /api/show`, both beside the API prefix.
+    /// Whatever fails, is oversized, or is not shaped as an engine's answer is `None`.
+    async fn read_context(&self, deadline: Duration) -> Option<(u64, context::Engine)> {
+        let started = tokio::time::Instant::now();
+        let cancel = Cancellation::new();
+        let base = self.config.url.trim_end_matches('/');
+        let base = base.strip_suffix("/v1").unwrap_or(base);
+        let request = self.with_auth(self.client.get(format!("{base}/props")));
+        if let Ok(Exchange::Response { status, body, .. }) = self
+            .exchange(request, deadline, ENVELOPE_BYTES, &cancel)
+            .await
+            && (200..300).contains(&status)
+            && let Some(n) = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|v| context::from_llama_cpp_props(&v))
+        {
+            return Some((n, context::Engine::LlamaCpp));
+        }
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return None;
+        }
+        let request = self
+            .with_auth(self.client.post(format!("{base}/api/show")))
+            .json(&json!({"model": self.config.model}));
+        match self
+            .exchange(request, remaining, ENVELOPE_BYTES, &cancel)
+            .await
+        {
+            Ok(Exchange::Response { status, body, .. }) if (200..300).contains(&status) => {
+                serde_json::from_slice::<Value>(&body)
+                    .ok()
+                    .and_then(|v| context::from_ollama_show(&v))
+                    .map(|n| (n, context::Engine::Ollama))
+            }
+            _ => None,
+        }
+    }
+
+    async fn probe_core(&self, deadline: Duration) -> Probe {
         let started = tokio::time::Instant::now();
         let cancel = Cancellation::new();
         let request = self.with_auth(self.client.get(self.endpoint("models")));
@@ -533,6 +593,8 @@ impl OpenAiBackend {
             decision_transport: None,
             transport_reason: None,
             parallel_tool_calls: None,
+            context_tokens: None,
+            context_engine: None,
         };
         if !reachable {
             probe.detail = detail;

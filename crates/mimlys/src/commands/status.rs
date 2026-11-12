@@ -99,6 +99,17 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     ) {
         out.line(line);
     }
+    // The run goes on: a context below the need is a warning, never an error (REQ-MDL-003).
+    if let Some(p) = probe.as_ref()
+        && p.context_too_small()
+        && let (Some(tokens), Some(needed)) = (p.context_tokens, p.context_needed_tokens)
+    {
+        out.line(messages::context_too_small_warning(
+            p.context_engine,
+            tokens,
+            needed,
+        ));
+    }
     for line in messages::store_lines(&store) {
         out.line(line);
     }

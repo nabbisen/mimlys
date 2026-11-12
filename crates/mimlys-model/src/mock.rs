@@ -121,6 +121,11 @@ pub struct MockConfig {
     pub refuse_parallel_tool_calls: bool,
     /// Wait this long before answering the probe request that carries `tools`.
     pub tools_probe_delay_ms: u64,
+    /// The body of `GET /props`, as llama.cpp answers it; `None` is a 404, as
+    /// any other engine does.
+    pub props: Option<Value>,
+    /// The body of `POST /api/show`, as Ollama answers it; `None` is a 404.
+    pub api_show: Option<Value>,
 }
 
 impl Default for MockConfig {
@@ -136,6 +141,8 @@ impl Default for MockConfig {
             },
             refuse_parallel_tool_calls: false,
             tools_probe_delay_ms: 0,
+            props: None,
+            api_show: None,
         }
     }
 }
@@ -214,7 +221,11 @@ impl MockServer {
     pub fn decision_requests(&self) -> Vec<Recorded> {
         self.requests()
             .into_iter()
-            .filter(|r| r.line.starts_with("POST") && !is_probe(&r.body))
+            .filter(|r| {
+                r.line.starts_with("POST")
+                    && r.line.contains("/chat/completions")
+                    && !is_probe(&r.body)
+            })
             .collect()
     }
 
@@ -288,6 +299,18 @@ impl State {
                 &json!({"object": "list", "data": data}).to_string(),
                 &[],
             );
+            return;
+        }
+        // The engine's own endpoints, beside the API prefix (REQ-MDL-003).
+        let served = if line.starts_with("GET /props") {
+            self.config.props.as_ref()
+        } else if line.starts_with("POST /api/show") {
+            self.config.api_show.as_ref()
+        } else {
+            None
+        };
+        if let Some(value) = served {
+            respond(&mut stream, 200, &value.to_string(), &[]);
             return;
         }
         if !(line.starts_with("POST ") && line.contains("/chat/completions")) {

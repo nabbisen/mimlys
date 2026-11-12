@@ -119,6 +119,8 @@ fn req_mdl_004_auto_resolves_at_probe() {
             decision_transport: Some(DecisionTransport::Envelope),
             transport_reason: None,
             parallel_tool_calls: None,
+            context_tokens: None,
+            context_engine: None,
         }
     );
     assert_eq!(server.remaining(), 1, "probe completions consume no script");
