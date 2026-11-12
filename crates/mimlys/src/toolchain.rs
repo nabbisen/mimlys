@@ -336,6 +336,9 @@ pub fn plan_revoke_all(
     let mut plan: Vec<Planned> = Vec::new();
     let listed = |plan: &[Planned], path: &str| plan.iter().any(|p| same_path(&p.path, path));
     for e in &record.entries {
+        if std::path::Path::new(&e.path).is_file() {
+            continue;
+        }
         if !listed(&plan, &e.path) {
             plan.push(Planned {
                 path: e.path.clone(),
@@ -345,6 +348,9 @@ pub fn plan_revoke_all(
         }
     }
     for (path, source) in candidates {
+        if std::path::Path::new(path).is_file() {
+            continue;
+        }
         if !listed(&plan, path) && in_force(path) {
             plan.push(Planned {
                 path: path.clone(),
