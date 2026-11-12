@@ -23,6 +23,9 @@
 //! strings in an approval), REQ-TOOL-004 (symbolic links), REQ-SBX-006
 //! (malformed modules) and REQ-MCP-003 with THR-25 (hostile descriptions).
 
+// The symbolic-link scenario runs on Unix only: elsewhere its fields are read by nothing.
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use mimlys_core::action::{EffectKind, EffectView};
 use mimlys_core::approval::{ApprovalRequest, render};
 use mimlys_core::clock::{Clock, FakeClock};
@@ -36,7 +39,7 @@ use mimlys_core::policy::Policy;
 use mimlys_core::rejection::Detail;
 use mimlys_core::runtime::{CreateTask, Runtime, RuntimeDeps, Session};
 use mimlys_core::spi::fake::{FakePersistence, FakeToolProvider, FakeWorkspaces, ScriptedBackend};
-use mimlys_core::spi::{ExecutionContext, ExecutionOutcome, PersistenceRead, ToolProvider};
+use mimlys_core::spi::{ExecutionOutcome, PersistenceRead};
 use mimlys_core::task::ScopeSpec;
 use mimlys_core::tool::{Param, ParamSchema, ParamType, Provider, ResourceProfile, ToolDefinition};
 use mimlys_core::validate::permissive::PermissiveHooks;
@@ -936,6 +939,7 @@ fn fs_symlinks(name: &str, c: Symlinks) -> Result<(), String> {
     }
     #[cfg(unix)]
     {
+        use mimlys_core::spi::{ExecutionContext, ToolProvider};
         use mimlys_exec::builtin::BuiltinTools;
         let _ = name;
         let root = tempfile::tempdir().unwrap();
