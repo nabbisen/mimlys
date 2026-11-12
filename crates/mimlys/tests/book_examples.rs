@@ -1,6 +1,6 @@
-//! The book's examples that are commands run (REQ-CLI-007, handoff 013): the
-//! Storage page and the "Several projects, several jobs" section of Getting
-//! started. A fenced `sh` block preceded by the comment `<!-- tested -->` is
+//! The book's examples that are commands run (REQ-CLI-007, handoffs 013 and
+//! 010b): the Storage page, the "Several projects, several jobs" section of
+//! Getting started and the page "How a task runs". A fenced `sh` block preceded by the comment `<!-- tested -->` is
 //! executed line by line against a store with finished, cancelled and held
 //! tasks; every `mimlys …` line must exit 0, with `<task>` standing for a
 //! finished task. A change to a command that the book shows, or to the book's
@@ -118,9 +118,11 @@ impl Env {
 /// Getting started runs and succeeds.
 #[test]
 fn req_cli_007_the_commands_in_the_books_tested_blocks_run() {
-    let (Some(storage_page), Some(getting_started)) =
-        (book("reference/storage.md"), book("getting-started.md"))
-    else {
+    let (Some(storage_page), Some(getting_started), Some(flow_page)) = (
+        book("reference/storage.md"),
+        book("getting-started.md"),
+        book("how-a-task-runs.md"),
+    ) else {
         common::skip(
             "req_cli_007_the_commands_in_the_books_tested_blocks_run",
             "the book is not in this source tree",
@@ -130,13 +132,16 @@ fn req_cli_007_the_commands_in_the_books_tested_blocks_run() {
     let mut commands = tested_commands(&storage_page);
     let storage = commands.len();
     commands.extend(tested_commands(&getting_started));
+    let before_flow = commands.len();
+    commands.extend(tested_commands(&flow_page));
     assert!(
         storage >= 4,
         "the Storage page has tested commands: {commands:?}"
     );
+    assert!(before_flow > storage, "Getting started has tested commands");
     assert!(
-        commands.len() > storage,
-        "Getting started has tested commands"
+        commands.len() > before_flow,
+        "How a task runs has tested commands"
     );
     let env = Env::new();
     let finished = env.fill();
