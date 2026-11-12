@@ -1,6 +1,6 @@
 # RFC 017 — Admit the worker and the interpreter modules by their files, not their directories
 
-**Status.** Proposed (2026-11-12), for the owner's sign-off.
+**Status.** Accepted (2026-11-12, by the owner). Release 0.10. Normative text: REQ-CONF-011 and REQ-CONF-008 amended; external design §13.3; handoff 017.
 **Tracks.** Handoff 011f §3 (measured on `windows-latest`: an entry on `mimlys-worker.exe` alone, none on its directory, is enough for the container to start the worker and run tools); the replanning report §3 C ("entries without propagation"); the code at `main` (`crates/mimlys/src/app.rs`: `confinement_spec`, `fixed_read_paths`, and the runtime's own read paths for `toolchain::prepare`).
 **Touches.** `mimlys` (`app.rs`, `toolchain.rs`), `mimlys-exec` (the three backends' handling of a read path that is a file; on Windows, `acl.rs`'s entry on a file and its record); requirements REQ-CONF-011 and REQ-CONF-008; external design §13.3, §13.5; threat register THR-36.
 **Release.** 0.10.

@@ -15,7 +15,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Priority |
 |----|-------|----------|
-| 017 | [Admit the worker and the interpreter modules by their files, not their directories](./proposed/017-admit-files-not-their-directories.md) | for 0.10: least privilege on every platform; on Windows, no propagating write on a shared directory |
+| — | none at the moment | |
 
 ## Accepted
 
@@ -25,6 +25,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 | 015 | [Adaptive effort, part one](./accepted/015-adaptive-effort.md) | 2026-11-10 (M8, after 0.10) |
 | 014 | [The local daemon](./accepted/014-local-daemon.md) | 2026-11-10 (M9, decided at 0.10's disposition) |
 | 016 | [Formal proofs with Verus, kept narrow](./accepted/016-formal-proofs-with-verus.md) | 2026-11-11 (0.10: the permission-lock decision; rules for any other proof) |
+| 017 | [Admit the worker and the interpreter modules by their files, not their directories](./accepted/017-admit-files-not-their-directories.md) | 2026-11-12 (0.10) |
 
 ## Implemented
 

@@ -65,6 +65,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 12 | [011l Linux read set, follow-up](./011l-linux-read-set-follow-up/implementation-handoff.md) | RFC 011 | 011j |
 | 13 | [009e rypsok 0.10.0, compatibility measured](./009e-rypsok-0.10.0/implementation-handoff.md) | RFC 009 | 009c, 009d |
 | 14 | [009f Can a stale tool list reach mimlys?](./009f-rmcp-tool-list-cache/implementation-handoff.md) | RFC 009 | 009e |
+| 15 | [017 The worker and the interpreter modules admitted by their files](./017-admit-files-not-their-directories/implementation-handoff.md) | [RFC 017](../accepted/017-admit-files-not-their-directories.md) | — |
 
 ## Milestone M5
 
