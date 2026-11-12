@@ -15,7 +15,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Priority |
 |----|-------|----------|
-| — | none at the moment | |
+| 017 | [Admit the worker and the interpreter modules by their files, not their directories](./proposed/017-admit-files-not-their-directories.md) | for 0.10: least privilege on every platform; on Windows, no propagating write on a shared directory |
 
 ## Accepted
 
