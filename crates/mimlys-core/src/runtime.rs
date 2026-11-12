@@ -13,7 +13,7 @@ mod read;
 mod storage;
 
 pub use control::{CreateTask, RuntimeStatus, TaskView};
-pub use loop_::StepResultView;
+pub use loop_::{PROMPT_LOG_TARGET, StepResultView};
 pub use read::{Activity, Reader};
 pub use storage::{Holdings, TaskHolding};
 

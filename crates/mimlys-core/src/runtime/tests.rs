@@ -2519,24 +2519,17 @@ fn req_sec_011_a_panicking_tool_provider_is_host_fault_unavailable() {
     }
 }
 
-/// REQ-SEC-011 (external design §21): the log line of a contained panic says
-/// that a panic was contained, in which adapter, and carries the panic's
-/// message bounded to LIM-I5 characters, on one line, with the configured
-/// secrets redacted; it carries no stack trace.
-#[test]
-fn req_sec_011_a_contained_panic_is_logged_bounded_and_redacted() {
-    use crate::spi::fake::PanicAt;
-    use std::collections::HashMap;
-    use std::io::Write;
-    use std::sync::{Mutex, OnceLock};
-    use std::thread::ThreadId;
+type LogBuffers = Arc<std::sync::Mutex<std::collections::HashMap<std::thread::ThreadId, Vec<u8>>>>;
 
-    // One global subscriber for the test binary, writing each thread's lines
-    // to that thread's own buffer: a scoped subscriber is unreliable while
-    // other tests, on other threads, reach the same call sites first.
-    type Buffers = Arc<Mutex<HashMap<ThreadId, Vec<u8>>>>;
+/// One global subscriber for the test binary, writing each thread's lines to
+/// that thread's own buffer: a scoped subscriber is unreliable while other
+/// tests, on other threads, reach the same call sites first.
+fn per_thread_log() -> LogBuffers {
+    use std::io::Write;
+    use std::sync::OnceLock;
+
     #[derive(Clone)]
-    struct PerThread(Buffers);
+    struct PerThread(LogBuffers);
     impl Write for PerThread {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             self.0
@@ -2551,10 +2544,10 @@ fn req_sec_011_a_contained_panic_is_logged_bounded_and_redacted() {
             Ok(())
         }
     }
-    static BUFFERS: OnceLock<Buffers> = OnceLock::new();
-    let buffers = BUFFERS
+    static BUFFERS: OnceLock<LogBuffers> = OnceLock::new();
+    BUFFERS
         .get_or_init(|| {
-            let buffers = Buffers::default();
+            let buffers = LogBuffers::default();
             let writer = PerThread(buffers.clone());
             let subscriber = tracing_subscriber::fmt()
                 .json()
@@ -2564,7 +2557,18 @@ fn req_sec_011_a_contained_panic_is_logged_bounded_and_redacted() {
                 .expect("no other global subscriber in this test binary");
             buffers
         })
-        .clone();
+        .clone()
+}
+
+/// REQ-SEC-011 (external design §21): the log line of a contained panic says
+/// that a panic was contained, in which adapter, and carries the panic's
+/// message bounded to LIM-I5 characters, on one line, with the configured
+/// secrets redacted; it carries no stack trace.
+#[test]
+fn req_sec_011_a_contained_panic_is_logged_bounded_and_redacted() {
+    use crate::spi::fake::PanicAt;
+
+    let buffers = per_thread_log();
     let me = std::thread::current().id();
     buffers.lock().unwrap().remove(&me);
 
@@ -2612,6 +2616,74 @@ fn req_sec_011_a_contained_panic_is_logged_bounded_and_redacted() {
     }
     assert!(!log.contains(secret), "the secret never reaches the log");
     assert!(!log.contains("backtrace"), "no stack trace in the log line");
+}
+
+/// REQ-OBS-004 (external design §17.3): a line written while a step runs
+/// carries the step span's fields, `task_id` and `step_id`, and `action_id`
+/// once the step has an action; a line written outside a step carries none.
+/// The two lines are the contained panics of the model backend (during the
+/// decision: no action yet) and of the tool provider (during the execution
+/// of the step's action), and the ids are the stored ones.
+#[test]
+fn req_obs_004_a_line_during_a_step_carries_the_ids_of_the_step_and_its_action() {
+    use crate::spi::fake::PanicAt;
+
+    let buffers = per_thread_log();
+    let me = std::thread::current().id();
+    buffers.lock().unwrap().remove(&me);
+
+    let mut stored = Vec::new();
+    for adapter in ["model_backend", "tool_provider"] {
+        let h = Harness::new(vec![act("read_file", "a")]);
+        if adapter == "model_backend" {
+            h.backend.panic_on_generate(PanicAt::Poll, "boom");
+        } else {
+            h.tools.panic_on_execute(PanicAt::Call, "boom");
+        }
+        let id = h.create();
+        h.step(id);
+        let steps = h.persistence.load_steps(id).unwrap();
+        assert_eq!(steps.len(), 1, "{adapter}");
+        let actions = h.persistence.load_actions(id).unwrap();
+        stored.push((
+            id.to_string(),
+            steps[0].step_id.to_string(),
+            actions.first().map(|a| a.action_id.to_string()),
+        ));
+    }
+    // Outside a step: no span.
+    tracing::error!("a line outside any step");
+
+    let written = buffers.lock().unwrap().remove(&me).unwrap_or_default();
+    let log = String::from_utf8(written).unwrap();
+    let lines: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("one JSON log line"))
+        .collect();
+    assert_eq!(lines.len(), 3, "{log}");
+
+    let (task, step, action) = &stored[0];
+    assert!(
+        action.is_none(),
+        "the backend panic ends the step before an action"
+    );
+    let span = &lines[0]["span"];
+    assert_eq!(span["name"], "step", "{log}");
+    assert_eq!(span["task_id"], task.as_str(), "{log}");
+    assert_eq!(span["step_id"], step.as_str(), "{log}");
+    assert!(span.get("action_id").is_none(), "{log}");
+
+    let (task, step, action) = &stored[1];
+    let span = &lines[1]["span"];
+    assert_eq!(span["task_id"], task.as_str(), "{log}");
+    assert_eq!(span["step_id"], step.as_str(), "{log}");
+    assert_eq!(
+        span["action_id"],
+        action.as_deref().expect("the step proposed an action"),
+        "{log}"
+    );
+
+    assert!(lines[2].get("span").is_none(), "{log}");
 }
 
 fn create_request() -> CreateTask {
