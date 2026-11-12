@@ -197,8 +197,11 @@ pub fn warm_xcrun_cache() -> Option<PathBuf> {
 }
 
 /// The read and write sets of the worker (RFC 011 §1, §6): the workspaces
-/// and the temporary directory writable; the interpreters, the worker's own
-/// directory, the declared toolchain paths and the system's read-only.
+/// and the temporary directory writable; mimlys's own `interpreters`
+/// directory, the worker binary and each configured interpreter module **as
+/// files** (RFC 017: not their directories, which may hold anything else the
+/// user installed beside them), the declared toolchain paths and the system's
+/// read-only.
 pub fn confinement_spec(
     data_dir: &Path,
     interpreters: &[mimlys_exec::interpreters::Configured],
@@ -206,14 +209,8 @@ pub fn confinement_spec(
     deny_network: bool,
 ) -> mimlys_exec::confine::ConfinementSpec {
     let mut read_paths: Vec<PathBuf> = vec![data_dir.join("interpreters"), data_dir.join("tmp")];
-    for i in interpreters {
-        if let Some(dir) = i.module.parent() {
-            read_paths.push(dir.to_path_buf());
-        }
-    }
-    if let Some(dir) = worker_binary().parent() {
-        read_paths.push(dir.to_path_buf());
-    }
+    read_paths.extend(interpreters.iter().map(|i| i.module.clone()));
+    read_paths.push(worker_binary());
     read_paths.extend(system_read_paths());
     if !deny_network {
         read_paths.extend(network_read_paths());
@@ -311,15 +308,14 @@ pub const NETWORK_READ_CANDIDATES: [&str; 4] = [
 ];
 
 /// The read paths that hold whatever the declarations say: the data
-/// directory's `interpreters` and `tmp`, the worker's own directory and the
-/// system's. A `command` must lie under these or under its tool's declared
-/// `read_paths` (external design §13.5). On Windows the system's directories
+/// directory's `interpreters` and `tmp`, the worker binary (the file, not its
+/// directory: RFC 017) and the system's. A `command` must lie under these or
+/// under its tool's declared `read_paths` (external design §13.5): a tool
+/// beside mimlys, such as `~/.cargo/bin/cargo`, declares its directory. On Windows the system's directories
 /// are named here too, as the container reads them already.
 pub fn fixed_read_paths(data_dir: &Path) -> Vec<PathBuf> {
     let mut paths = vec![data_dir.join("interpreters"), data_dir.join("tmp")];
-    if let Some(dir) = worker_binary().parent() {
-        paths.push(dir.to_path_buf());
-    }
+    paths.push(worker_binary());
     paths.extend(system_read_paths());
     if cfg!(windows) {
         for var in ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)"] {
@@ -545,15 +541,12 @@ impl App {
         // Windows (RFC 011 §3, §7): the AppContainer exists and mimlys's own
         // directories carry its entries; a declared path without its entry
         // leaves that tool unavailable until `toolchain grant`.
+        // The worker binary and each module are entries on the files, not on their
+        // directories (RFC 017): the entry is not inherited, so nothing beside them is
+        // reached and the write propagates to nothing.
         let mut runtime_read: Vec<PathBuf> = vec![data_dir.join("interpreters")];
-        runtime_read.extend(
-            interpreters
-                .iter()
-                .filter_map(|i| i.module.parent().map(Path::to_path_buf)),
-        );
-        if let Some(dir) = worker_binary().parent() {
-            runtime_read.push(dir.to_path_buf());
-        }
+        runtime_read.extend(interpreters.iter().map(|i| i.module.clone()));
+        runtime_read.push(worker_binary());
         let container = crate::toolchain::prepare(
             &data_dir,
             &crate::toolchain::RuntimePaths {

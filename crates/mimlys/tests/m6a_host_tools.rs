@@ -52,6 +52,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
+read_paths = [{tooldir:?}]
 allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
@@ -61,6 +62,7 @@ env = {{ PROBE_OK = "1" }}
 env_allow = ["MIMLYS_TEST_RUNTIME_PID", "MIMLYS_TEST_OWNER_PID"]
 [host_tools.strict]
 command = {tool:?}
+read_paths = [{tooldir:?}]
 allowed_args = ["ok"]
 arg_pattern = "[a-z]+"
 max_args = 3
@@ -68,6 +70,7 @@ effect = "workspace_write"
 timeout_ms = 20000
 [host_tools.fetch]
 command = {tool:?}
+read_paths = [{tooldir:?}]
 allowed_args = ["connect", "read"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 2
@@ -79,6 +82,7 @@ network = true
             script = script_path.to_string_lossy(),
             builtin = BUILTIN,
             tool = probe_tool().to_string_lossy(),
+            tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         );
         std::fs::write(&config, text).unwrap();
         Self {
@@ -1099,8 +1103,9 @@ fn req_conf_011_credentials_beside_toolchain_are_unreadable() {
     let beside = toolchain.path().join("credentials.toml");
     let inside = toolchain.path().join("bin/marker");
     let extra = format!(
-        "[host_tools.beside]\ncommand = {tool:?}\nallowed_args = [\"read\"]\narg_pattern = \"[A-Za-z0-9_./:=-]+\"\nmax_args = 2\neffect = \"workspace_write\"\ntimeout_ms = 20000\nread_paths = [{bin:?}]\n",
+        "[host_tools.beside]\ncommand = {tool:?}\nallowed_args = [\"read\"]\narg_pattern = \"[A-Za-z0-9_./:=-]+\"\nmax_args = 2\neffect = \"workspace_write\"\ntimeout_ms = 20000\nread_paths = [{bin:?}, {tooldir:?}]\n",
         tool = probe_tool().to_string_lossy(),
+        tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         bin = toolchain.path().join("bin").to_string_lossy(),
     );
     let beside_call = |path: &Path| json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "beside", "args": ["read", path.to_str().unwrap()]}});
@@ -1476,6 +1481,86 @@ fn req_conf_011_status_names_the_dependency_steps_read_set() {
             .unwrap_or_else(|| panic!("no line for the step's files in {text}"));
         for f in &extra {
             assert!(line.contains(f.as_str()), "{line}");
+        }
+    }
+}
+
+/// REQ-CONF-011, RFC 017 (handoff 017): inside Landlock only the worker's and
+/// the module's **files** are admitted, not the folders that hold them. A
+/// worker installed in a folder with another file, and an interpreter module
+/// in a folder with another file: a host tool reads the two files and is
+/// refused both neighbours. (Before RFC 017 the folders were in the read set
+/// and the neighbours were readable.)
+#[test]
+fn req_conf_011_only_the_workers_and_the_modules_files_are_admitted() {
+    let test = "req_conf_011_only_the_workers_and_the_modules_files_are_admitted";
+    let install = tempfile::tempdir().unwrap();
+    let bin = install.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let worker = bin.join("mimlys-worker");
+    std::fs::copy(env!("CARGO_BIN_EXE_mimlys-worker"), &worker).unwrap();
+    let worker_neighbour = bin.join("neighbour.txt");
+    std::fs::write(&worker_neighbour, "another file beside the worker").unwrap();
+    let modules = tempfile::tempdir().unwrap();
+    let module = modules.path().join("extra.wasm");
+    std::fs::write(&module, "a module").unwrap();
+    let module_neighbour = modules.path().join("neighbour.txt");
+    std::fs::write(&module_neighbour, "another file beside the module").unwrap();
+    let read = |path: &Path| probe(&["read", path.to_str().unwrap()]);
+    let env = Env::new(
+        &[
+            read(&worker),
+            read(&worker_neighbour),
+            read(&module),
+            read(&module_neighbour),
+            complete(),
+        ],
+        &format!(
+            "[interpreters.extra]\nmodule = {:?}\nsha256 = {:?}\n",
+            module.to_string_lossy(),
+            "0".repeat(64)
+        ),
+    )
+    .env("MIMLYS_WORKER_BIN", worker.to_str().unwrap());
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "read the neighbours",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 4, "{obs:?}");
+    for (i, (what, allowed)) in [
+        ("the worker's file", true),
+        ("a file beside the worker", false),
+        ("the module's file", true),
+        ("a file beside the module", false),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let out = stdout_of(&obs[i]);
+        if *allowed {
+            assert!(
+                out.starts_with("read ") && !out.contains("failed"),
+                "{what} is readable: {out}"
+            );
+        } else {
+            assert!(
+                out.contains("read failed: permission denied"),
+                "{what} is refused: {out}"
+            );
         }
     }
 }
