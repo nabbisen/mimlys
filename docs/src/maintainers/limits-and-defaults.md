@@ -43,6 +43,7 @@
 | LIM-I6 | Rendered approval request | 4000 characters | fixed | Readable in a terminal |
 | LIM-I7 | Entries returned by `list_dir` or `search_files` | 500 | 50–5000 | Context budget |
 | LIM-I8 | Tasks listed in the text of `status --storage` (the JSON lists all) | 10 | 1–1000 | Interface size (handoff 013) |
+| LIM-I9 | A string of a rejection's `detail`, and the entries of one of its lists (`visible_tools`, `allowed`), as the model reads it | 200 characters; 32 entries | fixed | Context budget; LIM-I5's length for a string; every tool name stays in the capability note (handoff 002c) |
 
 ## Context
 
@@ -123,6 +124,7 @@
 | LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
 | LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
 | LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
+| LIM-O17 | Wait of `events --follow` for a runtime to take the store of a `running` task no runtime holds, before it says `recovery pending` and ends | 5000 ms | fixed | A runtime takes the lock within a process start; ten polls of LIM-O15 (handoff 002d) |
 | LIM-O16 | Grace for an MCP server to end after its standard input closes, before its group is killed | 5000 ms | 500 – 30000; per server `shutdown_ms` | rypsok's graceful shutdown takes up to 3 s by default (its letter of 2026-11-11); LIM-O2's 2 s cut it short |
 
 ## Model backend

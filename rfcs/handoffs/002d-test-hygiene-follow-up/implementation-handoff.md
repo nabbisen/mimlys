@@ -37,3 +37,28 @@ Two product questions first, then the test-side items.
 The rule of §3c applies to every test written here.
 
 Return: one request per item group, `.git-exclude/review-requests/002d-<item>/README.md` (1, 2, and 3 to 9 together, or in slices).
+
+## After review (2026-11-12): 002d-3
+
+002d-1 and 002d-2 are landed. Four items follow.
+
+10. **A terminal task leaves nothing behind in the runtime** (REQ-SCHED-005; 002d-2 question 4). This is in scope, because a daemon (RFC 014) keeps the runtime alive.
+    - At a task's terminal transition, the three per-task maps of `Runtime` drop its entry: `cancellations`, `last_requests` and `unpinned`.
+    - Extend the SCHED-005 test with the three, through the public API or a test-support accessor. Do not make the maps public.
+    - Mutation: one of the three not cleared.
+11. **The Linux full tier is asserted** (002d-2 question 3).
+    - The Linux CI jobs fail when `skips.log` holds a skip whose reason is the tier. The demonstration's rustup skip and the opt-in tests' (`MIMLYS_RYPSOK_BIN`, `MIMLYS_M4_*`) are allowed by name.
+    - The step's rule is written in `repository-guards.md` §1.
+    - The opt-in tests stay printed skips (question 1).
+12. **The Landlock unit test is counted** (question 2): a skip helper that `mimlys-exec`'s unit tests can reach, writing to the same `skips.log`.
+13. **A script in `read_only` mode reads** (002c question 7). RFC 005 §5 says `mode = read_only` derives `workspace_read`.
+    - Today the policy derives every `run_script` and `run_wasm` call from the definition's `workspace_write`, so a read-only script:
+      - takes the write snapshots;
+      - is judged for approval as a write;
+      - is never a read for the profile.
+    - The sandbox already opens the workspace read-only.
+    - Derive the effect from `mode` at validation, as RFC 005 says. Correct the comment in `tools.rs`. Say in the request what changes for snapshots, approval and the profiles.
+    - Test through the loop: a read-only script takes no snapshot, and a read-write one does.
+    - Mutation: the mode ignored.
+
+The second finding of 002d-2 (two overlapping `run_step` calls for one task in one process) is a note for RFC 014's handoff: the daemon's design says who serialises a task's steps. Return: `.git-exclude/review-requests/002d-3/README.md`.

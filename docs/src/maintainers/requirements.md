@@ -349,7 +349,7 @@ Instantiation and WASI setup time shall be measured per execution and reported; 
 The runtime shall not invoke a host compiler on generated code. Compiled-language adapters are deferred to the confined worker (DR-007). (R-06)
 
 ### REQ-SBX-011 Resource accounting — M2 · T
-Fuel consumed, peak memory, wall time and output bytes shall be recorded per execution.
+Fuel consumed, peak memory, wall time and output bytes shall be recorded per execution. Fuel is recorded where the engine counts it exactly (a normal end, an exit, fuel exhaustion, `unreachable`, a host call's refusal) and as unknown (`null`) otherwise, never as a figure the engine did not count (handoff 002d).
 
 ### REQ-SBX-012 Fail closed — M2 · T
 If the worker or the sandbox configuration cannot be established as required, the execution shall fail with `host_fault` and detail `unavailable`; nothing runs with fewer guards. (SEC-012 of the draft)

@@ -27,3 +27,23 @@
 - the redaction skipped for the prompt lines (the secret test fails).
 
 Return: `.git-exclude/review-requests/010c-logs/README.md`.
+
+## After review (2026-11-12): 010c-2
+
+010c-1 is landed. Two changes follow it.
+
+1. **The switch is the request** (question 1). `logging.debug_prompts = true` turns on the prompt target's `debug` lines whatever `logging.level` is: one directive in `logging.rs`. A user who turns the switch on gets what it says, without a second setting to find.
+   - The start warning goes back to saying only that prompts and model output are written to the log (redacted).
+   - The book's paragraph follows. External design §17.3 and its sample configuration already say this.
+   - Tests: on at the default `info`, the request and reply lines appear and the secret never does; off at `trace`, none of them.
+   - Mutation: the directive gated on the level again.
+2. **The span reaches the threads and tasks that log for a step** (question 2). Two readers log on their own thread or task:
+   - the worker's standard-error reader (`mimlys-exec`, "worker trace" lines);
+   - the MCP client's standard-error reader (`mimlys-mcp`, `client.rs`).
+
+   Each captures `Span::current()` where it is spawned and logs inside it, so their lines carry the step's ids when a step started them.
+   - A reader that outlives its step (the worker serves many steps) takes the span of the execution it reads for, not the span of the step that started the process. Say in the request which you did and why.
+   - Tests: a host tool's worker line, and a server's standard-error line during a call, carry the ids.
+   - Mutation: the span not captured.
+
+Questions 3 to 6 are accepted as done. Return: `.git-exclude/review-requests/010c-logs-2/README.md`.

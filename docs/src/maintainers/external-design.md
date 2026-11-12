@@ -236,12 +236,12 @@ No filesystem access happens before stage 12. Stage 7 produces the same `denied`
 | `schema` | Missing or unknown field, wrong type, bad enumeration | `path`, `expected`, `allowed` | The field at `path` must be `expected` |
 | `unknown_tool` | Tool not visible | `tool`, `visible_tools` | Use one of `visible_tools` |
 | `invalid_argument` | Out of bounds or invalid | `path`, `min`, `max`, `allowed` | Change the argument at `path` |
-| `denied` | Outside the workspace or grants; excluded path; destination not granted; effect not allowed; promotion proposed; a host-tool argument outside its declaration | `reason` from `path_outside_workspace`, `path_excluded`, `grant_missing`, `destination_not_granted`, `scheme_not_https`, `effect_not_allowed`, `promote_not_allowed`, `argument_not_allowed`; `grant_kind`; for `argument_not_allowed` the `argument` position and `value`, or `max` | One fixed hint per reason: a relative path; other files; the grant to ask for; a granted domain; the `https` form of the URL; the declared literals and pattern |
+| `denied` | Outside the workspace or grants; excluded path; destination not granted; effect not allowed; promotion proposed; a host-tool argument outside its declaration | `reason` from `path_outside_workspace`, `path_excluded`, `grant_missing`, `destination_not_granted`, `scheme_not_https`, `effect_not_allowed`, `promote_not_allowed`, `argument_not_allowed`; `grant_kind`; for `argument_not_allowed` the `argument` position and `value`, or `max` | One fixed hint per reason: a relative path; other files; ask for the missing grant (its kind in `grant_kind` when there is one); a granted domain; the `https` form of the URL; the declared literals and pattern |
 | `state` | Decision not allowed now | `reason` from `pending_user_item`, `completion_check_running` | Wait for the pending item |
 | `budget` | Would exceed a budget | `budget` from `deadline`, `workspace` | Finish or give up |
-| `approval_rejected` | The user rejected the action | `note` (user text, optional) | Choose another approach |
+| `approval_rejected` | The user rejected the action | none: the user's note (optional) reaches the model as its own `user` segment (`rejection_note`), never inside runtime feedback | Choose another approach |
 
-Hints are at most LIM-I5 characters and come from a fixed table; a `denied` hint is chosen by its `reason`, so the model is told what to change, never a generic sentence (CLR-5).
+Hints are at most LIM-I5 characters and come from a fixed table; a `denied` hint is chosen by its `reason`, so the model is told what to change, never a generic sentence (CLR-5). A hint names only keys its detail always carries. The model reads a rejection as the feedback segment `{code, hint, detail}`: the detail's fixed keys above, each string and list bounded by LIM-I9. The detail is stored with the step (persistence schema 3), so the request after a restart is the one the live run would have sent; a step stored before 0.10 has the code and its hint only. A fork's history and a compressed step keep their fixed summaries (REQ-CTX-004).
 
 ### 6.5 Counters and convergence (REQ-DEC-010)
 
@@ -664,7 +664,7 @@ No timer and no collector: everything on disk belongs to one task (RFC 006 §6).
 
 Events are written by a writing runtime only; a read command (REQ-PERS-013) records none, `runtime.started` and `runtime.stopped` included.
 
-`task.created`, `task.state_changed{from, to, reason?}`, `task.pause_requested`, `task.deleted{audit}`, `step.started`, `step.finished{outcome}`, `decision.received{hash, transport, text_chars?}` (from 0.9: `transport` is `tool_calls` or `envelope`; `text_chars` counts text beside a structured call, which is not part of the decision), `decision.rejected{code}`, `action.proposed`, `action.authorized`, `action.started`, `execution.finished{attempt, termination}`, `action.finished{status, cause?}`, `approval.requested`, `approval.decided{decision}`, `approval.invalidated`, `question.asked`, `question.answered`, `grant.issued`, `grant.revoked`, `workspace.materialized`, `workspace.snapshot{reason}`, `workspace.rollback`, `workspace.promoted{files}`, `task.recovered{disposition}`, `tool.pinned`, `tool.unpinned`, `server.started{server, version?}`, `server.stopped{server, reason}`, `runtime.started{tier, backend}`, `runtime.stopped`, `runtime.orphans_killed{count}`, `snapshot.journals_recovered{finished, undone, objects_removed}` (from 0.10: the start finished or undid snapshot journals a crash left, REQ-WS-012; recorded only when it did). `backend` is the descriptor `{kind, model?, locality}` of the backend in force (REQ-SEC-010, RFC 008); the same descriptor is recorded on every task's versions at creation.
+`task.created`, `task.state_changed{from, to, reason?}`, `task.pause_requested`, `task.deleted{audit}`, `step.started`, `step.finished{outcome}`, `decision.received{hash, transport, text_chars?}` (from 0.9: `transport` is `tool_calls` or `envelope`; `text_chars` counts text beside a structured call, which is not part of the decision), `decision.rejected{code, reason?, grant_kind?}`, `action.proposed`, `action.authorized`, `action.started`, `execution.finished{attempt, termination}`, `action.finished{status, cause?}`, `approval.requested`, `approval.decided{decision}`, `approval.invalidated`, `question.asked`, `question.answered`, `grant.issued`, `grant.revoked`, `workspace.materialized`, `workspace.snapshot{reason}`, `workspace.rollback`, `workspace.promoted{files}`, `task.recovered{disposition}`, `tool.pinned`, `tool.unpinned`, `server.started{server, version?}`, `server.stopped{server, reason}`, `runtime.started{tier, backend}`, `runtime.stopped`, `runtime.orphans_killed{count}`, `snapshot.journals_recovered{finished, undone, objects_removed}` (from 0.10: the start finished or undid snapshot journals a crash left, REQ-WS-012; recorded only when it did). `backend` is the descriptor `{kind, model?, locality}` of the backend in force (REQ-SEC-010, RFC 008); the same descriptor is recorded on every task's versions at creation.
 
 Every event carries `event_id`, `at` (LIM-U4), `actor` (`user{session, os_user}`, `runtime`, `model`, `tool{name}`), `task_id?`, `step_id?`, `action_id?`, `policy_hash`.
 
@@ -674,7 +674,7 @@ Per task and aggregated: tasks by state; events by name; rejections by code; hal
 
 ### 17.3 Logs (REQ-OBS-004)
 
-Structured lines on standard error: timestamp, level, event, durations, counts, outcome, and, for a line written while a task's step runs, the fields of the step's span: `task_id`, `step_id` and, once there is an action, `action_id`. Never prompt content, file content or secrets at the default level. `logging.debug_prompts = true` writes, at `debug`, each request's messages and the model's reply, through the same redaction, and warns at start.
+Structured lines on standard error: timestamp, level, event, durations, counts, outcome, and, for a line written while a task's step runs, the fields of the step's span: `task_id`, `step_id` and, once there is an action, `action_id`. Never prompt content, file content or secrets at the default level. `logging.debug_prompts = true` writes each request's messages and the model's reply as `debug` lines of their own target, whatever `logging.level` is (the switch is the request), through the same redaction, and warns at start.
 
 ---
 
@@ -801,7 +801,7 @@ env = { RUSTUP_HOME = "~/.rustup" }
 
 [logging]
 level = "info"
-debug_prompts = false                  # true logs prompts and model output, and warns at start
+debug_prompts = false                  # true logs prompts and model output (redacted) at any level, and warns at start
 
 [interpreters.javascript]              # optional: overrides the shipped build (RFC 005)
 module = "/path/to/qjs-wasi.wasm"
@@ -847,6 +847,7 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 | Approval expires | halt `approval_expired` | REQ-APR-006 |
 | Workspace quota | halt `workspace_quota` | REQ-WS-008 |
 | Second runtime on the data directory | refuses to start | REQ-PERS-001 |
+| Engine context smaller than one request needs (the budget's tokens at the transport's lowest measured characters per token, plus `max_tokens`) | `status` shows `context: <n> tokens per request (needs about <m>)` and a warning with the engine's remedy (llama.cpp's `-c` for all its slots, or Ollama's `num_ctx`); `run` and the commands that drive steps say it once on standard error; the run goes on. The context is the engine's word (llama.cpp's `/props`; Ollama's `/api/ps` for a loaded model, else the Modelfile's `num_ctx`), else `unknown`, never assumed | REQ-MDL-003 |
 | MCP definition changed | tool unavailable for the task; `tool.unpinned` | REQ-MCP-002 |
 
 ---
