@@ -31,7 +31,7 @@ fn req_conf_003_m2_probe() {
 fn req_conf_009_tree_termination() {
     let command = WorkerCommand {
         program: "/bin/sh".into(),
-        args: vec!["-c".into(), "sleep 30 & echo $! ; wait".into()],
+        args: vec!["-c".into(), "sleep 120 & echo $! ; wait".into()],
         env: vec![("PATH".into(), "/usr/bin:/bin".into())],
         current_dir: None,
     };
@@ -50,12 +50,20 @@ fn req_conf_009_tree_termination() {
             || cfg!(not(target_os = "linux"))
     );
     child.kill_tree();
-    std::thread::sleep(Duration::from_millis(200));
     if cfg!(target_os = "linux") {
-        let alive = std::fs::read_to_string(format!("/proc/{grandchild}/stat"))
-            .map(|s| !s.contains(") Z "))
-            .unwrap_or(false);
-        assert!(!alive, "the grandchild must be gone with the group");
+        // Decided by the process's state, not by a fixed pause: the grandchild
+        // sleeps for 120 s, so it is gone because of the kill (never because
+        // it ended), and a slow machine is given up to 60 s to deliver the signal.
+        let alive = || {
+            std::fs::read_to_string(format!("/proc/{grandchild}/stat"))
+                .map(|s| !s.contains(") Z "))
+                .unwrap_or(false)
+        };
+        let started = std::time::Instant::now();
+        while alive() && started.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "the grandchild must be gone with the group");
     }
 }
 

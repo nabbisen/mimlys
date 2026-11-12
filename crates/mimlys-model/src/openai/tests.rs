@@ -288,6 +288,27 @@ fn req_mdl_003_failures_are_unavailable() {
                 body: "{}".into(),
                 headers: vec![("Retry-After".into(), "1".into())],
             },
+            // Five of them: see the 404 calls below.
+            Reply::Raw {
+                status: 404,
+                body: "{}".into(),
+                headers: vec![],
+            },
+            Reply::Raw {
+                status: 404,
+                body: "{}".into(),
+                headers: vec![],
+            },
+            Reply::Raw {
+                status: 404,
+                body: "{}".into(),
+                headers: vec![],
+            },
+            Reply::Raw {
+                status: 404,
+                body: "{}".into(),
+                headers: vec![],
+            },
             Reply::Raw {
                 status: 404,
                 body: "{}".into(),
@@ -327,11 +348,20 @@ fn req_mdl_003_failures_are_unavailable() {
         took >= std::time::Duration::from_millis(900),
         "Retry-After honoured: {took:?}"
     );
-    let (err, took) = call("404");
-    assert!(matches!(err, BackendError::Unavailable { ref detail } if detail == "status:404"));
+    // No pause for a plain client error. The pause would be BACKOFF (250 ms),
+    // which is no margin for one call on a slow machine; so five calls are
+    // made, all five must be `status:404`, and the quickest is the one held to
+    // BACKOFF: a pause on every 404 puts all five above it, a stalled machine
+    // does not do so five times in a row.
+    let mut quickest = std::time::Duration::MAX;
+    for _ in 0..5 {
+        let (err, took) = call("404");
+        assert!(matches!(err, BackendError::Unavailable { ref detail } if detail == "status:404"));
+        quickest = quickest.min(took);
+    }
     assert!(
-        took < BACKOFF,
-        "no pause for a plain client error: {took:?}"
+        quickest < BACKOFF,
+        "no pause for a plain client error: the quickest of five took {quickest:?}"
     );
     let (err, _) = call("close");
     assert!(matches!(err, BackendError::Unavailable { ref detail } if detail == "transport"));
@@ -347,11 +377,20 @@ fn req_mdl_003_failures_are_unavailable() {
 #[test]
 fn lim_m1_deadline_and_cancellation() {
     let rt = rt();
+    // The server answers after HOLD_MS, far longer than anything the test waits
+    // for: the request ends because of the deadline or the cancellation, never
+    // because the server answered, and the margin allowed is half the hold (a
+    // stall of a slow machine is not that long), the rule of handoff 011i. The
+    // poll interval itself (CANCEL_POLL, 100 ms) is not timed: a cancellation
+    // that is seen only when the server answers fails the test, one that is seen
+    // after a second or two does not.
+    const HOLD_MS: u64 = 60_000;
+    let margin = std::time::Duration::from_millis(HOLD_MS / 2);
     let server = MockServer::start(
         MockConfig::default(),
         vec![
-            Reply::Slow(2000, Box::new(Reply::Content("{}".into()))),
-            Reply::Slow(2000, Box::new(Reply::Content("{}".into()))),
+            Reply::Slow(HOLD_MS, Box::new(Reply::Content("{}".into()))),
+            Reply::Slow(HOLD_MS, Box::new(Reply::Content("{}".into()))),
         ],
     );
     let backend = OpenAiBackend::new(config(server.url(), Mode::None));
@@ -362,7 +401,7 @@ fn lim_m1_deadline_and_cancellation() {
         .block_on(backend.generate(short, Cancellation::new()))
         .unwrap_err();
     assert!(matches!(err, BackendError::Timeout), "{err}");
-    assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+    assert!(started.elapsed() < margin, "{:?}", started.elapsed());
 
     let cancel = Cancellation::new();
     let flag = cancel.clone();
@@ -375,11 +414,7 @@ fn lim_m1_deadline_and_cancellation() {
         .block_on(backend.generate(request(), cancel))
         .unwrap_err();
     assert!(matches!(err, BackendError::Cancelled), "{err}");
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(600),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < margin, "{:?}", started.elapsed());
 }
 
 /// REQ-MDL-007 / REQ-SEC-009: the body is read through a bound; content

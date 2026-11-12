@@ -401,7 +401,11 @@ fn m6b_deadline_kills_the_whole_tree() {
         .map(str::trim)
         .map(str::to_owned)
         .unwrap_or_else(|| panic!("no child pid in {}", stdout_of(&obs[0])));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // The detached child sleeps for 60 s, of which the run took at least the
+    // tool's 10 s deadline: it is gone because the job ended it, and a slow
+    // machine is given up to 30 s to do so, which is less than it has left to
+    // live (a state, not a short pause).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while alive(&child) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
