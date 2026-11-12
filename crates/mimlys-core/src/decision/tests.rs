@@ -34,6 +34,7 @@ fn req_dec_002_five_decision_kinds_parse() {
 }
 
 /// REQ-DEC-002: unknown fields, wrong types and bad kinds are `schema` rejections with a path.
+/// REQ-TEST-004 (wrong-type decisions, the rejection code at the parser): a wrong type is `schema` and names the path. That nothing executed is asserted through the loop by `req_test_004_hostile_decisions_get_their_code_and_execute_nothing`.
 #[test]
 fn req_dec_002_schema_rejections_carry_paths() {
     let p = |input: &str| {

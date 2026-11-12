@@ -1068,6 +1068,8 @@ mod snapshots_m3 {
 
     /// RFC 006 §6: deleting a task's data releases its objects in the same
     /// transaction; shared objects survive; `audit` removes the records.
+    /// REQ-WS-009 (`deleted`): the workspace state reads `deleted` after `delete_task_data`, and the task record stays unless the audit is asked for.
+    /// REQ-WS-012 (reference counts in the same transaction as the rows): the objects released by the deleted task's rows are returned, an object another task still references stays with its count, the blob rows and snapshot rows go, the integrity check passes, and `audit` removes the records.
     #[test]
     fn rfc_006_delete_task_data() {
         let dir = tempfile::tempdir().unwrap();
