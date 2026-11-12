@@ -1067,3 +1067,14 @@ fn req_conf_008_concurrent_grants_keep_both_entries() {
         assert_eq!(stdout_of(&obs[0]).trim(), "ok");
     }
 }
+
+/// THROWAWAY (handoff 017, measurement 4, "before"): the time of mimlys's own first start.
+#[test]
+fn req_conf_008_first_start_time_is_reported() {
+    let env = Env::new(&[], "");
+    let started = std::time::Instant::now();
+    let (code, listed) = env.json(&["toolchain", "list"]);
+    let elapsed = started.elapsed();
+    assert_eq!(code, 0, "{listed}");
+    eprintln!("FIRST_START_MS={}", elapsed.as_millis());
+}
