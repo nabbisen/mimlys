@@ -1,0 +1,19 @@
+# THROWAWAY (handoff 017): a mutation of the Windows file entry, run against the m6b tests of REQ-CONF-008/011.
+name: mutate 017
+on:
+  push:
+    branches: [017-mut-c]
+permissions:
+  contents: read
+jobs:
+  mutate:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - shell: bash
+        run: |
+          cargo test -p mimlys --all-features --test m6b_host_tools --no-fail-fast -- req_conf_008 req_conf_011 2>&1 | grep -E "^test |test result|panicked|left:|right:" | cut -c1-300 || true

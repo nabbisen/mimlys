@@ -547,6 +547,7 @@ impl App {
         let mut runtime_read: Vec<PathBuf> = vec![data_dir.join("interpreters")];
         runtime_read.extend(interpreters.iter().map(|i| i.module.clone()));
         runtime_read.push(worker_binary());
+        runtime_read.extend(worker_binary().parent().map(Path::to_path_buf));
         let container = crate::toolchain::prepare(
             &data_dir,
             &crate::toolchain::RuntimePaths {
