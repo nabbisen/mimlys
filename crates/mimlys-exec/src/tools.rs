@@ -296,7 +296,14 @@ impl ToolProvider for WorkerTools {
         };
         let cancel = context.cancel.clone();
         Box::pin(async move {
-            match tokio::task::spawn_blocking(move || worker.execute(execution, cancel)).await {
+            // A blocking thread does not inherit the step's span: carry it in,
+            // so that the worker's lines and this execution's own are the step's.
+            let span = tracing::Span::current();
+            match tokio::task::spawn_blocking(move || {
+                span.in_scope(|| worker.execute(execution, cancel))
+            })
+            .await
+            {
                 Ok(outcome) => outcome,
                 Err(_) => ExecutionOutcome {
                     termination: mimlys_core::action::Termination::HostFault {

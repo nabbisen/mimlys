@@ -98,12 +98,18 @@ pub struct Connection {
     process_id: Option<u32>,
     info: ServerInfo,
     dirty: Arc<AtomicBool>,
+    /// The calls in flight, for the span of the standard-error reader's lines.
+    reader_span: mimlys_core::log_span::ReaderSpan,
 }
 
 impl Connection {
     /// Spawns and initializes; the caller bounds the time. `dirty` is set
     /// when the server announces a changed tool list.
     pub async fn start(config: &ServerConfig, dirty: Arc<AtomicBool>) -> Result<Self, String> {
+        let reader_span = mimlys_core::log_span::ReaderSpan::new();
+        // The start is in flight too, so that a line written while the server
+        // initializes carries the ids of the step that needed it.
+        let starting = reader_span.begin();
         let mut command = tokio::process::Command::new(&config.command);
         command
             .args(&config.args)
@@ -135,11 +141,17 @@ impl Connection {
         };
         if let Some(stderr) = stderr {
             let server = config.name.clone();
+            // The server outlives the step that started it and serves many
+            // calls: each line is written in the span of the call in flight
+            // when it is read (none between calls), not in a span captured here.
+            let reader_span = reader_span.clone();
             tokio::spawn(async move {
                 use tokio::io::AsyncBufReadExt;
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::info!(target: "mimlys_mcp", server = %server, "{line}");
+                    reader_span.current().in_scope(
+                        || tracing::info!(target: "mimlys_mcp", server = %server, "{line}"),
+                    );
                 }
             });
         }
@@ -170,12 +182,14 @@ impl Connection {
                 .and_then(|i| i.server_info.as_ref().map(|s| s.version.clone())),
             instructions: peer_info.as_ref().and_then(|i| i.instructions.clone()),
         };
+        drop(starting);
         Ok(Self {
             service,
             child,
             process_id,
             info,
             dirty,
+            reader_span,
         })
     }
 
@@ -201,6 +215,7 @@ impl Connection {
 
     /// `tools/list`, every page.
     pub async fn list_tools(&self) -> Result<Vec<Listed>, String> {
+        let _in_flight = self.reader_span.begin();
         let tools = self
             .service
             .peer()
@@ -229,6 +244,7 @@ impl Connection {
         cancel: &Cancellation,
         grace: Duration,
     ) -> CallOutcome {
+        let _in_flight = self.reader_span.begin();
         let request = ClientRequest::CallToolRequest(rmcp::model::Request::new(
             CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments),
         ));
