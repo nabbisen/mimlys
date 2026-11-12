@@ -366,6 +366,9 @@ async fn req_tool_003_delete_path() {
 /// links with `std::os::unix`.)
 /// REQ-TEST-005 (external design §6.3), symbolic links.
 /// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths: symbolic links.
+/// REQ-PRIV-001 (external design §14.2), minimization: the content of a file outside
+/// the workspace (`top secret`) does not enter an observation through a link, a
+/// listing or a search.
 #[cfg(unix)]
 #[tokio::test]
 async fn req_tool_004_symlink_escape_is_refused() {
