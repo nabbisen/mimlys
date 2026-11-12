@@ -22,6 +22,11 @@
 //! unforgeable), REQ-CTX-008 (invisible characters), REQ-APR-003 (hostile
 //! strings in an approval), REQ-TOOL-004 (symbolic links), REQ-SBX-006
 //! (malformed modules) and REQ-MCP-003 with THR-25 (hostile descriptions).
+//! Two test requirements are verified here in part: REQ-TEST-004 (oversized,
+//! duplicated-key, trailing-text and invisible-character decisions get their
+//! rejection code at the parser; the same shapes through the loop, executing
+//! nothing, are `req_test_004_hostile_decisions_get_their_code_and_execute_nothing`)
+//! and REQ-TEST-006 (a rendered approval escapes hostile strings).
 
 // The symbolic-link scenario runs on Unix only: elsewhere its fields are read by nothing.
 #![cfg_attr(not(unix), allow(dead_code))]
