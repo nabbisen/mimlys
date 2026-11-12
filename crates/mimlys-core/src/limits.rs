@@ -104,10 +104,6 @@ pub const LIM_W1_WORKSPACE_BYTES: u64 = 1024 * 1024 * 1024;
 pub const LIM_W1_WORKSPACE_BYTES_RANGE: (u64, u64) = (64 * 1024 * 1024, 64 * 1024 * 1024 * 1024);
 /// LIM-W2: files in a workspace.
 pub const LIM_W2_WORKSPACE_FILES: u64 = 200_000;
-/// LIM-P3: snapshot retention after a task is terminal, in days.
-pub const LIM_P3_RETENTION_DAYS: u32 = 30;
-/// LIM-P3 range.
-pub const LIM_P3_RETENTION_DAYS_RANGE: (u32, u32) = (1, 365);
 /// LIM-S1: fuel per execution.
 pub const LIM_S1_FUEL: u64 = 10_000_000_000;
 /// LIM-S1 range.

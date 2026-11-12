@@ -124,8 +124,8 @@ impl Env {
 /// REQ-PERS-010, REQ-PRIV-006 (external design §16.4): no timer and no
 /// collector (the retired `workspace.retention_days` key is refused, and `gc`
 /// does not exist, `cli.rs`). A terminal task and a task that is not terminal, both older
-/// than every retention a timer could have held (400 days; LIM-P3's range
-/// ends at 365), keep their workspace, snapshots and events through the
+/// than every retention a timer could have held (400 days; the range of the
+/// retired timer, LIM-P3, ended at 365), keep their workspace, snapshots and events through the
 /// commands that open the store for writing (a run, which does the startup
 /// recovery) and for reading, and through a `task prune` that is not
 /// confirmed. Then the user's command removes what it names and no more: a
