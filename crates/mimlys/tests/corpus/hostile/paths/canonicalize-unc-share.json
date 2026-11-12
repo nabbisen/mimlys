@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "A UNC path is refused under the POSIX rules too.",
+  "origin": "mimlys-core path/tests.rs req_dec_007_escapes_and_absolute_paths",
+  "input": "\\\\server\\share",
+  "rules": "posix",
+  "expect": {
+    "error": "absolute"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "check": "loop.reject",
+  "note": "A JSON array: rejected.",
+  "origin": "mimlys-core runtime/tests.rs req_sec_003_validation_and_policy_errors_execute_nothing",
+  "input": "[1, 2, 3]",
+  "expect": {
+    "step_outcome": "rejected",
+    "task_state": "running",
+    "tool_calls": 0,
+    "unwritten": [
+      "authorized",
+      "running",
+      "execution",
+      "action_terminal"
+    ]
+  }
+}

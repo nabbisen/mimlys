@@ -786,6 +786,58 @@ fn req_obs_002_events_and_versions() {
     assert_eq!(store.load_grants(task.task_id).unwrap().len(), 1);
 }
 
+/// REQ-DEC-011: a plan version is immutable in the store: a new plan is a new row (the
+/// latest version is the plan), and a version that exists is never replaced, so the
+/// earlier version stays on record.
+#[test]
+fn req_dec_011_a_plan_version_is_never_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let store = open(&data).unwrap();
+    let fx = Fx::new();
+    let (task, _) = sequence(&store, &fx, 0, false);
+    let plan = |version: u32, steps: &[&str]| mimlys_core::task::PlanVersion {
+        task_id: task.task_id,
+        version,
+        steps: steps.iter().map(|s| (*s).to_owned()).collect(),
+        created_at: fx.now(),
+    };
+    let received = || {
+        fx.event(
+            &task,
+            Event::DecisionReceived {
+                hash: hash_bytes(b"plan"),
+                transport: Default::default(),
+                text_chars: None,
+            },
+        )
+    };
+    store.record_plan(&plan(1, &["read"]), &received()).unwrap();
+    store
+        .record_plan(&plan(2, &["read", "fix"]), &received())
+        .unwrap();
+    assert_eq!(store.load_plan(task.task_id).unwrap().unwrap().version, 2);
+    let err = store
+        .record_plan(&plan(1, &["rewritten"]), &received())
+        .unwrap_err();
+    assert!(matches!(err, PersistenceError::Storage { .. }), "{err:?}");
+    assert_eq!(
+        store.load_plan(task.task_id).unwrap(),
+        Some(plan(2, &["read", "fix"])),
+        "the failed rewrite changed nothing"
+    );
+    let conn = rusqlite::Connection::open(data.join("mimlys.db")).unwrap();
+    let versions: Vec<(i64, String)> = conn
+        .prepare("SELECT version, record FROM plan_versions ORDER BY version")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(versions.len(), 2, "both versions are on record");
+    assert!(versions[0].1.contains("\"read\"") && !versions[0].1.contains("rewritten"));
+}
+
 /// REQ-TEST-007: crash injection at every point, before and after the commit; the store recovers to a consistent state.
 #[cfg(feature = "crash-injection")]
 #[test]
@@ -1068,6 +1120,13 @@ mod snapshots_m3 {
 
     /// RFC 006 §6: deleting a task's data releases its objects in the same
     /// transaction; shared objects survive; `audit` removes the records.
+    /// REQ-WS-009 (`deleted`): the workspace state reads `deleted` after `delete_task_data`, and the task record stays unless the audit is asked for.
+    /// REQ-WS-012 (reference counts in the same transaction as the rows): the objects released by the deleted task's rows are returned, an object another task still references stays with its count, the blob rows and snapshot rows go, the integrity check passes, and `audit` removes the records.
+    /// REQ-OBS-005: without `audit` the task and its record stay; with it the task and all
+    /// its events are removed.
+    /// REQ-PERS-010, REQ-PRIV-006 (external design §16.4), in the store: without
+    /// `audit` the task record and its events stay and only the task's snapshots,
+    /// blobs and unshared objects go; with `audit` the records go too.
     #[test]
     fn rfc_006_delete_task_data() {
         let dir = tempfile::tempdir().unwrap();

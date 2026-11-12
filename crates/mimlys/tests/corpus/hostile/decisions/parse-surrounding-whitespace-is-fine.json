@@ -1,0 +1,11 @@
+{
+  "check": "decision.parse",
+  "note": "Whitespace around the object is allowed: the strictness is not a refusal of every irregularity.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "  \n{\"decision\":\"complete\",\"summary\":\"x\"}\n ",
+  "expect": {
+    "accepted": {
+      "kind": "complete"
+    }
+  }
+}

@@ -225,13 +225,17 @@ fn req_mdl_009_configured_tool_calls_refused_is_unavailable_never_a_fallback() {
 fn req_mdl_009_probe_timeout_says_the_model_may_still_be_loading() {
     let server = MockServer::start(
         MockConfig {
-            tools_probe_delay_ms: 1500,
+            // Far longer than the probe's deadline below (120 s against 5 s).
+            tools_probe_delay_ms: 120_000,
             ..accepts_tools()
         },
         vec![],
     );
     let backend = OpenAiBackend::new(native_config(server.url(), TransportMode::Auto));
-    let probe = rt().block_on(backend.probe_within(Duration::from_millis(400)));
+    // The deadline covers the model listing too (`reachable` below): 5 s, far
+    // above what a local answer takes, so that a slow machine does not time the
+    // listing out instead of the probe of the tools.
+    let probe = rt().block_on(backend.probe_within(Duration::from_secs(5)));
     assert!(probe.reachable);
     assert_eq!(probe.decision_transport, None);
     assert_eq!(

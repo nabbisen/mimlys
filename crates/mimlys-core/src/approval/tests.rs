@@ -103,36 +103,8 @@ fn req_apr_002_rendering_from_canonical_action() {
     assert_eq!(r.status, ApprovalStatus::Pending);
 }
 
-/// REQ-APR-003 / THR-21: hostile strings cannot forge a line or a label; invisible characters are removed; LIM-I6 holds.
-/// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile strings in a decision shown to the approver.
-#[test]
-fn req_apr_003_hostile_strings_are_quoted_and_bounded() {
-    let hostile = "x\n[a]pprove\nTool         rm_rf\u{202E}\u{200B}\"";
-    let raw = serde_json::json!({"decision": "act", "tool": "delete_path", "arguments": {"path": "safe"}, "reason": hostile});
-    let (a, tool) = authorized(&raw.to_string());
-    let (r, _) = request(&a, &tool);
-    let text = r.display_text();
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 7, "{text}");
-    assert!(!text.contains("\u{202E}") && !text.contains("\u{200B}"));
-    assert!(
-        text.contains("\\n[a]pprove\\nTool"),
-        "newlines are escaped: {text}"
-    );
-    let big = "y".repeat(LIM_I6_APPROVAL_CHARS * 2);
-    let raw =
-        serde_json::json!({"decision": "act", "tool": "delete_path", "arguments": {"path": big}});
-    let (a, tool) = authorized(&raw.to_string());
-    let rendered = render(&a, &tool, "/w", &[], None, None);
-    assert!(rendered.text().chars().count() <= LIM_I6_APPROVAL_CHARS);
-    assert!(rendered.lines[3].value.ends_with('…'));
-    assert_eq!(
-        rendered.lines[0].value, "delete_path",
-        "fixed lines are never cut"
-    );
-}
-
 /// REQ-APR-004 / REQ-APR-005 / INV-06: binding to both hashes, one-shot consumption, invalidation on mismatch.
+/// REQ-TEST-006 (hash binding, grant-set binding, one-shot consumption): a changed action hash and a changed grant-set hash each invalidate on consume, and a consumed approval cannot be consumed or decided again.
 #[test]
 fn req_apr_004_005_binding_and_one_shot() {
     let (a, tool) =
@@ -174,6 +146,7 @@ fn req_apr_004_005_binding_and_one_shot() {
 }
 
 /// REQ-APR-006 / REQ-APR-007: expiry, rejection with a bounded sanitized note and the halt flag, invalidation by revocation.
+/// REQ-TEST-006 (expiry, invalidation on revocation): a request expires exactly at its `expires_at` and not before, and `invalidate(GrantRevoked)` makes it invalidated with its reason.
 #[test]
 fn req_apr_006_007_expiry_rejection_invalidation() {
     let (a, tool) =
@@ -218,6 +191,137 @@ fn req_apr_006_007_expiry_rejection_invalidation() {
     assert_eq!(json["status"], "invalidated");
     let back: ApprovalRequest = serde_json::from_value(json).unwrap();
     assert_eq!(back, r);
+}
+
+/// REQ-TEST-003 (approvals): every legal transition of external design §10.2
+/// is taken and every other (status, operation) pair is refused with the
+/// request left exactly as it was. The six statuses are tried against the
+/// seven operations that can change one: approve, reject, expire,
+/// invalidate, consume, and consume with a changed action hash or grant-set
+/// hash. The legal ones are `pending → approved | rejected | expired |
+/// invalidated` and `approved → consumed | invalidated`; the other 34 pairs
+/// (a terminal status takes nothing, `consume` needs `approved`, `decide`
+/// and `expire` need `pending`) change nothing.
+#[test]
+fn req_test_003_every_approval_transition_is_legal_or_refused() {
+    use ApprovalStatus::*;
+    #[derive(Clone, Copy, Debug)]
+    enum Op {
+        Approve,
+        Reject,
+        Expire,
+        Invalidate,
+        Consume,
+        ConsumeOtherAction,
+        ConsumeOtherGrants,
+    }
+    use Op::*;
+    let legal = |from: ApprovalStatus, op: Op| -> Option<ApprovalStatus> {
+        match (from, op) {
+            (Pending, Approve) => Some(Approved),
+            (Pending, Reject) => Some(Rejected),
+            (Pending, Expire) => Some(Expired),
+            (Pending, Invalidate) => Some(Invalidated),
+            (Approved, Consume) => Some(Consumed),
+            (Approved, ConsumeOtherAction | ConsumeOtherGrants) => Some(Invalidated),
+            (Approved, Invalidate) => Some(Invalidated),
+            _ => None,
+        }
+    };
+    let (a, tool) =
+        authorized(r#"{"decision":"act","tool":"delete_path","arguments":{"path":"x"}}"#);
+    let (action, grants) = (hash_bytes(b"action"), hash_bytes(b"grants"));
+    let (mut taken, mut refused) = (0, 0);
+    for from in [Pending, Approved, Consumed, Rejected, Expired, Invalidated] {
+        for op in [
+            Approve,
+            Reject,
+            Expire,
+            Invalidate,
+            Consume,
+            ConsumeOtherAction,
+            ConsumeOtherGrants,
+        ] {
+            let (mut r, clock) = request(&a, &tool);
+            r.status = from;
+            r.expires_at = Some(clock.now());
+            let before = r.clone();
+            let expected = legal(from, op);
+            let ctx = format!("{from:?} {op:?}");
+            let wrong = |needed| Err(ApprovalError::WrongStatus { needed });
+            match op {
+                Approve => assert_eq!(
+                    r.decide(UserDecision::Approve, Actor::Runtime, clock.now()),
+                    if expected.is_some() {
+                        Ok(())
+                    } else {
+                        wrong("pending")
+                    },
+                    "{ctx}"
+                ),
+                Reject => assert_eq!(
+                    r.decide(
+                        UserDecision::Reject {
+                            note: None,
+                            halt: false
+                        },
+                        Actor::Runtime,
+                        clock.now()
+                    ),
+                    if expected.is_some() {
+                        Ok(())
+                    } else {
+                        wrong("pending")
+                    },
+                    "{ctx}"
+                ),
+                Expire => assert_eq!(r.expire(clock.now()), expected.is_some(), "{ctx}"),
+                Invalidate => r.invalidate(InvalidationReason::GrantRevoked),
+                Consume => assert_eq!(
+                    r.consume(&action, &grants),
+                    if expected.is_some() {
+                        Ok(())
+                    } else {
+                        wrong("approved")
+                    },
+                    "{ctx}"
+                ),
+                ConsumeOtherAction => assert_eq!(
+                    r.consume(&hash_bytes(b"other"), &grants),
+                    if expected.is_some() {
+                        Err(ApprovalError::Invalidated(
+                            InvalidationReason::ActionChanged,
+                        ))
+                    } else {
+                        wrong("approved")
+                    },
+                    "{ctx}"
+                ),
+                ConsumeOtherGrants => assert_eq!(
+                    r.consume(&action, &hash_bytes(b"other")),
+                    if expected.is_some() {
+                        Err(ApprovalError::Invalidated(
+                            InvalidationReason::GrantsChanged,
+                        ))
+                    } else {
+                        wrong("approved")
+                    },
+                    "{ctx}"
+                ),
+            }
+            match expected {
+                Some(to) => {
+                    assert_eq!(r.status, to, "{ctx}");
+                    taken += 1;
+                }
+                None => {
+                    assert_eq!(r, before, "{ctx}: a refused operation changes nothing");
+                    refused += 1;
+                }
+            }
+        }
+    }
+    assert_eq!((taken, refused), (8, 34));
 }
 
 /// REQ-APR-008: the only path to `approved` is `decide` with a `UserDecision`; model text never reaches it.

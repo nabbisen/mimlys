@@ -1,0 +1,19 @@
+{
+  "check": "path.relation",
+  "note": "The root is an ancestor of any path.",
+  "origin": "mimlys-core path/tests.rs req_dec_006_nfc_and_case_modes",
+  "a": "src/lib.rs",
+  "b": ".",
+  "rules": "posix",
+  "expect": {
+    "equal": false,
+    "same_as": {
+      "sensitive": false,
+      "insensitive": false
+    },
+    "starts_with": {
+      "sensitive": true,
+      "insensitive": true
+    }
+  }
+}

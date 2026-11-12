@@ -172,11 +172,15 @@ fn req_tool_007_cancel_reaches_the_worker() {
     write_module(&fx, "loop.wasm", LOOP);
     let cancel = Cancellation::new();
     let c = cancel.clone();
+    // The instant of the cancel: the time to end is measured from the state
+    // change, not from the start of the run (the worker's start included).
+    let cancelled_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let at = std::sync::Arc::clone(&cancelled_at);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(300));
+        *at.lock().unwrap() = Some(std::time::Instant::now());
         c.cancel();
     });
-    let started = std::time::Instant::now();
     let out = fx.worker.execute(
         execution(
             &fx,
@@ -188,7 +192,19 @@ fn req_tool_007_cancel_reaches_the_worker() {
     );
     assert_eq!(out.termination, Termination::Cancelled);
     assert!(out.failure.is_none());
-    assert!(started.elapsed() < std::time::Duration::from_millis(2_500));
+    // The loop's own deadline is 60 s, so `Cancelled` is what proves that the
+    // cancel reached the worker. LIM-O2 is the contract; the time allowed is five
+    // times the limit: a cancel that needs a multiple of it is a defect, a stall of
+    // a slow machine shorter than that is not.
+    let took = cancelled_at
+        .lock()
+        .unwrap()
+        .expect("the cancel was sent")
+        .elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(5 * mimlys_core::limits::LIM_O2_CANCEL_MS),
+        "the cancel took {took:?} to reach the worker"
+    );
 }
 
 /// REQ-SBX-002 through the worker: the deadline ends a loop as `deadline`.
@@ -208,12 +224,64 @@ fn req_sbx_002_deadline_through_the_worker() {
     assert_eq!(out.termination, Termination::Deadline);
 }
 
+/// REQ-SBX-012 (external design §12, §7.4), fail closed: a worker that cannot
+/// be established (its program is not there) ends the execution
+/// `host_fault{unavailable}`; the module does not run (no output, no exit
+/// code, no fuel spent), and nothing falls back to running it in the
+/// runtime's own process. The same execution through the real worker runs
+/// (the control).
+#[test]
+fn req_sbx_012_a_worker_that_cannot_be_established_fails_closed() {
+    let fx = fx();
+    write_module(&fx, "hello.wasm", HELLO);
+    let run = |worker: &Worker| {
+        worker.execute(
+            execution(
+                &fx,
+                "run_wasm",
+                serde_json::json!({"module": "hello.wasm"}),
+                5_000,
+            ),
+            Cancellation::new(),
+        )
+    };
+    let control = run(&fx.worker);
+    assert_eq!(control.termination, Termination::Exited { exit_code: 7 });
+    assert_eq!(control.stdout, b"hello\n");
+
+    let absent = Worker::new(WorkerConfig {
+        program: fx._dir.path().join("no-such-worker"),
+        interpreters: vec![],
+        confinement: platform(),
+        limits: mimlys_exec::sandbox::Limits::default(),
+        spec: None,
+        host_tools: vec![],
+        record: None,
+    });
+    let out = run(&absent);
+    assert_eq!(
+        out.termination,
+        Termination::HostFault {
+            detail: HostFaultDetail::Unavailable
+        }
+    );
+    assert!(
+        out.stdout.is_empty() && out.stderr.is_empty(),
+        "nothing ran"
+    );
+    assert_eq!(out.metrics.fuel, None);
+}
+
 /// REQ-ARCH-008 / REQ-TEST-008: the worker's death is `host_fault{worker_died}`,
 /// the runtime survives, the next execution restarts the worker; the budget
 /// LIM-X3 ends in `host_fault{unavailable}`.
 /// REQ-SEC-011 (external design §12, §21), the worker clause: the worker's
 /// death is an execution failure, never a runtime failure: the test process,
 /// which is the runtime side, survives every death.
+/// REQ-SBX-012 (external design §12), fail closed, the budget half: once
+/// LIM-X3 is spent a worker cannot be established for the task, and its next
+/// execution is `host_fault{unavailable}` (the module is not run elsewhere);
+/// another task still gets a worker.
 #[test]
 fn req_arch_008_worker_death_and_restart_budget() {
     let fx = fx();

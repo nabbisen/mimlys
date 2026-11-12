@@ -1,0 +1,22 @@
+{
+  "check": "loop.reject",
+  "note": "200000 nested arrays, far past any parser's recursion: rejected, the process lives.",
+  "origin": "mimlys-core runtime/tests.rs req_sec_011_hostile_model_output_and_tool_results_do_not_end_the_process",
+  "input": [
+    {
+      "repeat": "[",
+      "times": 200000
+    }
+  ],
+  "expect": {
+    "step_outcome": "rejected",
+    "task_state": "running",
+    "tool_calls": 0,
+    "unwritten": [
+      "authorized",
+      "running",
+      "execution",
+      "action_terminal"
+    ]
+  }
+}

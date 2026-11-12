@@ -206,13 +206,18 @@ mod with_a_stand_in {
         let pid = dir.path().join("pid");
         let xcrun = stand_in(
             dir.path(),
-            &format!("echo $$ > {}\nexec sleep 30", pid.display()),
+            &format!("echo $$ > {}\nexec sleep 120", pid.display()),
         );
+        // The wait is 3 s (a stand-in that is slow to start still writes its
+        // pid within it); the stand-in holds for 120 s. Had the wait not been
+        // bounded, the call would return only when the stand-in ended on its
+        // own, after those 120 s; a stall of the machine is far shorter than the
+        // 60 s, half of the hold, that is allowed (the rule of handoff 011i).
         let started = Instant::now();
-        let state = run(Some(file.clone()), &xcrun, Duration::from_millis(400));
+        let state = run(Some(file.clone()), &xcrun, Duration::from_secs(3));
         assert_eq!(state, CacheState::Missing { file });
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(60),
             "returned after {:?}",
             started.elapsed()
         );
@@ -242,10 +247,13 @@ mod with_a_stand_in {
         let file = dir.path().join("xcrun_db");
         let hanging = stand_in(
             dir.path(),
-            &format!("echo partial > {}\nexec sleep 30", file.display()),
+            &format!("echo partial > {}\nexec sleep 120", file.display()),
         );
+        // A wait of 3 s, not a few hundred milliseconds: a stand-in that was
+        // killed before it wrote the partial file would leave nothing to remove,
+        // and the test would pass without having looked at the defect.
         assert_eq!(
-            run(Some(file.clone()), &hanging, Duration::from_millis(400)),
+            run(Some(file.clone()), &hanging, Duration::from_secs(3)),
             CacheState::Missing { file: file.clone() }
         );
         assert!(!file.exists(), "the partial file was removed");
@@ -268,7 +276,7 @@ mod with_a_stand_in {
     /// no file; the hang costs one bound, not the rest of the list.
     #[test]
     fn req_conf_005_a_failing_or_hanging_tool_ends_the_warming_and_leaves_no_file() {
-        for (how, bad) in [("fails", "exit 1"), ("hangs", "exec sleep 30")] {
+        for (how, bad) in [("fails", "exit 1"), ("hangs", "exec sleep 120")] {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("xcrun_db");
             let asked = dir.path().join("asked");
@@ -284,8 +292,10 @@ mod with_a_stand_in {
             let state = run(Some(file.clone()), &xcrun, Duration::from_secs(4));
             assert_eq!(state, CacheState::Missing { file: file.clone() }, "{how}");
             assert!(!file.exists(), "{how}: the partial file was removed");
+            // The hang holds for 120 s: unbounded, the call would take that long;
+            // the 4 s wait of the one bad tool is far below the 60 s allowed.
             assert!(
-                started.elapsed() < Duration::from_secs(15),
+                started.elapsed() < Duration::from_secs(60),
                 "{how}: returned after {:?}",
                 started.elapsed()
             );

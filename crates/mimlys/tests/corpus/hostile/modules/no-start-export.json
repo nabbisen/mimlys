@@ -1,0 +1,13 @@
+{
+  "check": "sandbox.module",
+  "note": "A valid module without `_start` compiles and is refused at instantiation as host_fault invalid_module, never a process failure.",
+  "origin": "mimlys-exec sandbox/tests.rs req_sbx_006_malformed_module",
+  "module": "(module (memory 1) (export \"memory\" (memory 0)))",
+  "expect": {
+    "compile": "accepted",
+    "run": {
+      "termination": "host_fault",
+      "detail": "invalid_module"
+    }
+  }
+}

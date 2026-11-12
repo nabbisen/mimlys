@@ -372,7 +372,7 @@ pub fn toolchain_revoked(path: &str) -> String {
 /// `toolchain revoke` of a directory mimlys itself needs.
 pub fn toolchain_revoke_runtime_path(path: &str) -> String {
     format!(
-        "{path} is one of mimlys's own directories (the workspaces, the temporary directory, the interpreters, the worker); the worker cannot run without it, so it is not revoked here"
+        "{path} is one of mimlys's own paths (the workspaces, the temporary directory, the interpreters, the worker binary and the interpreter modules' files); the worker cannot run without it, so it is not revoked here"
     )
 }
 /// `toolchain revoke --all` where nothing was changed outside the data directory.

@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "A newline in a path is a control character.",
+  "origin": "mimlys-core path/tests.rs req_dec_007_escapes_and_absolute_paths",
+  "input": "a\nb",
+  "rules": "posix",
+  "expect": {
+    "error": "control_character"
+  }
+}

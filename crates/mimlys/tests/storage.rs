@@ -348,6 +348,74 @@ fn req_ws_013_tasks_by_size_with_state_age_and_the_filesystem() {
     drop(s.writer);
 }
 
+/// REQ-WS-012 (a terminal task's workspace, snapshots, unreferenced objects
+/// and blobs go, and nothing of any other task): of two completed tasks that
+/// share most of their content and hold a blob each, `task delete` of the
+/// first, without `--yes`, shows and removes nothing; with `--yes` it removes
+/// the first task's directory, its blob, its manifests and the one object
+/// only it referenced, and leaves the second task's tree, blob and manifests
+/// and every object the second still references. The next command opens the
+/// store, which runs the integrity check (the reference counts equal the
+/// manifests', CONS-04), and a rollback of the second task to its base reads
+/// the shared objects back.
+/// Not verified here, nor by any test: the clause that the next start finishes or undoes a pending snapshot journal. `SnapshotFiles::pending` and `undo` are unit-tested (`rfc_006_journal_finish_or_undo`), but no startup path calls them (handoff 002b slice 3, finding F1).
+#[test]
+fn req_ws_012_task_delete_removes_the_task_and_what_only_it_held() {
+    let s = store();
+    let (a, b) = (s.ids[0].clone(), s.ids[1].clone());
+    drop(s.writer);
+    let data = &s.env.data;
+    let snapshots_of = |id: &str| {
+        s.env.json(&["task", "show", id])["snapshots"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let (snapshots_a, snapshots_b) = (snapshots_of(&a), snapshots_of(&b));
+    let (manifests, objects) = (
+        data.join("snapshots/manifests"),
+        data.join("snapshots/objects"),
+    );
+    assert_eq!(bytes_under(&data.join("blobs")), 1500 + 900);
+    assert_eq!(files(&manifests).len(), snapshots_a + snapshots_b);
+    let objects_before = files(&objects).len();
+
+    // Shown, asked, not confirmed: nothing goes.
+    let shown = s.env.json(&["task", "delete", &a]);
+    assert_eq!(shown["deleted"], false, "{shown}");
+    assert!(data.join("workspaces").join(&a).exists());
+    assert_eq!(bytes_under(&data.join("blobs")), 1500 + 900);
+    assert_eq!(files(&manifests).len(), snapshots_a + snapshots_b);
+    assert_eq!(files(&objects).len(), objects_before);
+
+    // Confirmed: the first task goes, the second stays.
+    let done = s.env.json(&["task", "delete", &a, "--yes"]);
+    assert_eq!(done["deleted"], true, "{done}");
+    assert!(!data.join("workspaces").join(&a).exists());
+    assert_eq!(
+        bytes_under(&data.join("blobs")),
+        900,
+        "only the second blob"
+    );
+    assert_eq!(files(&manifests).len(), snapshots_b);
+    assert_eq!(
+        files(&objects).len(),
+        objects_before - 1,
+        "the one object only the first task referenced is gone, the shared ones stay"
+    );
+    assert!(data.join("workspaces").join(&b).join("tree").exists());
+
+    // The store is consistent (opening it checked CONS-04) and the shared
+    // objects are intact: the second task rolls back to its base from them.
+    let shown = s.env.json(&["task", "show", &b]);
+    let base = shown["snapshots"][0]["snapshot_id"].as_str().unwrap();
+    s.env.json(&["rollback", &b, "--snapshot", base]);
+    assert_eq!(
+        std::fs::read_to_string(data.join("workspaces").join(&b).join("tree/src/lib.rs")).unwrap(),
+        "fn a() -> i32 { 0 }\n"
+    );
+}
+
 /// REQ-WS-013: an empty store (or none at all) has a view of zeros and
 /// creates nothing.
 #[test]

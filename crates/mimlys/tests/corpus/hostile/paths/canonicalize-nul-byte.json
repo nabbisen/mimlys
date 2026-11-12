@@ -1,0 +1,10 @@
+{
+  "check": "path.canonicalize",
+  "note": "NUL in a path is a control character.",
+  "origin": "mimlys-core path/tests.rs req_dec_007_escapes_and_absolute_paths",
+  "input": "a\u0000b",
+  "rules": "posix",
+  "expect": {
+    "error": "control_character"
+  }
+}

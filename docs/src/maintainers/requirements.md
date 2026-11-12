@@ -140,7 +140,7 @@ A task shall be in exactly one of `created`, `running`, `waiting_user`, `paused`
 `completed`, `failed` and `cancelled` are terminal. No field of a terminal task, its steps, actions or observations shall change afterwards, except retention-driven deletion of blobs. (C-02)
 
 ### REQ-TASK-004 Fork — M3 · T
-`create_task` with `from_task` and an optional `from_snapshot` shall create a new task whose workspace is materialized from that snapshot and whose history is attached read-only as context. The source task's active grants are copied and shown to the user at creation; nothing is broadened. (C-02, NFR-014 of the draft)
+`create_task` with `from_task` and an optional `from_snapshot` shall create a new task whose workspace is materialized from that snapshot and whose history is attached read-only as context. The source task's active grants are copied and shown to the user at creation; nothing is broadened. A halted source is not terminal and still holds its project scope (REQ-TASK-012): its fork is refused on an overlapping scope, and the refusal names both ways on, another `--scope` or `task cancel` of the source first. (C-02, NFR-014 of the draft)
 
 ### REQ-TASK-005 Pause and resume — M1 · T
 `pause_task` from `running` shall take effect at the next step boundary: a model request in flight is cancelled, an execution in flight finishes within its budget. `resume_task` shall be valid from `created`, `paused` and `halted`; from `halted` with reason `budget_steps` or `budget_deadline` it may extend those two budgets within the ceiling and nothing else. Resumption shall add a runtime notice to the next context. (A-10)
@@ -568,7 +568,7 @@ The runtime shall persist the events of external design §17, each with timestam
 `get_metrics` shall derive from events and step records: tasks by state, events by name, rejections by code, halts by reason, approvals by decision, actions by status, and over measured steps the context size, compression ratio, prefix ratio, model latency and token usage (external design §17.2).
 
 ### REQ-OBS-004 Logs — M1 · T
-Logs shall be structured lines on standard error with timestamp, level, task and action ids and event; never prompt content, file content or secrets at the default level; a debug level that logs prompts shall warn at start. (REQ-PRIV-004)
+Logs shall be structured lines on standard error with timestamp, level and event, and, for a line written while a task's step runs, the task and step ids and the action id when there is an action; never prompt content, file content or secrets at the default level; the switch that logs prompts and model output (`logging.debug_prompts`) shall do so, redacted like every line, and shall warn at start. (REQ-PRIV-004)
 
 ### REQ-OBS-005 Audit retention — M3 · T
 Events are retained until the user removes a task's audit with `task delete --audit`; no timer (REQ-PERS-010).

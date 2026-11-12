@@ -225,7 +225,60 @@ fn m3_promotion() {
     );
 }
 
+/// REQ-WS-012 (promotion backups): a promoted task has a `backup` snapshot of
+/// the targets it replaced; `task delete --yes` removes that snapshot's
+/// manifest and every object only the task's snapshots referenced, so no
+/// manifest and no object is left, and the project the promotion changed is
+/// not touched. (The promotion cannot be reversed afterwards: the backup went
+/// with the task, which `task prune` guards against and `task delete` does not.)
+#[test]
+fn req_ws_012_task_delete_removes_the_promotion_backup() {
+    let env = Env::new("edit.json");
+    let scope = scope();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["promote", &id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["applied"], true);
+    let (_, view) = env.json(&["task", "show", &id]);
+    let reasons: Vec<&str> = view["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["reason"].as_str().unwrap())
+        .collect();
+    assert!(reasons.contains(&"backup"), "{reasons:?}");
+    let manifests = env.data.path().join("data/snapshots/manifests");
+    let objects = env.data.path().join("data/snapshots/objects");
+    let count = |dir: &Path| std::fs::read_dir(dir).unwrap().count();
+    assert_eq!(count(&manifests), reasons.len());
+    assert!(count(&objects) > 0);
+    let promoted = std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap();
+    assert_eq!(promoted, "fn a() -> i32 { 1 }\n");
+
+    let (code, value) = env.json(&["task", "delete", &id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["deleted"], true);
+    assert_eq!(count(&manifests), 0, "the backup's manifest went too");
+    assert_eq!(count(&objects), 0, "no object only this task held is left");
+    assert!(!env.tree(&id).exists());
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
+        promoted,
+        "the project is not touched by the delete"
+    );
+}
+
 /// RFC 006 §6: deletion needs a terminal task, shows what goes, keeps the audit unless asked.
+/// REQ-WS-009 (end to end, `deleted` only by the user's `task delete`, never for a task that is not terminal): the held task refuses the delete with the `state` error, the cancelled one is removed only with `--yes`.
+/// REQ-WS-012 (end to end): deletion needs a terminal task, shows the footprint and asks (nothing goes without `--yes`), removes the tree, every manifest and every object, keeps the audit (`task.deleted`) unless `--audit`, and `--audit` removes the task.
+/// REQ-OBS-005: after `task delete --yes` the task's events are still listed (`task.deleted`
+/// among them); only `task delete --audit` removes the task's record.
+/// REQ-PERS-010, REQ-PRIV-006 (external design §16.4): through the binary, a task that is
+/// not terminal is refused (`state`) and keeps its workspace, nothing goes without `--yes`,
+/// the audit (`task.deleted` among the events) stays after the deletion, and only
+/// `--audit` removes the task record.
 #[test]
 fn m3_delete_with_footprint() {
     let env = Env::new("edit.json");

@@ -1,0 +1,9 @@
+{
+  "check": "decision.parse",
+  "note": "A repeated key inside the arguments is refused too.",
+  "origin": "mimlys-core decision/tests.rs req_dec_003_malformed_inputs",
+  "input": "{\"decision\":\"act\",\"tool\":\"t\",\"arguments\":{\"a\":1,\"a\":2}}",
+  "expect": {
+    "malformed": "duplicate_key"
+  }
+}

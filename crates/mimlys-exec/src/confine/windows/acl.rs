@@ -54,9 +54,9 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
     AddAce, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-    GetLengthSid, GetSecurityDescriptorControl, INHERITED_ACE, InitializeAcl, OBJECT_INHERIT_ACE,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_USER, TokenUser,
+    GetLengthSid, GetSecurityDescriptorControl, INHERITED_ACE, InitializeAcl, NO_INHERITANCE,
+    OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    SE_DACL_PROTECTED, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_USER, TokenUser,
     UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
@@ -366,7 +366,15 @@ fn merge_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(),
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: access.mask(),
         grfAccessMode: mode,
-        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        // A directory's entry is inherited by what is beneath it (a toolchain's
+        // files need it: Windows checks the file). A file's entry (the worker, an
+        // interpreter module: RFC 017) is on that file alone and inherited by
+        // nothing.
+        grfInheritance: if path.is_dir() {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        } else {
+            NO_INHERITANCE
+        },
         Trustee: TRUSTEE_W {
             pMultipleTrustee: std::ptr::null_mut(),
             MultipleTrusteeOperation: 0,

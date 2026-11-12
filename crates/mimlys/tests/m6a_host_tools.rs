@@ -52,6 +52,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
+read_paths = [{tooldir:?}]
 allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
@@ -61,6 +62,7 @@ env = {{ PROBE_OK = "1" }}
 env_allow = ["MIMLYS_TEST_RUNTIME_PID", "MIMLYS_TEST_OWNER_PID"]
 [host_tools.strict]
 command = {tool:?}
+read_paths = [{tooldir:?}]
 allowed_args = ["ok"]
 arg_pattern = "[a-z]+"
 max_args = 3
@@ -68,6 +70,7 @@ effect = "workspace_write"
 timeout_ms = 20000
 [host_tools.fetch]
 command = {tool:?}
+read_paths = [{tooldir:?}]
 allowed_args = ["connect", "read"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 2
@@ -79,6 +82,7 @@ network = true
             script = script_path.to_string_lossy(),
             builtin = BUILTIN,
             tool = probe_tool().to_string_lossy(),
+            tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         );
         std::fs::write(&config, text).unwrap();
         Self {
@@ -297,6 +301,8 @@ fn m6a_clauses_hold_inside_a_host_tool() {
 
 /// REQ-CONF-009 / RFC 011 §2 (K): a tool that `setsid`s a child and sleeps
 /// is terminated with its whole tree when the task is cancelled, within LIM-O2.
+/// REQ-CLI-005 (second signal): two stop signals to `mimlys run` cancel the task
+/// (`cancelled`), the process exits and no process of the worker's tree is left.
 #[test]
 fn m6a_cancel_kills_the_whole_tree() {
     cancel_kills_the_whole_tree(false, "1234", None);
@@ -307,6 +313,7 @@ fn m6a_cancel_kills_the_whole_tree() {
 /// (REQ-CONF-011), so the descendants a cancelled tool left re-parented to
 /// the worker are swept by the runtime. A different sleep length keeps the
 /// two tests' processes apart when they run side by side.
+/// REQ-CLI-005 (second signal): as above, on this rung.
 #[test]
 fn m6a_cancel_kills_the_whole_tree_on_the_subreaper_rung() {
     cancel_kills_the_whole_tree(true, "1235", Some("subreaper"));
@@ -334,6 +341,7 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
         );
     }
     let scope = env.scope();
+    let err_path = env.data.path().join("run.stderr");
     let run = env
         .command(&[
             "--json",
@@ -345,43 +353,149 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
             "host_tool:probe",
         ])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::fs::File::create(&err_path).unwrap())
         .spawn()
         .unwrap();
     // Wait until the sleepers exist, then stop the run twice: the first
     // signal asks for a pause at the next boundary, the second cancels the
     // running step (external design §19.2); the store lock admits one
     // runtime at a time, so this is how a user cancels from the terminal.
-    let started = std::time::Instant::now();
-    while sleepers(secs) < 2 && started.elapsed() < std::time::Duration::from_secs(20) {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
     assert!(
-        sleepers(secs) >= 2,
+        wait_for(std::time::Duration::from_secs(60), || sleepers(secs) >= 2),
         "the host tool and its setsid child run"
     );
-    let cancel_at = std::time::Instant::now();
     let pid = run.id().to_string();
-    for _ in 0..2 {
+    let signal = || {
         let _ = Command::new("kill").args(["-INT", &pid]).status();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-    }
+    };
+    // The second signal is sent when the first has been taken (the runtime says
+    // so on its standard error), not after a pause that a slow machine could
+    // outlast: two signals taken as one would ask for a pause and never cancel.
+    signal();
+    assert!(
+        wait_for(std::time::Duration::from_secs(60), || {
+            std::fs::read_to_string(&err_path).is_ok_and(|t| t.contains("stop signal: pausing"))
+        }),
+        "the first signal was never taken: {}",
+        std::fs::read_to_string(&err_path).unwrap_or_default()
+    );
+    let cancel_at = std::time::Instant::now();
+    signal();
     let out = run.wait_with_output().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while sleepers(secs) > 0 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    assert_eq!(
-        sleepers(secs),
-        0,
+    assert!(
+        wait_for(std::time::Duration::from_secs(60), || sleepers(secs) == 0),
         "every sleeper, the setsid one included, is gone"
     );
+    // Within LIM-O2 and the runtime's own grace (five times the limit): a
+    // margin no stall of a slow machine reaches.
     assert!(cancel_at.elapsed() < std::time::Duration::from_secs(10));
     let value: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
-        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+        .unwrap_or_else(|_| panic!("{}", std::fs::read_to_string(&err_path).unwrap_or_default()));
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let (_, task) = env.json(&["task", "show", &id]);
     assert_eq!(task["task"]["state"], "cancelled");
+}
+
+/// Polls `done` every 25 ms until it holds or `limit` has passed (the tests
+/// decide by the state this waits for, never by how long it took; the limits
+/// they give are far longer than anything they wait for, handoff 011i).
+fn wait_for(limit: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < limit {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    done()
+}
+
+/// Whether the non-blocking `accept` finds a connection within 60 s.
+fn accepted<T>(mut accept: impl FnMut() -> std::io::Result<T>) -> bool {
+    wait_for(std::time::Duration::from_secs(60), || accept().is_ok())
+}
+
+/// REQ-CLI-005 (first signal): one stop signal to `mimlys run` while a step runs pauses
+/// the task at the next boundary. The running step is not interrupted (its action
+/// finishes), the next step does not start, the process exits by itself with the task
+/// `paused`, and the signal is acknowledged on standard error. The step takes about
+/// three seconds, less than the grace after which a pause that has not taken effect
+/// becomes a cancellation (LIM-O1 less one second), so the pause is the outcome; the
+/// test decides by the task's recorded state and the process's exit, and the one wait
+/// it bounds is far longer than anything it waits for.
+#[test]
+fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
+    let secs = "2.718";
+    let env = Env::new(
+        &[probe(&["setsid-sleep", secs]), probe(&["ok"]), complete()],
+        "",
+    );
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(
+            "req_cli_005_one_stop_signal_pauses_at_the_next_boundary",
+            &format!("tier {tier}"),
+        );
+        return;
+    }
+    let scope = env.scope();
+    let mut run = env
+        .command(&[
+            "--json",
+            "run",
+            "pause me",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let wait = std::time::Duration::from_secs(120);
+    let started = std::time::Instant::now();
+    while sleepers(secs) < 1 && started.elapsed() < wait {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(sleepers(secs) >= 1, "the host tool's step is running");
+    let _ = Command::new("kill")
+        .args(["-INT", &run.id().to_string()])
+        .status();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = run.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > wait {
+            let _ = run.kill();
+            let _ = run.wait();
+            panic!("`mimlys run` did not exit after the stop signal");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let out = run.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("pausing at the next step"),
+        "{status:?} {stderr}"
+    );
+    let value: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+        .unwrap_or_else(|_| panic!("{stderr}"));
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (_, task) = env.json(&["task", "show", &id]);
+    assert_eq!(task["task"]["state"], "paused", "{task}");
+    let finished: Vec<String> = env
+        .events(&id)
+        .iter()
+        .filter(|e| e["event"] == "action.finished")
+        .map(|e| e["status"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        finished,
+        ["succeeded"],
+        "the running step finished and no further action began"
+    );
 }
 
 /// Live `sleep <secs>` processes of this user.
@@ -399,6 +513,8 @@ fn sleepers(secs: &str) -> usize {
 /// REQ-CONF-003 / REQ-CONF-004: an injected failure of a mandatory clause
 /// makes the tier `core` with the reason, and `run_host_tool` is neither
 /// listed nor accepted.
+/// REQ-CLI-006: `status` shows the tier (`core`) and names the clause the platform cannot
+/// enforce, in `clauses` (state `unavailable`, with the reason) and in `unavailable_clauses`.
 /// REQ-SEC-003 (external design §13.4, §21), the confinement clause: a
 /// confinement error (clause F failing) results in no execution: the model's
 /// proposal of the host tool, granted at creation, is rejected `unknown_tool`
@@ -663,7 +779,11 @@ fn m6a_orphans_are_reaped_at_startup() {
         cmd.process_group(0);
     }
     let mut orphan = cmd.spawn().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Both sleepers exist (a state, not a pause), up to 60 s.
+    assert!(
+        wait_for(std::time::Duration::from_secs(60), || sleepers("4321") >= 2),
+        "the leftover tree starts"
+    );
     let pid = orphan.id();
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
     let start_time: u64 = stat
@@ -688,11 +808,10 @@ fn m6a_orphans_are_reaped_at_startup() {
     assert!(data.join("worker.json").exists());
     // A command that writes reaps it at startup (REQ-CONF-009).
     let (_, _) = env.json(&["interpreters", "list"]);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while sleepers("4321") > 0 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    assert_eq!(sleepers("4321"), 0, "the leftover tree is gone");
+    assert!(
+        wait_for(std::time::Duration::from_secs(60), || sleepers("4321") == 0),
+        "the leftover tree is gone"
+    );
     let _ = orphan.wait();
     assert!(!data.join("worker.json").exists());
     let (_, metrics) = env.json(&["metrics"]);
@@ -936,9 +1055,8 @@ fn req_conf_012_io_uring_connect_is_denied() {
         common::skip(test, &format!("io_uring is not usable here: {line}"));
         return;
     }
-    std::thread::sleep(std::time::Duration::from_millis(100));
     assert!(
-        listener.accept().is_ok(),
+        accepted(|| listener.accept()),
         "the control reached the listener"
     );
     let env = Env::new(&[probe(&["uring-connect", &addr]), complete()], "");
@@ -1099,8 +1217,9 @@ fn req_conf_011_credentials_beside_toolchain_are_unreadable() {
     let beside = toolchain.path().join("credentials.toml");
     let inside = toolchain.path().join("bin/marker");
     let extra = format!(
-        "[host_tools.beside]\ncommand = {tool:?}\nallowed_args = [\"read\"]\narg_pattern = \"[A-Za-z0-9_./:=-]+\"\nmax_args = 2\neffect = \"workspace_write\"\ntimeout_ms = 20000\nread_paths = [{bin:?}]\n",
+        "[host_tools.beside]\ncommand = {tool:?}\nallowed_args = [\"read\"]\narg_pattern = \"[A-Za-z0-9_./:=-]+\"\nmax_args = 2\neffect = \"workspace_write\"\ntimeout_ms = 20000\nread_paths = [{bin:?}, {tooldir:?}]\n",
         tool = probe_tool().to_string_lossy(),
+        tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         bin = toolchain.path().join("bin").to_string_lossy(),
     );
     let beside_call = |path: &Path| json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "beside", "args": ["read", path.to_str().unwrap()]}});
@@ -1168,11 +1287,10 @@ fn req_conf_012_runtime_is_not_dumpable() {
         .spawn()
         .unwrap();
     // The host tool is running when its sleepers exist: runtime and worker are both up.
-    let started = std::time::Instant::now();
-    while sleepers("1236") < 2 && started.elapsed() < std::time::Duration::from_secs(20) {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    assert!(sleepers("1236") >= 2, "the host tool runs");
+    assert!(
+        wait_for(std::time::Duration::from_secs(60), || sleepers("1236") >= 2),
+        "the host tool runs"
+    );
     let runtime = run.id();
     let worker = child_of(runtime, "mimlys-worker")
         .unwrap_or_else(|| panic!("no mimlys-worker under pid {runtime}"));
@@ -1476,6 +1594,86 @@ fn req_conf_011_status_names_the_dependency_steps_read_set() {
             .unwrap_or_else(|| panic!("no line for the step's files in {text}"));
         for f in &extra {
             assert!(line.contains(f.as_str()), "{line}");
+        }
+    }
+}
+
+/// REQ-CONF-011, RFC 017 (handoff 017): inside Landlock only the worker's and
+/// the module's **files** are admitted, not the folders that hold them. A
+/// worker installed in a folder with another file, and an interpreter module
+/// in a folder with another file: a host tool reads the two files and is
+/// refused both neighbours. (Before RFC 017 the folders were in the read set
+/// and the neighbours were readable.)
+#[test]
+fn req_conf_011_only_the_workers_and_the_modules_files_are_admitted() {
+    let test = "req_conf_011_only_the_workers_and_the_modules_files_are_admitted";
+    let install = tempfile::tempdir().unwrap();
+    let bin = install.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let worker = bin.join("mimlys-worker");
+    std::fs::copy(env!("CARGO_BIN_EXE_mimlys-worker"), &worker).unwrap();
+    let worker_neighbour = bin.join("neighbour.txt");
+    std::fs::write(&worker_neighbour, "another file beside the worker").unwrap();
+    let modules = tempfile::tempdir().unwrap();
+    let module = modules.path().join("extra.wasm");
+    std::fs::write(&module, "a module").unwrap();
+    let module_neighbour = modules.path().join("neighbour.txt");
+    std::fs::write(&module_neighbour, "another file beside the module").unwrap();
+    let read = |path: &Path| probe(&["read", path.to_str().unwrap()]);
+    let env = Env::new(
+        &[
+            read(&worker),
+            read(&worker_neighbour),
+            read(&module),
+            read(&module_neighbour),
+            complete(),
+        ],
+        &format!(
+            "[interpreters.extra]\nmodule = {:?}\nsha256 = {:?}\n",
+            module.to_string_lossy(),
+            "0".repeat(64)
+        ),
+    )
+    .env("MIMLYS_WORKER_BIN", worker.to_str().unwrap());
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "read the neighbours",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 4, "{obs:?}");
+    for (i, (what, allowed)) in [
+        ("the worker's file", true),
+        ("a file beside the worker", false),
+        ("the module's file", true),
+        ("a file beside the module", false),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let out = stdout_of(&obs[i]);
+        if *allowed {
+            assert!(
+                out.starts_with("read ") && !out.contains("failed"),
+                "{what} is readable: {out}"
+            );
+        } else {
+            assert!(
+                out.contains("read failed: permission denied"),
+                "{what} is refused: {out}"
+            );
         }
     }
 }

@@ -38,6 +38,7 @@ fn req_task_008_budgets_default_to_the_limits_register() {
 }
 
 /// REQ-DEC-010 / LIM-T1: the step budget halts the task on the step that reaches it.
+/// REQ-TEST-011 (`budget_steps`): the halt comes on the step that reaches LIM-T1 and on no earlier one.
 #[test]
 fn req_dec_010_steps_budget_halts() {
     let budgets = Budgets::default();
@@ -57,6 +58,7 @@ fn req_dec_010_steps_budget_halts() {
 }
 
 /// REQ-DEC-010 / LIM-T2: consecutive rejections halt; an accepted step resets the count.
+/// REQ-TEST-011 (`budget_rejections`): the halt comes at LIM-T2 and an accepted step resets the count.
 #[test]
 fn req_dec_010_consecutive_rejections_halt_and_reset() {
     let budgets = Budgets::default();
@@ -77,6 +79,7 @@ fn req_dec_010_consecutive_rejections_halt_and_reset() {
 }
 
 /// REQ-DEC-010 / LIM-T6: consecutive failed actions halt; a succeeded action resets; a step without an action leaves the count.
+/// REQ-TEST-011 (`budget_failures`): the halt comes at LIM-T6 and a succeeded action resets the count.
 #[test]
 fn req_dec_010_consecutive_failures_halt_and_reset() {
     let budgets = Budgets::default();
@@ -105,6 +108,7 @@ fn req_dec_010_consecutive_failures_halt_and_reset() {
 }
 
 /// REQ-DEC-010 / LIM-T4: identical decisions with an unchanged snapshot halt; a changed snapshot or decision resets the run.
+/// REQ-TEST-011 (the identical-decision rule): the halt `convergence` comes at LIM-T4 only for the same decision hash with an unchanged snapshot; a changed snapshot or decision resets the run.
 #[test]
 fn req_dec_010_identical_decisions_require_an_unchanged_snapshot() {
     let budgets = Budgets::default();
@@ -139,6 +143,7 @@ fn req_dec_010_identical_decisions_require_an_unchanged_snapshot() {
 }
 
 /// REQ-DEC-010: the first exceeded budget is reported in the order steps, rejections, failures, convergence.
+/// REQ-TEST-011 (order of the halts): when several budgets are reached at once the reported reason is the first of steps, rejections, failures.
 #[test]
 fn req_dec_010_first_budget_wins_in_fixed_order() {
     let budgets = Budgets {

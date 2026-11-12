@@ -66,6 +66,10 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 13 | [009e rypsok 0.10.0, compatibility measured](./009e-rypsok-0.10.0/implementation-handoff.md) | RFC 009 | 009c, 009d |
 | 14 | [009f Can a stale tool list reach mimlys?](./009f-rmcp-tool-list-cache/implementation-handoff.md) | RFC 009 | 009e |
 | 15 | [017 The worker and the interpreter modules admitted by their files](./017-admit-files-not-their-directories/implementation-handoff.md) | [RFC 017](../accepted/017-admit-files-not-their-directories.md) | — |
+| 16 | [002c A rejection reaches the model with its reason and detail](./002c-rejections-reach-the-model/implementation-handoff.md) | RFC 002, RFC 007 | 002b, 010b |
+| 17 | [004c The next start finishes or undoes a pending snapshot journal](./004c-snapshot-journals-at-start/implementation-handoff.md) | RFC 004, RFC 006 | — |
+| 18 | [010c The log carries the step's ids; `debug_prompts` does what it says](./010c-logs/implementation-handoff.md) | RFC 010 | — |
+| 19 | [002d Test hygiene, follow-up](./002d-test-hygiene-follow-up/implementation-handoff.md) | RFC 002 | 002b |
 
 ## Milestone M5
 

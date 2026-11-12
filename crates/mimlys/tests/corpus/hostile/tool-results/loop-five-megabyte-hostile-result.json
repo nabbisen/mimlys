@@ -1,0 +1,56 @@
+{
+  "check": "loop.tool_result",
+  "note": "A tool answers with a five-megabyte invalid stream on both streams, control and bidirectional characters and a payload nested 100 deep: the step continues, the task goes on, what the model and the store hold is bounded, and the control characters are gone.",
+  "origin": "mimlys-core runtime/tests.rs req_sec_011_hostile_model_output_and_tool_results_do_not_end_the_process (tool result part)",
+  "decisions": [
+    {
+      "decision": "act",
+      "tool": "read_file",
+      "arguments": {
+        "path": "a"
+      }
+    },
+    {
+      "decision": "plan",
+      "steps": [
+        "go on"
+      ]
+    }
+  ],
+  "tool_result": {
+    "payload_nesting": 100,
+    "stdout": [
+      {
+        "hex_repeat": "ff",
+        "times": 5242880
+      },
+      {
+        "hex": "00 1b 5b 32 4a e2 80 ae 20 65 76 69 6c 07"
+      }
+    ],
+    "stderr": [
+      {
+        "hex_repeat": "ff",
+        "times": 5242880
+      },
+      {
+        "hex": "00 1b 5b 32 4a e2 80 ae 20 65 76 69 6c 07"
+      }
+    ]
+  },
+  "expect": {
+    "step_outcomes": [
+      "continued",
+      "continued"
+    ],
+    "observations": 1,
+    "max_stream_chars": "LIM_C2_EXCERPT_CEILING_CHARS",
+    "stdout_lacks_chars": [
+      "\u0000",
+      "\u001b",
+      "\u0007",
+      "\u202e"
+    ],
+    "next_request_chars_at_most": "LIM_C1_CONTEXT_CHARS*2"
+  }
+}

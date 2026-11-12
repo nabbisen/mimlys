@@ -1,0 +1,21 @@
+{
+  "check": "decision.approval_bounded",
+  "note": "An argument of twice LIM-I6 characters is cut with an ellipsis inside its own line, the whole display stays within LIM-I6, and the fixed lines are never cut.",
+  "origin": "mimlys-core approval/tests.rs req_apr_003_hostile_strings_are_quoted_and_bounded (second part)",
+  "input": [
+    "{\"decision\":\"act\",\"tool\":\"delete_path\",\"arguments\":{\"path\":\"",
+    {
+      "repeat": "y",
+      "times": "LIM_I6_APPROVAL_CHARS*2"
+    },
+    "\"}}"
+  ],
+  "expect": {
+    "max_chars": "LIM_I6_APPROVAL_CHARS",
+    "ellipsis_on_line": 3,
+    "unchanged_line": {
+      "index": 0,
+      "value": "delete_path"
+    }
+  }
+}
