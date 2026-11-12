@@ -61,8 +61,7 @@ pub fn config_source(path: Option<&str>) -> String {
     }
 }
 /// `debug_prompts` is on (REQ-OBS-004).
-pub const DEBUG_PROMPTS_WARNING: &str =
-    "warning: logging.debug_prompts is on; prompts and model output are written to the log";
+pub const DEBUG_PROMPTS_WARNING: &str = "warning: logging.debug_prompts is on; prompts and model output are written to the log at the debug level (set logging.level to \"debug\" or \"trace\" to see them)";
 /// A task was created.
 pub fn task_created(id: &str, state: &TaskState) -> String {
     format!("task {id} created ({})", state_text(state))

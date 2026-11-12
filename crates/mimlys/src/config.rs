@@ -946,7 +946,7 @@ pub struct LoggingSection {
     /// `error`, `warn`, `info`, `debug` or `trace`.
     #[serde(default = "default_level")]
     pub level: String,
-    /// Log prompts and model output (REQ-OBS-004): warns at start.
+    /// Log each request's messages and the model's reply at `debug` (REQ-PRIV-004): warns at start.
     #[serde(default)]
     pub debug_prompts: bool,
 }

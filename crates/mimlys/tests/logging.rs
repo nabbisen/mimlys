@@ -46,6 +46,19 @@ impl Env {
         Self { dir, config, scope }
     }
 
+    /// The stored events of a task, as JSON.
+    fn events(&self, task: &str) -> Value {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        cmd.arg("--config")
+            .arg(&self.config)
+            .args(["--json", "events", task])
+            .env("MIMLYS_CONFIG", "")
+            .env("MIMLYS_LOGGING_TEST_KEY", SECRET);
+        let out = run_bounded(&mut cmd, self.dir.path());
+        assert_eq!(out.code(), 0, "{}", out.stderr);
+        serde_json::from_str(out.stdout.trim()).unwrap_or_else(|e| panic!("{e}: {}", out.stdout))
+    }
+
     /// The exit code, standard output and standard error of a run of the
     /// goal over the project.
     fn run(&self) -> (i32, String, String) {
@@ -147,4 +160,178 @@ fn req_priv_004_the_prompt_option_warns_at_start() {
     let (code, stdout, stderr) = quiet.run();
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(!stderr.contains("debug_prompts"), "{stderr}");
+}
+
+/// The server of the next tests: the model's final reply carries the secret
+/// (a model repeating a key it should not have), so that the redaction of the
+/// lines that hold a reply has something to remove.
+fn leaking_server() -> MockServer {
+    MockServer::start(
+        MockConfig {
+            expect_bearer: Some(SECRET.to_owned()),
+            ..MockConfig::default()
+        },
+        vec![
+            Reply::Decision(
+                json!({"decision": "act", "tool": "read_file", "arguments": {"path": "a.txt"}}),
+            ),
+            Reply::Decision(
+                json!({"decision": "complete", "summary": format!("{MODEL} {SECRET}")}),
+            ),
+        ],
+    )
+}
+
+fn json_lines(stderr: &str) -> Vec<Value> {
+    stderr
+        .lines()
+        .filter(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON ({e}): {l}")))
+        .collect()
+}
+
+fn message(line: &Value) -> &str {
+    line["fields"]["message"].as_str().unwrap_or_default()
+}
+
+/// Every string value stored under `key`, anywhere in `value`.
+fn collect(value: &Value, key: &str, into: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map {
+                match (k == key, v) {
+                    (true, Value::String(s)) => into.push(s.clone()),
+                    _ => collect(v, key, into),
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|v| collect(v, key, into)),
+        _ => {}
+    }
+}
+
+/// REQ-OBS-004 (external design §17.3): a log line written while a task's
+/// step runs carries the step's ids, `task_id` and `step_id` (and
+/// `action_id` once the step has an action: the unit test next to the step
+/// loop covers that), as the fields of its `span`; a line written before the
+/// first step carries none. A whole run, `debug` level, with the prompt
+/// option on only so that the model requests and replies are lines written
+/// during the steps: the ids are those of the task and of the two steps in
+/// the stored events.
+#[test]
+fn req_obs_004_a_line_during_a_step_has_the_ids_and_one_outside_has_none() {
+    let server = server();
+    let env = Env::new(&server, "level = \"debug\"\ndebug_prompts = true");
+    let (code, stdout, stderr) = env.run();
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let task: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = task["task"]["task_id"].as_str().unwrap().to_owned();
+    let mut stored_steps = Vec::new();
+    collect(&env.events(&task_id), "step_id", &mut stored_steps);
+    stored_steps.sort();
+    stored_steps.dedup();
+    assert_eq!(stored_steps.len(), 2, "two steps ran: {stored_steps:?}");
+
+    let lines = json_lines(&stderr);
+    let first_prompt = lines
+        .iter()
+        .position(|l| message(l) == "model request message")
+        .expect("a request line");
+    assert!(first_prompt > 0, "lines were written before the first step");
+    for line in &lines[..first_prompt] {
+        assert!(line.get("span").is_none(), "a line outside a step: {line}");
+    }
+    let mut seen = Vec::new();
+    for line in lines
+        .iter()
+        .filter(|l| matches!(message(l), "model request message" | "model reply"))
+    {
+        let span = &line["span"];
+        assert_eq!(span["name"], "step", "{line}");
+        assert_eq!(span["task_id"], task_id.as_str(), "{line}");
+        let step = span["step_id"].as_str().unwrap_or_else(|| panic!("{line}"));
+        assert!(stored_steps.iter().any(|s| s == step), "{line}");
+        assert!(
+            span.get("action_id").is_none(),
+            "no action during the decision: {line}"
+        );
+        seen.push(step.to_owned());
+    }
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen, stored_steps, "both steps wrote lines");
+}
+
+/// REQ-PRIV-004 (external design §17.3): with `debug_prompts` on, at
+/// `debug`, each request's messages and the model's reply are lines of their
+/// own: the goal, the file's content and the reply appear; the secret, which
+/// the model's reply here repeats and which travels as the bearer token,
+/// appears nowhere, the redaction marker in its place.
+#[test]
+fn req_priv_004_with_the_prompt_option_on_prompts_and_replies_are_logged_redacted() {
+    let server = leaking_server();
+    let env = Env::new(&server, "level = \"debug\"\ndebug_prompts = true");
+    let (code, stdout, stderr) = env.run();
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .starts_with("warning:"),
+        "the warning is the first line"
+    );
+    let lines = json_lines(&stderr);
+    let in_lines = |what: &str, needle: &str| {
+        lines
+            .iter()
+            .any(|l| message(l) == what && l["fields"].to_string().contains(needle))
+    };
+    assert!(
+        in_lines("model request message", GOAL),
+        "the goal: {stderr}"
+    );
+    assert!(
+        in_lines("model request message", FILE),
+        "the file: {stderr}"
+    );
+    assert!(in_lines("model reply", MODEL), "the reply: {stderr}");
+    assert!(
+        in_lines("model reply", "[redacted:"),
+        "the secret in the reply is redacted: {stderr}"
+    );
+    assert!(
+        !stderr.contains(SECRET),
+        "the secret reached the log:\n{stderr}"
+    );
+    assert!(
+        server.decision_requests().iter().all(|r| r
+            .headers
+            .iter()
+            .any(|(k, v)| k == "authorization" && v == &format!("Bearer {SECRET}"))),
+        "the secret travelled as the bearer token"
+    );
+}
+
+/// REQ-PRIV-004: with the option off, nothing of a prompt, a file or a
+/// reply is written at the most verbose level, though the model's reply
+/// repeats the secret and the other lines are many.
+#[test]
+fn req_priv_004_with_the_prompt_option_off_no_line_holds_a_prompt_or_a_reply() {
+    let server = leaking_server();
+    let env = Env::new(&server, "level = \"trace\"");
+    let (code, stdout, stderr) = env.run();
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    for line in json_lines(&stderr) {
+        assert!(
+            !matches!(message(&line), "model request message" | "model reply"),
+            "{line}"
+        );
+    }
+    for needle in [GOAL, FILE, MODEL, SECRET] {
+        assert!(
+            !stderr.contains(needle),
+            "{needle} reached the log:\n{stderr}"
+        );
+    }
 }
