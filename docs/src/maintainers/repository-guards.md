@@ -35,6 +35,8 @@ It lists every requirement marked `T` that no test names, and every invariant `I
 - **What is searched.** The test files only: a `tests.rs` beside a module and everything under a crate's `tests/`. A mention in ordinary source (a doc comment on an implementation: `(REQ-ARCH-002)`) is documentation, not a test, and does not count.
 - The state on 2026-11-03: the intake review (N-05) found 8 of 14 invariants and 29 of 187 `T` requirements named by no test, searching every Rust file. Searching the test files only, as above, the script finds **8 of 14 invariants and 46 of 189 `T` requirements** (four more are mapped as structural): 21 requirements are named only in source comments. The invariants agree; the requirements differ by that 21, and the script's number is the one to track.
 
+- The state on 2026-11-12, after handoff 002b item 1: **21 of 210 `T` requirements** listed and 0 of 14 invariants (nine mapped as structural). Three are listed on purpose because the code does not yet do what they say (REQ-OBS-004, REQ-OBS-008, REQ-PLAT-004: handoffs 010c, 002c and 002d); the rest are named by the handoffs of RFC 013 part two, 014 and 015, and REQ-SCHED-002 and REQ-SCHED-005 by handoff 002d.
+
 ## 3a. The hostile corpus (REQ-SEC-013, REQ-TEST-017)
 
 The corpus is **data**: one directory of case files, `crates/mimlys/tests/corpus/hostile/<kind>/*.json`, read by one harness, `crates/mimlys/tests/hostile_corpus.rs` (a test of the `mimlys` crate, so part of `cargo test --all-features` and run on every change; no `build.rs`). The kinds are the families of REQ-SEC-013: `decisions/` (the strict parser, the loop's rejections of model output, the approval display; model text changes no authority), `paths/` (traversal, absolute and Windows forms, case and normalization, the existence leak, symbolic links), `tool-results/` (the sanitizer, the context markers, a five-megabyte hostile result through the loop), `mcp-descriptions/` (THR-25) and `modules/` (the sandbox's malformed modules). The harness lives in the `mimlys` crate because it is the one crate that depends on core, exec and mcp, whose public interfaces the cases attack; the cases need no private item and no copy of a fixture.
@@ -86,6 +88,10 @@ The corpus is **data**: one directory of case files, `crates/mimlys/tests/corpus
 - **Developers** need nothing. Only a change to `crates/mimlys-exec/src/confine/dacl_wait.rs` or `verify/` asks for `sh verify/run.sh` locally, and CI runs it either way.
 
 If merging ever moves to pull requests, every job becomes a required check together, as one decision.
+
+## 3c. Tests decide by state, never by a short elapsed time (handoffs 011i, 002b item 3)
+
+A test decides by a process's or the store's state: a marker written, a file that stops growing, a process that is gone, the outcome that only the defect would change. Any duration it holds (a stand-in that hangs, a give-up) is far longer than anything it waits for, so a slow runner cannot fail a correct test and a short bound cannot hide a defect. Where a limit is the contract (LIM-O2, a cancellation seen within 2 000 ms), the test measures from the state change and asserts **five times the limit**; the tight figure is the product's, not a CI runner's. A wall-clock property finer than that (a poll interval) is not asserted until the product has a clock to inject. A lower bound (a refusal after the wait, never before) stays as it is: a slow runner can only lengthen it.
 
 ## 4. Other scripts
 
