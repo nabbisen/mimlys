@@ -178,6 +178,13 @@ pub const LIM_O16_SERVER_SHUTDOWN_MS_RANGE: (i64, i64) = (500, 30_000);
 /// LIM-O16: `check` warns when a configured `shutdown_ms` is below this, in
 /// milliseconds: few servers finish their own shutdown that fast.
 pub const LIM_O16_SERVER_SHUTDOWN_WARN_BELOW_MS: i64 = 1_000;
+/// LIM-O17 (proposed by handoff 002d item 2; the architect registers it): how
+/// long `events --follow` of a `running` task that no runtime holds waits for
+/// one to take the store, in milliseconds, before it says `recovery pending`
+/// and ends (REQ-PERS-013). A runtime takes the lock in its first moments (a
+/// process start, the configuration read, under a loaded or emulated machine a
+/// few seconds); ten polls of LIM-O15. Not configurable.
+pub const LIM_O17_FOLLOW_HOLDER_WAIT_MS: u64 = 5_000;
 /// LIM-O8: the wait for each `xcrun --find <tool>` of the warming (one call
 /// per listed tool) to fill the cache before the worker starts (macOS, an
 /// Xcode selected, the cache absent), in milliseconds. Past it the start goes

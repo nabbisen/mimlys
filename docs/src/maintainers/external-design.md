@@ -289,6 +289,8 @@ proposed ──▶ rejected
 
 `execution_id`, `action_id`, `attempt`, `started_at`, `ended_at`, `termination`, `exit_code?`, `snapshot_before?`, `snapshot_after?`, `stdout_blob?`, `stderr_blob?`, `metrics{wall_ms, fuel?, memory_peak_bytes?, stdout_bytes, stderr_bytes, setup_ms?}`.
 
+`metrics.fuel` is the fuel the execution consumed, or **absent (`null`, unknown, never `0`)** when the engine cannot give it. Wasmtime keeps the fuel counter in a register of the running function and writes it to the store only on a call, a return, `unreachable` and when the fuel runs out. A run that ends anywhere else, in guest code (`deadline` and `cancelled`, which are epoch interruptions; a trap such as an out-of-bounds access; a refused memory growth), leaves the store's counter stale, so its figure is not recorded. The figure is recorded for `exited`, `fuel_exhausted`, `unreachable` and for an end raised by a host call (`output_limit`). `wall_ms` says how long a run that ended without a fuel figure lasted.
+
 | `termination` | Meaning | `exit_code` |
 |---|---|---|
 | `exited` | The program ended by itself | present |

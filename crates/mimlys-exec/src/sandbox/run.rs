@@ -151,10 +151,14 @@ impl Sandbox {
                 }
             )
         });
-        let fuel_used = request
-            .limits
-            .fuel
-            .saturating_sub(store.get_fuel().unwrap_or(0));
+        // The fuel is exact only where the engine saved it (see `fuel_is_exact`); a run
+        // ended anywhere else records it as unknown, never as the stale figure (REQ-SBX-011).
+        let fuel_used = fuel_is_exact(&result, refused.load(Ordering::SeqCst)).then(|| {
+            request
+                .limits
+                .fuel
+                .saturating_sub(store.get_fuel().unwrap_or(0))
+        });
         let termination = match result {
             Ok(()) => Termination::Exited { exit_code: 0 },
             Err(err) => classify(&err, interrupt, refused.load(Ordering::SeqCst)),
@@ -165,7 +169,7 @@ impl Sandbox {
             termination,
             metrics: ExecutionMetrics {
                 wall_ms,
-                fuel: Some(fuel_used),
+                fuel: fuel_used,
                 memory_peak_bytes: Some(peak.load(Ordering::SeqCst)),
                 stdout_bytes: out.len() as u64,
                 stderr_bytes: errs.len() as u64,
@@ -275,6 +279,34 @@ impl Sandbox {
     /// most two ticks after it.
     fn ticks(&self, deadline_ms: u64) -> u64 {
         self.ticker.owed() + deadline_ms.div_ceil(LIM_S7_EPOCH_TICK_MS) + 1
+    }
+}
+
+/// Whether the store's fuel counter is the fuel the run consumed (REQ-SBX-011).
+///
+/// Wasmtime's compiled code keeps the counter in a function-local register and
+/// writes it back to the store only on a call, a return, `unreachable` and when
+/// the fuel is out; a loop adds to the register alone. A trap anywhere else (an
+/// epoch interruption for the deadline or a cancel, an out-of-bounds access, a
+/// division by zero, a refused memory growth) leaves the counter at its last
+/// write: `0` for a loop that never called, otherwise a figure far below the
+/// truth. The engine cannot give the fuel of such a run, so it is not recorded
+/// (`None`); the figure is exact for a normal end, an exit, the fuel running
+/// out, `unreachable`, and an end raised by a host call (an output limit, a
+/// write that failed), all of which the counter was saved before.
+fn fuel_is_exact(result: &Result<(), wasmtime::Error>, memory_refused: bool) -> bool {
+    let Err(err) = result else {
+        return true;
+    };
+    if err.downcast_ref::<I32Exit>().is_some() {
+        return true;
+    }
+    match err.downcast_ref::<Trap>() {
+        Some(Trap::OutOfFuel | Trap::UnreachableCodeReached) => true,
+        Some(_) => false,
+        // An error that is no trap came out of a host call, which saved the counter first;
+        // except the memory limiter's refusal, raised from a growth the guest asked for.
+        None => !memory_refused,
     }
 }
 
