@@ -208,12 +208,64 @@ fn req_sbx_002_deadline_through_the_worker() {
     assert_eq!(out.termination, Termination::Deadline);
 }
 
+/// REQ-SBX-012 (external design §12, §7.4), fail closed: a worker that cannot
+/// be established (its program is not there) ends the execution
+/// `host_fault{unavailable}`; the module does not run (no output, no exit
+/// code, no fuel spent), and nothing falls back to running it in the
+/// runtime's own process. The same execution through the real worker runs
+/// (the control).
+#[test]
+fn req_sbx_012_a_worker_that_cannot_be_established_fails_closed() {
+    let fx = fx();
+    write_module(&fx, "hello.wasm", HELLO);
+    let run = |worker: &Worker| {
+        worker.execute(
+            execution(
+                &fx,
+                "run_wasm",
+                serde_json::json!({"module": "hello.wasm"}),
+                5_000,
+            ),
+            Cancellation::new(),
+        )
+    };
+    let control = run(&fx.worker);
+    assert_eq!(control.termination, Termination::Exited { exit_code: 7 });
+    assert_eq!(control.stdout, b"hello\n");
+
+    let absent = Worker::new(WorkerConfig {
+        program: fx._dir.path().join("no-such-worker"),
+        interpreters: vec![],
+        confinement: platform(),
+        limits: mimlys_exec::sandbox::Limits::default(),
+        spec: None,
+        host_tools: vec![],
+        record: None,
+    });
+    let out = run(&absent);
+    assert_eq!(
+        out.termination,
+        Termination::HostFault {
+            detail: HostFaultDetail::Unavailable
+        }
+    );
+    assert!(
+        out.stdout.is_empty() && out.stderr.is_empty(),
+        "nothing ran"
+    );
+    assert_eq!(out.metrics.fuel, None);
+}
+
 /// REQ-ARCH-008 / REQ-TEST-008: the worker's death is `host_fault{worker_died}`,
 /// the runtime survives, the next execution restarts the worker; the budget
 /// LIM-X3 ends in `host_fault{unavailable}`.
 /// REQ-SEC-011 (external design §12, §21), the worker clause: the worker's
 /// death is an execution failure, never a runtime failure: the test process,
 /// which is the runtime side, survives every death.
+/// REQ-SBX-012 (external design §12), fail closed, the budget half: once
+/// LIM-X3 is spent a worker cannot be established for the task, and its next
+/// execution is `host_fault{unavailable}` (the module is not run elsewhere);
+/// another task still gets a worker.
 #[test]
 fn req_arch_008_worker_death_and_restart_budget() {
     let fx = fx();

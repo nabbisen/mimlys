@@ -392,6 +392,10 @@ fn m2_read_write_stays_in_the_workspace() {
 }
 
 /// REQ-CONF-003 / REQ-OBS-006: `status` shows the tier, every clause and the engine.
+/// REQ-PLAT-003 (every platform): the binary reports the tier it runs in, `core`
+/// or `full` (never none), with each clause's state and the engine, on each of
+/// the four platforms of the CI matrix; the core tier (built-in tools and the
+/// sandbox) is what the other tests of this file run on all of them.
 #[test]
 fn m2_status_shows_tier_and_clauses() {
     let data = tempfile::tempdir().unwrap();

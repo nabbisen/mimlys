@@ -1068,6 +1068,9 @@ mod snapshots_m3 {
 
     /// RFC 006 §6: deleting a task's data releases its objects in the same
     /// transaction; shared objects survive; `audit` removes the records.
+    /// REQ-PERS-010, REQ-PRIV-006 (external design §16.4), in the store: without
+    /// `audit` the task record and its events stay and only the task's snapshots,
+    /// blobs and unshared objects go; with `audit` the records go too.
     #[test]
     fn rfc_006_delete_task_data() {
         let dir = tempfile::tempdir().unwrap();

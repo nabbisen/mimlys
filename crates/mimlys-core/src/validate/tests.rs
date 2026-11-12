@@ -180,6 +180,9 @@ fn req_dec_005_unknown_tool() {
 /// rejection, with no path content in it.
 /// REQ-TEST-005 (external design §6.3), the same `denied` whether or not the path exists (unit).
 /// REQ-SEC-013 (hostile corpus, repository guards §3a), hostile paths in a decision.
+/// REQ-PRIV-001 (external design §14.2), minimization: a path outside the workspace
+/// (`../..`, absolute) is denied `path_outside_workspace` before any tool runs, so
+/// nothing from outside the workspace can become an observation.
 #[test]
 fn req_dec_007_out_of_scope_denied_identically() {
     let c = Ctx::new();

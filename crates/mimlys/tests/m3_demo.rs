@@ -226,6 +226,10 @@ fn m3_promotion() {
 }
 
 /// RFC 006 §6: deletion needs a terminal task, shows what goes, keeps the audit unless asked.
+/// REQ-PERS-010, REQ-PRIV-006 (external design §16.4): through the binary, a task that is
+/// not terminal is refused (`state`) and keeps its workspace, nothing goes without `--yes`,
+/// the audit (`task.deleted` among the events) stays after the deletion, and only
+/// `--audit` removes the task record.
 #[test]
 fn m3_delete_with_footprint() {
     let env = Env::new("edit.json");

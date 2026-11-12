@@ -379,6 +379,8 @@ impl Drop for Holder {
 /// table as the worker observed it. F, N and P are `enforced (seatbelt)`, E
 /// is the explicit environment, K is `enforced (seatbelt_membership)`, M and
 /// C are the best-effort watchdogs; the tier is `full` with nothing accepted.
+/// REQ-PLAT-003 (macOS, M6c): the tier is `full` where `sandbox_init` exists
+/// (a machine without it skips through `common::skip`, which the CI job counts).
 #[test]
 fn req_conf_003_macos_status_table() {
     let test = "req_conf_003_macos_status_table";

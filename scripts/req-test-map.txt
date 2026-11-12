@@ -5,3 +5,4 @@ REQ-ENG-002 "See REQ-TEST-014": the CI gate
 REQ-ENG-001 scripts/check-unsafe.sh, run by the `rules` job on every change
 REQ-SEC-012 the `deny` job runs `cargo deny check advisories licenses bans sources` on every change
 REQ-TEST-018 the `verus` job runs the proof and the vacuity guard (verify/run.sh, verify/guard.sh) on every change: .github/workflows/ci.yml, docs/src/maintainers/repository-guards.md §3b
+REQ-PLAT-002 the `check` job of .github/workflows/ci.yml runs `cargo build --workspace --all-targets` and `cargo test --workspace --all-features --no-fail-fast` on ubuntu-latest (Linux x86_64), ubuntu-24.04-arm (Linux aarch64), windows-latest (Windows x86_64) and macos-latest (macOS aarch64) on every push to main and every pull request; the `rosetta` job runs the same tests for x86_64-apple-darwin under Rosetta 2 on the arm64 runner; skips are counted per platform; the Intel kernel's confinement is stated as untested in docs/src/maintainers/repository-guards.md
