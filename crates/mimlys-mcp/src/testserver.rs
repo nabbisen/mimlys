@@ -40,7 +40,7 @@
 //! upgrade or another configuration); `MIMLYS_TESTSERVER_FAIL_LIST_FILE=<path>`
 //! answers every `tools/list` with an error while that file exists;
 //! `MIMLYS_TESTSERVER_STDERR_LINE=<text>` makes every call of the rypsok tools
-//! and `echo_env` write `<text>` as a line on standard error, then wait 300 ms
+//! and `echo_env` write `<text>` as a line on standard error, then wait 5000 ms
 //! before it answers (so that the client's reader has read the line while the
 //! call is still in flight).
 
@@ -454,7 +454,7 @@ pub fn main() {
                     other => {
                         if let Ok(text) = std::env::var("MIMLYS_TESTSERVER_STDERR_LINE") {
                             eprintln!("{text}");
-                            std::thread::sleep(Duration::from_millis(300));
+                            std::thread::sleep(Duration::from_millis(5000));
                         }
                         let mut result = call(other, &arguments);
                         if let Some(obj) = result.as_object_mut()
