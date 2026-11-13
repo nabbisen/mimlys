@@ -147,7 +147,18 @@ impl Runtime {
             step_id = tracing::field::Empty,
             action_id = tracing::field::Empty
         );
-        self.run_step_in_span(task_id).instrument(span).await
+        let result = self.run_step_in_span(task_id).instrument(span).await;
+        // A step that ended `cancelled` has taken the request: it is consumed
+        // with the step, so that the caller's next move (pausing the task, or
+        // running on) is not met by the same request again (handoff 010d).
+        // A task that became terminal has no token left (`forget_task`).
+        if let Ok(view) = &result
+            && view.outcome == StepOutcome::Cancelled
+            && !view.state.is_terminal()
+        {
+            self.consume_cancellation(task_id);
+        }
+        result
     }
 
     async fn run_step_in_span(&self, task_id: TaskId) -> Result<StepResultView, RuntimeError> {

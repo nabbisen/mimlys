@@ -461,51 +461,215 @@ fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
         );
         return;
     }
-    let scope = env.scope();
-    let mut run = env
-        .command(&[
-            "--json",
-            "run",
-            "pause me",
-            "--scope",
-            scope.to_str().unwrap(),
-            "--grant",
-            "host_tool:probe",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let wait = std::time::Duration::from_secs(120);
-    let started = std::time::Instant::now();
-    while sleepers(secs) < 1 && started.elapsed() < wait {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(sleepers(secs) >= 1, "the host tool's step is running");
-    let _ = Command::new("kill")
-        .args(["-INT", &run.id().to_string()])
-        .status();
-    let started = std::time::Instant::now();
-    let status = loop {
-        if let Some(status) = run.try_wait().unwrap() {
-            break status;
-        }
-        if started.elapsed() > wait {
-            let _ = run.kill();
-            let _ = run.wait();
-            panic!("`mimlys run` did not exit after the stop signal");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-    let out = run.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let mut run = Followed::start(&env, "pause me", secs, 1);
+    run.interrupt();
+    let status = run.exit(&env, secs);
+    let stderr = run.stderr();
     assert!(
         stderr.contains("pausing at the next step"),
         "{status:?} {stderr}"
     );
-    let value: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
-        .unwrap_or_else(|_| panic!("{stderr}"));
-    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let id = run.task_id();
+    let (_, task) = env.json(&["task", "show", &id]);
+    assert_eq!(task["task"]["state"], "paused", "{task}");
+    let finished: Vec<String> = env
+        .events(&id)
+        .iter()
+        .filter(|e| e["event"] == "action.finished")
+        .map(|e| e["status"].as_str().unwrap().to_owned())
+        .collect();
+    // Not asserted (§3c: no verdict by a short time); shown with `--nocapture`:
+    // how long the step took from its action's start, against the grace of
+    // 4000 ms after which a pause not yet applied cancels the execution.
+    let events = env.events(&id);
+    let at = |name: &str| {
+        let e = events.iter().find(|e| e["event"] == name)?;
+        let t = e["at"].as_str()?.get(11..23)?.to_owned();
+        let n = |a: usize, b: usize| t.get(a..b)?.parse::<u64>().ok();
+        Some(((n(0, 2)? * 60 + n(3, 5)?) * 60 + n(6, 8)?) * 1000 + n(9, 12)?)
+    };
+    if let (Some(from), Some(to)) = (at("action.started"), at("step.finished")) {
+        eprintln!("the step took {} ms (the grace is 4000 ms)", to - from);
+    }
+    // The step is about a second shorter than the grace, but a machine that
+    // stalls for that second would make it the other case (the watchdog said so on
+    // standard error): the test does not decide by that margin. Either way the
+    // run exited, the task is paused, and one action ran, no further one began.
+    let expected = if stderr.contains("its execution was cancelled") {
+        "cancelled"
+    } else {
+        "succeeded"
+    };
+    assert_eq!(
+        finished,
+        [expected],
+        "the running step ended (finished, or cancelled at the grace) and no further action began"
+    );
+}
+
+/// REQ-CLI-005 (first signal, during the model request): the pause waits for the
+/// request in flight and for the step it belongs to; the request is held 3 s (less
+/// than the grace of 4 s), so the step goes on to its action, finishes it, and the task
+/// pauses at the boundary after it. Judged by state: the signal is sent when the
+/// store has the step's start and not yet the decision, the run exits, the task is
+/// `paused`, and the one action that ran is not followed by another. (A stall of the
+/// machine past the grace would cancel the request instead: the verdict
+/// follows what standard error says, as in the test of the running tool.)
+#[test]
+fn req_cli_005_one_stop_signal_during_the_model_request_pauses_after_the_step() {
+    let env = Env::new(
+        &[
+            json!({"raw": probe(&["ok"]).to_string(), "delay_ms": 3000}),
+            probe(&["ok"]),
+            complete(),
+        ],
+        "",
+    );
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(
+            "req_cli_005_one_stop_signal_during_the_model_request_pauses_after_the_step",
+            &format!("tier {tier}"),
+        );
+        return;
+    }
+    let mut run = Followed::spawn(&env, "pause me early");
+    run.await_state(&env, "the step started", "", || {
+        count_events(env.data.path(), "step.started") >= 1
+    });
+    assert_eq!(
+        count_events(env.data.path(), "decision.received"),
+        0,
+        "the model request is still in flight when the signal is sent"
+    );
+    run.interrupt();
+    let status = run.exit(&env, "");
+    let stderr = run.stderr();
+    assert!(
+        stderr.contains("pausing at the next step"),
+        "{status:?} {stderr}"
+    );
+    let id = run.task_id();
+    let (_, task) = env.json(&["task", "show", &id]);
+    assert_eq!(task["task"]["state"], "paused", "{task}");
+    let finished = finished_statuses(&env, &id);
+    assert!(
+        finished.len() <= 1
+            && finished
+                .iter()
+                .all(|s| s == "succeeded" || s == "cancelled"),
+        "no action began after the pause: {finished:?}"
+    );
+}
+
+/// REQ-CLI-005 / LIM-O1 (first signal, a model request that outlasts the grace): the
+/// request is held 6 s. The signal asks for a pause; the grace passes and the request
+/// is cancelled, the step ends `cancelled` before any action began, the pause is
+/// taken at that boundary, and the run exits with the task `paused`. Before handoff
+/// 010d the cancellation outlived the step and the run went round its loop for good.
+/// Judged by state: the exit, the task `paused`, no action in the store.
+#[test]
+fn req_cli_005_one_stop_signal_cancels_a_model_request_that_outlasts_the_grace() {
+    let env = Env::new(
+        &[
+            json!({"raw": probe(&["ok"]).to_string(), "delay_ms": 6000}),
+            probe(&["ok"]),
+            complete(),
+        ],
+        "",
+    );
+    let mut run = Followed::spawn(&env, "pause me early and late");
+    run.await_state(&env, "the step started", "", || {
+        count_events(env.data.path(), "step.started") >= 1
+    });
+    run.interrupt();
+    let status = run.exit(&env, "");
+    let stderr = run.stderr();
+    assert!(
+        stderr.contains("pausing at the next step")
+            && stderr.contains("its execution was cancelled"),
+        "{status:?} {stderr}"
+    );
+    let id = run.task_id();
+    let (_, task) = env.json(&["task", "show", &id]);
+    assert_eq!(task["task"]["state"], "paused", "{task}");
+    assert_eq!(
+        count_events(env.data.path(), "action.started"),
+        0,
+        "the request was cancelled before the step had an action"
+    );
+    let steps: Vec<String> = env
+        .events(&id)
+        .iter()
+        .filter(|e| e["event"] == "step.finished")
+        .map(|e| e["outcome"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(steps, ["cancelled"], "the one step ended cancelled");
+}
+
+/// The `action.finished` statuses of the task, in order.
+fn finished_statuses(env: &Env, id: &str) -> Vec<String> {
+    env.events(id)
+        .iter()
+        .filter(|e| e["event"] == "action.finished")
+        .map(|e| e["status"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// How many events named `name` the store holds, as a second process reads it
+/// (read-only); 0 while the store does not exist yet.
+fn count_events(data: &Path, name: &str) -> usize {
+    rusqlite::Connection::open_with_flags(
+        data.join("data/mimlys.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .and_then(|conn| {
+        conn.query_row("select count(*) from events where name = ?1", [name], |r| {
+            r.get::<_, i64>(0)
+        })
+    })
+    .map_or(0, |n| usize::try_from(n).unwrap_or(0))
+}
+
+/// REQ-CLI-005 / LIM-O1 (first signal, a step that outlasts the grace): one stop
+/// signal while a step runs that would take two minutes. The pause cannot be taken
+/// at a boundary within LIM-O1, so the step's execution is cancelled when the grace
+/// (LIM-O1 less one second) has passed; the cancelled step is a boundary, the pause
+/// is taken there, and the process exits with the task `paused`. Judged by state: the
+/// process exits (the bound is far longer than the grace), the action is `cancelled`
+/// (the sleeper did not run its two minutes), the task is `paused`, and nothing of
+/// the worker's tree is left. Main's CI run 43338280616 showed a run alive 120 s
+/// after one signal; a cancelled step left the cancellation set for good and the
+/// run went round `drive`'s loop without ever taking the pause (handoff 010d).
+#[test]
+fn req_cli_005_one_stop_signal_cancels_a_step_that_outlasts_the_grace() {
+    let secs = "123.45";
+    let env = Env::new(
+        &[probe(&["setsid-sleep", secs]), probe(&["ok"]), complete()],
+        "",
+    );
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(
+            "req_cli_005_one_stop_signal_cancels_a_step_that_outlasts_the_grace",
+            &format!("tier {tier}"),
+        );
+        return;
+    }
+    let mut run = Followed::start(&env, "pause me late", secs, 2);
+    run.interrupt();
+    let status = run.exit(&env, secs);
+    let stderr = run.stderr();
+    assert!(
+        stderr.contains("pausing at the next step")
+            && stderr.contains("its execution was cancelled"),
+        "{status:?} {stderr}"
+    );
+    assert!(
+        wait_for(std::time::Duration::from_secs(60), || sleepers(secs) == 0),
+        "every sleeper, the setsid one included, is gone"
+    );
+    let id = run.task_id();
     let (_, task) = env.json(&["task", "show", &id]);
     assert_eq!(task["task"]["state"], "paused", "{task}");
     let finished: Vec<String> = env
@@ -516,9 +680,258 @@ fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
         .collect();
     assert_eq!(
         finished,
-        ["succeeded"],
-        "the running step finished and no further action began"
+        ["cancelled"],
+        "the step was cancelled and no further action began"
     );
+}
+
+/// A `mimlys run` started for a stop-signal test: its streams go to files
+/// (as `run_bounded` does and as the cancel test's do), so that whatever the run
+/// did is still there when the test gives up.
+struct Followed {
+    run: std::process::Child,
+    out_path: PathBuf,
+    err_path: PathBuf,
+}
+
+impl Followed {
+    /// Starts `run <goal>` of the probe tool and waits until `sleepers_up`
+    /// sleepers of `secs` (the host tool's step is running) are there.
+    fn start(env: &Env, goal: &str, secs: &str, sleepers_up: usize) -> Self {
+        let mut followed = Self::spawn(env, goal);
+        followed.await_state(env, "the host tool's step never started", secs, || {
+            sleepers(secs) >= sleepers_up
+        });
+        followed
+    }
+
+    /// Waits until `reached` holds; a run that never gets there fails the
+    /// test with its evidence (the bound is far longer than any start).
+    fn await_state(&mut self, env: &Env, what: &str, secs: &str, reached: impl FnMut() -> bool) {
+        if !wait_for(std::time::Duration::from_secs(120), reached) {
+            self.give_up(env, what, secs);
+        }
+    }
+
+    /// Starts `run <goal>` of the probe tool.
+    fn spawn(env: &Env, goal: &str) -> Self {
+        let scope = env.scope();
+        let out_path = env.data.path().join("run.stdout");
+        let err_path = env.data.path().join("run.stderr");
+        let run = env
+            .command(&[
+                "--json",
+                "run",
+                goal,
+                "--scope",
+                scope.to_str().unwrap(),
+                "--grant",
+                "host_tool:probe",
+            ])
+            .stdout(std::fs::File::create(&out_path).unwrap())
+            .stderr(std::fs::File::create(&err_path).unwrap())
+            .spawn()
+            .unwrap();
+        Self {
+            run,
+            out_path,
+            err_path,
+        }
+    }
+
+    /// Sends one SIGINT to the run.
+    fn interrupt(&self) {
+        let _ = Command::new("kill")
+            .args(["-INT", &self.run.id().to_string()])
+            .status();
+    }
+
+    /// Waits for the run's exit by its state, with a bound far longer than
+    /// anything it waits for (the longest step of these tests is under ten
+    /// seconds, LIM-O1 five): a run still alive after it fails the test with
+    /// its evidence, before the run is killed.
+    fn exit(&mut self, env: &Env, secs: &str) -> std::process::ExitStatus {
+        let mut status = None;
+        wait_for(std::time::Duration::from_secs(120), || {
+            status = self.run.try_wait().unwrap();
+            status.is_some()
+        });
+        match status {
+            Some(status) => status,
+            None => self.give_up(env, "the run did not exit after the stop signal", secs),
+        }
+    }
+
+    /// Prints the run's two streams, the process tree below it and the
+    /// store's events, then kills the run and fails. The evidence comes
+    /// first: a run killed before it is read leaves nothing to explain it
+    /// (main's CI run 43338280616).
+    fn give_up(&mut self, env: &Env, what: &str, secs: &str) -> ! {
+        let report = format!(
+            "{what}\n--- stdout ---\n{}\n--- stderr ---\n{}\n--- process tree ---\n{}\n--- store ---\n{}",
+            std::fs::read_to_string(&self.out_path).unwrap_or_default(),
+            self.stderr(),
+            process_tree(self.run.id(), secs),
+            store_report(env.data.path()),
+        );
+        let _ = self.run.kill();
+        let _ = self.run.wait();
+        // Whatever the host tool left sleeping, by pid: the next run of the
+        // suite is not met by it.
+        if let Ok(found) = Command::new("pgrep")
+            .args(["-f", &format!("^sleep {secs}$")])
+            .output()
+        {
+            for pid in String::from_utf8_lossy(&found.stdout).lines() {
+                let _ = Command::new("kill").args(["-KILL", pid.trim()]).status();
+            }
+        }
+        panic!("{report}");
+    }
+
+    fn stderr(&self) -> String {
+        std::fs::read_to_string(&self.err_path).unwrap_or_default()
+    }
+
+    /// The task id the run printed (`--json`).
+    fn task_id(&self) -> String {
+        let stdout = std::fs::read_to_string(&self.out_path).unwrap_or_default();
+        let value: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{}", self.stderr()));
+        value["task"]["task_id"].as_str().unwrap().to_owned()
+    }
+}
+
+/// The process `root`, its descendants and the `sleep <secs>` processes, one
+/// line each: pid, parent, state, CPU ticks (a run spinning shows ticks that
+/// grow, one blocked does not), threads, command line; for `root` also the
+/// signal masks and each thread's state and wait channel.
+fn process_tree(root: u32, secs: &str) -> String {
+    let mut text = String::new();
+    let stat = |pid: u32| -> Option<(u32, char, u64, u64)> {
+        let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let rest = &s[s.rfind(')')? + 2..];
+        let f: Vec<&str> = rest.split(' ').collect();
+        Some((
+            f.get(1)?.parse().ok()?,
+            f.first()?.chars().next()?,
+            f.get(11)?.parse().ok()?,
+            f.get(12)?.parse().ok()?,
+        ))
+    };
+    let cmdline = |pid: u32| {
+        std::fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|b| String::from_utf8_lossy(&b).replace('\0', " "))
+            .unwrap_or_default()
+    };
+    let all: Vec<u32> = std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse().ok())
+        .collect();
+    let mut wanted = vec![root];
+    let mut i = 0;
+    while i < wanted.len() {
+        let parent = wanted[i];
+        i += 1;
+        for &pid in &all {
+            if stat(pid).is_some_and(|s| s.0 == parent) && !wanted.contains(&pid) {
+                wanted.push(pid);
+            }
+        }
+    }
+    for &pid in &all {
+        if !wanted.contains(&pid) && cmdline(pid).trim() == format!("sleep {secs}") {
+            wanted.push(pid);
+        }
+    }
+    for &pid in &wanted {
+        match stat(pid) {
+            Some((ppid, state, utime, stime)) => {
+                let threads = std::fs::read_dir(format!("/proc/{pid}/task"))
+                    .map(|d| d.count())
+                    .unwrap_or(0);
+                text.push_str(&format!(
+                    "pid {pid} ppid {ppid} state {state} ticks {utime}+{stime} threads {threads}: {}\n",
+                    cmdline(pid).trim()
+                ));
+            }
+            None => text.push_str(&format!("pid {pid}: gone\n")),
+        }
+    }
+    if let Ok(status) = std::fs::read_to_string(format!("/proc/{root}/status")) {
+        for line in status.lines() {
+            if ["SigPnd", "ShdPnd", "SigBlk", "SigIgn", "SigCgt"]
+                .iter()
+                .any(|k| line.starts_with(k))
+            {
+                text.push_str(&format!("run {line}\n"));
+            }
+        }
+    }
+    if let Ok(tasks) = std::fs::read_dir(format!("/proc/{root}/task")) {
+        for t in tasks.flatten() {
+            let dir = t.path();
+            let read = |name: &str| {
+                std::fs::read_to_string(dir.join(name))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            let state = read("stat");
+            let state = state.rsplit(") ").next().unwrap_or("").chars().next();
+            text.push_str(&format!(
+                "run thread {} {} state {state:?} wchan {}\n",
+                t.file_name().to_string_lossy(),
+                read("comm"),
+                read("wchan")
+            ));
+        }
+    }
+    text
+}
+
+/// The store as a second process reads it, read-only: each task's state and
+/// the events in order (all of them up to 80, else the first 20 and the last
+/// 60 with the count between).
+fn store_report(data: &Path) -> String {
+    let path = data.join("data/mimlys.db");
+    let conn = match rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(conn) => conn,
+        Err(e) => return format!("cannot open {}: {e}", path.display()),
+    };
+    let mut text = String::new();
+    let query = |sql: &str, text: &mut String| -> Vec<(String, String)> {
+        let Ok(mut stmt) = conn.prepare(sql) else {
+            text.push_str(&format!("cannot prepare {sql}\n"));
+            return vec![];
+        };
+        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    };
+    for (id, state) in query("select task_id, state from tasks", &mut text) {
+        text.push_str(&format!("task {id} state {state}\n"));
+    }
+    let events = query(
+        "select at || ' ' || name, record from events order by position",
+        &mut text,
+    );
+    let total = events.len();
+    for (i, (name, record)) in events.iter().enumerate() {
+        if total <= 80 || i < 20 || i >= total - 60 {
+            let record: String = record.chars().take(300).collect();
+            text.push_str(&format!("event {i}: {name} {record}\n"));
+        } else if i == 20 {
+            text.push_str(&format!("... {} events omitted ...\n", total - 80));
+        }
+    }
+    text.push_str(&format!("{total} events\n"));
+    text
 }
 
 /// Live `sleep <secs>` processes of this user.

@@ -981,6 +981,72 @@ fn req_sched_004_cancellation_reaches_the_step() {
     );
 }
 
+/// REQ-CLI-005 / REQ-SCHED-004 (handoff 010d): the step that ends `cancelled`
+/// takes the cancellation request with it. A task still `running` after it
+/// can be paused, and the pause is taken at the next boundary (the follow
+/// mode's answer to a step that did not reach a boundary within LIM-O1); the
+/// request is not met again by every later step, which kept `mimlys run` going
+/// round its loop for good. A request that arrives while a step ends otherwise
+/// stays for the next step, so that it is not lost.
+#[test]
+fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
+    // Before the boundary: the step ends cancelled, the pause is then taken.
+    let h = Harness::new(vec![act("read_file", "a"), act("read_file", "b")]);
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create();
+    h.runtime.request_cancel(id);
+    let result = h.step(id);
+    assert_eq!(result.outcome, StepOutcome::Cancelled);
+    assert_eq!(result.state, TaskState::Running);
+    assert!(
+        !h.runtime.cancellation(id).is_cancelled(),
+        "the request went with the step that acted on it"
+    );
+    let task = h.runtime.pause_task(&h.session, id).unwrap();
+    assert!(task.pause_requested);
+    let result = h.step(id);
+    assert_eq!(
+        result.outcome,
+        StepOutcome::Paused,
+        "the pause is taken at the next boundary, not met by the old request"
+    );
+    assert_eq!(h.state(id), TaskState::Paused);
+    assert!(
+        h.backend.requests().is_empty(),
+        "no decision was requested at either boundary"
+    );
+
+    // With no pause asked for, the next step runs: the request is spent.
+    let h = Harness::new(vec![act("read_file", "a")]);
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create();
+    h.runtime.request_cancel(id);
+    assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+
+    // A request that comes while a step ends otherwise is kept for the next
+    // step (a late watchdog, a second signal), which ends cancelled at once.
+    let h = Harness::new(vec![act("read_file", "a"), act("read_file", "b")]);
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create();
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    h.runtime.request_cancel(id);
+    assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
+    h.runtime.pause_task(&h.session, id).unwrap();
+    assert_eq!(h.step(id).outcome, StepOutcome::Paused);
+
+    // The task that is cancelled afterwards leaves nothing behind.
+    let h = Harness::new(vec![act("read_file", "a")]);
+    let id = h.create();
+    h.runtime.request_cancel(id);
+    assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
+    h.runtime.cancel_task(&h.session, id).unwrap();
+    assert!(!h.per_task_entries(id).0);
+}
+
 /// A tool provider that counts the executions in flight and, at each call,
 /// the steps open in the persistence (REQ-SCHED-002).
 struct InFlight {
