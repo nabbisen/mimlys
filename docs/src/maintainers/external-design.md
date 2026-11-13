@@ -674,7 +674,7 @@ Per task and aggregated: tasks by state; events by name; rejections by code; hal
 
 ### 17.3 Logs (REQ-OBS-004)
 
-Structured lines on standard error: timestamp, level, event, durations, counts, outcome, and, for a line written while a task's step runs, the fields of the step's span: `task_id`, `step_id` and, once there is an action, `action_id`. Never prompt content, file content or secrets at the default level. `logging.debug_prompts = true` writes each request's messages and the model's reply as `debug` lines of their own target, whatever `logging.level` is (the switch is the request), through the same redaction, and warns at start.
+Structured lines on standard error: timestamp, level, event, durations, counts, outcome, and, for a line written while a task's step runs, the fields of the step's span: `task_id`, `step_id` and, once there is an action, `action_id`. Never prompt content, file content or secrets at the default level. `logging.debug_prompts = true` writes each request's messages and the model's reply as `debug` lines of their own target, whatever `logging.level` is (the switch is the request), through the same redaction, and warns at start. A line that a reader of another process's standard error writes (the worker's reader, an MCP server's) carries the ids of the one execution or call in flight on that process when the line is read, and no ids when none or more than one is in flight: a missing id rather than a wrong one. The one residual error is a line written during one call and read only during the next, which needs the reader to lag by a whole call; the protocols carry no request id that could settle it.
 
 ---
 
