@@ -1,0 +1,73 @@
+# Throwaway (handoff 010d): the pause test of `mimlys run` in a loop on the runner
+# types where it failed once (main's CI run 43338280616). This file lives on the
+# branch `010d-stress` only and is triggered by a push to that branch only.
+name: stress 010d
+
+on:
+  push:
+    branches: [010d-stress]
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: stress (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: stress-010d
+      - name: build the test binary
+        run: cargo test -p mimlys --all-features --test m6a_host_tools --no-run
+      - name: the whole m6a suite, 25 times (the load the failure was seen under)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/stress"
+          fail=0
+          for i in $(seq 1 25); do
+            if ! cargo test -p mimlys --all-features --test m6a_host_tools -- --nocapture --skip outlasts_the_grace > "$RUNNER_TEMP/stress/suite-$i.txt" 2>&1; then
+              fail=$((fail + 1))
+              echo "::group::suite run $i FAILED"
+              grep -v "run thread" "$RUNNER_TEMP/stress/suite-$i.txt" | cut -c1-400 | tail -150
+              echo "::endgroup::"
+            fi
+          done
+          echo "suite runs failed: $fail of 25"
+          echo "step durations (ms), pause test:"
+          cat "$RUNNER_TEMP/stress"/suite-*.txt | grep -o "the step took [0-9]* ms" | awk '{print $4}' | sort -n | tr '\n' ' '
+          echo
+          nproc
+          [ "$fail" -eq 0 ]
+      - name: the pause test alone, 40 times, every core loaded
+        shell: bash
+        run: |
+          n=$(nproc)
+          for b in $(seq 1 $((n * 3))); do
+            ( while :; do :; done ) &
+          done
+          burners=$(jobs -p)
+          fail=0
+          for i in $(seq 1 40); do
+            if ! cargo test -p mimlys --all-features --test m6a_host_tools -- --nocapture --exact req_cli_005_one_stop_signal_pauses_at_the_next_boundary > "$RUNNER_TEMP/stress/one-$i.txt" 2>&1; then
+              fail=$((fail + 1))
+              echo "::group::single run $i FAILED"
+              grep -v "run thread" "$RUNNER_TEMP/stress/one-$i.txt" | cut -c1-400 | tail -150
+              echo "::endgroup::"
+            fi
+          done
+          kill $burners || true
+          echo "single runs failed: $fail of 40"
+          echo "step durations (ms), pause test:"
+          cat "$RUNNER_TEMP/stress"/one-*.txt | grep -o "the step took [0-9]* ms" | awk '{print $4}' | sort -n | tr '\n' ' '
+          echo
+          [ "$fail" -eq 0 ]
