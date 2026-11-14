@@ -219,56 +219,134 @@ impl ToolProc {
         }
     }
 
-    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        match self {
-            #[cfg(unix)]
-            ToolProc::Std(c) => c.try_wait(),
-            #[cfg(windows)]
-            ToolProc::Win(c, _) => c.try_wait(),
+    /// Whether the tool's own process has ended. On Unix it is not reaped
+    /// yet: its process group still names its tree until the tree is ended
+    /// (a reaped pid can be given to another process), and
+    /// [`kill_tree`](Self::kill_tree) reaps it and returns its status.
+    fn has_exited(&mut self) -> std::io::Result<bool> {
+        let exited = self.poll_exit()?;
+        // Test builds: `MIMLYS_PROBE_WAIT_ERROR` answers an error, instead of
+        // "ended", once the tool has ended, so that the path of a wait that
+        // fails is run on a real tree (REQ-TEST-013).
+        if exited && cfg!(debug_assertions) && std::env::var_os("MIMLYS_PROBE_WAIT_ERROR").is_some()
+        {
+            return Err(std::io::Error::other("injected (MIMLYS_PROBE_WAIT_ERROR)"));
         }
+        Ok(exited)
     }
 
-    /// Terminates the tree (clause K; REQ-CONF-009): the `tool` cgroup as
-    /// one where it exists, then the child's process group and every
-    /// descendant that re-parented to the worker; on Windows the tool's job.
-    fn kill_tree(&mut self, tool_cgroup: Option<&Path>) {
-        #[cfg(not(target_os = "linux"))]
-        let _ = tool_cgroup;
+    fn poll_exit(&mut self) -> std::io::Result<bool> {
         match self {
             #[cfg(unix)]
             ToolProc::Std(child) => {
+                use rustix::process::{WaitId, WaitIdOptions, waitid};
+                let pid = rustix::process::Pid::from_child(child);
+                let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+                waitid(WaitId::Pid(pid), options)
+                    .map(|status| status.is_some())
+                    .map_err(std::io::Error::from)
+            }
+            #[cfg(windows)]
+            ToolProc::Win(c, _) => c.try_wait().map(|status| status.is_some()),
+        }
+    }
+
+    /// Terminates the tree (clause K; REQ-CONF-009), at every end of the
+    /// tool: the `tool` cgroup as one where it exists, then the child's
+    /// process group and every descendant that re-parented to the worker; on
+    /// macOS the membership sweep; on Windows the tool's job. The result is
+    /// checked: a process that survives within LIM-O2 is logged at `warn` as
+    /// `tree_kill_incomplete`, on every platform. Returns the tool's own
+    /// exit status, reaped here.
+    fn kill_tree(&mut self, tool_cgroup: Option<&Path>) -> Option<std::process::ExitStatus> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = tool_cgroup;
+        #[cfg(any(target_os = "linux", windows))]
+        let grace = Duration::from_millis(LIM_O2_CANCEL_MS);
+        let (status, incomplete) = match self {
+            #[cfg(unix)]
+            ToolProc::Std(child) => {
+                // A test build can leave the tree alone (`MIMLYS_PROBE_NO_TREE_KILL`) to
+                // show that a survivor is reported; the tool's own process is always ended.
+                let kill = !tree_kill_disabled();
                 #[cfg(target_os = "linux")]
-                if let Some(dir) = tool_cgroup {
+                if kill && let Some(dir) = tool_cgroup {
+                    // A cgroup that cannot be killed is not the end: the walk below
+                    // reaches the same processes, and what it leaves is reported.
                     let _ = crate::confine::linux::kill_cgroup(dir);
                 }
                 let pid = rustix::process::Pid::from_child(child);
-                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+                if kill {
+                    let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+                }
                 let _ = child.kill();
-                let _ = child.wait();
+                let status = child.wait().ok();
                 #[cfg(target_os = "linux")]
-                crate::confine::linux::kill_descendants(
-                    std::process::id(),
-                    Duration::from_millis(LIM_O2_CANCEL_MS),
-                );
+                let incomplete = {
+                    let remaining =
+                        crate::confine::linux::tool_tree_remaining(tool_cgroup, kill, grace);
+                    // The killed descendants that re-parented to the worker are zombies
+                    // until reaped, and a zombie still counts against the process limit.
+                    crate::confine::linux::reap_ended_children();
+                    match remaining {
+                        Ok(0) => None,
+                        Ok(n) => Some(format!(
+                            "{n} process(es) remained after {LIM_O2_CANCEL_MS} ms"
+                        )),
+                        Err(reason) => Some(reason),
+                    }
+                };
                 #[cfg(target_os = "macos")]
-                sweep_members();
+                let incomplete = sweep_members();
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                let incomplete: Option<String> = None;
+                (status, incomplete)
             }
             #[cfg(windows)]
             ToolProc::Win(child, job) => {
                 job.kill();
                 let _ = child.kill();
-                let _ = child.wait();
+                let status = child.wait().ok();
+                // The job is asked what is left of it, until none remains or LIM-O2 passes.
+                let started = Instant::now();
+                let mut active = job.active_processes();
+                while active.is_some_and(|n| n > 0) && started.elapsed() < grace {
+                    std::thread::sleep(Duration::from_millis(10));
+                    active = job.active_processes();
+                }
+                let incomplete = match active {
+                    Some(0) => None,
+                    Some(n) => Some(format!(
+                        "{n} process(es) remained after {LIM_O2_CANCEL_MS} ms"
+                    )),
+                    None => Some("the job cannot be queried".to_owned()),
+                };
+                (status, incomplete)
             }
+        };
+        if let Some(why) = incomplete {
+            // The worker has no log of its own: the runtime logs this line at `warn`.
+            crate::trace::warn(&format!("tree_kill_incomplete: {why}"));
         }
+        status
     }
+}
+
+/// Test builds: `MIMLYS_PROBE_NO_TREE_KILL` leaves a tool's descendants
+/// alone at the end of the tool, so that a survivor is real and the warning
+/// for it can be seen (REQ-TEST-013). Read only with `debug_assertions` on.
+#[cfg(unix)]
+fn tree_kill_disabled() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("MIMLYS_PROBE_NO_TREE_KILL").is_some()
 }
 
 /// Clause K on macOS (RFC 011 Amendment 2, settled, point 6): the sandbox's
 /// members other than the worker, found and killed until none is left or
 /// LIM-O2 passes; re-parented orphans are members like any other. Does
 /// nothing unless the worker verified the mechanism after applying its profile.
+/// Returns why the tree is not known to be gone, when it is not.
 #[cfg(target_os = "macos")]
-fn sweep_members() {
+fn sweep_members() -> Option<String> {
     let report = crate::confine::macos::sweep(Duration::from_millis(LIM_O2_CANCEL_MS));
     crate::trace::line(|| {
         format!(
@@ -276,12 +354,8 @@ fn sweep_members() {
             report.killed, report.rounds, report.complete
         )
     });
-    if !report.complete {
-        tracing::warn!(
-            target: "mimlys_worker",
-            "tree_kill_incomplete: members of the sandbox remained after {LIM_O2_CANCEL_MS} ms"
-        );
-    }
+    (!report.complete)
+        .then(|| format!("members of the sandbox remained after {LIM_O2_CANCEL_MS} ms"))
 }
 
 #[cfg(unix)]
@@ -398,18 +472,25 @@ pub fn run(r: HostRun<'_>) -> HostOutcome {
     #[cfg(target_os = "macos")]
     let mut next_watch = Instant::now();
     let termination = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // Clause K: what the tool left behind (a daemon, an orphan) is
-                // a member of the sandbox and ends with it.
-                #[cfg(target_os = "macos")]
-                sweep_members();
-                break Termination::Exited {
-                    exit_code: exit_code(status),
+        match child.has_exited() {
+            Ok(true) => {
+                // Clause K (REQ-CONF-009): the tool's own exit ends its tree
+                // as a cancel does. What it left behind (a daemon, a process
+                // in a session of its own) ends with it, before the
+                // action's "after" snapshot is taken.
+                break match child.kill_tree(r.tool_cgroup) {
+                    Some(status) => Termination::Exited {
+                        exit_code: exit_code(status),
+                    },
+                    None => Termination::HostFault {
+                        detail: HostFaultDetail::Unavailable,
+                    },
                 };
             }
-            Ok(None) => {}
+            Ok(false) => {}
             Err(_) => {
+                // The state of the tool is not known; its tree ends all the same.
+                child.kill_tree(r.tool_cgroup);
                 break Termination::HostFault {
                     detail: HostFaultDetail::Unavailable,
                 };

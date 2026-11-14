@@ -280,6 +280,8 @@ fn own_clauses(serving: bool) -> BTreeMap<String, ClauseState> {
         "MIMLYS_PROBE_NO_CGROUP",
         "MIMLYS_PROBE_MAX_LANDLOCK_ABI",
         "MIMLYS_PROBE_FAIL_SERVING",
+        "MIMLYS_PROBE_NO_TREE_KILL",
+        "MIMLYS_PROBE_WAIT_ERROR",
         "SystemRoot",
         "SYSTEMROOT",
     ];
@@ -540,6 +542,7 @@ fn serve(state: State) {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         execute(
                             &state,
+                            execution_id,
                             &tool,
                             &arguments,
                             deadline_ms,
@@ -606,9 +609,19 @@ type Executed = (
     Vec<Notice>,
 );
 
+/// A directory of one execution, removed when the execution is over.
+struct Ephemeral<'a>(&'a Path);
+
+impl Drop for Ephemeral<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.0);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute(
     state: &State,
+    execution_id: mimlys_core::ids::ExecutionId,
     tool: &str,
     arguments: &serde_json::Value,
     deadline_ms: i64,
@@ -631,10 +644,15 @@ fn execute(
         .parent()
         .map(|p| p.join("tmp"))
         .unwrap_or_else(|| workspace.join(".tmp"));
-    let tmp = tmp_root.join(format!("exec-{}", std::process::id()));
+    // Per execution, never reused: the worker's pid and this execution's id. The
+    // directory is the tool's `HOME` and `TMPDIR` and goes with the execution.
+    let tmp = tmp_root.join(format!("exec-{}-{execution_id}", std::process::id()));
     if std::fs::create_dir_all(&tmp).is_err() {
         return fault(HostFaultDetail::Unavailable);
     }
+    // Whatever way the execution ends, a host tool's included, its directory goes
+    // (external design §14.1: ephemeral per-execution temp).
+    let _ephemeral = Ephemeral(&tmp);
     let args_obj = arguments.as_object().cloned().unwrap_or_default();
     if tool == "run_host_tool" {
         // REQ-SEC-003: an error in confinement means no execution. The

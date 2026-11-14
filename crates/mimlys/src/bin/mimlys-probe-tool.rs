@@ -3,7 +3,7 @@
 //! output. Built only with the `test-bins` feature; never part of a release.
 //!
 //! `read <path>`, `list <dir>`, `write <path>`, `write-env <VAR> <name>`, `connect <addr>`, `env <name>`,
-//! `sleep <secs>`, `setsid-sleep <secs>`, `fork <n> [hold_ms]`, `alloc <mib>`,
+//! `sleep <secs>`, `setsid-sleep <secs>`, `detach <secs>` (Unix but macOS: a sleeper in a session of its own, then the tool ends), `fork <n> [hold_ms]`, `alloc <mib>`,
 //! `alloc-touch <mib>` (resident memory: every page written), `connect-name
 //! <host:port>` (resolve and connect), `cwd`, `ok`.
 //!
@@ -407,6 +407,26 @@ fn main() {
             0
         }
         #[cfg(all(unix, not(target_os = "macos")))]
+        Some("detach") => {
+            // `detach <secs>`: starts `setsid sleep <secs>` in the background and
+            // ends at once, so that what is left is a process in a session of its
+            // own, outside the tool's group, with no parent to wait for it.
+            let secs = args.get(1).map(String::as_str).unwrap_or("30");
+            match std::process::Command::new("sh")
+                .args(["-c", &format!("setsid sleep {secs} >/dev/null 2>&1 &")])
+                .status()
+            {
+                Ok(_) => {
+                    println!("detached");
+                    0
+                }
+                Err(e) => {
+                    println!("detach failed: {}", e.kind());
+                    3
+                }
+            }
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
         Some("setsid-sleep") => {
             // A child that leaves the process group, then everyone sleeps.
             let secs = args.get(1).map(String::as_str).unwrap_or("30");
@@ -713,7 +733,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|list|write|write-env|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|sandbox-nested|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|list|write|write-env|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|detach|fork|alloc|alloc-touch|orphan|proclist|sandbox-nested|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }

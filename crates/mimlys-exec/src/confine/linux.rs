@@ -776,6 +776,66 @@ pub fn kill_cgroup(path: &Path) -> bool {
     std::fs::write(path.join("cgroup.kill"), "1").is_ok()
 }
 
+/// Reaps the worker's children that have ended and that nobody waits for:
+/// the descendants of a tool that re-parented to the worker (a subreaper)
+/// and were killed. Called once the tool's own process has been waited for,
+/// when no other child of the worker is running (one execution at a time,
+/// LIM-X2), so it cannot take the status of a child someone waits for.
+/// Returns how many it reaped.
+pub fn reap_ended_children() -> usize {
+    use rustix::process::{WaitOptions, wait};
+    let mut reaped = 0;
+    while let Ok(Some(_)) = wait(WaitOptions::NOHANG) {
+        reaped += 1;
+    }
+    reaped
+}
+
+/// The processes in a cgroup now, counted from its `cgroup.procs`.
+fn cgroup_members(path: &Path) -> std::io::Result<usize> {
+    Ok(std::fs::read_to_string(path.join("cgroup.procs"))?
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count())
+}
+
+/// The processes left in a cgroup after a `cgroup.kill`, which the kernel
+/// carries out asynchronously: counted until none remains or `grace` passes.
+/// `Err` when the cgroup cannot be read: an unknown is never a pass.
+pub fn cgroup_members_within(path: &Path, grace: Duration) -> Result<usize, String> {
+    let started = Instant::now();
+    loop {
+        let members = cgroup_members(path).map_err(|e| format!("tool cgroup unreadable: {e}"))?;
+        if members == 0 || started.elapsed() >= grace {
+            return Ok(members);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// What remains of a host tool's tree after it was killed, within `grace`
+/// (REQ-CONF-009): the worker's descendants, walked from `/proc` and killed
+/// again until none remains (`kill` is false only in a test build that
+/// leaves a survivor on purpose, and then they are only counted), and the
+/// members of the `tool` cgroup, where there is one. The larger of the two.
+pub fn tool_tree_remaining(
+    tool_cgroup: Option<&Path>,
+    kill: bool,
+    grace: Duration,
+) -> Result<usize, String> {
+    let worker = std::process::id();
+    let walked = if kill {
+        kill_descendants(worker, grace)
+    } else {
+        descendants_of(worker).len()
+    };
+    let members = match tool_cgroup {
+        Some(dir) => cgroup_members_within(dir, grace)?,
+        None => 0,
+    };
+    Ok(walked.max(members))
+}
+
 #[cfg(feature = "probe-syscalls")]
 pub mod probe;
 
