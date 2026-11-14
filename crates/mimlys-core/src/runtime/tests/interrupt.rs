@@ -31,6 +31,10 @@ struct Asking {
     task: Mutex<Option<TaskId>>,
     session: Session,
     ask: Mutex<Ask>,
+    /// What it asks when the step's environment is built (`definitions`): after
+    /// the step's boundary and before its action would begin, which is where a
+    /// request lands that the boundary of an approved step did not see.
+    ask_at_definitions: Mutex<Ask>,
     /// Per execution: whether the token it was given was cancelled when it looked.
     saw_cancelled: Mutex<Vec<bool>>,
     /// The task's state and the actions' statuses right after `cancel_task`.
@@ -39,6 +43,16 @@ struct Asking {
 
 impl crate::spi::ToolProvider for Asking {
     fn definitions(&self) -> Vec<ToolDefinition> {
+        let runtime = self.runtime.lock().unwrap().clone();
+        let task = *self.task.lock().unwrap();
+        if let (Some(runtime), Some(task)) = (runtime, task) {
+            match *self.ask_at_definitions.lock().unwrap() {
+                Ask::NoNewAction => runtime.start_no_new_action(task),
+                Ask::Undoable => runtime.interrupt_step(task),
+                Ask::Anyway => runtime.interrupt_step_anyway(task),
+                Ask::Nothing | Ask::CancelTask => {}
+            }
+        }
         self.inner.definitions()
     }
 
@@ -209,6 +223,7 @@ impl Rig {
                 os_user: "tester".into(),
             },
             ask: Mutex::new(Ask::Nothing),
+            ask_at_definitions: Mutex::new(Ask::Nothing),
             saw_cancelled: Mutex::new(Vec::new()),
             after_cancel_task: Mutex::new(None),
         });
@@ -284,6 +299,13 @@ impl Rig {
     /// What the tool provider asks while the action runs.
     fn ask(&self, ask: Ask) {
         *self.provider.ask.lock().unwrap() = ask;
+    }
+
+    /// What the tool provider asks when the next step's environment is built:
+    /// a stop signal that comes after the step's boundary and before its action
+    /// begins, as in the step that continues an approved action.
+    fn ask_when_the_step_begins(&self, ask: Ask) {
+        *self.provider.ask_at_definitions.lock().unwrap() = ask;
     }
 
     /// What the backend asks while the model request is in flight.
@@ -624,8 +646,11 @@ fn req_sched_004_a_request_made_while_the_task_waits_is_cleared_when_the_user_de
 /// nothing rolled back; its observation says that the stop came before it began.
 /// The step ends `cancelled`, the request is spent, and the caller pauses the
 /// task. (An action that needs approval is started only after the user's
-/// decision, which clears the request, so the request is made again after it, as
-/// a signal during the approved step would.)
+/// decision, which clears the request. A request made after the decision and
+/// before the approved step begins is met by that step's boundary (see
+/// `req_cli_005_no_new_step_begins_after_a_stop_signal`); one that comes after
+/// the boundary, as here at the building of the step's environment, is met by
+/// the check before the action begins.)
 #[test]
 fn req_cli_005_a_first_signal_during_the_model_request_starts_no_new_action() {
     for (definition, _) in classes() {
@@ -635,7 +660,7 @@ fn req_cli_005_a_first_signal_during_the_model_request_starts_no_new_action() {
         let mut result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
         if result.outcome == StepOutcome::Waited {
             rig.runtime.approve_action(&rig.session, rig.task).unwrap();
-            rig.runtime.start_no_new_action(rig.task);
+            rig.ask_when_the_step_begins(Ask::NoNewAction);
             result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
         }
         assert_eq!(result.outcome, StepOutcome::Cancelled, "{name}");
@@ -683,6 +708,90 @@ fn req_cli_005_a_first_signal_during_the_model_request_starts_no_new_action() {
     }
 }
 
+/// REQ-CLI-005 (handoff 010e-4, item 1): no new step begins after a stop signal.
+/// A first signal that finds no step in flight (the task is `running`, between
+/// two steps) is met by the next step's boundary: it ends `cancelled` at once,
+/// with no model request, the request is spent by it, the caller pauses, and the
+/// step after that begins normally. The same for either stronger request, which
+/// imply the weakest.
+#[test]
+fn req_cli_005_no_new_step_begins_after_a_stop_signal() {
+    type Ask = fn(&Runtime, TaskId);
+    let asks: [(&str, Ask); 3] = [
+        ("start_no_new_action", Runtime::start_no_new_action),
+        ("interrupt_step", Runtime::interrupt_step),
+        ("interrupt_step_anyway", Runtime::interrupt_step_anyway),
+    ];
+    for (name, ask) in asks {
+        let h = Harness::new(vec![
+            act("read_file", "a"),
+            act("read_file", "b"),
+            act("read_file", "c"),
+        ]);
+        for _ in 0..3 {
+            h.tools
+                .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+        }
+        let id = h.create();
+        assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{name}");
+        let requests = h.backend.requests().len();
+        assert_eq!(requests, 1, "{name}");
+        // No step is in flight: the task is running between two steps.
+        ask(&h.runtime, id);
+        let cancelled = h.step(id);
+        assert_eq!(cancelled.outcome, StepOutcome::Cancelled, "{name}");
+        assert_eq!(cancelled.state, TaskState::Running, "{name}");
+        assert_eq!(
+            h.backend.requests().len(),
+            requests,
+            "{name}: the step made no model request"
+        );
+        assert_eq!(h.tools.calls().len(), 1, "{name}: nor any action");
+        assert!(
+            !h.runtime.no_new_action_requested(id),
+            "{name}: the request is spent by that step"
+        );
+        // The caller pauses, as after any cancelled step.
+        h.runtime.pause_task(&h.session, id).unwrap();
+        assert_eq!(h.step(id).outcome, StepOutcome::Paused, "{name}");
+        assert_eq!(
+            h.backend.requests().len(),
+            requests,
+            "{name}: still no request"
+        );
+        // And the step after the resume begins normally.
+        h.runtime.resume_task(&h.session, id, None).unwrap();
+        assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{name}");
+        assert_eq!(
+            h.backend.requests().len(),
+            requests + 1,
+            "{name}: the next step asked the model"
+        );
+    }
+}
+
+/// REQ-CLI-005 (handoff 010e-4, item 1): the spent request does not meet the
+/// step after it. A `running` task whose step ended `cancelled` and which is not
+/// paused runs its next step normally.
+#[test]
+fn req_cli_005_the_request_is_spent_by_the_step_it_ended() {
+    let h = Harness::new(vec![act("read_file", "a"), act("read_file", "b")]);
+    for _ in 0..2 {
+        h.tools
+            .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    }
+    let id = h.create();
+    h.runtime.start_no_new_action(id);
+    assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
+    assert_eq!(
+        h.backend.requests().len(),
+        0,
+        "the task's first step never asked"
+    );
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    assert_eq!(h.backend.requests().len(), 1);
+}
+
 /// REQ-CLI-005 (handoff 010e-3, item 2): a request of either stronger kind that
 /// is set when an execution would begin starts nothing either, and nothing is
 /// recorded `unknown` for a call that was never sent. The requests are made
@@ -697,10 +806,7 @@ fn req_cli_005_a_stronger_request_already_set_when_an_execution_would_begin_star
             let mut result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
             if result.outcome == StepOutcome::Waited {
                 rig.runtime.approve_action(&rig.session, rig.task).unwrap();
-                match ask {
-                    Ask::Undoable => rig.runtime.interrupt_step(rig.task),
-                    _ => rig.runtime.interrupt_step_anyway(rig.task),
-                }
+                rig.ask_when_the_step_begins(ask);
                 result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
             }
             assert_eq!(result.outcome, StepOutcome::Cancelled, "{name} {ask:?}");
@@ -710,8 +816,7 @@ fn req_cli_005_a_stronger_request_already_set_when_an_execution_would_begin_star
                 !rig.events().contains(&"action.started".to_owned()),
                 "{name} {ask:?}"
             );
-            // Whether the step ended at the boundary or at the check, no action
-            // was recorded unknown for a call that was never sent.
+            // No action was recorded unknown for a call that was never sent.
             for action in rig.persistence.load_actions(rig.task).unwrap() {
                 assert_ne!(action.status, ActionStatus::Unknown, "{name} {ask:?}");
             }
@@ -738,6 +843,7 @@ fn req_pers_008_an_action_that_cannot_be_undone_and_was_ended_by_the_runtime_is_
     };
     let outcomes: Vec<(&str, ExecutionOutcome)> = vec![
         ("deadline", ExecutionOutcome::timed_out(1)),
+        ("fuel_exhausted", ended_by(Termination::FuelExhausted, None)),
         ("memory_limit", ended_by(Termination::MemoryLimit, None)),
         ("output_limit", ended_by(Termination::OutputLimit, None)),
         ("process_limit", ended_by(Termination::ProcessLimit, None)),

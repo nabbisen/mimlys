@@ -179,6 +179,39 @@ impl Servers {
     }
 }
 
+/// What a call that never left gives: the server could not be reached, its
+/// connection was closed before the request was written, or its restart limit
+/// (LIM-X3) was reached. Nothing was started: `host_fault{unavailable}`, the
+/// cause `tool_unavailable` (external design §7.5; REQ-TOOL-009).
+fn unavailable(reason: &str, metrics: ExecutionMetrics) -> ExecutionOutcome {
+    ExecutionOutcome {
+        termination: Termination::HostFault {
+            detail: HostFaultDetail::Unavailable,
+        },
+        failure: Some(FailureCause::ToolUnavailable),
+        payload: json!({ "reason": reason }),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        notices: vec![],
+        metrics,
+    }
+}
+
+/// What a server that could not serve gives: nothing was sent (the server could
+/// not be started, or the restart limit LIM-X3 was reached before the call), so
+/// both are what a call that never left gives.
+fn map_server_error(error: ServerError, wall_ms: i64) -> ExecutionOutcome {
+    let metrics = ExecutionMetrics {
+        wall_ms,
+        ..ExecutionMetrics::default()
+    };
+    match error {
+        ServerError::Unavailable { reason, .. } => unavailable(&reason, metrics),
+        // The same fixed word `status` shows for it.
+        ServerError::Died { .. } => unavailable("died", metrics),
+    }
+}
+
 /// The external tools of one task.
 pub struct McpTools {
     task_id: TaskId,
@@ -253,9 +286,17 @@ impl McpTools {
                 notices: vec![],
                 metrics,
             },
-            CallOutcome::Failed { reason }
-                if reason.starts_with("call:closed") || reason.starts_with("send:closed") =>
-            {
+            // The request was not written: nothing reached the server, so the
+            // call never left. It is what a server not reachable gives
+            // (`host_fault{unavailable}`, the cause `tool_unavailable`), not a
+            // lost worker: an unknown outcome would send the user to check an
+            // effect that cannot exist (external design §7.5, REQ-TOOL-009).
+            CallOutcome::Failed { reason } if reason.starts_with("send:closed") => {
+                unavailable(&reason, metrics)
+            }
+            // The connection closed after the request was written: the call
+            // may have taken effect, the worker is lost.
+            CallOutcome::Failed { reason } if reason.starts_with("call:closed") => {
                 ExecutionOutcome {
                     termination: Termination::HostFault {
                         detail: HostFaultDetail::WorkerDied,
@@ -472,37 +513,11 @@ impl ToolProvider for McpTools {
             let wall_ms = started.elapsed().as_millis() as i64;
             match outcome {
                 Ok(o) => self.map_outcome(&name, o, wall_ms),
-                Err(ServerError::Died { .. }) => ExecutionOutcome {
-                    termination: Termination::HostFault {
-                        detail: HostFaultDetail::WorkerDied,
-                    },
-                    failure: Some(FailureCause::SandboxFault {
-                        detail: HostFaultDetail::WorkerDied,
-                    }),
-                    payload: Value::Null,
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                    notices: vec![],
-                    metrics: ExecutionMetrics {
-                        wall_ms,
-                        ..ExecutionMetrics::default()
-                    },
-                },
-                Err(ServerError::Unavailable { reason, .. }) => ExecutionOutcome {
-                    termination: Termination::HostFault {
-                        detail: HostFaultDetail::Unavailable,
-                    },
-                    failure: Some(FailureCause::ToolUnavailable),
-                    payload: json!({ "reason": reason }),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                    notices: vec![],
-                    metrics: ExecutionMetrics {
-                        wall_ms,
-                        ..ExecutionMetrics::default()
-                    },
-                },
+                Err(error) => map_server_error(error, wall_ms),
             }
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

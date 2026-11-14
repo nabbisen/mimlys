@@ -170,8 +170,12 @@ impl Runtime {
             }));
         }
         let now = self.deps.clock.now();
-        // The boundary: a cancellation request, a requested pause, then the deadline (REQ-TASK-005, REQ-TASK-006, REQ-TASK-009).
-        if self.step_interruption(task_id).is_cancelled() {
+        // The boundary: a stop request, a requested pause, then the deadline (REQ-TASK-005, REQ-TASK-006, REQ-TASK-009).
+        // The stop request read here is the weakest one (start no new action,
+        // which the two stronger requests imply): no new step begins after a
+        // stop signal, so the step ends `cancelled` at once, with no model
+        // request, and the caller pauses (REQ-CLI-005).
+        if self.no_new_action_requested(task_id) {
             return Ok(StepResultView {
                 outcome: StepOutcome::Cancelled,
                 state: task.state,
