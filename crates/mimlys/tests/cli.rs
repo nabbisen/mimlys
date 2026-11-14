@@ -363,6 +363,34 @@ fn req_conf_011_check_refuses_a_directory_that_holds_credentials() {
     assert!(message.contains("external_read"), "{message}");
 }
 
+/// REQ-CONF-006 (no shell is involved), REQ-CFG-001: a declaration whose
+/// `command` is a batch script, `.cmd` or `.bat` in any case, is refused by
+/// `check` and at load by every command, on every platform, with exit code 1
+/// and the message naming the declaration, the reason and the remedy; the
+/// program the script runs loads. The Windows job runs this too.
+#[test]
+fn req_conf_006_check_refuses_a_batch_script_command() {
+    for command in ["x.cmd", "X.BAT", "tools/run.Cmd"] {
+        let env = Env::new(&format!(
+            "[host_tools.build]\ncommand = {command:?}\neffect = \"workspace_write\"\n"
+        ));
+        for args in [&["check"][..], &["status"][..]] {
+            let (code, value) = env.json(args);
+            assert_eq!(code, 1, "{command} {args:?}: {value}");
+            let message = value["error"]["message"].as_str().unwrap();
+            assert!(
+                message.contains("host_tools.build.command")
+                    && message.contains("no shell is involved")
+                    && message.contains("declare the program the script runs"),
+                "{command} {args:?}: {message}"
+            );
+        }
+    }
+    let env = Env::new("[host_tools.build]\ncommand = \"x.exe\"\neffect = \"workspace_write\"\n");
+    let (code, value) = env.json(&["check"]);
+    assert_eq!(code, 0, "the program the script runs loads: {value}");
+}
+
 /// REQ-CONF-008: `toolchain revoke --all` takes no path (a usage error, exit
 /// 2), and one of the two is required.
 #[test]

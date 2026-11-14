@@ -515,6 +515,16 @@ pub fn command_refusal(
 ) -> Option<String> {
     let program = mimlys_exec::host_tool::resolve_command(declaration).ok()?;
     let target = std::fs::canonicalize(&program).ok()?;
+    // REQ-CONF-006: a command that resolves, by name or through a link, to a
+    // batch script is refused where the declaration is read, as a command
+    // written with the extension is (`HostToolDeclaration::check`).
+    for resolved in [&program, &target] {
+        if mimlys_core::host_tool::is_batch_script(&resolved.to_string_lossy()) {
+            return Some(mimlys_core::host_tool::batch_script_refusal(
+                &resolved.to_string_lossy(),
+            ));
+        }
+    }
     let allowed: Vec<String> = fixed
         .iter()
         .map(PathBuf::as_path)
