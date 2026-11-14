@@ -40,3 +40,76 @@
 - the request not cleared at a transition.
 
 Return: `.git-exclude/review-requests/010e-interrupt/README.md`.
+
+## After review (2026-11-14): 010e-3
+
+010e-1 and 010e-2 are landed. The review answered the six design questions. The specification now says the following:
+- external design §7.1, §7.2 (`host_write`), §7.5 (new paragraph), §16.3 and §19.2;
+- REQ-CLI-005 and REQ-PERS-008;
+- RFC 014's decision 6 note.
+
+Eight changes follow. One PR is fine; two if 6 is large.
+
+1. **A host write is never interrupted by the first signal** (question 2). The runtime undoes no host write: `plan_recovery` already halts `UndoThenHalt` `unknown_outcome`, and no code undoes "through the tool's backup". So `can_be_undone` is true only for `AfterUnknown::RedoPermitted` and `AfterUnknown::Rollback`. The signal and recovery then agree on what is done as well as on which actions. Keep the variant (it is recorded); fix the doc comments that list "a host write with a backup".
+   - Test: for every effect kind × flags, `can_be_undone` is true exactly when `plan_recovery` of a running action with that effect does not give `unknown_outcome`. This replaces the test against `after_unknown`; it checks the one rule by its result.
+2. **The first signal starts nothing new** (found in review). Today a first Ctrl-C during the model request does not stop the step from then starting its action. An external read that is not idempotent needs no approval, so a stop can be followed by the start of a call that cannot be taken back.
+   - The first signal sets a third, weakest request, as at once as it sets the stage. Name it for what it does, for example `Runtime::start_no_new_action`; the second request and the third imply it.
+   - `execute` reads it **before** `ActionInput::Start`. When it is set, the action is closed `cancelled` without starting, and its observation says the stop signal came before it began. The step ends `cancelled` and the task pauses as after the watchdog.
+   - The same check covers a request of either other kind that is already set when an execution would begin. Then nothing is recorded `unknown` for a call that was never sent.
+   - Cleared as the other two are.
+   - In the signal handler, set the request **before** reading `irreversible_in_flight`. Then an action that slipped past the check was started before the read, and the check at the grace sees it. So the 250 ms re-check loop is no longer needed: remove it, unless you show a case it still covers.
+3. **The waiting line names the effect** (question 3). `IrreversibleAction` carries the effect. The texts are in §19.2:
+   - external write: `it changes something outside this machine and cannot be undone`;
+   - host write: `it changes files outside the task's workspace and cannot be undone`;
+   - external read that is not idempotent: `it has sent a request outside this machine that cannot be taken back`.
+
+   Each ends `; press Ctrl-C again to interrupt it anyway`. When the store cannot say (`SIGNAL_UNKNOWN_ACTION`): `waiting for the action in flight to finish: mimlys cannot tell whether it can be undone; press Ctrl-C again to interrupt it anyway`.
+4. **Say what happened after it happened** (your 6.7). The watchdog no longer prints the interruption line at the grace. `drive` prints it when a step has ended `cancelled` and the pause is taken. Then the race you describe (the step between its model request and an action that cannot be undone) can no longer print "interrupted" before a wait.
+   - Wording: `the step was still running 4 seconds after the stop signal, so it was interrupted; the task is paused`.
+   - Insert `, and its workspace changes were rolled back` before `; the task is paused` only when the step wrote `workspace.rollback`.
+   - The second-signal line predicts nothing: `stop signal: interrupting <tool> although it cannot be undone`. The halt text and the unknown-action line then say what came of it.
+5. **An action that cannot be undone, ended by the runtime, is `unknown`** (question 4 b). External design §7.5 and REQ-PERS-008 state the rule.
+   - It applies when the execution started and the runtime, not the tool, ended it:
+     - at `deadline`, `memory_limit`, `output_limit`, `process_limit`, `cancelled` or `host_fault{worker_died}`;
+     - or by an MCP connection lost after the call was sent.
+   - Then the action is recorded `unknown` (`MarkUnknown`), the observation's status is `unknown`, nothing is restored, and the task halts `unknown_outcome`. There is no retry and no feedback.
+   - Map the MCP case to the termination it has in code, and say which.
+   - The interrupted-anyway path of 010e-1 is one case of this rule; make it the same code.
+   - Your test `..._ends_at_its_own_deadline` then expects the action `unknown` and the task `halted`/`unknown_outcome`.
+6. **Every halt is in the events** (question 5). Give the step's end the task as it was before `execute`, so that each halt decided inside `execute` writes `task.state_changed`:
+   - a disposition `Halt{..}` (`tool_unavailable`);
+   - a failed restore;
+   - item 5.
+
+   Remove the special event of `ff9bd1b`. An event that was missing is additive (§22): no schema version moves. CHANGELOG, Fixed.
+   - Test: for each of these halts, the last `task.state_changed` is the halt with its reason, and `metrics`' `halts_by_reason` counts it.
+7. **The words for an unknown outcome cover every cause.** These are no longer only a crash and an interruption.
+   - The halt text: `an action that cannot be undone did not finish by itself (the runtime stopped, it was interrupted, or it reached a limit), so what it did is unknown; check before resuming`.
+   - The line: `outcome unknown: action <id> (<tool>, <effect>) did not finish by itself and cannot be undone; check what it did before relying on it`.
+8. **The book and the CHANGELOG follow.** `cli.md` and `getting-started.md` drop "a host write that made a backup" and "a host write without a backup" (it is "a host write"). They state rule 2 ("starts nothing new"), the three waiting lines and rule 5. They also say that `unknown_actions` lists such actions for the task's whole life, a resume included (question 6: kept as you did it).
+
+**Answers that need no code:**
+- question 1: status `unknown`, confirmed, and §7.1 now says what it means;
+- question 4 a: RFC 014's note, for the daemon's handoff;
+- question 6: kept.
+
+**Tests,** by state (§3c), naming REQ-CLI-005, REQ-PERS-008 and REQ-OBS-001:
+- 1: the test against recovery.
+- 2:
+  - a first signal during the model request of a step whose action is an external read that is not idempotent: the action `cancelled` and never started (no `action.started`; the test server received no call), the task `paused`;
+  - the same for a workspace write: never started, nothing rolled back.
+- 3: each effect's line, by a unit test of the text chosen.
+- 4: in `follow.rs`, the fake step reaches an action that cannot be undone after the grace. No "interrupted" line is printed, the waiting line is, and the rolled-back clause appears only with a rollback.
+- 5: the deadline test and a `host_fault{worker_died}` case: action `unknown`, task `halted`/`unknown_outcome`, no `workspace.rollback`. A workspace write that times out stays `failed` and rolled back.
+- 6: as said in item 6.
+
+With 4 and 5 the 7 s and 1 s tests no longer depend on the step ending within 3 s of its hold. Say whether their holds can then stay as they are.
+
+**Mutations:**
+- `can_be_undone` true for `UndoThenHalt`;
+- the check before `Start` removed;
+- the interruption line printed at the grace again;
+- a deadline on an external write recorded `failed`;
+- the halt event omitted for `tool_unavailable`.
+
+Return: `.git-exclude/review-requests/010e-3-interrupt/README.md`.
