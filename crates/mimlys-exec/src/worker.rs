@@ -755,6 +755,7 @@ fn worker_env() -> Vec<(String, String)> {
             "MIMLYS_PROBE_FAIL",
             "MIMLYS_PROBE_BEST_EFFORT",
             "MIMLYS_PROBE_NO_CGROUP",
+            "MIMLYS_PROBE_MAX_LANDLOCK_ABI",
         ] {
             if let Ok(v) = std::env::var(name) {
                 env.push((name.to_owned(), v));

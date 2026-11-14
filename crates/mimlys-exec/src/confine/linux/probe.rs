@@ -336,3 +336,22 @@ pub fn vm_read(pid: i32, addr: usize, len: usize) -> Result<Vec<u8>, i32> {
     buffer.truncate(n as usize);
     Ok(buffer)
 }
+
+/// The Landlock ABI version the kernel reports (`landlock_create_ruleset`
+/// with the version flag), or 0 when Landlock is not available. The kernel's
+/// own answer, asked apart from the backend's detection, so that a test of
+/// the backend does not take its expectation from the code it tests.
+pub fn landlock_abi_version() -> i32 {
+    const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1;
+    // The version query takes a null attribute, size 0 and the flag.
+    // SAFETY: with a null attribute and size 0 the call reads no memory.
+    let version = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            LANDLOCK_CREATE_RULESET_VERSION,
+        )
+    };
+    version.max(0) as i32
+}

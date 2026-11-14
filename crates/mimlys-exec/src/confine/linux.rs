@@ -6,7 +6,11 @@
 //! `socket` rule never sees) and cross-process memory access; Landlock last,
 //! with the read and write sets, TCP `bind` and `connect` handled with no
 //! rule where the ABI (4 and later) allows and network is denied, and
-//! abstract Unix sockets scoped where the ABI allows (REQ-CONF-012). No
+//! abstract Unix sockets scoped where the ABI allows (REQ-CONF-012). A
+//! pathname Unix socket is reachable only inside the write set (REQ-CONF-001,
+//! REQ-CONF-005): from ABI 9 Landlock handles `ResolveUnix` with a rule on the
+//! write set alone; below it the filter denies `socket(AF_UNIX, ..)`
+//! (`socketpair` reaches no path and stays). No
 //! foreign-function code: `landlock`, `seccompiler` and `rustix` are safe
 //! interfaces, and `libc` contributes syscall numbers only. The one
 //! `unsafe` block is the `pre_exec` hook that puts a host tool's process
@@ -61,8 +65,16 @@ pub fn apply(spec: &ConfinementSpec) -> Applied {
     // P (part one): no privilege gain for this process and everything it starts.
     let no_new_privs = rustix::thread::set_no_new_privs(true).is_ok();
 
+    // The Landlock ABI the kernel offers (capped in test builds), asked for
+    // once: it decides which primitive keeps a pathname Unix socket inside the
+    // write set (REQ-CONF-001, REQ-CONF-005). From ABI 9 Landlock itself
+    // handles `ResolveUnix`; below it the seccomp filter denies the creation
+    // of a Unix socket (`socketpair` reaches no path and stays allowed).
+    let abi = detect_abi();
+    let resolve_unix = abi.is_some_and(|a| a >= ABI::V9);
+
     // N (part two) and P (part two): the seccomp filter.
-    let seccomp = match install_seccomp(spec.deny_network) {
+    let seccomp = match install_seccomp(spec.deny_network, !resolve_unix) {
         Ok(()) => true,
         Err(reason) => {
             report.insert("seccomp_error".into(), ClauseState::unavailable(&reason));
@@ -84,7 +96,7 @@ pub fn apply(spec: &ConfinementSpec) -> Applied {
     // Where the ABI is 4 or later and network is denied, the same ruleset
     // also handles TCP `bind` and `connect` with no rule: a second layer
     // under the seccomp filter (UDP stays with seccomp).
-    let landlock = apply_landlock(spec, cgroup.dir.as_deref());
+    let landlock = apply_landlock(spec, cgroup.dir.as_deref(), abi);
     let landlock_net = matches!(
         &landlock,
         Ok(Landlock {
@@ -92,38 +104,18 @@ pub fn apply(spec: &ConfinementSpec) -> Applied {
             net: true
         })
     );
-    report.insert(
-        "F".into(),
-        match &landlock {
-            Ok(Landlock {
-                status: RulesetStatus::FullyEnforced,
-                ..
-            }) => ClauseState::enforced("landlock"),
-            Ok(Landlock {
-                status: RulesetStatus::PartiallyEnforced,
-                ..
-            }) => ClauseState::best_effort("landlock_partial"),
-            Ok(Landlock {
-                status: RulesetStatus::NotEnforced,
-                ..
-            }) => ClauseState::unavailable("landlock_not_enforced"),
-            Err(reason) => ClauseState::unavailable(reason),
-        },
+    let landlock_full = matches!(
+        &landlock,
+        Ok(Landlock {
+            status: RulesetStatus::FullyEnforced,
+            ..
+        })
     );
-    // N reads from what held: the filter alone is complete (it denies the
-    // `socket` rule's bypass, `io_uring`), and the Landlock layer is named
-    // when it held too.
+    let guard = unix_guard(resolve_unix, landlock_full, seccomp);
+    report.insert("F".into(), filesystem_state(&landlock, guard));
     report.insert(
         "N".into(),
-        if !spec.deny_network {
-            ClauseState::unavailable("network allowed for the dependency step")
-        } else if seccomp && landlock_net {
-            ClauseState::enforced("seccomp+landlock_net")
-        } else if seccomp {
-            ClauseState::enforced("seccomp")
-        } else {
-            ClauseState::unavailable("seccomp_unsupported")
-        },
+        network_state(spec.deny_network, seccomp, landlock_net, guard),
     );
 
     // K, decided after Landlock from what this process can still do: the
@@ -157,6 +149,71 @@ pub fn apply(spec: &ConfinementSpec) -> Applied {
         cgroup: cgroup.dir,
         tool_cgroup,
         rlimit_memory,
+    }
+}
+
+/// The primitive that keeps a pathname Unix socket inside the write set,
+/// named only when it holds: Landlock's `ResolveUnix` (the ruleset applied in
+/// full on an ABI that has it), or the filter's denial of `socket(AF_UNIX, ..)`
+/// (installed, on an ABI that does not). `None` when neither holds.
+fn unix_guard(resolve_unix: bool, landlock_full: bool, seccomp: bool) -> Option<&'static str> {
+    if resolve_unix && landlock_full {
+        Some(UNIX_GUARD_LANDLOCK)
+    } else if !resolve_unix && seccomp {
+        Some(UNIX_GUARD_SECCOMP)
+    } else {
+        None
+    }
+}
+
+/// Clause F: Landlock in full, and a Unix socket guard; without the guard the
+/// clause is not enforced, however complete the rest of the ruleset is.
+fn filesystem_state(landlock: &Result<Landlock, String>, guard: Option<&str>) -> ClauseState {
+    match landlock {
+        Ok(Landlock {
+            status: RulesetStatus::FullyEnforced,
+            ..
+        }) => match guard {
+            Some(UNIX_GUARD_LANDLOCK) => ClauseState::enforced(UNIX_GUARD_LANDLOCK),
+            Some(guard) => ClauseState::enforced(&format!("landlock+{guard}")),
+            None => ClauseState::unavailable("no_unix_socket_guard"),
+        },
+        Ok(Landlock {
+            status: RulesetStatus::PartiallyEnforced,
+            ..
+        }) => ClauseState::best_effort("landlock_partial"),
+        Ok(Landlock {
+            status: RulesetStatus::NotEnforced,
+            ..
+        }) => ClauseState::unavailable("landlock_not_enforced"),
+        Err(reason) => ClauseState::unavailable(reason),
+    }
+}
+
+/// Clause N reads from what held: the filter alone is complete for the
+/// network (it also denies `io_uring`, which creates sockets the `socket`
+/// rule never sees), the Landlock layer is named when it held too, and so is
+/// the primitive that keeps Unix sockets inside the write set, without which
+/// N does not say `enforced`.
+fn network_state(
+    deny_network: bool,
+    seccomp: bool,
+    landlock_net: bool,
+    guard: Option<&str>,
+) -> ClauseState {
+    if !deny_network {
+        ClauseState::unavailable("network allowed for the dependency step")
+    } else if !seccomp {
+        ClauseState::unavailable("seccomp_unsupported")
+    } else if let Some(guard) = guard {
+        let layers = if landlock_net {
+            vec!["seccomp", "landlock_net", guard]
+        } else {
+            vec!["seccomp", guard]
+        };
+        ClauseState::enforced(&layers.join("+"))
+    } else {
+        ClauseState::unavailable("no_unix_socket_guard")
     }
 }
 
@@ -329,11 +386,42 @@ const ALWAYS_DENIED: [i64; 22] = [
     libc::SYS_process_vm_writev,
 ];
 
-/// The filter: sockets outside `AF_UNIX` when network is denied, and always,
-/// answered `EPERM`: the privilege and namespace syscalls, `io_uring` and
-/// cross-process memory access (also in the dependency step's worker, which
-/// needs none of them).
-fn install_seccomp(deny_network: bool) -> Result<(), String> {
+/// The primitive name when Landlock handles `ResolveUnix` (ABI 9 and later).
+const UNIX_GUARD_LANDLOCK: &str = "landlock_resolve_unix";
+
+/// The primitive name when the filter denies `socket(AF_UNIX, ..)` (below ABI 9).
+const UNIX_GUARD_SECCOMP: &str = "seccomp_no_unix_socket";
+
+/// Which `socket` calls the filter answers `EPERM`. `socketpair` is a
+/// different system call, reaches no path, and is never part of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SocketRule {
+    /// None: network allowed and Landlock handles Unix sockets.
+    Open,
+    /// Only `AF_UNIX` (network allowed, below Landlock ABI 9).
+    DenyUnix,
+    /// Everything but `AF_UNIX` (network denied, Landlock ABI 9 and later).
+    DenyInet,
+    /// Every call (network denied, below Landlock ABI 9).
+    DenyAll,
+}
+
+impl SocketRule {
+    fn of(deny_network: bool, deny_unix: bool) -> Self {
+        match (deny_network, deny_unix) {
+            (false, false) => SocketRule::Open,
+            (false, true) => SocketRule::DenyUnix,
+            (true, false) => SocketRule::DenyInet,
+            (true, true) => SocketRule::DenyAll,
+        }
+    }
+}
+
+/// The filter: sockets outside `AF_UNIX` when network is denied, `AF_UNIX`
+/// too below Landlock ABI 9 (`deny_unix`), and always, answered `EPERM`: the
+/// privilege and namespace syscalls, `io_uring` and cross-process memory
+/// access (also in the dependency step's worker, which needs none of them).
+fn seccomp_program(deny_network: bool, deny_unix: bool) -> Result<BpfProgram, String> {
     let arch = match std::env::consts::ARCH {
         "x86_64" => TargetArch::x86_64,
         "aarch64" => TargetArch::aarch64,
@@ -344,18 +432,8 @@ fn install_seccomp(deny_network: bool) -> Result<(), String> {
     for nr in always {
         rules.insert(nr, vec![]);
     }
-    if deny_network {
-        let not_unix = SeccompCondition::new(
-            0,
-            SeccompCmpArgLen::Dword,
-            SeccompCmpOp::Ne,
-            libc::AF_UNIX as u64,
-        )
-        .map_err(|e| format!("seccomp_condition:{e}"))?;
-        rules.insert(
-            libc::SYS_socket,
-            vec![SeccompRule::new(vec![not_unix]).map_err(|e| format!("seccomp_rule:{e}"))?],
-        );
+    if let Some(socket_rules) = socket_rules(SocketRule::of(deny_network, deny_unix))? {
+        rules.insert(libc::SYS_socket, socket_rules);
     }
     let filter = SeccompFilter::new(
         rules,
@@ -364,17 +442,61 @@ fn install_seccomp(deny_network: bool) -> Result<(), String> {
         arch,
     )
     .map_err(|e| format!("seccomp_filter:{e}"))?;
-    let program: BpfProgram = filter
+    filter
         .try_into()
-        .map_err(|e: seccompiler::BackendError| format!("seccomp_compile:{e}"))?;
+        .map_err(|e: seccompiler::BackendError| format!("seccomp_compile:{e}"))
+}
+
+/// Installs the filter on the calling thread (and so, from the worker's main
+/// thread before any other exists, on everything it starts).
+fn install_seccomp(deny_network: bool, deny_unix: bool) -> Result<(), String> {
+    let program = seccomp_program(deny_network, deny_unix)?;
     seccompiler::apply_filter(&program).map_err(|e| format!("seccomp_apply:{e}"))
 }
 
-/// The highest Landlock ABI this kernel supports, found by asking for each
-/// as a hard requirement from the newest down (the crate's own query is
-/// private).
+/// The `socket` rules of one [`SocketRule`]; `None` when the call is not filtered.
+fn socket_rules(rule: SocketRule) -> Result<Option<Vec<SeccompRule>>, String> {
+    let domain = |op: SeccompCmpOp| {
+        SeccompCondition::new(0, SeccompCmpArgLen::Dword, op, libc::AF_UNIX as u64)
+            .map_err(|e| format!("seccomp_condition:{e}"))
+    };
+    let condition = match rule {
+        SocketRule::Open => return Ok(None),
+        // An empty list of rules is answered for every call, as for the other denied calls.
+        SocketRule::DenyAll => return Ok(Some(vec![])),
+        SocketRule::DenyUnix => domain(SeccompCmpOp::Eq)?,
+        SocketRule::DenyInet => domain(SeccompCmpOp::Ne)?,
+    };
+    Ok(Some(vec![
+        SeccompRule::new(vec![condition]).map_err(|e| format!("seccomp_rule:{e}"))?,
+    ]))
+}
+
+/// The environment variable that caps the Landlock ABI in a test build
+/// (REQ-TEST-013): the rung below ABI 9 then runs on any kernel. Read only
+/// when `debug_assertions` are on, like the other `MIMLYS_PROBE_*` knobs.
+pub const ABI_CAP_VARIABLE: &str = "MIMLYS_PROBE_MAX_LANDLOCK_ABI";
+
+/// The cap a test build asks for, if any.
+fn abi_cap() -> Option<i32> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var(ABI_CAP_VARIABLE).ok()?.trim().parse().ok()
+}
+
+/// The highest Landlock ABI this kernel supports (not above the test cap),
+/// found by asking for each as a hard requirement from the newest down (the
+/// crate's own query is private). ABI 8 adds no access right to the
+/// filesystem set, so it is not asked for apart from ABI 7.
 fn detect_abi() -> Option<ABI> {
+    detect_abi_capped(abi_cap())
+}
+
+/// [`detect_abi`] with the cap given.
+fn detect_abi_capped(cap: Option<i32>) -> Option<ABI> {
     for abi in [
+        ABI::V9,
         ABI::V7,
         ABI::V6,
         ABI::V5,
@@ -383,6 +505,9 @@ fn detect_abi() -> Option<ABI> {
         ABI::V2,
         ABI::V1,
     ] {
+        if cap.is_some_and(|cap| abi as i32 > cap) {
+            continue;
+        }
         let created = Ruleset::default()
             .set_compatibility(CompatLevel::HardRequirement)
             .handle_access(AccessFs::from_all(abi))
@@ -398,7 +523,15 @@ fn detect_abi() -> Option<ABI> {
 /// the clause tests to know which primitive the N clause must report.
 #[cfg(feature = "probe-syscalls")]
 pub fn landlock_net_supported() -> bool {
-    detect_abi().is_some_and(|abi| abi >= ABI::V4)
+    probe::landlock_abi_version() >= 4
+}
+
+/// Whether this kernel's Landlock handles `ResolveUnix` (ABI 9, Linux 7.1),
+/// for the clause tests to know which primitive keeps Unix sockets inside the
+/// write set. The kernel's own answer: the test cap is not applied.
+#[cfg(feature = "probe-syscalls")]
+pub fn landlock_resolve_unix_supported() -> bool {
+    probe::landlock_abi_version() >= 9
 }
 
 /// What the Landlock rung produced: the status the kernel gave and whether
@@ -474,17 +607,42 @@ fn landlock_ruleset(
     Ok((created, net))
 }
 
+/// The two rulesets, made and not yet applied.
+struct Layers {
+    /// What a host tool's process applies between fork and exec.
+    tool: landlock::RulesetCreated,
+    /// What the worker applies to itself.
+    worker: landlock::RulesetCreated,
+    /// The worker's ruleset handles TCP `bind` and `connect`.
+    net: bool,
+}
+
+/// Makes both rulesets over the specification. The worker's own cgroup is
+/// writable by the worker alone: a tool's process joins the `tool`
+/// sub-cgroup through a descriptor the worker opened, and the tool layer
+/// holds no right on the directory itself (REQ-CONF-010).
+fn build_layers(spec: &ConfinementSpec, cgroup: Option<&Path>, abi: ABI) -> Result<Layers, String> {
+    let (tool, _) = landlock_ruleset(spec, None, abi, &[], false)?;
+    let (worker, net) = landlock_ruleset(spec, cgroup, abi, &WORKER_ONLY_READ, true)?;
+    Ok(Layers { tool, worker, net })
+}
+
 /// Landlock, in two layers (REQ-CONF-011, REQ-CONF-012): the host tools'
 /// ruleset is made first and kept for [`restrict_child`]; then the worker
 /// restricts itself with the same sets plus `/proc`.
-fn apply_landlock(spec: &ConfinementSpec, cgroup: Option<&Path>) -> Result<Landlock, String> {
-    let abi = detect_abi().ok_or_else(|| "landlock_unsupported".to_owned())?;
-    let (tool_layer, _) = landlock_ruleset(spec, cgroup, abi, &[], false)?;
-    let tool_fd: Option<std::os::fd::OwnedFd> = tool_layer.into();
+fn apply_landlock(
+    spec: &ConfinementSpec,
+    cgroup: Option<&Path>,
+    abi: Option<ABI>,
+) -> Result<Landlock, String> {
+    let abi = abi.ok_or_else(|| "landlock_unsupported".to_owned())?;
+    let layers = build_layers(spec, cgroup, abi)?;
+    let tool_fd: Option<std::os::fd::OwnedFd> = layers.tool.into();
     let tool_fd = tool_fd.ok_or_else(|| "landlock_tool_layer: no descriptor".to_owned())?;
     let _ = TOOL_LAYER.set(tool_fd);
-    let (worker_layer, net) = landlock_ruleset(spec, cgroup, abi, &WORKER_ONLY_READ, true)?;
-    let status = worker_layer
+    let net = layers.net;
+    let status = layers
+        .worker
         .restrict_self()
         .map_err(|e| format!("landlock_restrict:{e}"))?;
     Ok(Landlock {

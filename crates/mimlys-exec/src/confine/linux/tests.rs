@@ -190,3 +190,203 @@ fn req_conf_012_always_denied_syscalls_include_io_uring_and_vm_access() {
         assert!(ALWAYS_DENIED.contains(&nr), "{name}");
     }
 }
+
+/// REQ-CONF-005: F and N say `enforced` only when a primitive keeps a Unix
+/// socket inside the write set, and name it: Landlock's `ResolveUnix` where the
+/// ABI has it and the ruleset held in full, the filter's denial of
+/// `socket(AF_UNIX, ..)` where it does not and the filter was installed.
+#[test]
+fn req_conf_005_clauses_are_enforced_only_when_a_unix_socket_guard_holds() {
+    let full = || {
+        Ok(Landlock {
+            status: RulesetStatus::FullyEnforced,
+            net: true,
+        })
+    };
+    // ABI 9 and later: the guard is Landlock's, whatever the filter did.
+    assert_eq!(unix_guard(true, true, true), Some("landlock_resolve_unix"));
+    assert_eq!(unix_guard(true, true, false), Some("landlock_resolve_unix"));
+    // The ruleset did not hold in full: the filter does not stand in for it
+    // on this ABI, where it does not deny the socket.
+    assert_eq!(unix_guard(true, false, true), None);
+    // Below ABI 9: the filter's, when it was installed, and only then.
+    assert_eq!(
+        unix_guard(false, true, true),
+        Some("seccomp_no_unix_socket")
+    );
+    assert_eq!(unix_guard(false, true, false), None);
+    assert_eq!(unix_guard(false, false, false), None);
+
+    assert_eq!(
+        filesystem_state(&full(), unix_guard(true, true, true)),
+        ClauseState::enforced("landlock_resolve_unix")
+    );
+    assert_eq!(
+        filesystem_state(&full(), unix_guard(false, true, true)),
+        ClauseState::enforced("landlock+seccomp_no_unix_socket")
+    );
+    assert_eq!(
+        filesystem_state(&full(), None),
+        ClauseState::unavailable("no_unix_socket_guard"),
+        "a complete ruleset without the guard is not enforced"
+    );
+    assert!(matches!(
+        filesystem_state(&Err("landlock_unsupported".into()), None),
+        ClauseState::Unavailable { .. }
+    ));
+
+    assert_eq!(
+        network_state(true, true, true, Some("landlock_resolve_unix")),
+        ClauseState::enforced("seccomp+landlock_net+landlock_resolve_unix")
+    );
+    assert_eq!(
+        network_state(true, true, false, Some("seccomp_no_unix_socket")),
+        ClauseState::enforced("seccomp+seccomp_no_unix_socket")
+    );
+    assert_eq!(
+        network_state(true, true, true, None),
+        ClauseState::unavailable("no_unix_socket_guard")
+    );
+    assert_eq!(
+        network_state(true, false, false, Some("landlock_resolve_unix")),
+        ClauseState::unavailable("seccomp_unsupported")
+    );
+    assert!(matches!(
+        network_state(false, true, false, Some("landlock_resolve_unix")),
+        ClauseState::Unavailable { .. }
+    ));
+}
+
+/// What a thread restricted by the filter finds when it creates sockets.
+#[derive(Debug, PartialEq, Eq)]
+struct Sockets {
+    /// `socket(AF_UNIX, ..)`: a listener bound in a directory of the test.
+    unix: Result<(), std::io::ErrorKind>,
+    /// `socketpair(AF_UNIX, ..)`.
+    pair: Result<(), std::io::ErrorKind>,
+    /// `socket(AF_INET, ..)`: a TCP listener on the loopback.
+    inet: Result<(), std::io::ErrorKind>,
+}
+
+/// Installs the filter of the given shape on one thread (a filter binds the
+/// thread that installs it and what it starts) and tries each socket call.
+fn sockets_under_filter(deny_network: bool, deny_unix: bool) -> Sockets {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.sock");
+    std::thread::spawn(move || {
+        let program = seccomp_program(deny_network, deny_unix).expect("filter");
+        seccompiler::apply_filter(&program).expect("install");
+        let kind = |r: std::io::Result<()>| r.map_err(|e| e.kind());
+        Sockets {
+            unix: kind(std::os::unix::net::UnixListener::bind(&path).map(|_| ())),
+            pair: kind(std::os::unix::net::UnixStream::pair().map(|_| ())),
+            inet: kind(std::net::TcpListener::bind("127.0.0.1:0").map(|_| ())),
+        }
+    })
+    .join()
+    .unwrap()
+}
+
+/// REQ-CONF-005: below Landlock ABI 9 the filter denies `socket(AF_UNIX, ..)`
+/// and keeps `socketpair`; with network denied it denies every other family
+/// too, and with network allowed (the dependency step) only `AF_UNIX`.
+#[test]
+fn req_conf_005_the_filter_denies_unix_sockets_below_landlock_abi_9() {
+    let denied = Err(std::io::ErrorKind::PermissionDenied);
+    // Network denied, below ABI 9: no socket call at all, the pair apart.
+    assert_eq!(
+        sockets_under_filter(true, true),
+        Sockets {
+            unix: denied,
+            pair: Ok(()),
+            inet: denied
+        }
+    );
+    // Network allowed (the dependency step), below ABI 9: only Unix sockets.
+    assert_eq!(
+        sockets_under_filter(false, true),
+        Sockets {
+            unix: denied,
+            pair: Ok(()),
+            inet: Ok(())
+        }
+    );
+    // ABI 9 and later: Landlock keeps Unix sockets in the write set, so the
+    // filter leaves them to it; the network is denied as before.
+    assert_eq!(
+        sockets_under_filter(true, false),
+        Sockets {
+            unix: Ok(()),
+            pair: Ok(()),
+            inet: denied
+        }
+    );
+}
+
+/// REQ-CONF-005: the ABI the backend asks for follows the cap, so that the
+/// rung below ABI 9 runs on any kernel, and never exceeds the kernel's.
+#[test]
+fn req_conf_005_the_abi_cap_selects_the_rung() {
+    let kernel = detect_abi_capped(None);
+    let capped = detect_abi_capped(Some(8));
+    if let Some(capped) = capped {
+        assert!(capped < ABI::V9, "{capped:?}");
+        assert!(Some(capped) <= kernel);
+    }
+    assert_eq!(detect_abi_capped(Some(0)), None);
+    assert!(detect_abi_capped(Some(100)) == kernel);
+}
+
+/// REQ-CONF-010: the host tools' layer holds no right on the worker's own
+/// cgroup directory, which the worker's layer does hold. The directory is a
+/// stand-in outside the write set, with the file the cgroup filesystem would
+/// have; each layer is applied to a thread of its own.
+#[test]
+fn req_conf_010_the_tool_layer_holds_no_right_on_the_workers_cgroup() {
+    let Some(abi) = detect_abi_capped(None) else {
+        crate::test_skip::skip(
+            "req_conf_010_the_tool_layer_holds_no_right_on_the_workers_cgroup",
+            "no Landlock on this kernel",
+        );
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let cgroup = tmp.path().join("mimlys-1");
+    std::fs::create_dir_all(cgroup.join(TOOL_CGROUP)).unwrap();
+    let procs = cgroup.join(TOOL_CGROUP).join("cgroup.procs");
+    std::fs::write(&procs, "").unwrap();
+    let write_set = tmp.path().join("write");
+    std::fs::create_dir_all(&write_set).unwrap();
+    let own = write_set.join("own");
+    std::fs::write(&own, "").unwrap();
+    let mut spec = spec_denying_network(tmp.path());
+    spec.write_paths = vec![write_set];
+    let open_for_write = |path: &Path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map(|_| ())
+            .map_err(|e| e.kind())
+    };
+    // Each layer is made for its own thread: a ruleset is applied once.
+    let apply = |worker: bool| {
+        let layers = build_layers(&spec, Some(&cgroup), abi).expect("layers");
+        let (procs, own) = (procs.clone(), own.clone());
+        std::thread::spawn(move || {
+            let layer = if worker { layers.worker } else { layers.tool };
+            layer.restrict_self().expect("restrict this thread");
+            (open_for_write(&procs), open_for_write(&own))
+        })
+        .join()
+        .unwrap()
+    };
+    let (tool_procs, tool_own) = apply(false);
+    assert_eq!(
+        tool_procs,
+        Err(std::io::ErrorKind::PermissionDenied),
+        "the tool layer has no right on the worker's cgroup"
+    );
+    assert_eq!(tool_own, Ok(()), "and still writes its own set");
+    let (worker_procs, _) = apply(true);
+    assert_eq!(worker_procs, Ok(()), "the worker's layer has it");
+}
