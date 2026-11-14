@@ -84,7 +84,7 @@
 |---|---|---:|---|---|
 | LIM-X1 | Tasks in `running` at once, per runtime | 1 | fixed | v1 is sequential (D-11); no configuration changes it. A later scheduler (the daemon theme) may make it configurable; until then a range here would mislead |
 | LIM-X2 | Executions in flight, per runtime | 1 | fixed | Memory: LIM-X2 × LIM-S3; no configuration changes it (as LIM-X1) |
-| LIM-X3 | Worker or MCP server restarts per task | 3 | 0–10 | Fault containment |
+| LIM-X3 | Worker or MCP server restarts per task, in one runtime process (external design §11.1) | 3 | 0–10 | Fault containment |
 | LIM-X4 | Worker start, including interpreter compilation | 60000 ms | 5000 – 600000 | Cranelift compiles a multi-megabyte interpreter once per worker |
 | LIM-X5 | Executions of one user at once across runtimes (RFC 013 admission) | 2 | 1–16 | Provisional: a candidate until the operation theme's measurement report fixes it (RFC 013) |
 
