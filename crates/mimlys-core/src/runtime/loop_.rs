@@ -11,7 +11,7 @@ use super::context::{ContextInputs, assemble};
 use super::{Runtime, RuntimeError};
 use crate::action::{
     Action, ActionInput, DispositionKind, Execution, FailureCause, Proposal, Termination,
-    disposition,
+    can_be_undone, disposition,
 };
 use crate::approval::{ApprovalError, ApprovalRequest, ApprovalStatus, InvalidationReason, render};
 use crate::clock::Instant;
@@ -1172,7 +1172,9 @@ impl Runtime {
                         authorized,
                         ExecutionContext {
                             deadline_ms: authorized.deadline_ms(),
-                            cancel: self.cancellation(task.task_id),
+                            // An action that cannot be undone is interrupted
+                            // only by the second request (REQ-CLI-005).
+                            cancel: self.execution_cancellation(task.task_id, authorized.effect()),
                         },
                     )
                 },
@@ -1199,13 +1201,22 @@ impl Runtime {
                     None => (ObservationStatus::Succeeded, None),
                 },
             };
+            // An action that cannot be undone and was interrupted anyway (the second
+            // stop signal, REQ-CLI-005) has an unknown outcome: it is recorded as
+            // the recovery of a crash records it (`unknown`, no rollback), and the
+            // task halts `unknown_outcome` with the action listed (external design
+            // §16.3, §19.2), never `cancelled` as if nothing had happened.
+            let interrupted_anyway =
+                status == ObservationStatus::Cancelled && !can_be_undone(authorized.effect());
             // Transaction equals action (REQ-TOOL-010, REQ-WS-010): a write that failed is
             // restored to its pre-execution snapshot before its observation; one that was
             // cancelled is restored unless the profile keeps; one that succeeded is snapshotted.
             let mut rolled_back = false;
             let mut snapshot_after = None;
             let mut notices = outcome.notices.clone();
-            if let Some(before) = action.snapshot_before {
+            if let Some(before) = action.snapshot_before
+                && !interrupted_anyway
+            {
                 let restore = match status {
                     ObservationStatus::Failed => true,
                     ObservationStatus::Cancelled => {
@@ -1255,7 +1266,11 @@ impl Runtime {
                 authorized.tool(),
                 &outcome_with_notices,
                 Verdict {
-                    status,
+                    status: if interrupted_anyway {
+                        ObservationStatus::Unknown
+                    } else {
+                        status
+                    },
                     cause: cause.clone(),
                     rolled_back,
                 },
@@ -1280,6 +1295,7 @@ impl Runtime {
             )?; // 6
             let input = match (status, &cause) {
                 (ObservationStatus::Succeeded, _) => ActionInput::Succeed,
+                (ObservationStatus::Cancelled, _) if interrupted_anyway => ActionInput::MarkUnknown,
                 (ObservationStatus::Cancelled, _) => ActionInput::Cancel,
                 (_, Some(cause)) => ActionInput::Fail(cause.clone()),
                 (_, None) => ActionInput::Fail(FailureCause::ToolError {
@@ -1301,6 +1317,19 @@ impl Runtime {
                 ),
             )?; // 7
             step.phase = StepPhase::Evaluate;
+            if interrupted_anyway {
+                let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
+                // The halt is recorded here: the step's end below sees the task
+                // already halted and would not say that it changed state.
+                persistence.append_event(&self.event(
+                    Actor::Runtime,
+                    Some(task.task_id),
+                    None,
+                    None,
+                    state_changed(&task, &halted),
+                ))?;
+                return Ok((step, Some(ActionOutcome::Failed), halted));
+            }
             let Some(cause) = cause else {
                 return Ok((
                     step,

@@ -93,7 +93,9 @@ pub enum ActionStatus {
     },
     /// Cancelled before or during execution.
     Cancelled,
-    /// The runtime restarted while the action was running; its effect is unknown.
+    /// The action was running when the runtime restarted, or was interrupted
+    /// by the user's second stop signal or by a cancellation, and cannot be
+    /// undone: its effect is unknown (external design §7.1, §16.3, §19.2).
     Unknown,
 }
 
@@ -143,7 +145,7 @@ pub enum ActionInput {
     Fail(FailureCause),
     /// Cancelled by the user or by a task transition.
     Cancel,
-    /// Found running at restart.
+    /// Found running at restart, or interrupted although it cannot be undone.
     MarkUnknown,
 }
 
@@ -615,6 +617,17 @@ pub fn after_unknown(effect: EffectView) -> AfterUnknown {
         EffectKind::ExternalRead => AfterUnknown::Halt,
         EffectKind::ExternalWrite => AfterUnknown::Halt,
     }
+}
+
+/// Whether an action of this effect can be interrupted without leaving its
+/// outcome unknown: the actions whose rule after `unknown` is not to halt
+/// `unknown_outcome` (a read, a workspace write that is rolled back, a host
+/// write with a backup, an idempotent external read). It is the one rule of
+/// recovery (`after_unknown`) read from the other side, so that a stop signal
+/// and a restart can never disagree about what can be undone (REQ-CLI-005,
+/// external design §19.2).
+pub fn can_be_undone(effect: EffectView) -> bool {
+    after_unknown(effect) != AfterUnknown::Halt
 }
 
 /// Measurements of one execution (external design §7.4).

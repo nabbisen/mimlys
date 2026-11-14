@@ -12,7 +12,7 @@ mod loop_;
 mod read;
 mod storage;
 
-pub use control::{CreateTask, RuntimeStatus, TaskView};
+pub use control::{CreateTask, RuntimeStatus, TaskView, UnknownAction};
 pub use loop_::{PROMPT_LOG_TARGET, StepResultView};
 pub use read::{Activity, Reader};
 pub use storage::{Holdings, TaskHolding};
@@ -147,13 +147,35 @@ impl RuntimeError {
     }
 }
 
+/// What has been asked of the step in flight (REQ-CLI-005, external design
+/// §19.2). Two requests, the second stronger: the first interrupts what can be
+/// undone (a model request; an action whose rule after `unknown` is not to halt
+/// `unknown_outcome`), the second interrupts anything, an action that cannot be
+/// undone included, whose outcome is then unknown. The second implies the first.
+#[derive(Clone, Debug, Default)]
+struct Interruption {
+    /// Observed by a model request and by an action that can be undone.
+    undoable: Cancellation,
+    /// Observed by an action that cannot be undone.
+    anyway: Cancellation,
+}
+
+/// An action in flight that cannot be undone (REQ-CLI-005).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrreversibleAction {
+    /// The action.
+    pub action_id: ActionId,
+    /// The tool it runs.
+    pub tool: String,
+}
+
 /// The runtime.
 pub struct Runtime {
     deps: RuntimeDeps,
     policy_hash: Hash,
     exclusions: ExclusionMatcher,
-    /// One cancellation token per task with work in flight (REQ-SCHED-004).
-    cancellations: std::sync::Mutex<std::collections::HashMap<TaskId, Cancellation>>,
+    /// The interruption requests of each task with work in flight (REQ-SCHED-004).
+    cancellations: std::sync::Mutex<std::collections::HashMap<TaskId, Interruption>>,
     /// The redactor built from the configured secrets.
     redactor: crate::context::Redactor,
     /// Each task's previous request in this process, for the prefix measure (REQ-CTX-010).
@@ -196,9 +218,14 @@ impl Runtime {
         })
     }
 
-    /// The task's cancellation token: the model request and the execution
-    /// of its current step observe it (REQ-SCHED-004).
+    /// The token the task's model request and its actions that can be undone
+    /// observe (REQ-SCHED-004): set by [`Runtime::request_cancel`] and by
+    /// [`Runtime::request_cancel_anyway`].
     pub fn cancellation(&self, task_id: TaskId) -> Cancellation {
+        self.interruption(task_id).undoable
+    }
+
+    fn interruption(&self, task_id: TaskId) -> Interruption {
         self.cancellations
             .lock()
             .expect("cancellation registry")
@@ -207,30 +234,78 @@ impl Runtime {
             .clone()
     }
 
-    /// Asks the task's current step to stop: the model request or the
-    /// execution in flight ends `cancelled` and the step ends with outcome
-    /// `cancelled`; the caller then cancels or pauses the task. A task with
-    /// no step in flight is unaffected until its next step, which ends the
-    /// same way. The request is consumed by the step that ends `cancelled`
-    /// (`run_step`): a task still `running` after it can be paused, and a
-    /// pause requested then is taken at the next boundary; a request made
-    /// again is a new request. A request made while the step ends otherwise
-    /// stays for the next step.
-    pub fn request_cancel(&self, task_id: TaskId) {
-        self.cancellation(task_id).cancel();
+    /// The token an action's execution observes: an action that cannot be
+    /// undone is not interrupted by [`Runtime::request_cancel`], only by
+    /// [`Runtime::request_cancel_anyway`] (REQ-CLI-005). The one rule is
+    /// `action::after_unknown`, the rule of recovery.
+    pub(crate) fn execution_cancellation(
+        &self,
+        task_id: TaskId,
+        effect: crate::action::EffectView,
+    ) -> Cancellation {
+        let interruption = self.interruption(task_id);
+        if crate::action::can_be_undone(effect) {
+            interruption.undoable
+        } else {
+            interruption.anyway
+        }
     }
 
-    /// Takes the request a `cancelled` step has acted on: the task's next
-    /// step gets a fresh token (the execution that observed the old one holds
-    /// its own clone). Nothing is created for a task without one.
+    /// Asks the task's current step to stop what can be undone: the model
+    /// request, or an action whose rule after `unknown` is not to halt
+    /// `unknown_outcome`, ends `cancelled` and the step ends with outcome
+    /// `cancelled`; the caller then cancels or pauses the task. An action that
+    /// cannot be undone (an external write, a host write without a backup, an
+    /// external read that is not idempotent) is not interrupted: it runs to its
+    /// end, which its own deadline bounds ([`Runtime::irreversible_in_flight`]
+    /// tells the caller to wait for it). A task with no step in flight is
+    /// unaffected until its next step, which ends the same way. The request is
+    /// consumed by the step that ends `cancelled` (`run_step`): a task still
+    /// `running` after it can be paused, and a pause requested then is taken at
+    /// the next boundary; a request made again is a new request. A request made
+    /// while the step ends otherwise stays for the next step.
+    pub fn request_cancel(&self, task_id: TaskId) {
+        self.interruption(task_id).undoable.cancel();
+    }
+
+    /// As [`Runtime::request_cancel`], and also for an action that cannot be
+    /// undone: it is interrupted, its outcome is recorded unknown (action
+    /// status `unknown`) and the task halts `unknown_outcome` with the action
+    /// listed, the rule of a crash (external design §16.3).
+    pub fn request_cancel_anyway(&self, task_id: TaskId) {
+        let interruption = self.interruption(task_id);
+        interruption.undoable.cancel();
+        interruption.anyway.cancel();
+    }
+
+    /// The action of the task now running that cannot be undone, if any: the
+    /// one a stop signal waits for instead of interrupting (REQ-CLI-005).
+    pub fn irreversible_in_flight(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<IrreversibleAction>, RuntimeError> {
+        Ok(self
+            .deps
+            .persistence
+            .load_running_action(task_id)?
+            .filter(|action| !crate::action::can_be_undone(action.content().effect()))
+            .map(|action| IrreversibleAction {
+                action_id: action.action_id,
+                tool: action.content().tool().to_owned(),
+            }))
+    }
+
+    /// Takes the requests a `cancelled` step has acted on: the task's next
+    /// step gets fresh tokens (the execution that observed the old ones holds
+    /// its own clone). Nothing is created for a task without any.
     fn consume_cancellation(&self, task_id: TaskId) {
-        if let Some(token) = self
+        if let Some(interruption) = self
             .cancellations
             .lock()
             .expect("cancellation registry")
             .get_mut(&task_id)
         {
-            *token = Cancellation::new();
+            *interruption = Interruption::default();
         }
     }
 

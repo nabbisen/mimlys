@@ -78,10 +78,33 @@ another invocation.
 
 ## Signals
 
-Ctrl-C (and SIGTERM on Unix) once asks for a pause at the next step
-boundary; a step that does not reach its boundary within LIM-O1 has its
-execution cancelled first. A second signal cancels the task. The process
-exits after the state is persisted.
+Ctrl-C (and SIGTERM on Unix) once asks for a pause: the task pauses when the
+step in flight has finished. A step still running LIM-O1 less one second after
+the signal (4 seconds) has what can be undone interrupted: its model request, a
+read, a write inside the workspace (its changes are rolled back), a host write
+that made a backup. The task pauses there.
+
+An action that cannot be undone is never interrupted by the first signal: an
+external write, a host write without a backup, an external read that is not
+repeatable. The process says
+
+```text
+waiting for <tool> to finish: it changes something outside this machine and cannot be undone; press Ctrl-C again to interrupt it anyway
+```
+
+and waits for the action to end by itself, which its own deadline bounds (60
+seconds for an external tool unless the declaration says otherwise; a host
+tool's `timeout_ms`). Then the task pauses.
+
+A second signal interrupts that action anyway. What it did is then unknown, and
+the task does not pretend otherwise: the action's status is `unknown`, the task
+is `halted` with `unknown_outcome`, and the action is named, in the text and in
+`unknown_actions` of the JSON, so that you can check what it did before you
+resume. A second signal with no such action in flight cancels the task.
+
+`mimlys task cancel` ends a task `cancelled` as asked; an action it finds
+interrupted that cannot be undone is recorded and named in the same way. The
+process exits after the state is persisted.
 
 ## JSON output
 
@@ -90,7 +113,7 @@ contract (REQ-CLI-004):
 
 | Command | Value |
 |---|---|
-| `run`, `task new|show|resume|pause|cancel`, `approve`, `reject`, `answer` | `{task, pending_approval, pending_question, plan, grants}`: the task record with its `state` (`created`, `running`, `waiting_user` + `wait_kind`, `paused`, `halted` + `halt_reason`, `recovering`, `completed` + `completion`, `failed` + `reason`, `cancelled`), `counters`, `budgets`, `versions` (the policy hash, `decision_schema_version`, `event_schema_version`, `action_schema_version`, the tool-definition hashes, `runtime_version`, the backend, the imported tools), `scope`, `profile` |
+| `run`, `task new|show|resume|pause|cancel`, `approve`, `reject`, `answer` | `{task, pending_approval, pending_question, plan, grants, unknown_actions}`: the task record with its `state` (`created`, `running`, `waiting_user` + `wait_kind`, `paused`, `halted` + `halt_reason`, `recovering`, `completed` + `completion`, `failed` + `reason`, `cancelled`), `counters`, `budgets`, `versions` (the policy hash, `decision_schema_version`, `event_schema_version`, `action_schema_version`, the tool-definition hashes, `runtime_version`, the backend, the imported tools), `scope`, `profile`; `unknown_actions` is `[{action_id, tool, effect}]`, the actions whose outcome is unknown (found running at a restart, or interrupted although they cannot be undone), empty when none |
 | `task list` | `[{task_id, goal, state, created_at, updated_at}]` |
 | `grant`, `revoke` | the grant: `{grant_id, task_id, kind, issued_by, issued_at, expires_at, status}` |
 | `events` | `[{position, record: {event_id, at, actor, …, task_id, step_id, action_id, policy_hash, event, …}}]` |

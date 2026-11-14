@@ -5,12 +5,12 @@
 
 use super::loop_::{PROVIDER, state_changed};
 use super::{Runtime, RuntimeError, Session};
-use crate::action::{Action, ActionInput, ActionStatus};
+use crate::action::{Action, ActionInput, ActionStatus, EffectKind, can_be_undone};
 use crate::approval::{ApprovalRequest, ApprovalStatus, InvalidationReason, UserDecision};
 use crate::clock::Instant;
 use crate::event::{Actor, ApprovalDecision, Event};
 use crate::grant::{Grant, GrantKind, GrantSet};
-use crate::ids::{GrantId, SnapshotId, TaskId};
+use crate::ids::{ActionId, GrantId, SnapshotId, TaskId};
 use crate::limits::{
     LIM_D4_TEXT_CHARS, LIM_T5_DEADLINE_MS, LIM_T5_DEADLINE_MS_RANGE, LIM_X1_RUNNING_TASKS,
 };
@@ -68,6 +68,22 @@ pub struct TaskView {
     pub promotions: Vec<Promotion>,
     /// What the task holds on disk.
     pub footprint: Footprint,
+    /// The actions whose outcome is unknown: found running at a restart, or
+    /// interrupted although they cannot be undone (REQ-CLI-005, REQ-TASK-006,
+    /// external design §19.2). The user, not the record, decides what happened
+    /// to them.
+    pub unknown_actions: Vec<UnknownAction>,
+}
+
+/// An action whose outcome is unknown (REQ-CLI-005).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct UnknownAction {
+    /// The action.
+    pub action_id: ActionId,
+    /// The tool it ran.
+    pub tool: String,
+    /// Its effect class.
+    pub effect: EffectKind,
 }
 
 /// A status whose backend descriptor was moved into a richer view (the
@@ -660,11 +676,21 @@ impl Runtime {
         }
         for action in self.deps.persistence.load_actions(task_id)? {
             if !action.status.is_terminal() {
+                // An action running that cannot be undone is not cancelled as
+                // if nothing had happened: its outcome is unknown, as after a
+                // crash, and the task is cancelled all the same (REQ-TASK-006).
+                let input = if action.status == ActionStatus::Running
+                    && !can_be_undone(action.content().effect())
+                {
+                    ActionInput::MarkUnknown
+                } else {
+                    ActionInput::Cancel
+                };
                 self.close_action(
                     session.actor(),
                     &task,
                     &action,
-                    ActionInput::Cancel,
+                    input,
                     StepOutcome::Cancelled,
                     now,
                 )?;

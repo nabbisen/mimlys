@@ -71,6 +71,10 @@ required-features = ["test-bins"]
 name = "m5_mcp"
 required-features = ["test-bins"]
 
+[[test]]
+name = "m5_signals"
+required-features = ["test-bins"]
+
 [[bin]]
 name = "mimlys-probe-tool"
 required-features = ["test-bins"]

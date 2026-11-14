@@ -19,6 +19,7 @@ use crate::tool::{Param, ParamSchema, ParamType, Provider, ResourceProfile, Tool
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod interrupt;
 mod native;
 mod native_context;
 mod rejection_feedback;
