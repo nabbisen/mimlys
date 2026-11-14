@@ -435,8 +435,28 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
 /// still writes its own tree, `HOME` and `TMPDIR`.
 #[test]
 fn req_conf_006_a_host_tool_reaches_only_its_own_tasks_workspace() {
-    let test = "req_conf_006_a_host_tool_reaches_only_its_own_tasks_workspace";
-    let env = Env::new(&[probe(&["write", "b-owned.txt"]), complete()], "");
+    host_tool_reaches_only_its_own_task(
+        "req_conf_006_a_host_tool_reaches_only_its_own_tasks_workspace",
+        &[],
+    );
+}
+
+/// REQ-CONF-006: the same when the workers are made per task, as on macOS
+/// (a test-build knob chooses it here): the worker itself is confined to
+/// the one task.
+#[test]
+fn req_conf_006_a_worker_made_per_task_reaches_only_its_own_tasks_workspace() {
+    host_tool_reaches_only_its_own_task(
+        "req_conf_006_a_worker_made_per_task_reaches_only_its_own_tasks_workspace",
+        &[("MIMLYS_PROBE_WORKER_PER_TASK", "1")],
+    );
+}
+
+fn host_tool_reaches_only_its_own_task(test: &str, knobs: &[(&str, &str)]) {
+    let mut env = Env::new(&[probe(&["write", "b-owned.txt"]), complete()], "");
+    for (k, v) in knobs {
+        env = env.env(k, v);
+    }
     let (tier, table) = clauses(&env);
     if tier != "full" {
         common::skip(test, &format!("this machine is tier {tier} ({table:?})"));

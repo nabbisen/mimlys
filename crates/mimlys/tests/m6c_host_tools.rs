@@ -75,7 +75,7 @@ impl Env {
         guard: Option<std::sync::RwLockReadGuard<'static, ()>>,
     ) -> Self {
         let data = tempfile::tempdir().unwrap();
-        // The directory is in the write set (`<data>/tmp`) and short enough for a Unix socket path.
+        // `<data>/tmp` is in the read set of every worker.
         std::fs::create_dir_all(data.path().join("data/tmp")).unwrap();
         let config = data.path().join("config.toml");
         let script_path = data.path().join("script.json");
@@ -92,7 +92,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
-allowed_args = ["ok", "cwd", "read", "write", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -190,15 +190,6 @@ read_paths = [{tooldir:?}]
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/lib.rs"), "fn a() {}\n").unwrap();
         dir
-    }
-
-    /// The write set's short directory (`<data>/tmp`), canonical.
-    fn short_dir(&self) -> PathBuf {
-        self.data
-            .path()
-            .join("data/tmp")
-            .canonicalize()
-            .expect("created by Env::new")
     }
 
     fn events(&self, id: &str) -> Vec<Value> {
@@ -658,6 +649,95 @@ fn req_conf_005_name_lookup_is_denied() {
     );
 }
 
+/// REQ-CONF-006: a host tool writes only its own task's workspace. A worker
+/// is made for one task (one Seatbelt profile cannot be narrowed by the tool,
+/// settled point of the spikes), so task B leaves a file in its tree and task
+/// A's tool, run from the same data directory by a worker of its own, can
+/// neither read, write nor list B's tree nor the directory of tasks, and still
+/// writes its own tree, `HOME` and `TMPDIR`.
+#[test]
+fn req_conf_006_a_host_tool_reaches_only_its_own_tasks_workspace() {
+    let test = "req_conf_006_a_host_tool_reaches_only_its_own_tasks_workspace";
+    let env = Env::new(&[probe(&["write", "b-owned.txt"]), complete()], "");
+    let (_, table) = clauses(&env);
+    if !seatbelt_or_skip(test, &table) {
+        return;
+    }
+    let scope = env.scope();
+    let run = |goal: &str| -> String {
+        let (code, value) = env.json(&[
+            "run",
+            goal,
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ]);
+        assert_eq!(code, 0, "{value}");
+        assert_eq!(value["task"]["state"], "completed", "{value}");
+        value["task"]["task_id"].as_str().unwrap().to_owned()
+    };
+    let tree = |id: &str| {
+        env.data
+            .path()
+            .join("data/workspaces")
+            .join(id)
+            .join("tree")
+            .canonicalize()
+            .unwrap()
+    };
+    let b = run("b");
+    let b_tree = tree(&b);
+    assert!(b_tree.join("b-owned.txt").is_file(), "task B's own write");
+    let b_dir = b_tree.parent().unwrap().to_path_buf();
+    let workspaces = b_dir.parent().unwrap().to_path_buf();
+    let arg = |p: &Path| p.to_str().unwrap().to_owned();
+    // Each refusal is followed by an action that succeeds, so that the
+    // budget of consecutive failures does not end the task first.
+    env.set_script(&[
+        probe(&["write", "a-owned.txt"]),
+        probe(&["write-env", "HOME", "h.txt"]),
+        probe(&["write-env", "TMPDIR", "t.txt"]),
+        probe(&["read", &arg(&b_tree.join("b-owned.txt"))]),
+        probe(&["ok"]),
+        probe(&["write", &arg(&b_tree.join("a-was-here.txt"))]),
+        probe(&["ok"]),
+        probe(&["list", &arg(&b_tree)]),
+        probe(&["ok"]),
+        probe(&["list", &arg(&b_dir)]),
+        probe(&["ok"]),
+        probe(&["list", &arg(&workspaces)]),
+        probe(&["ok"]),
+        complete(),
+    ]);
+    let a = run("a");
+    let obs = env.observations(&a);
+    assert_eq!(obs.len(), 13, "{obs:?}");
+    for (i, what) in [(0, "its own tree"), (1, "its HOME"), (2, "its TMPDIR")] {
+        assert_eq!(
+            stdout_of(&obs[i]).trim(),
+            "wrote",
+            "{what}: {}",
+            stdout_of(&obs[i])
+        );
+    }
+    assert!(tree(&a).join("a-owned.txt").is_file());
+    for (i, expected) in [
+        (3, "read failed: permission denied"),
+        (5, "write failed: permission denied"),
+        (7, "list failed: permission denied"),
+        (9, "list failed: permission denied"),
+        (11, "list failed: permission denied"),
+    ] {
+        assert!(
+            stdout_of(&obs[i]).contains(expected),
+            "action {i} reached another task: {}",
+            stdout_of(&obs[i])
+        );
+    }
+    assert!(!b_tree.join("a-was-here.txt").exists());
+}
+
 /// REQ-CONF-005 / clause N: Unix sockets work under the write set (bind,
 /// listen, connect) and a socket that exists outside it cannot be reached;
 /// the control reaches it.
@@ -679,10 +759,13 @@ fn req_conf_005_unix_sockets_only_under_the_write_set() {
         "the control reached the socket"
     );
     let env = Env::new(&[], "");
-    let inside = env.short_dir().join("m6c.sock");
-    assert!(inside.to_str().unwrap().len() < 100, "{inside:?}");
+    // Inside the task's own workspace: the tool's working directory is its tree,
+    // and a relative name keeps the path far below the length of a socket path.
+    // (The runtime's `<data>/tmp` is no longer in the write set of a worker: a
+    // worker is made for one task, REQ-CONF-006.)
+    let inside = "m6c.sock";
     env.set_script(&[
-        probe(&["unix-socket", inside.to_str().unwrap()]),
+        probe(&["unix-socket", inside]),
         probe(&["unix-connect", outside_socket.to_str().unwrap()]),
         complete(),
     ]);

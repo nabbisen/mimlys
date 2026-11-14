@@ -48,6 +48,45 @@ pub struct ConfinementSpec {
     pub data_dir: PathBuf,
 }
 
+/// The specification narrowed to one task (REQ-CONF-006): the write set's
+/// entries inside the data directory (every task's workspace and the
+/// runtime's temporary directory) are replaced by the task's tree and a
+/// temporary directory of the task. The paths are checked to be what they
+/// claim: the tree of one task directly under `<data>/workspaces`, named
+/// `tree`, and the temporary directory inside that task's directory; both
+/// exist. Anything else is refused, never widened. A specification without a
+/// data directory is refused.
+pub fn task_spec(
+    base: &ConfinementSpec,
+    tree: &Path,
+    tmp: &Path,
+) -> Result<ConfinementSpec, String> {
+    if base.data_dir.as_os_str().is_empty() {
+        return Err("no data directory in the specification".to_owned());
+    }
+    let task_dir = tree
+        .parent()
+        .filter(|dir| dir.parent() == Some(base.data_dir.join("workspaces").as_path()))
+        .ok_or_else(|| format!("{} is not the tree of a task", tree.display()))?;
+    if tree.file_name().is_none_or(|name| name != "tree") || !tmp.starts_with(task_dir) {
+        return Err(format!(
+            "{} and {} do not belong to one task",
+            tree.display(),
+            tmp.display()
+        ));
+    }
+    for dir in [tree, tmp] {
+        if !dir.is_dir() {
+            return Err(format!("{} is not a directory", dir.display()));
+        }
+    }
+    let mut spec = base.clone();
+    spec.write_paths.retain(|p| !p.starts_with(&base.data_dir));
+    spec.write_paths.push(tree.to_path_buf());
+    spec.write_paths.push(tmp.to_path_buf());
+    Ok(spec)
+}
+
 /// What a backend reports per clause after applying itself.
 pub type Report = BTreeMap<Clause, ClauseState>;
 
@@ -70,7 +109,7 @@ pub struct Applied {
 #[cfg(windows)]
 use mimlys_core::limits::LIM_O2_CANCEL_MS;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
