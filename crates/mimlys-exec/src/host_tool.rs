@@ -307,15 +307,27 @@ fn spawn_tool(program: &Path, r: &HostRun<'_>) -> Result<ToolProc, String> {
             .map_err(|e| format!("tool cgroup: {e}"))?;
         crate::confine::linux::attach_child_to_cgroup(&mut cmd, procs);
     }
-    // REQ-CONF-011: the tool's process is bound by the worker's sets without
-    // what only the worker reads (`/proc`).
+    // REQ-CONF-011, REQ-CONF-006: the tool's process is bound by the worker's
+    // sets without what only the worker reads (`/proc`), and writes, of the
+    // data directory, only its own task's workspace tree and the execution's
+    // temporary directory. A layer that cannot be made is a tool that does
+    // not start. The descriptor stays open until the process is spawned.
     #[cfg(target_os = "linux")]
-    crate::confine::linux::restrict_child(&mut cmd);
+    let layer = crate::confine::linux::restrict_child(
+        &mut cmd,
+        crate::confine::linux::TaskPaths {
+            tree: r.workspace,
+            tmp: r.tmp,
+        },
+    )
+    .map_err(|e| format!("tool layer: {e}"))?;
     let previous = r.rlimit_memory.and_then(set_address_space_limit);
     let spawned = cmd.spawn();
     if let Some(prev) = previous {
         restore_address_space_limit(prev);
     }
+    #[cfg(target_os = "linux")]
+    drop(layer);
     spawned.map(ToolProc::Std).map_err(|e| e.to_string())
 }
 

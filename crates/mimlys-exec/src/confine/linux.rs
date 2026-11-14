@@ -548,9 +548,11 @@ struct Landlock {
 /// what project code can read (REQ-CONF-011): Landlock layers intersect.
 const WORKER_ONLY_READ: [&str; 1] = ["/proc"];
 
-/// The tool layer's ruleset descriptor, made before the worker restricts
-/// itself and applied by each host tool's process between fork and exec.
-static TOOL_LAYER: std::sync::OnceLock<std::os::fd::OwnedFd> = std::sync::OnceLock::new();
+/// What every host tool's layer is made from: the specification the worker
+/// applied to itself and the Landlock ABI it asked for. The layer itself is
+/// made for each host tool, for the task the tool belongs to
+/// ([`restrict_child`]).
+static TOOL_BASE: std::sync::OnceLock<(ConfinementSpec, ABI)> = std::sync::OnceLock::new();
 
 /// A ruleset over the specification: every access right the kernel's ABI
 /// knows handled as a hard requirement, the read set readable and
@@ -606,42 +608,78 @@ fn landlock_ruleset(
     Ok((created, net))
 }
 
-/// The two rulesets, made and not yet applied.
-struct Layers {
-    /// What a host tool's process applies between fork and exec.
-    tool: landlock::RulesetCreated,
-    /// What the worker applies to itself.
-    worker: landlock::RulesetCreated,
-    /// The worker's ruleset handles TCP `bind` and `connect`.
-    net: bool,
+/// What a host tool may write of the data directory: its own task's
+/// workspace tree and the temporary directory of the execution. The tool
+/// reads what the worker's specification lets it read and writes nothing
+/// else of the data directory: not another task's tree, not the task's own
+/// metadata, not the runtime's temporary directory (REQ-CONF-006).
+#[derive(Clone, Copy, Debug)]
+pub struct TaskPaths<'a> {
+    /// `<data>/workspaces/<task>/tree`: the tool's working directory.
+    pub tree: &'a Path,
+    /// `<data>/workspaces/<task>/tmp/<execution>`: its `HOME` and `TMPDIR`.
+    pub tmp: &'a Path,
 }
 
-/// Makes both rulesets over the specification. The worker's own cgroup is
-/// writable by the worker alone: a tool's process joins the `tool`
-/// sub-cgroup through a descriptor the worker opened, and the tool layer
-/// holds no right on the directory itself (REQ-CONF-010).
-fn build_layers(spec: &ConfinementSpec, cgroup: Option<&Path>, abi: ABI) -> Result<Layers, String> {
-    let (tool, _) = landlock_ruleset(spec, None, abi, &[], false)?;
-    let (worker, net) = landlock_ruleset(spec, cgroup, abi, &WORKER_ONLY_READ, true)?;
-    Ok(Layers { tool, worker, net })
+/// The specification of one task's tools: the worker's, with the write set's
+/// entries inside the data directory (every task's workspace and the runtime's
+/// temporary directory) replaced by the two of this task. The paths are
+/// checked to be what they claim: the tree of one task directly under
+/// `<data>/workspaces`, and the temporary directory inside that task's
+/// directory. Anything else is refused, never widened.
+fn tool_spec(base: &ConfinementSpec, task: TaskPaths<'_>) -> Result<ConfinementSpec, String> {
+    if base.data_dir.as_os_str().is_empty() {
+        return Err("no data directory in the specification".to_owned());
+    }
+    let task_dir = task
+        .tree
+        .parent()
+        .filter(|dir| dir.parent() == Some(base.data_dir.join("workspaces").as_path()))
+        .ok_or_else(|| format!("{} is not the tree of a task", task.tree.display()))?;
+    if task.tree.file_name().is_none_or(|name| name != "tree") || !task.tmp.starts_with(task_dir) {
+        return Err(format!(
+            "{} and {} do not belong to one task",
+            task.tree.display(),
+            task.tmp.display()
+        ));
+    }
+    for dir in [task.tree, task.tmp] {
+        if !dir.is_dir() {
+            return Err(format!("{} is not a directory", dir.display()));
+        }
+    }
+    let mut spec = base.clone();
+    spec.write_paths.retain(|p| !p.starts_with(&base.data_dir));
+    spec.write_paths.push(task.tree.to_path_buf());
+    spec.write_paths.push(task.tmp.to_path_buf());
+    Ok(spec)
 }
 
-/// Landlock, in two layers (REQ-CONF-011, REQ-CONF-012): the host tools'
-/// ruleset is made first and kept for [`restrict_child`]; then the worker
-/// restricts itself with the same sets plus `/proc`.
+/// The host tools' ruleset for one task. It holds no right on the worker's
+/// own cgroup directory, which only the worker's layer carries
+/// (REQ-CONF-010): a tool's process joins the `tool` sub-cgroup through a
+/// descriptor the worker opened.
+fn tool_ruleset(
+    base: &ConfinementSpec,
+    abi: ABI,
+    task: TaskPaths<'_>,
+) -> Result<landlock::RulesetCreated, String> {
+    let spec = tool_spec(base, task)?;
+    landlock_ruleset(&spec, None, abi, &[], false).map(|(ruleset, _)| ruleset)
+}
+
+/// Landlock for the worker (REQ-CONF-011, REQ-CONF-012): the worker
+/// restricts itself with the read and write sets of the specification plus
+/// `/proc`, and keeps the specification for the layers of its host tools.
 fn apply_landlock(
     spec: &ConfinementSpec,
     cgroup: Option<&Path>,
     abi: Option<ABI>,
 ) -> Result<Landlock, String> {
     let abi = abi.ok_or_else(|| "landlock_unsupported".to_owned())?;
-    let layers = build_layers(spec, cgroup, abi)?;
-    let tool_fd: Option<std::os::fd::OwnedFd> = layers.tool.into();
-    let tool_fd = tool_fd.ok_or_else(|| "landlock_tool_layer: no descriptor".to_owned())?;
-    let _ = TOOL_LAYER.set(tool_fd);
-    let net = layers.net;
-    let status = layers
-        .worker
+    let (worker, net) = landlock_ruleset(spec, cgroup, abi, &WORKER_ONLY_READ, true)?;
+    let _ = TOOL_BASE.set((spec.clone(), abi));
+    let status = worker
         .restrict_self()
         .map_err(|e| format!("landlock_restrict:{e}"))?;
     Ok(Landlock {
@@ -650,17 +688,26 @@ fn apply_landlock(
     })
 }
 
-/// Restricts a host tool's process to the tool layer between fork and exec:
-/// the worker's sets without what only the worker reads. The process is
-/// then bound by both layers. A spawn whose restriction fails does not
-/// start (fail closed). A worker without Landlock has no layer and nothing
-/// to add. The ruleset descriptor is the worker's, inherited by the fork.
-pub fn restrict_child(cmd: &mut std::process::Command) {
+/// Restricts a host tool's process, between fork and exec, to the worker's
+/// sets without what only the worker reads, and to its own task's workspace
+/// and the execution's temporary directory of the data directory: a second
+/// layer, made now for this tool, so that the process is bound by both
+/// (REQ-CONF-006, REQ-CONF-011). A restriction that cannot be made is an
+/// error and the tool does not start (fail closed). A worker without
+/// Landlock has no layer and nothing to add (it reports F, and the worker
+/// does not run a host tool). The ruleset descriptor is the caller's to keep
+/// open until the process has been spawned: the fork inherits it.
+pub fn restrict_child(
+    cmd: &mut std::process::Command,
+    task: TaskPaths<'_>,
+) -> Result<Option<std::os::fd::OwnedFd>, String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
-    let Some(fd) = TOOL_LAYER.get() else {
-        return;
+    let Some((base, abi)) = TOOL_BASE.get() else {
+        return Ok(None);
     };
+    let fd: Option<std::os::fd::OwnedFd> = tool_ruleset(base, *abi, task)?.into();
+    let fd = fd.ok_or_else(|| "landlock_tool_layer: no descriptor".to_owned())?;
     let raw = fd.as_raw_fd();
     // The closure runs in the forked child before `exec`: one raw system call
     // on an inherited descriptor, no allocation, no lock (REQ-CONF-010).
@@ -674,6 +721,7 @@ pub fn restrict_child(cmd: &mut std::process::Command) {
             }
         });
     }
+    Ok(Some(fd))
 }
 
 /// Kills every descendant of `root` (not `root` itself) until none remains
