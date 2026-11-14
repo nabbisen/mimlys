@@ -192,10 +192,14 @@ message naming the command to run: `mimlys approve <id>`, `mimlys reject
 <id>`, `mimlys answer <id> <text>`. The command continues the task in its
 own process.
 
-Press Ctrl-C once to pause when the step in flight has finished; twice to
-cancel. An action that cannot be undone (an external write, a host write
-without a backup) is never interrupted by the first press: the process says
-which one it waits for and why, and a second press interrupts it anyway, with
-its outcome recorded as unknown (see [Signals](./reference/cli.md#signals)).
+Press Ctrl-C once to pause: the step in flight starts no new action, and the task
+pauses when what is in flight has finished; twice to cancel. An action that
+cannot be undone (an external write, a host write, an external read that is not
+repeatable) is never interrupted by the first press: the process says which one
+it waits for and why, and a second press interrupts it anyway. What such an
+action did is then unknown, as it is when it reaches its deadline or a limit, or
+its connection is lost: the task halts with `unknown_outcome` and names the
+action, so that you can check what it did before you resume (see
+[Signals](./reference/cli.md#signals)).
 `mimlys task resume <id>` continues a paused or halted task; a budget halt
 takes `--extend-steps` or `--extend-deadline`.
