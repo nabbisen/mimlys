@@ -351,6 +351,81 @@ fn req_sec_003_a_worker_with_a_short_report_refuses_run_host_tool() {
     worker.shutdown();
 }
 
+/// REQ-CONF-006: where workers are made per task (macOS by default, here by
+/// the handle's switch), one worker serves one task: its executions of the same
+/// task share it, and the first execution of another task ends it and gets a
+/// worker of its own. Read from the worker record's process id: the first
+/// worker is gone when the second answers.
+#[cfg(target_os = "linux")]
+#[test]
+fn req_conf_006_a_worker_made_per_task_is_replaced_by_the_next_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ids = ScriptedIds::default();
+    let mut tasks = Vec::new();
+    for _ in 0..2 {
+        let task = TaskId::new(&ids);
+        let root = data.join("workspaces").join(task.to_string());
+        std::fs::create_dir_all(root.join("tree")).unwrap();
+        std::fs::create_dir_all(root.join("tmp")).unwrap();
+        std::fs::write(
+            root.join("tree").join("hello.wasm"),
+            wat::parse_str(HELLO).unwrap(),
+        )
+        .unwrap();
+        tasks.push((task, root.join("tree")));
+    }
+    for sub in ["tmp", "interpreters"] {
+        std::fs::create_dir_all(data.join(sub)).unwrap();
+    }
+    let record = dir.path().join("worker.json");
+    let worker = Worker::new(WorkerConfig {
+        program: worker_bin(),
+        interpreters: vec![],
+        confinement: platform(),
+        limits: mimlys_exec::sandbox::Limits::default(),
+        spec: Some(mimlys::app::confinement_spec(&data, &[], &[], true)),
+        host_tools: vec![],
+        record: Some(record.clone()),
+    });
+    worker.bind_to_task(true);
+    let run = |task: usize| {
+        let (id, tree) = &tasks[task];
+        let out = worker.execute(
+            Execution {
+                task_id: *id,
+                execution_id: ExecutionId::new(&ids),
+                action_id: ActionId::new(&ids),
+                tool: "run_wasm".into(),
+                arguments: serde_json::json!({"module": "hello.wasm"}),
+                effect: mimlys_core::action::EffectView {
+                    kind: mimlys_core::action::EffectKind::WorkspaceWrite,
+                    reversible: true,
+                    idempotent: false,
+                },
+                deadline_ms: 20_000,
+                workspace_root: tree.to_string_lossy().into_owned(),
+                read_only: false,
+                replay: None,
+            },
+            Cancellation::new(),
+        );
+        assert_eq!(out.termination, Termination::Exited { exit_code: 7 });
+        let text = std::fs::read_to_string(&record).expect("the live worker's record");
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value["pid"].as_u64().unwrap()
+    };
+    let first = run(0);
+    assert_eq!(run(0), first, "the same task keeps its worker");
+    let second = run(1);
+    assert_ne!(second, first, "another task gets a worker of its own");
+    assert!(
+        !std::path::Path::new(&format!("/proc/{first}")).exists(),
+        "the first task's worker has ended"
+    );
+    worker.shutdown();
+}
+
 /// REQ-ARCH-008 / REQ-TEST-008: the worker's death is `host_fault{worker_died}`,
 /// the runtime survives, the next execution restarts the worker; the budget
 /// LIM-X3 ends in `host_fault{unavailable}`.

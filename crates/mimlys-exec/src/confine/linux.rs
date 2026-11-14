@@ -629,31 +629,7 @@ pub struct TaskPaths<'a> {
 /// `<data>/workspaces`, and the temporary directory inside that task's
 /// directory. Anything else is refused, never widened.
 fn tool_spec(base: &ConfinementSpec, task: TaskPaths<'_>) -> Result<ConfinementSpec, String> {
-    if base.data_dir.as_os_str().is_empty() {
-        return Err("no data directory in the specification".to_owned());
-    }
-    let task_dir = task
-        .tree
-        .parent()
-        .filter(|dir| dir.parent() == Some(base.data_dir.join("workspaces").as_path()))
-        .ok_or_else(|| format!("{} is not the tree of a task", task.tree.display()))?;
-    if task.tree.file_name().is_none_or(|name| name != "tree") || !task.tmp.starts_with(task_dir) {
-        return Err(format!(
-            "{} and {} do not belong to one task",
-            task.tree.display(),
-            task.tmp.display()
-        ));
-    }
-    for dir in [task.tree, task.tmp] {
-        if !dir.is_dir() {
-            return Err(format!("{} is not a directory", dir.display()));
-        }
-    }
-    let mut spec = base.clone();
-    spec.write_paths.retain(|p| !p.starts_with(&base.data_dir));
-    spec.write_paths.push(task.tree.to_path_buf());
-    spec.write_paths.push(task.tmp.to_path_buf());
-    Ok(spec)
+    super::task_spec(base, task.tree, task.tmp)
 }
 
 /// The host tools' ruleset for one task. It holds no right on the worker's

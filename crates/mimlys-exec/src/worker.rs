@@ -147,6 +147,8 @@ struct Live {
     facts: WorkerFacts,
     /// The worker's own cgroup, recorded for a later runtime and removed at its end.
     cgroup: Option<PathBuf>,
+    /// The task this worker was made for, where workers are made per task ([`Worker::per_task`]).
+    task: Option<TaskId>,
 }
 
 /// The worker handle. One execution at a time (LIM-X2).
@@ -157,6 +159,8 @@ pub struct Worker {
     /// When set, what the administrator accepted as best effort: every worker
     /// this handle spawns must report the mandatory clauses before it is used.
     require: Mutex<Option<Vec<Clause>>>,
+    /// Workers are made per task (see `Worker::per_task`).
+    per_task: std::sync::atomic::AtomicBool,
     restarts: Mutex<BTreeMap<TaskId, u32>>,
     facts: Mutex<WorkerFacts>,
     /// The execution in flight, for the span of the log thread's lines.
@@ -171,6 +175,11 @@ impl Worker {
             live: Mutex::new(None),
             probe_cache: Mutex::new(None),
             require: Mutex::new(None),
+            per_task: std::sync::atomic::AtomicBool::new(
+                cfg!(target_os = "macos")
+                    || (cfg!(debug_assertions)
+                        && std::env::var_os("MIMLYS_PROBE_WORKER_PER_TASK").is_some()),
+            ),
             restarts: Mutex::new(BTreeMap::new()),
             facts: Mutex::new(WorkerFacts::default()),
             reader_span: mimlys_core::log_span::ReaderSpan::new(),
@@ -305,12 +314,18 @@ impl Worker {
     pub fn start(&self) -> Result<WorkerFacts, String> {
         let mut live = self.live.lock().expect("worker");
         if live.is_none() {
-            *live = Some(self.spawn()?);
+            *live = Some(self.spawn(None)?);
         }
         Ok(live.as_ref().map(|l| l.facts.clone()).unwrap_or_default())
     }
 
-    fn spawn(&self) -> Result<Live, String> {
+    fn spawn(&self, task: Option<&Execution>) -> Result<Live, String> {
+        // The specification the worker confines itself with: narrowed to the task of
+        // the execution that makes it, where workers are made per task.
+        let spec = match task {
+            Some(execution) => self.spec_for(execution)?,
+            None => self.config.spec.clone(),
+        };
         let mut args = vec![
             "--serve".to_owned(),
             "--fuel".to_owned(),
@@ -330,7 +345,7 @@ impl Worker {
                 i.script_name
             ));
         }
-        if let Some(spec) = &self.config.spec {
+        if let Some(spec) = &spec {
             args.push("--confine".into());
             args.push(serde_json::to_string(spec).expect("serializes"));
         }
@@ -358,7 +373,7 @@ impl Worker {
         let mut child = self
             .config
             .confinement
-            .spawn(&command, self.config.spec.as_ref())
+            .spawn(&command, spec.as_ref())
             .map_err(|e| e.to_string())?;
         let stdin = child.take_stdin().ok_or("worker stdin")?;
         let stdout = child.take_stdout().ok_or("worker stdout")?;
@@ -402,6 +417,7 @@ impl Worker {
             frames,
             facts: WorkerFacts::default(),
             cgroup: None,
+            task: task.map(|e| e.task_id),
         };
         tracing::debug!(target: "mimlys_worker", "worker {} started, probing", live.child.id());
         let probing = Instant::now();
@@ -473,6 +489,16 @@ impl Worker {
         // The lock makes this the one execution in flight; the log thread
         // writes the worker's lines in the span current here (the step's).
         let _in_flight = self.reader_span.begin();
+        // A worker made for one task (REQ-CONF-006) does not serve another: it
+        // ends, and the execution gets a worker of its own task.
+        if self.per_task()
+            && live
+                .as_ref()
+                .is_some_and(|l| l.task != Some(execution.task_id))
+            && let Some(other) = live.take()
+        {
+            self.end_live(other);
+        }
         if live.is_none() {
             let count = *self
                 .restarts
@@ -483,7 +509,7 @@ impl Worker {
             if count > LIM_X3_RESTARTS {
                 return fault(HostFaultDetail::Unavailable, started, None);
             }
-            match self.spawn() {
+            match self.spawn(Some(&execution)) {
                 Ok(l) => *live = Some(l),
                 Err(detail) => {
                     tracing::warn!(target: "mimlys_worker", "spawn failed: {detail}");
@@ -520,21 +546,63 @@ impl Worker {
 
     /// Ends the worker; the tree is terminated (REQ-CONF-009).
     pub fn shutdown(&self) {
-        if let Some(mut l) = self.live.lock().expect("worker").take() {
-            let _ = write_frame(&mut l.stdin, &Request::Shutdown);
-            if !l.child.wait_within(Duration::from_millis(LIM_O2_CANCEL_MS)) {
-                l.child.kill_tree();
-            }
-            if let Some(path) = &self.config.record {
-                let _ = std::fs::remove_file(path);
-            }
-            #[cfg(target_os = "linux")]
-            if let Some(dir) = &l.cgroup {
-                // Empty now that the tree is gone; a populated cgroup refuses, and the next start reaps it.
-                let _ = crate::confine::linux::kill_cgroup(dir);
-                let _ = crate::confine::linux::remove_cgroup(dir);
-            }
+        if let Some(l) = self.live.lock().expect("worker").take() {
+            self.end_live(l);
         }
+    }
+
+    /// Ends a live worker: a shutdown request, the tree terminated if it does
+    /// not end within LIM-O2, its record and its cgroup removed.
+    fn end_live(&self, mut l: Live) {
+        let _ = write_frame(&mut l.stdin, &Request::Shutdown);
+        if !l.child.wait_within(Duration::from_millis(LIM_O2_CANCEL_MS)) {
+            l.child.kill_tree();
+        }
+        if let Some(path) = &self.config.record {
+            let _ = std::fs::remove_file(path);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(dir) = &l.cgroup {
+            // Empty now that the tree is gone; a populated cgroup refuses, and the next start reaps it.
+            let _ = crate::confine::linux::kill_cgroup(dir);
+            let _ = crate::confine::linux::remove_cgroup(dir);
+        }
+    }
+
+    /// Whether a worker is made for one task (REQ-CONF-006): where the
+    /// platform lets a process apply its confinement once and for its tools
+    /// too (macOS: one Seatbelt profile, no second one), the write set of that
+    /// confinement is one task's workspace, so a worker serves one task at a
+    /// time and is replaced when another task's execution comes. Elsewhere
+    /// (Linux: a layer made for each tool; Windows: not yet) one worker serves
+    /// every task. Test builds can choose it on any platform with
+    /// `MIMLYS_PROBE_WORKER_PER_TASK`, and a test can ask for it on a handle
+    /// ([`Worker::bind_to_task`]).
+    fn per_task(&self) -> bool {
+        self.per_task.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Makes this handle's workers per task, or not (see `per_task`); for tests.
+    pub fn bind_to_task(&self, on: bool) {
+        self.per_task
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The specification for the worker that serves `execution`: narrowed to
+    /// its task when workers are made per task, the configured one otherwise.
+    fn spec_for(
+        &self,
+        execution: &Execution,
+    ) -> Result<Option<crate::confine::ConfinementSpec>, String> {
+        let Some(base) = &self.config.spec else {
+            return Ok(None);
+        };
+        if !self.per_task() {
+            return Ok(Some(base.clone()));
+        }
+        let tree = PathBuf::from(&execution.workspace_root);
+        let tmp = tree.parent().map(|dir| dir.join("tmp")).unwrap_or_default();
+        crate::confine::task_spec(base, &tree, &tmp).map(Some)
     }
 
     /// Writes the live worker's record for a later runtime to reap it (REQ-CONF-009).
