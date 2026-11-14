@@ -45,6 +45,12 @@ impl Env {
     /// (`external_write`, or `external_read` and idempotent), the model
     /// proposing `slow` for `ms` milliseconds and then completing.
     fn new(ms: u64, effect: &str) -> Self {
+        Self::with_deadline(ms, effect, 60_000)
+    }
+
+    /// As [`Env::new`], the tool's own deadline (`timeout_ms`, LIM-O5's range)
+    /// being `deadline_ms`.
+    fn with_deadline(ms: u64, effect: &str, deadline_ms: u64) -> Self {
         let data = tempfile::tempdir().unwrap();
         let config = data.path().join("config.toml");
         let script = [
@@ -68,7 +74,7 @@ env_allow = ["PATH"]
 [servers.rypsok.tools.slow]
 effect = {effect:?}
 idempotent = {idempotent}
-timeout_ms = 60000
+timeout_ms = {deadline_ms}
 "#,
             data = data.path().join("data").to_string_lossy(),
             script = script_path.to_string_lossy(),
@@ -458,5 +464,37 @@ fn req_task_006_task_cancel_names_an_external_write_whose_outcome_is_unknown_tex
             && out.stdout.contains("rypsok.slow"),
         "{}",
         out.stdout
+    );
+}
+
+/// REQ-CLI-005, LIM-O1 (the wait is bounded): the same `external_write` held 20 s
+/// but with its own deadline of 1 s (the bottom of LIM-O5's range). One stop
+/// signal: the process says that it waits for the tool and why, interrupts
+/// nothing, and the tool's own deadline ends the call; the pause is then taken
+/// and the task is `paused`. Judged by state: the run exits and the task is
+/// `paused` with the action ended by its deadline (not by the signal: it is
+/// `failed`, never `cancelled` or `unknown`). Without the deadline the wait would
+/// be the full 20 s.
+#[test]
+fn req_cli_005_the_wait_for_an_action_that_cannot_be_undone_ends_at_its_own_deadline() {
+    let env = Env::with_deadline(20_000, "external_write", 1_000);
+    let id = env.create();
+    let mut run = Followed::start(&env, &["approve", &id]);
+    run.interrupt();
+    let status = run.exit(&env);
+    let stderr = run.stderr();
+    let said: Vec<&str> = stderr.lines().filter(|l| !l.starts_with('{')).collect();
+    assert_eq!(said, [WAITING], "{status:?} {stderr}");
+    assert_eq!(env.task(&id)["task"]["state"], "paused", "{stderr}");
+    assert_eq!(
+        env.finished(&id),
+        ["failed"],
+        "ended by its deadline: {stderr}"
+    );
+    assert!(
+        env.task(&id)["unknown_actions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }

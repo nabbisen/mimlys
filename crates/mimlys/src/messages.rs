@@ -209,12 +209,17 @@ pub fn pending_non_interactive(task_id: &str, kind: WaitKind) -> String {
     }
 }
 /// A stop signal arrived once.
-pub const SIGNAL_PAUSING: &str = "stop signal: pausing at the next step (press again to cancel)";
-/// A stop signal arrived twice.
-pub const SIGNAL_CANCELLING: &str = "stop signal: cancelling the task";
-/// The exit after a signal took longer than LIM-O1; the step was interrupted.
-pub const SIGNAL_INTERRUPTED: &str =
-    "the step did not reach a boundary in time; its execution was cancelled";
+pub const SIGNAL_PAUSING: &str = "stop signal: the task pauses when the step in flight has finished (press Ctrl-C again to cancel it)";
+/// A stop signal arrived twice and nothing in flight cannot be undone.
+pub const SIGNAL_CANCELLING: &str =
+    "stop signal: cancelling the task, and stopping the step in flight";
+/// The step was still running `seconds` after the stop signal (the grace, LIM-O1 less one
+/// second), so what can be undone in it is interrupted.
+pub fn signal_interrupted(seconds: u64) -> String {
+    format!(
+        "the step was still running {seconds} seconds after the stop signal, so it was interrupted (its workspace changes are rolled back); the task is paused"
+    )
+}
 /// The first stop signal met an action that cannot be undone (REQ-CLI-005):
 /// the process waits for it, which its own deadline bounds, and says why.
 pub fn signal_waiting(tool: &str) -> String {

@@ -156,7 +156,7 @@ impl Runtime {
             && view.outcome == StepOutcome::Cancelled
             && !view.state.is_terminal()
         {
-            self.consume_cancellation(task_id);
+            self.clear_interruption(task_id);
         }
         result
     }
@@ -171,7 +171,7 @@ impl Runtime {
         }
         let now = self.deps.clock.now();
         // The boundary: a cancellation request, a requested pause, then the deadline (REQ-TASK-005, REQ-TASK-006, REQ-TASK-009).
-        if self.cancellation(task_id).is_cancelled() {
+        if self.step_interruption(task_id).is_cancelled() {
             return Ok(StepResultView {
                 outcome: StepOutcome::Cancelled,
                 state: task.state,
@@ -360,7 +360,7 @@ impl Runtime {
         now: Instant,
     ) -> Result<Decided, RuntimeError> {
         let persistence = &self.deps.persistence;
-        let cancel = self.cancellation(task.task_id);
+        let cancel = self.step_interruption(task.task_id);
         let transport = match self.resolve_transport(&cancel).await {
             Ok(transport) => transport,
             Err(error) => {
@@ -1174,7 +1174,7 @@ impl Runtime {
                             deadline_ms: authorized.deadline_ms(),
                             // An action that cannot be undone is interrupted
                             // only by the second request (REQ-CLI-005).
-                            cancel: self.execution_cancellation(task.task_id, authorized.effect()),
+                            cancel: self.execution_interruption(task.task_id, authorized.effect()),
                         },
                     )
                 },
@@ -1328,6 +1328,7 @@ impl Runtime {
                     None,
                     state_changed(&task, &halted),
                 ))?;
+                self.transitioned(&task, &halted);
                 return Ok((step, Some(ActionOutcome::Failed), halted));
             }
             let Some(cause) = cause else {
@@ -1339,6 +1340,7 @@ impl Runtime {
             };
             if unknown_after_restore {
                 let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
+                self.transitioned(&task, &halted);
                 return Ok((step, Some(ActionOutcome::Failed), halted));
             }
             let d = disposition(
@@ -1367,6 +1369,7 @@ impl Runtime {
                 },
                 DispositionKind::Halt { reason } => {
                     let halted = task.transition(TaskInput::Halt(reason), ended)?;
+                    self.transitioned(&task, &halted);
                     return Ok((step, Some(ActionOutcome::Failed), halted));
                 }
                 DispositionKind::Feedback => return Ok((step, Some(ActionOutcome::Failed), task)),
@@ -1591,6 +1594,8 @@ impl Runtime {
                 state_changed(&before, &after),
             ))?;
         }
+        // A request does not outlive a transition (handoff 010e).
+        self.transitioned(&before, &after);
         if after.state.is_terminal() {
             // completed, failed or (a step ended after a cancel) cancelled: REQ-SCHED-005.
             self.forget_task(after.task_id);
@@ -1612,6 +1617,9 @@ impl Runtime {
                 state_changed(before, after),
             ),
         )?;
+        // A request does not outlive a transition: the pause (or the halt) at
+        // the boundary clears it (handoff 010e).
+        self.transitioned(before, after);
         Ok(())
     }
 
