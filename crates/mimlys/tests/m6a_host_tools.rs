@@ -508,16 +508,18 @@ fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
     );
 }
 
-/// REQ-CLI-005 (first signal, during the model request): the pause waits for the
-/// request in flight and for the step it belongs to; the request is held 3 s (less
-/// than the grace of 4 s), so the step goes on to its action, finishes it, and the task
-/// pauses at the boundary after it. Judged by state: the signal is sent when the
-/// store has the step's start and not yet the decision, the run exits, the task is
-/// `paused`, and the one action that ran is not followed by another. (A stall of the
-/// machine past the grace would cancel the request instead: the verdict
-/// follows what standard error says, as in the test of the running tool.)
+/// REQ-CLI-005 (first signal, during the model request): the step in flight starts
+/// no new action. The request is held 3 s (less than the grace of 4 s), so it
+/// returns and the step proposes its action; the action is closed `cancelled`
+/// without starting (nothing ran, so the record is exact), its observation says
+/// that the stop came before it began, the step ends `cancelled` and the task
+/// pauses. Judged by state: the signal is sent when the store has the step's
+/// start and not yet the decision, the run exits, the task is `paused`, no
+/// `action.started` was ever recorded. (A stall of the machine past the grace
+/// would interrupt the request instead: no action at all; both are the rule, and
+/// neither starts an action.)
 #[test]
-fn req_cli_005_one_stop_signal_during_the_model_request_pauses_after_the_step() {
+fn req_cli_005_one_stop_signal_during_the_model_request_starts_no_new_action() {
     let env = Env::new(
         &[
             json!({"raw": probe(&["ok"]).to_string(), "delay_ms": 3000}),
@@ -529,7 +531,7 @@ fn req_cli_005_one_stop_signal_during_the_model_request_pauses_after_the_step() 
     let (tier, _) = clauses(&env);
     if tier != "full" {
         common::skip(
-            "req_cli_005_one_stop_signal_during_the_model_request_pauses_after_the_step",
+            "req_cli_005_one_stop_signal_during_the_model_request_starts_no_new_action",
             &format!("tier {tier}"),
         );
         return;
@@ -553,14 +555,30 @@ fn req_cli_005_one_stop_signal_during_the_model_request_pauses_after_the_step() 
     let id = run.task_id();
     let (_, task) = env.json(&["task", "show", &id]);
     assert_eq!(task["task"]["state"], "paused", "{task}");
+    assert_eq!(
+        count_events(env.data.path(), "action.started"),
+        0,
+        "no action began after the signal"
+    );
+    assert_eq!(
+        count_events(env.data.path(), "execution.finished"),
+        0,
+        "nothing ran"
+    );
     let finished = finished_statuses(&env, &id);
     assert!(
-        finished.len() <= 1
-            && finished
-                .iter()
-                .all(|s| s == "succeeded" || s == "cancelled"),
-        "no action began after the pause: {finished:?}"
+        finished.iter().all(|s| s == "cancelled") && finished.len() <= 1,
+        "the action, if one was proposed, was closed cancelled: {finished:?}"
     );
+    for observation in env.observations(&id) {
+        assert_eq!(observation["status"], "cancelled", "{observation}");
+        assert_eq!(
+            observation["notices"],
+            json!([{"code": "stopped_before_start"}]),
+            "{observation}"
+        );
+    }
+    assert_eq!(count_events(env.data.path(), "workspace.rollback"), 0);
 }
 
 /// REQ-CLI-005 / LIM-O1 (first signal, a model request that outlasts the grace): the
@@ -588,8 +606,14 @@ fn req_cli_005_one_stop_signal_cancels_a_model_request_that_outlasts_the_grace()
     let stderr = run.stderr();
     assert!(
         stderr.contains("the task pauses when the step in flight has finished")
-            && stderr.contains("so it was interrupted"),
+            && stderr.contains(
+                "the step was still running 4 seconds after the stop signal, so it was interrupted; the task is paused"
+            ),
         "{status:?} {stderr}"
+    );
+    assert!(
+        !stderr.contains("rolled back"),
+        "a model request that was interrupted rolled nothing back: {stderr}"
     );
     let id = run.task_id();
     let (_, task) = env.json(&["task", "show", &id]);
@@ -665,7 +689,9 @@ fn req_cli_005_one_stop_signal_cancels_a_step_that_outlasts_the_grace() {
     let stderr = run.stderr();
     assert!(
         stderr.contains("the task pauses when the step in flight has finished")
-            && stderr.contains("so it was interrupted"),
+            && stderr.contains(
+                "the step was still running 4 seconds after the stop signal, so it was interrupted, and its workspace changes were rolled back; the task is paused"
+            ),
         "{status:?} {stderr}"
     );
     assert!(

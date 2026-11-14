@@ -148,12 +148,16 @@ impl RuntimeError {
 }
 
 /// What has been asked of the step in flight (REQ-CLI-005, external design
-/// §19.2). Two requests, the second stronger: the first interrupts what can be
-/// undone (a model request; an action whose rule after `unknown` is not to halt
-/// `unknown_outcome`), the second interrupts anything, an action that cannot be
-/// undone included, whose outcome is then unknown. The second implies the first.
+/// §19.2). Three requests, each stronger than the one before and implying it:
+/// the weakest starts no new action; the first interrupts what can be undone
+/// (a model request; an action whose rule after `unknown` is re-execution or
+/// rollback); the second interrupts anything, an action that cannot be undone
+/// included, whose outcome is then unknown.
 #[derive(Clone, Debug, Default)]
 struct Interruption {
+    /// Read before an action starts: when set, the action is closed
+    /// `cancelled` without starting.
+    no_new_action: Cancellation,
     /// Observed by a model request and by an action that can be undone.
     undoable: Cancellation,
     /// Observed by an action that cannot be undone.
@@ -167,6 +171,8 @@ pub struct IrreversibleAction {
     pub action_id: ActionId,
     /// The tool it runs.
     pub tool: String,
+    /// Its effect, which tells the user why it cannot be undone.
+    pub effect: crate::action::EffectKind,
 }
 
 /// The runtime.
@@ -234,10 +240,17 @@ impl Runtime {
             .clone()
     }
 
+    /// Whether the step in flight is asked to start no new action
+    /// ([`Runtime::start_no_new_action`], and the two stronger requests that
+    /// imply it).
+    pub fn no_new_action_requested(&self, task_id: TaskId) -> bool {
+        self.interruption(task_id).no_new_action.is_cancelled()
+    }
+
     /// The token an action's execution observes: an action that cannot be
     /// undone is not interrupted by [`Runtime::interrupt_step`], only by
     /// [`Runtime::interrupt_step_anyway`] (REQ-CLI-005). The one rule is
-    /// `action::after_unknown`, the rule of recovery.
+    /// `action::can_be_undone`, the rule of recovery read from the other side.
     pub(crate) fn execution_interruption(
         &self,
         task_id: TaskId,
@@ -251,16 +264,29 @@ impl Runtime {
         }
     }
 
-    /// Asks the task's current step to stop what can be undone: the model
-    /// request, or an action whose rule after `unknown` is not to halt
-    /// `unknown_outcome`, ends `cancelled` and the step ends with outcome
-    /// `cancelled`. It interrupts a step; it does not cancel the task, and the
-    /// caller then pauses or cancels the task. An action that cannot be undone
-    /// (an external write, a host write without a backup, an external read that
-    /// is not idempotent) is not interrupted: it runs to its end, which its own
-    /// deadline bounds ([`Runtime::irreversible_in_flight`] tells the caller to
-    /// wait for it). A task with no step in flight is unaffected until its next
-    /// step, which ends the same way.
+    /// Asks the task's current step to start no new action, the weakest
+    /// request and the first a stop signal makes. An action the step has not
+    /// started yet is closed `cancelled` without starting (nothing ran, so the
+    /// record is exact), the step ends `cancelled` and the caller pauses the
+    /// task. Nothing in flight is interrupted: a model request and an action
+    /// already running go on. The two stronger requests,
+    /// [`Runtime::interrupt_step`] and [`Runtime::interrupt_step_anyway`],
+    /// imply this one. Spent and cleared as they are.
+    pub fn start_no_new_action(&self, task_id: TaskId) {
+        self.interruption(task_id).no_new_action.cancel();
+    }
+
+    /// Asks the task's current step to stop what can be undone, and to start
+    /// no new action ([`Runtime::start_no_new_action`]): the model request, or
+    /// an action whose rule after `unknown` is re-execution or rollback, ends
+    /// `cancelled` and the step ends with outcome `cancelled`. It interrupts a
+    /// step; it does not cancel the task, and the caller then pauses or cancels
+    /// the task. An action that cannot be undone (an external write, a host
+    /// write, an external read that is not idempotent) is not interrupted: it
+    /// runs to its end, which its own deadline bounds
+    /// ([`Runtime::irreversible_in_flight`] tells the caller to wait for it).
+    /// A task with no step in flight is unaffected until its next step, which
+    /// ends the same way.
     ///
     /// The request is spent by the step that ends `cancelled`: a task still
     /// `running` after it can be paused, and a pause requested then is taken at
@@ -270,7 +296,9 @@ impl Runtime {
     /// after a pause and a resume (handoff 010e). A request made while the step
     /// ends otherwise, with no transition, stays for the next step.
     pub fn interrupt_step(&self, task_id: TaskId) {
-        self.interruption(task_id).undoable.cancel();
+        let interruption = self.interruption(task_id);
+        interruption.no_new_action.cancel();
+        interruption.undoable.cancel();
     }
 
     /// As [`Runtime::interrupt_step`], and also for an action that cannot be
@@ -280,6 +308,7 @@ impl Runtime {
     /// as [`Runtime::interrupt_step`] is.
     pub fn interrupt_step_anyway(&self, task_id: TaskId) {
         let interruption = self.interruption(task_id);
+        interruption.no_new_action.cancel();
         interruption.undoable.cancel();
         interruption.anyway.cancel();
     }
@@ -298,6 +327,7 @@ impl Runtime {
             .map(|action| IrreversibleAction {
                 action_id: action.action_id,
                 tool: action.content().tool().to_owned(),
+                effect: action.content().effect().kind,
             }))
     }
 

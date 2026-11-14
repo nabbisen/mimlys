@@ -11,7 +11,7 @@ use super::context::{ContextInputs, assemble};
 use super::{Runtime, RuntimeError};
 use crate::action::{
     Action, ActionInput, DispositionKind, Execution, FailureCause, Proposal, Termination,
-    can_be_undone, disposition,
+    disposition, outcome_is_unknown,
 };
 use crate::approval::{ApprovalError, ApprovalRequest, ApprovalStatus, InvalidationReason, render};
 use crate::clock::Instant;
@@ -703,11 +703,15 @@ impl Runtime {
                         Event::ActionAuthorized,
                     ),
                 )?; // 4
-                let (step, action_outcome, task) = self
+                // The step's end is given the task as it was before `execute`,
+                // so that a halt decided inside it is written as a state change.
+                let before = task.clone();
+                let (step, action_outcome, after) = self
                     .execute(task, step, action, &authorized, env, now)
                     .await?;
-                self.finish_step(
-                    task,
+                self.finish_step_after(
+                    before,
+                    after,
                     step,
                     continued_or_cancelled(action_outcome),
                     action_outcome,
@@ -904,11 +908,13 @@ impl Runtime {
                 Event::ActionAuthorized,
             ),
         )?; // 4
-        let (step, action_outcome, task) = self
+        let before = task.clone();
+        let (step, action_outcome, after) = self
             .execute(task, step, action, &authorized, env, now)
             .await?;
-        self.finish_step(
-            task,
+        self.finish_step_after(
+            before,
+            after,
             step,
             continued_or_cancelled(action_outcome),
             action_outcome,
@@ -1109,6 +1115,7 @@ impl Runtime {
                 Event::ActionAuthorized,
             ),
         )?;
+        let before = task.clone();
         let (step, action_outcome, task) = self
             .execute(task, step, action, &authorized, env, now)
             .await?;
@@ -1120,7 +1127,8 @@ impl Runtime {
                 let completed = task.transition(TaskInput::Complete(completion), now)?;
                 self.finish_step_into(task, completed, step, StepOutcome::Completed, now)
             }
-            _ => self.finish_step(
+            _ => self.finish_step_after(
+                before,
                 task,
                 step,
                 continued_or_cancelled(action_outcome),
@@ -1149,6 +1157,42 @@ impl Runtime {
         let mut unknown_after_restore = false;
         loop {
             step.phase = StepPhase::Execute;
+            // The step in flight starts no new action once a stop signal has
+            // come (REQ-CLI-005, external design §19.2): read here, before the
+            // running intent is recorded, so that the call is never made. The
+            // action is closed `cancelled`: nothing ran, so the record is
+            // exact, and the observation says the stop came before it began.
+            // The stronger requests imply this one, so a request of either kind
+            // already set when an execution would begin is met here too.
+            if self.no_new_action_requested(task.task_id) {
+                let cancelled = action
+                    .transition(ActionInput::Cancel, now)
+                    .map_err(ordering)?;
+                let mut observation = Observation::stopped_before_start(
+                    ObservationId::new(self.deps.ids.as_ref()),
+                    action.action_id,
+                    authorized.tool(),
+                    now,
+                );
+                observation.redact(&self.redactor);
+                step.observation_id = Some(observation.observation_id);
+                persistence.record_not_started(
+                    &cancelled,
+                    &observation,
+                    &self.event(
+                        Actor::Runtime,
+                        Some(task.task_id),
+                        Some(step.step_id),
+                        Some(action.action_id),
+                        Event::ActionFinished {
+                            status: cancelled.status.name().to_owned(),
+                            cause: None,
+                        },
+                    ),
+                )?;
+                step.phase = StepPhase::Evaluate;
+                return Ok((step, None, task));
+            }
             action = action
                 .transition(ActionInput::Start, now)
                 .map_err(ordering)?;
@@ -1201,13 +1245,15 @@ impl Runtime {
                     None => (ObservationStatus::Succeeded, None),
                 },
             };
-            // An action that cannot be undone and was interrupted anyway (the second
-            // stop signal, REQ-CLI-005) has an unknown outcome: it is recorded as
-            // the recovery of a crash records it (`unknown`, no rollback), and the
-            // task halts `unknown_outcome` with the action listed (external design
-            // §16.3, §19.2), never `cancelled` as if nothing had happened.
-            let interrupted_anyway =
-                status == ObservationStatus::Cancelled && !can_be_undone(authorized.effect());
+            // An action that cannot be undone and whose execution the runtime, not
+            // the tool, ended (a deadline, a limit, a lost worker or connection, an
+            // interruption: the second stop signal included) has an unknown outcome
+            // (external design §7.5, REQ-PERS-008). It is recorded as the recovery of
+            // a crash records it (`unknown`, nothing restored), and the task halts
+            // `unknown_outcome` with the action listed (§16.3), with no retry and no
+            // feedback: never `failed` or `cancelled`, which would say that nothing
+            // happened.
+            let unknown_outcome = outcome_is_unknown(authorized.effect(), &outcome.termination);
             // Transaction equals action (REQ-TOOL-010, REQ-WS-010): a write that failed is
             // restored to its pre-execution snapshot before its observation; one that was
             // cancelled is restored unless the profile keeps; one that succeeded is snapshotted.
@@ -1215,7 +1261,7 @@ impl Runtime {
             let mut snapshot_after = None;
             let mut notices = outcome.notices.clone();
             if let Some(before) = action.snapshot_before
-                && !interrupted_anyway
+                && !unknown_outcome
             {
                 let restore = match status {
                     ObservationStatus::Failed => true,
@@ -1266,7 +1312,7 @@ impl Runtime {
                 authorized.tool(),
                 &outcome_with_notices,
                 Verdict {
-                    status: if interrupted_anyway {
+                    status: if unknown_outcome {
                         ObservationStatus::Unknown
                     } else {
                         status
@@ -1294,8 +1340,8 @@ impl Runtime {
                 ),
             )?; // 6
             let input = match (status, &cause) {
+                (_, _) if unknown_outcome => ActionInput::MarkUnknown,
                 (ObservationStatus::Succeeded, _) => ActionInput::Succeed,
-                (ObservationStatus::Cancelled, _) if interrupted_anyway => ActionInput::MarkUnknown,
                 (ObservationStatus::Cancelled, _) => ActionInput::Cancel,
                 (_, Some(cause)) => ActionInput::Fail(cause.clone()),
                 (_, None) => ActionInput::Fail(FailureCause::ToolError {
@@ -1317,18 +1363,8 @@ impl Runtime {
                 ),
             )?; // 7
             step.phase = StepPhase::Evaluate;
-            if interrupted_anyway {
+            if unknown_outcome {
                 let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
-                // The halt is recorded here: the step's end below sees the task
-                // already halted and would not say that it changed state.
-                persistence.append_event(&self.event(
-                    Actor::Runtime,
-                    Some(task.task_id),
-                    None,
-                    None,
-                    state_changed(&task, &halted),
-                ))?;
-                self.transitioned(&task, &halted);
                 return Ok((step, Some(ActionOutcome::Failed), halted));
             }
             let Some(cause) = cause else {
@@ -1340,7 +1376,6 @@ impl Runtime {
             };
             if unknown_after_restore {
                 let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
-                self.transitioned(&task, &halted);
                 return Ok((step, Some(ActionOutcome::Failed), halted));
             }
             let d = disposition(
@@ -1369,7 +1404,6 @@ impl Runtime {
                 },
                 DispositionKind::Halt { reason } => {
                     let halted = task.transition(TaskInput::Halt(reason), ended)?;
-                    self.transitioned(&task, &halted);
                     return Ok((step, Some(ActionOutcome::Failed), halted));
                 }
                 DispositionKind::Feedback => return Ok((step, Some(ActionOutcome::Failed), task)),
@@ -1537,13 +1571,30 @@ impl Runtime {
         action: Option<ActionOutcome>,
         now: Instant,
     ) -> Result<StepResultView, RuntimeError> {
-        let mut after = task.clone();
+        self.finish_step_after(task.clone(), task, step, outcome, action, now)
+    }
+
+    /// As [`Runtime::finish_step`] for a step whose `execute` may have halted
+    /// the task: `before` is the task as it was before `execute`, `task` as it
+    /// came out, so that a halt decided inside `execute` (a disposition that
+    /// halts, a failed restore, an unknown outcome) is written as the state
+    /// change it is, with its reason (REQ-OBS-001).
+    fn finish_step_after(
+        &self,
+        before: Task,
+        task: Task,
+        step: Step,
+        outcome: StepOutcome,
+        action: Option<ActionOutcome>,
+        now: Instant,
+    ) -> Result<StepResultView, RuntimeError> {
+        let mut after = task;
         let budget = after.counters.apply(
             &StepResult {
                 outcome,
                 action,
                 decision_hash: step.decision_hash.clone(),
-                snapshot: self.tree_identity(task.task_id, step.action_id)?,
+                snapshot: self.tree_identity(before.task_id, step.action_id)?,
             },
             &after.budgets,
         );
@@ -1561,7 +1612,7 @@ impl Runtime {
         } else {
             outcome
         };
-        self.finish_step_into(task, after, step, outcome, now)
+        self.finish_step_into(before, after, step, outcome, now)
     }
 
     fn finish_step_into(

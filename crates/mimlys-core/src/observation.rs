@@ -81,6 +81,10 @@ pub enum Notice {
         /// Why: the command, its temporary directory or the spawn.
         reason: String,
     },
+    /// The user's stop signal came before the action began: it was closed
+    /// `cancelled` without starting, so nothing ran (REQ-CLI-005, external
+    /// design §19.2). There is no execution behind this observation.
+    StoppedBeforeStart,
 }
 
 /// Why a listing or search skipped entries.
@@ -203,6 +207,31 @@ impl Observation {
 }
 
 impl Observation {
+    /// The observation of an action closed `cancelled` before it began (the
+    /// user's stop signal came first): no execution, no output, nothing
+    /// rolled back, and the notice that says why.
+    pub fn stopped_before_start(
+        observation_id: ObservationId,
+        action_id: ActionId,
+        tool: &str,
+        now: Instant,
+    ) -> Self {
+        Self {
+            observation_id,
+            action_id,
+            tool: tool.to_owned(),
+            status: ObservationStatus::Cancelled,
+            cause: None,
+            rolled_back: false,
+            payload: Value::Null,
+            stdout: String::new(),
+            stderr: String::new(),
+            notices: vec![Notice::StoppedBeforeStart],
+            metrics: ExecutionMetrics::default(),
+            created_at: now,
+        }
+    }
+
     /// Replaces configured secret values in the payload, both streams and
     /// the notices' texts (REQ-CTX-007), adding one `secret_redacted` notice
     /// per secret found.
