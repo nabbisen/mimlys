@@ -51,6 +51,57 @@ fn req_tool_009_a_request_not_written_is_unavailable_and_not_unknown() {
     assert_eq!(unreachable.failure, outcome.failure);
 }
 
+/// REQ-TOOL-009, REQ-PERS-008 (handoff 010e-5, item 3): every failure at the
+/// send (`send:transport`, `send:other`, as `send:closed`) precedes any write
+/// (the SDK returns from the send once the request is queued), so none is a
+/// tool error, and none is unknown: each is what a server not reachable gives.
+#[test]
+fn req_tool_009_every_send_failure_is_unavailable_and_none_a_tool_error() {
+    for reason in ["send:closed", "send:transport", "send:other"] {
+        let outcome = failed(reason);
+        assert_eq!(
+            outcome.termination,
+            Termination::HostFault {
+                detail: HostFaultDetail::Unavailable
+            },
+            "{reason}"
+        );
+        assert_eq!(
+            outcome.failure,
+            Some(FailureCause::ToolUnavailable),
+            "{reason}"
+        );
+        assert_eq!(outcome.payload, json!({ "reason": reason }), "{reason}");
+        assert!(
+            !outcome_is_unknown(external_write(), &outcome.termination),
+            "{reason}"
+        );
+    }
+}
+
+/// REQ-PERS-008 (handoff 010e-5, item 3): a write of the request that failed
+/// (`call:transport`: the SDK gives the failed write as the request's response)
+/// may follow a complete line, so it is a connection lost after the call:
+/// `host_fault{worker_died}`, unknown for an action that cannot be undone, never
+/// a tool error.
+#[test]
+fn req_pers_008_a_failed_write_of_the_request_is_a_lost_worker() {
+    let outcome = failed("call:transport");
+    assert_eq!(
+        outcome.termination,
+        Termination::HostFault {
+            detail: HostFaultDetail::WorkerDied
+        }
+    );
+    assert_eq!(
+        outcome.failure,
+        Some(FailureCause::SandboxFault {
+            detail: HostFaultDetail::WorkerDied
+        })
+    );
+    assert!(outcome_is_unknown(external_write(), &outcome.termination));
+}
+
 /// REQ-TOOL-009, REQ-PERS-008 (handoff 010e-4, item 2): a connection closed
 /// after the request was written (`call:closed`) stays `host_fault{worker_died}`:
 /// the call may have taken effect, so the outcome of an action that cannot be
@@ -87,7 +138,7 @@ fn req_tool_009_a_server_past_its_restart_limit_is_unavailable_and_not_unknown()
         }
     );
     assert_eq!(died.failure, Some(FailureCause::ToolUnavailable));
-    assert_eq!(died.payload, json!({"reason": "died"}));
+    assert_eq!(died.payload, json!({"reason": "restart_limit_reached"}));
     assert_eq!(died.metrics.wall_ms, 3);
     assert!(!outcome_is_unknown(external_write(), &died.termination));
     let unreachable = map_server_error(

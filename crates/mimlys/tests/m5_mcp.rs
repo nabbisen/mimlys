@@ -64,7 +64,7 @@ network_domains = ["example.org", "en.wikipedia.org"]
 tools = [{builtin}, {profile}]
 [servers.rypsok]
 command = {server:?}
-env_allow = ["PATH", "MIMLYS_TESTSERVER_HOSTILE", "MIMLYS_TESTSERVER_BAD_OUTPUT", "MIMLYS_TESTSERVER_UNSUPPORTED", "MIMLYS_TESTSERVER_WIDE", "MIMLYS_TESTSERVER_IGNORE_CANCEL"]
+env_allow = ["PATH", "MIMLYS_TESTSERVER_HOSTILE", "MIMLYS_TESTSERVER_BAD_OUTPUT", "MIMLYS_TESTSERVER_UNSUPPORTED", "MIMLYS_TESTSERVER_WIDE", "MIMLYS_TESTSERVER_IGNORE_CANCEL", "MIMLYS_TESTSERVER_DIE_LOG"]
 {extra_server}
 [servers.rypsok.tools.web_search]
 effect = "external_read"
@@ -702,6 +702,277 @@ fn m5_cancellation_deadline_death_and_restarts() {
     });
 }
 
+/// The `die` tool declared with `effect`, proposed `proposals` times: the server
+/// process ends at each call, and each `die` that reaches the server is a line
+/// in the returned log.
+fn dying_env(effect: &str, proposals: usize) -> (Env, PathBuf) {
+    let script: Vec<Value> = (0..proposals)
+        .map(|_| act("rypsok.die", json!({})))
+        .chain([complete()])
+        .collect();
+    let env = Env::new(
+        &script,
+        &format!(
+            "[servers.rypsok.tools.die]\neffect = \"{effect}\"\nidempotent = {}\ntimeout_ms = 30000\n",
+            effect == "external_read"
+        ),
+        &["rypsok.die"],
+    );
+    let log = env.data.path().join("die.log");
+    (
+        env.env("MIMLYS_TESTSERVER_DIE_LOG", log.to_str().unwrap()),
+        log,
+    )
+}
+
+fn die_calls(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |t| t.lines().count())
+}
+
+/// REQ-TOOL-009, REQ-MCP-001 (handoff 010e-5, item 1; external design §11.1):
+/// every restart made for a task counts against LIM-X3, the one the pin check
+/// makes before a call included. A server whose `die` tool (declared
+/// `external_read` and idempotent) ends the process at each call is restarted
+/// LIM-X3 times; the attempt after that is not made: `host_fault{unavailable}`,
+/// the cause `tool_unavailable` with the reason `restart_limit_reached`, no
+/// `die` reaches the server again, and no action is `unknown`. The task halts
+/// `tool_unavailable` (REQ-TOOL-009). Read from the store and the server's log.
+#[test]
+fn req_tool_009_restarts_made_by_the_pin_check_count_and_past_the_limit_the_call_is_not_made() {
+    let limit = mimlys_core::limits::LIM_X3_RESTARTS as usize;
+    // More steps proposed than the allowance serves. An idempotent read whose
+    // worker was lost is tried again once (attempt 2), so the first process and
+    // the LIM-X3 restarts serve 1 + LIM-X3 executions in all; the one after them
+    // is the attempt that must be refused.
+    let (env, log) = dying_env("external_read", limit + 1);
+    let scope = env.scope();
+    let (code, value) = env.json(&["run", "die", "--scope", scope.to_str().unwrap()]);
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let events = env.events(&id);
+    // Server events belong to no task: `metrics` counts them for the store.
+    let (_, metrics) = env.json(&["metrics"]);
+    assert_eq!(
+        metrics["events_by_name"]["server.started"].as_u64(),
+        Some(1 + limit as u64),
+        "the first start and exactly LIM-X3 restarts: {}",
+        metrics["events_by_name"]
+    );
+    assert_eq!(
+        die_calls(&log),
+        1 + limit,
+        "no `die` reached the server after the limit"
+    );
+    let finished: Vec<(String, String)> = events
+        .iter()
+        .filter(|e| e["event"] == "action.finished")
+        .map(|e| {
+            (
+                e["status"].as_str().unwrap().to_owned(),
+                e["cause"].as_str().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    // `action.finished` is recorded per attempt: the executions that reached
+    // the server died, the attempts after them (the retry too) were refused.
+    let mut expected: Vec<(String, String)> = (0..=limit)
+        .map(|_| ("failed".to_owned(), "sandbox_fault".to_owned()))
+        .collect();
+    expected.extend((0..2).map(|_| ("failed".to_owned(), "tool_unavailable".to_owned())));
+    assert_eq!(finished, expected, "{events:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["event"] == "action.finished" && e["status"] == "unknown"),
+        "nothing is unknown"
+    );
+    let task = env.json(&["task", "show", &id]).1;
+    assert_eq!(task["task"]["state"], "halted", "{task} (exit {code})");
+    assert_eq!(task["task"]["halt_reason"], "tool_unavailable", "{task}");
+    let conn = rusqlite::Connection::open(env.data.path().join("data/mimlys.db")).unwrap();
+    let last: String = conn
+        .query_row(
+            "select record from executions order by rowid desc limit 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let last: Value = serde_json::from_str(&last).unwrap();
+    assert_eq!(last["termination"], "host_fault", "{last}");
+    assert_eq!(last["detail"], "unavailable", "{last}");
+    let observation: String = conn
+        .query_row(
+            "select o.record from observations o join actions a on a.action_id = o.action_id where a.task_id = ?1 order by o.rowid desc limit 1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        observation.contains("restart_limit_reached"),
+        "the reason is in the last observation: {observation}"
+    );
+}
+
+/// REQ-PERS-008, REQ-TOOL-009 (handoff 010e-5, item 1): the same server with
+/// `die` declared `external_write`: the death on the first call is `unknown`
+/// (the call was sent, the connection was lost) and the task halts. The count is
+/// the task's, not the step's: a later start made for the same task, from the
+/// same `Servers`, goes on from the count it has, so the allowance is LIM-X3 in
+/// all, and the attempt after it is refused as `restart_limit_reached`. A
+/// listing for no task never counts.
+#[test]
+fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_never_counts() {
+    use mimlys_core::ids::TaskId;
+    let limit = mimlys_core::limits::LIM_X3_RESTARTS;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut config = ServerConfig::new("t", testserver(), vec![]);
+        config.env_allow = vec!["PATH".into()];
+        let server = Server::new(config);
+        let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let other = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let (_, _, hashes) = server.list().await.unwrap();
+        assert!(hashes.contains_key("die"));
+
+        // A listing for no task restarts a dead server and counts for nobody:
+        // any number of them leave the task its whole allowance.
+        for _ in 0..(limit + 2) {
+            kill_server(&server).await;
+            server.list().await.unwrap();
+        }
+        let mut deaths = 0;
+        // The task's allowance: each death is followed by a restart made for it
+        // (the pin check's listing), LIM-X3 times, whichever step it is made in.
+        for i in 0..limit {
+            kill_server(&server).await;
+            deaths += 1;
+            let current = server.current_hash(task, "web_search").await;
+            assert!(matches!(current, Ok(Some(_))), "{i}: {current:?}");
+        }
+        assert_eq!(deaths, limit);
+        // Another task has its own allowance.
+        kill_server(&server).await;
+        assert!(server.current_hash(other, "web_search").await.is_ok());
+        // The same task again, at once: it is the same count, the allowance is
+        // used, and the refusal is not once but every time.
+        kill_server(&server).await;
+        for _ in 0..3 {
+            let refused = server.current_hash(task, "web_search").await;
+            assert!(
+                matches!(refused, Err(mimlys_mcp::server::ServerError::Died { .. })),
+                "{refused:?}"
+            );
+            let called = server
+                .call(
+                    task,
+                    "engine_status",
+                    Default::default(),
+                    30_000,
+                    &Cancellation::new(),
+                )
+                .await;
+            assert!(
+                matches!(called, Err(mimlys_mcp::server::ServerError::Died { .. })),
+                "{called:?}"
+            );
+        }
+        // The refusal of one task is not the server's: a listing for no task
+        // still starts it.
+        assert!(server.list().await.is_ok());
+        server.shutdown().await;
+    });
+}
+
+/// REQ-TOOL-009, REQ-MCP-002 (handoff 010e-5, item 1): the relisting a task's
+/// provider makes at a step boundary (`refresh_pins`, after the list changed) is
+/// made on the task's behalf: a restart it makes counts against the task, and
+/// past the limit it neither starts the server nor unpins the tools for a
+/// definition that did not change (the call is refused later, as
+/// `restart_limit_reached`).
+#[test]
+fn req_tool_009_the_relisting_at_a_step_boundary_counts_for_its_task() {
+    use mimlys_core::ids::TaskId;
+    use mimlys_core::spi::ToolProvider;
+    let limit = mimlys_core::limits::LIM_X3_RESTARTS;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut config = ServerConfig::new("t", testserver(), vec![]);
+        config.env_allow = vec!["PATH".into()];
+        let servers =
+            std::sync::Arc::new(mimlys_mcp::tools::Servers::new(vec![Server::new(config)]));
+        let server = std::sync::Arc::clone(&servers.all()[0]);
+        let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let provider =
+            mimlys_mcp::tools::McpTools::open(task, std::sync::Arc::clone(&servers)).await;
+        let pinned = provider.imports();
+        assert!(!pinned.is_empty());
+        for i in 0..limit {
+            kill_server(&server).await;
+            server.force_relist();
+            let changed = provider.refresh_pins(&pinned);
+            assert!(changed.is_empty(), "{i}: {changed:?}");
+            assert!(server.is_running().await, "{i}: restarted for the task");
+        }
+        // The allowance is used: the next relisting does not start the server,
+        // and the tools stay pinned.
+        kill_server(&server).await;
+        server.force_relist();
+        let changed = provider.refresh_pins(&pinned);
+        assert!(changed.is_empty(), "{changed:?}");
+        assert!(!server.is_running().await, "not restarted past the limit");
+        assert!(matches!(
+            server.current_hash(task, "web_search").await,
+            Err(mimlys_mcp::server::ServerError::Died { .. })
+        ));
+        assert!(
+            provider
+                .definitions()
+                .iter()
+                .any(|d| d.name == "t.web_search")
+        );
+        server.shutdown().await;
+    });
+}
+
+/// REQ-PERS-008 (handoff 010e-5, item 1): the end-to-end half of the above: with
+/// `die` declared `external_write` the first death is `unknown` and the task
+/// halts `unknown_outcome` with the action listed; the call reaches the server
+/// once, and the model is not asked again.
+#[test]
+fn req_pers_008_a_death_of_an_external_write_is_unknown_and_halts() {
+    let (env, log) = dying_env("external_write", 3);
+    let scope = env.scope();
+    let (code, value) = env.json(&["run", "die", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["approve", &id]);
+    assert_eq!(code, 0, "{value}");
+    let task = env.json(&["task", "show", &id]).1;
+    assert_eq!(task["task"]["state"], "halted", "{task}");
+    assert_eq!(task["task"]["halt_reason"], "unknown_outcome", "{task}");
+    let events = env.events(&id);
+    let finished: Vec<&str> = events
+        .iter()
+        .filter(|e| e["event"] == "action.finished")
+        .map(|e| e["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(finished, ["unknown"], "{events:?}");
+    assert_eq!(die_calls(&log), 1);
+    // One start for each of the two processes (`run`, `approve`), no restart.
+    let (_, metrics) = env.json(&["metrics"]);
+    assert_eq!(
+        metrics["events_by_name"]["server.started"].as_u64(),
+        Some(2),
+        "{}",
+        metrics["events_by_name"]
+    );
+}
+
 /// REQ-MCP-001, LIM-O16: at runtime exit a server's standard input is closed
 /// and the server is given `shutdown_ms` to end by itself (5 000 ms by
 /// default, not LIM-O2's 2 000): one that needs 3 s ends on its own and is
@@ -1320,7 +1591,13 @@ fn req_mcp_002_a_failed_listing_is_unavailable_and_never_the_sdks_cached_list() 
         }
         // What mimlys last saw is untouched and is not offered as a fresh listing.
         assert_eq!(server.last_list().unwrap().2, first_hashes);
-        assert!(server.current_hash("web_fetch").await.is_none());
+        // A server that cannot list is the error, not a tool that is gone: the
+        // pin check gives the call `tool_unavailable`, not `definition_changed`.
+        let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
+        assert!(matches!(
+            server.current_hash(task, "web_fetch").await,
+            Err(mimlys_mcp::server::ServerError::Unavailable { .. })
+        ));
         server.shutdown().await;
     });
 }

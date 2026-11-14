@@ -39,6 +39,9 @@
 //! (`change_definition` creates the file; a test may create it to stand for an
 //! upgrade or another configuration); `MIMLYS_TESTSERVER_FAIL_LIST_FILE=<path>`
 //! answers every `tools/list` with an error while that file exists;
+//! `MIMLYS_TESTSERVER_DIE_LOG=<path>` appends a line to the file for every
+//! `die` call that reaches the server (to count the executions that did, across
+//! the processes the tool ends);
 //! `MIMLYS_TESTSERVER_STDERR_LINE=<text>` makes every call of the rypsok tools
 //! and `echo_env` write `<text>` as a line on standard error, then wait 5000 ms
 //! before it answers (so that the client's reader has read the line while the
@@ -400,6 +403,15 @@ pub fn main() {
                     .unwrap_or_default();
                 match name.as_str() {
                     "die" => {
+                        if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_DIE_LOG")
+                            && let Ok(mut file) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(path)
+                        {
+                            use std::io::Write as _;
+                            let _ = writeln!(file, "die");
+                        }
                         let _ = stdout.lock().expect("stdout").flush();
                         std::process::exit(3);
                     }
