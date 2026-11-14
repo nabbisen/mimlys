@@ -353,14 +353,19 @@ impl Worker {
             .name("mimlys-worker-log".into())
             .spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    reader_span.current().in_scope(|| {
-                        match line.strip_prefix(crate::trace::PREFIX) {
-                            Some(t) => {
+                    reader_span
+                        .current()
+                        .in_scope(|| match crate::trace::classify(&line) {
+                            crate::trace::LineKind::Trace(t) => {
                                 tracing::debug!(target: "mimlys_worker", "worker trace: {t}")
                             }
-                            None => tracing::info!(target: "mimlys_worker", "{line}"),
-                        }
-                    });
+                            crate::trace::LineKind::Warn(t) => {
+                                tracing::warn!(target: "mimlys_worker", "{t}")
+                            }
+                            crate::trace::LineKind::Other(line) => {
+                                tracing::info!(target: "mimlys_worker", "{line}")
+                            }
+                        });
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -755,6 +760,8 @@ fn worker_env() -> Vec<(String, String)> {
             "MIMLYS_PROBE_FAIL",
             "MIMLYS_PROBE_BEST_EFFORT",
             "MIMLYS_PROBE_NO_CGROUP",
+            "MIMLYS_PROBE_NO_TREE_KILL",
+            "MIMLYS_PROBE_WAIT_ERROR",
         ] {
             if let Ok(v) = std::env::var(name) {
                 env.push((name.to_owned(), v));

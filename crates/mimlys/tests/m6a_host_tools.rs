@@ -53,7 +53,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tooldir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "detach", "fork", "alloc"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -418,6 +418,273 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let (_, task) = env.json(&["task", "show", &id]);
     assert_eq!(task["task"]["state"], "cancelled");
+}
+
+/// The ended children nobody has waited for yet (state `Z`) of a process.
+fn zombie_children_of(parent: u32) -> usize {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                return false;
+            };
+            let Some((_, rest)) = stat.rsplit_once(')') else {
+                return false;
+            };
+            let mut fields = rest.split_whitespace();
+            let state = fields.next();
+            let ppid: Option<u32> = fields.next().and_then(|p| p.parse().ok());
+            state == Some("Z") && ppid == Some(parent)
+        })
+        .count()
+}
+
+/// For the evidence of a failure: each live `sleep <secs>` with its parent,
+/// its groups and its cgroup.
+fn describe_sleepers(secs: &str) -> String {
+    let Ok(found) = Command::new("pgrep")
+        .args(["-f", &format!("^sleep {secs}$")])
+        .output()
+    else {
+        return String::new();
+    };
+    let read = |path: String| {
+        std::fs::read(path)
+            .map(|b| {
+                String::from_utf8_lossy(&b)
+                    .replace('\0', " ")
+                    .trim()
+                    .to_owned()
+            })
+            .unwrap_or_else(|_| "gone".to_owned())
+    };
+    let mut text = String::new();
+    for pid in String::from_utf8_lossy(&found.stdout).lines() {
+        let stat = read(format!("/proc/{pid}/stat"));
+        let ppid = stat
+            .rsplit_once(") ")
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .unwrap_or("?")
+            .to_owned();
+        text.push_str(&format!(
+            "pid {pid}: stat after comm: {}\n  cgroup: {}\n  parent {ppid}: {}\n  parent stat: {}\n",
+            stat.rsplit_once(") ").map(|(_, r)| r).unwrap_or(&stat),
+            read(format!("/proc/{pid}/cgroup")),
+            read(format!("/proc/{ppid}/cmdline")),
+            read(format!("/proc/{ppid}/stat")),
+        ));
+    }
+    text
+}
+
+/// Kills what a failed test leaves sleeping, by pid.
+fn kill_sleepers(secs: &str) {
+    if let Ok(found) = Command::new("pgrep")
+        .args(["-f", &format!("^sleep {secs}$")])
+        .output()
+    {
+        for pid in String::from_utf8_lossy(&found.stdout).lines() {
+            let _ = Command::new("kill").args(["-KILL", pid.trim()]).status();
+        }
+    }
+}
+
+/// REQ-CONF-009: a tool that starts a sleeper in a session of its own and
+/// ends by itself leaves no tree behind. The state is read while the next
+/// action runs (it holds for as long as the test lets it): the sleeper of the
+/// first action is gone then, and no ended child of the worker is left
+/// unwaited for. `knobs` select the rung or the failure of the wait.
+fn tree_ends_with_the_tool(test: &str, knobs: &[(&str, &str)], detached: &str, held: &str) {
+    let mut env = Env::new(
+        &[
+            probe(&["detach", detached]),
+            probe(&["setsid-sleep", held]),
+            complete(),
+        ],
+        "",
+    );
+    for (k, v) in knobs {
+        env = env.env(k, v);
+    }
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("tier {tier}"));
+        return;
+    }
+    let mut run = Followed::spawn(&env, "detach");
+    // The second action runs, so the first has ended: its sleeper started and is gone.
+    run.await_state(&env, "the second action never started", held, || {
+        sleepers(held) >= 2
+    });
+    let left = sleepers(detached);
+    let worker = child_of(run.run.id(), "mimlys-worker");
+    let zombies = worker.map(zombie_children_of);
+    let evidence = format!(
+        "{}\nthe sleepers of the first action:\n{}",
+        process_tree(run.run.id(), detached),
+        describe_sleepers(detached)
+    );
+    // Stop the run: one signal pauses at the boundary, and the step that outlasts
+    // the grace is interrupted.
+    run.interrupt();
+    let status = run.exit(&env, held);
+    kill_sleepers(detached);
+    assert_eq!(
+        left, 0,
+        "the first action's sleeper outlived its tool\n{evidence}"
+    );
+    assert_eq!(
+        zombies,
+        Some(0),
+        "no ended descendant is left unwaited for\n{evidence}"
+    );
+    let stderr = run.stderr();
+    assert!(
+        !stderr.contains("tree_kill_incomplete"),
+        "{status:?} nothing survived the termination: {stderr}"
+    );
+    assert!(
+        wait_for(std::time::Duration::from_secs(60), || sleepers(held) == 0),
+        "the second action's tree is gone too"
+    );
+}
+
+/// REQ-CONF-009: the tree ends with the tool, on the `cgroup.kill` rung.
+#[test]
+fn req_conf_009_the_tree_ends_when_the_tool_exits() {
+    tree_ends_with_the_tool(
+        "req_conf_009_the_tree_ends_when_the_tool_exits",
+        &[],
+        "5601",
+        "5602",
+    );
+}
+
+/// REQ-CONF-009: and on the `subreaper` rung, where the walk of the
+/// worker's descendants is the primitive.
+#[test]
+fn req_conf_009_the_tree_ends_when_the_tool_exits_on_the_subreaper_rung() {
+    tree_ends_with_the_tool(
+        "req_conf_009_the_tree_ends_when_the_tool_exits_on_the_subreaper_rung",
+        &[("MIMLYS_PROBE_NO_CGROUP", "1")],
+        "5603",
+        "5604",
+    );
+}
+
+/// REQ-CONF-009: a wait on the tool that fails ends its tree as well (the
+/// failure is injected once the tool has ended, and ends the task). On the
+/// `subreaper` rung nothing but the termination reaches a process in a
+/// session of its own once the worker is gone, so the state after the run
+/// is the termination's doing: no sleeper is left.
+#[test]
+fn req_conf_009_the_tree_ends_when_the_wait_on_the_tool_fails() {
+    let test = "req_conf_009_the_tree_ends_when_the_wait_on_the_tool_fails";
+    let secs = "5605";
+    let env = Env::new(&[probe(&["detach", secs]), complete()], "")
+        .env("MIMLYS_PROBE_NO_CGROUP", "1")
+        .env("MIMLYS_PROBE_WAIT_ERROR", "1");
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("tier {tier}"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, stdout, stderr) = env.run(&[
+        "--json",
+        "run",
+        "detach",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    let left = sleepers(secs);
+    kill_sleepers(secs);
+    let value: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{stderr}"));
+    assert_eq!(
+        value["task"]["state"], "halted",
+        "the failed wait is a host fault ({code}): {value}"
+    );
+    assert_eq!(left, 0, "the sleeper outlived the tool's failed wait");
+}
+
+/// REQ-CONF-009: a process that survives the termination is reported,
+/// logged at `warn` as `tree_kill_incomplete`. A test build leaves the tree
+/// alone (`MIMLYS_PROBE_NO_TREE_KILL`), so the survivor is real; the test
+/// kills it by pid.
+#[test]
+fn req_conf_009_a_survivor_of_the_termination_is_reported() {
+    let test = "req_conf_009_a_survivor_of_the_termination_is_reported";
+    let secs = "5606";
+    let env =
+        Env::new(&[probe(&["detach", secs]), complete()], "").env("MIMLYS_PROBE_NO_TREE_KILL", "1");
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("tier {tier}"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, stdout, stderr) = env.run(&[
+        "--json",
+        "run",
+        "detach",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    kill_sleepers(secs);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let warning = stderr
+        .lines()
+        .find(|l| l.contains("tree_kill_incomplete"))
+        .unwrap_or_else(|| panic!("no warning in the log: {stderr}"));
+    assert!(
+        warning.contains("\"level\":\"WARN\""),
+        "logged at warn: {warning}"
+    );
+    assert!(
+        warning.contains("process(es) remained"),
+        "the line says what remained: {warning}"
+    );
+}
+
+/// REQ-CONF-009 (external design §14.1, ephemeral per-execution temp): a host tool's `HOME`
+/// and `TMPDIR` directory is made for one execution, never reused, and
+/// removed when the execution ends.
+#[test]
+fn req_conf_009_the_tools_home_is_per_execution_and_removed() {
+    let test = "req_conf_009_the_tools_home_is_per_execution_and_removed";
+    let env = Env::new(
+        &[
+            probe(&["env", "HOME"]),
+            probe(&["env", "HOME"]),
+            probe(&["env", "TMPDIR"]),
+            complete(),
+        ],
+        "",
+    );
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    let home = |o: &Value| {
+        stdout_of(o)
+            .trim()
+            .split_once('=')
+            .map(|(_, v)| v.to_owned())
+            .unwrap_or_default()
+    };
+    let (first, second, third) = (home(&obs[0]), home(&obs[1]), home(&obs[2]));
+    assert!(first.contains("/exec-"), "{first}");
+    assert_ne!(first, second, "never reused");
+    assert_ne!(second, third, "never reused");
+    for dir in [&first, &second, &third] {
+        assert!(!Path::new(dir).exists(), "{dir} is removed after its tool");
+    }
 }
 
 /// Polls `done` every 25 ms until it holds or `limit` has passed (the tests
