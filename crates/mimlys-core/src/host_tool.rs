@@ -191,6 +191,9 @@ impl HostToolDeclaration {
         if self.command.trim().is_empty() {
             return Err(err("command", "required".into()));
         }
+        if is_batch_script(&self.command) {
+            return Err(err("command", batch_script_refusal(&self.command)));
+        }
         if !matches!(
             self.effect,
             EffectKind::WorkspaceWrite | EffectKind::HostWrite | EffectKind::ExternalRead
@@ -235,6 +238,29 @@ impl HostToolDeclaration {
         }
         Ok(())
     }
+}
+
+/// Whether a command names a batch script, `.cmd` or `.bat`, in any case.
+/// Windows runs such a file through `cmd.exe` (a shell), and the arguments
+/// are quoted for the C runtime and not for `cmd.exe`; no shell is involved
+/// in a host tool (REQ-CONF-006). The same rule on every platform, so that a
+/// declaration is not valid on one machine and refused on another. Windows
+/// ignores trailing dots and spaces in a file name, so `run.cmd.` is `run.cmd`.
+pub fn is_batch_script(command: &str) -> bool {
+    let name = command.trim().trim_end_matches(['.', ' ']);
+    name.rsplit_once('.').is_some_and(|(_, extension)| {
+        !extension.contains(['/', '\\'])
+            && (extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat"))
+    })
+}
+
+/// The reason a batch script is refused as a command: what it is, why it is
+/// refused (REQ-CONF-006: no shell is involved) and the remedy (CLR-5).
+/// `shown` is the command as written or as it resolves.
+pub fn batch_script_refusal(shown: &str) -> String {
+    format!(
+        "\"{shown}\" is a batch script, which Windows runs through a shell (cmd.exe); no shell is involved in a host tool (REQ-CONF-006); declare the program the script runs"
+    )
 }
 
 /// Why a declared read path is refused (REQ-CONF-011).

@@ -455,6 +455,47 @@ fn req_conf_011_command_that_links_out_of_the_read_paths_is_refused() {
     declare("no-such-tool", &[&shim]).unwrap();
 }
 
+/// REQ-CONF-006: a `command` that resolves to a batch script is refused at
+/// load as one written with the extension is: a name looked up in a read
+/// path (the file is `run.CMD`), and a link whose target is one. The reason
+/// says no shell is involved and what to declare. A program of another name
+/// loads.
+#[cfg(unix)]
+#[test]
+fn req_conf_006_command_that_resolves_to_a_batch_script_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("run.CMD"), "echo\n").unwrap();
+    std::fs::write(bin.join("real"), "#!/bin/sh\n").unwrap();
+    std::os::unix::fs::symlink(bin.join("run.CMD"), bin.join("runner")).unwrap();
+    std::os::unix::fs::symlink(bin.join("real"), bin.join("plain")).unwrap();
+    let declare = |command: &str| {
+        Config::parse(&format!(
+            "config_version = 1\n[host_tools.tool]\ncommand = {command:?}\neffect = \"workspace_write\"\nread_paths = [{:?}]\n",
+            bin.to_string_lossy()
+        ))
+        .unwrap()
+        .validate()
+    };
+    // A link (by name, and by its absolute path) to a batch script.
+    for command in [
+        "runner".to_owned(),
+        bin.join("runner").to_string_lossy().into_owned(),
+    ] {
+        let err = declare(&command).unwrap_err();
+        assert_eq!(err.key, "host_tools.tool.command", "{command}");
+        assert!(
+            err.reason.contains("no shell is involved")
+                && err.reason.contains("declare the program the script runs")
+                && err.reason.contains("run.CMD"),
+            "{command}: {err}"
+        );
+    }
+    // A link to a program loads.
+    declare("plain").unwrap();
+}
+
 /// REQ-CONF-011: the decision itself (pure), on spellings of one platform:
 /// under a read path or equal to one is inside; a sibling with the same
 /// prefix, or the parent, is not.
