@@ -113,7 +113,7 @@ pub fn halt_text(reason: HaltReason) -> &'static str {
         HaltReason::QuestionExpired => "a question expired",
         HaltReason::Recovered => "recovered after a restart; resume to continue",
         HaltReason::UnknownOutcome => {
-            "an action's outcome is unknown after a restart; inspect the workspace before resuming"
+            "an action's outcome is unknown (it was running when the runtime stopped, or you interrupted it); check what it did before resuming"
         }
         HaltReason::WorkspaceQuota => "the workspace quota was reached",
         HaltReason::BackendUnavailable => {
@@ -215,6 +215,33 @@ pub const SIGNAL_CANCELLING: &str = "stop signal: cancelling the task";
 /// The exit after a signal took longer than LIM-O1; the step was interrupted.
 pub const SIGNAL_INTERRUPTED: &str =
     "the step did not reach a boundary in time; its execution was cancelled";
+/// The first stop signal met an action that cannot be undone (REQ-CLI-005):
+/// the process waits for it, which its own deadline bounds, and says why.
+pub fn signal_waiting(tool: &str) -> String {
+    format!(
+        "waiting for {tool} to finish: it changes something outside this machine and cannot be undone; press Ctrl-C again to interrupt it anyway"
+    )
+}
+/// What `signal_waiting` calls an action in flight when the store cannot say which one.
+pub const SIGNAL_UNKNOWN_ACTION: &str = "the action in flight";
+/// A further stop signal met an action that cannot be undone (REQ-CLI-005).
+pub fn signal_interrupting_anyway(tool: &str) -> String {
+    format!(
+        "stop signal: interrupting {tool} although it cannot be undone; its outcome will be unknown and the task halted"
+    )
+}
+/// An action whose outcome is unknown, as the commands list it (REQ-CLI-005, REQ-TASK-006).
+pub fn unknown_action_line(
+    action_id: &str,
+    tool: &str,
+    effect: mimlys_core::action::EffectKind,
+) -> String {
+    let effect = serde_json::to_string(&effect).unwrap_or_default();
+    format!(
+        "outcome unknown: action {action_id} ({tool}, {}) was interrupted, or running when the runtime stopped, and it cannot be undone; check what it did before relying on it",
+        effect.trim_matches('"')
+    )
+}
 /// A task list header.
 pub const LIST_HEADER: &str = "task id                               state                 updated                   footprint     goal";
 /// Nothing to list.
@@ -871,6 +898,13 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         lines.push(format!("forked    from task {source}"));
     }
     lines.push(footprint_line(&view.footprint));
+    for a in &view.unknown_actions {
+        lines.push(unknown_action_line(
+            &a.action_id.to_string(),
+            &a.tool,
+            a.effect,
+        ));
+    }
     for s in &view.snapshots {
         lines.push(format!(
             "snapshot  {}  {}  {} bytes, {} files",

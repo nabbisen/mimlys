@@ -641,6 +641,8 @@ fn count_events(data: &Path, name: &str) -> usize {
 /// the worker's tree is left. Main's CI run 43338280616 showed a run alive 120 s
 /// after one signal; a cancelled step left the cancellation set for good and the
 /// run went round `drive`'s loop without ever taking the pause (handoff 010d).
+/// The action is a workspace write (the probe tool's effect), which can be
+/// undone: it is interrupted and rolled back, as before handoff 010e.
 #[test]
 fn req_cli_005_one_stop_signal_cancels_a_step_that_outlasts_the_grace() {
     let secs = "123.45";
@@ -683,6 +685,18 @@ fn req_cli_005_one_stop_signal_cancels_a_step_that_outlasts_the_grace() {
         ["cancelled"],
         "the step was cancelled and no further action began"
     );
+    // REQ-CLI-005 (handoff 010e): a workspace write is what a stop signal may
+    // interrupt, because it is undone: the interrupted action's workspace is
+    // rolled back, and its outcome is not unknown.
+    assert_eq!(
+        count_events(env.data.path(), "workspace.rollback"),
+        1,
+        "the interrupted workspace write was rolled back"
+    );
+    let observations = env.observations(&id);
+    assert_eq!(observations.len(), 1, "{observations:?}");
+    assert_eq!(observations[0]["rolled_back"], true, "{}", observations[0]);
+    assert!(task["unknown_actions"].as_array().unwrap().is_empty());
 }
 
 /// A `mimlys run` started for a stop-signal test: its streams go to files

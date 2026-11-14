@@ -8,7 +8,8 @@
 //! writing method; no runtime check stands in for that.
 
 use super::RuntimeError;
-use super::control::TaskView;
+use super::control::{TaskView, UnknownAction};
+use crate::action::ActionStatus;
 use crate::clock::{Clock, Instant};
 use crate::ids::TaskId;
 use crate::snapshot::{Footprint, Promotion, PromotionPlan, SnapshotRecord};
@@ -95,6 +96,16 @@ pub(super) fn get_task(
     let snapshots = persistence.load_snapshots(task_id)?;
     let promotions = persistence.load_promotions(task_id)?;
     let footprint = footprint(persistence, workspaces, task_id, &snapshots, &promotions)?;
+    let unknown_actions = persistence
+        .load_actions(task_id)?
+        .into_iter()
+        .filter(|a| a.status == ActionStatus::Unknown)
+        .map(|a| UnknownAction {
+            action_id: a.action_id,
+            tool: a.content().tool().to_owned(),
+            effect: a.content().effect().kind,
+        })
+        .collect();
     Ok(TaskView {
         task,
         pending_approval,
@@ -104,6 +115,7 @@ pub(super) fn get_task(
         snapshots,
         promotions,
         footprint,
+        unknown_actions,
     })
 }
 

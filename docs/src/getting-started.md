@@ -192,6 +192,10 @@ message naming the command to run: `mimlys approve <id>`, `mimlys reject
 <id>`, `mimlys answer <id> <text>`. The command continues the task in its
 own process.
 
-Press Ctrl-C once to pause at the next step boundary; twice to cancel.
+Press Ctrl-C once to pause when the step in flight has finished; twice to
+cancel. An action that cannot be undone (an external write, a host write
+without a backup) is never interrupted by the first press: the process says
+which one it waits for and why, and a second press interrupts it anyway, with
+its outcome recorded as unknown (see [Signals](./reference/cli.md#signals)).
 `mimlys task resume <id>` continues a paused or halted task; a budget halt
 takes `--extend-steps` or `--extend-deadline`.
