@@ -12,7 +12,10 @@ use mimlys_core::path::PlatformRules;
 use mimlys_core::policy::Policy;
 use mimlys_core::runtime::{CreateTask, Runtime, RuntimeDeps, Session};
 use mimlys_core::spi::fake::{FakeToolProvider, FakeWorkspaces, ScriptedBackend};
-use mimlys_core::spi::{ExecutionOutcome, PersistenceRead};
+use mimlys_core::spi::{
+    BackendDescriptor, BoxFuture, Cancellation, ExecutionOutcome, GenerateRequest, ModelBackend,
+    PersistenceRead,
+};
 use mimlys_core::step::StepOutcome;
 use mimlys_core::task::{HaltReason, ScopeSpec, TaskState};
 use mimlys_core::tool::{Param, ParamSchema, ParamType, Provider, ResourceProfile, ToolDefinition};
@@ -56,8 +59,35 @@ fn tool(name: &str, kind: EffectKind, idempotent: bool) -> ToolDefinition {
     }
 }
 
+/// A backend that asks the runtime to start no new action while the model
+/// request is in flight, as a first stop signal does, when it is told to.
+struct Stopping {
+    inner: ScriptedBackend,
+    ask: std::sync::Mutex<Option<(std::sync::Weak<Runtime>, TaskId)>>,
+}
+
+impl ModelBackend for Stopping {
+    fn describe(&self) -> BackendDescriptor {
+        self.inner.describe()
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: GenerateRequest,
+        cancel: Cancellation,
+    ) -> BoxFuture<'a, Result<Vec<u8>, mimlys_core::spi::BackendError>> {
+        if let Some((runtime, task)) = self.ask.lock().unwrap().as_ref()
+            && let Some(runtime) = runtime.upgrade()
+        {
+            runtime.start_no_new_action(*task);
+        }
+        self.inner.generate(request, cancel)
+    }
+}
+
 struct Run {
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
+    backend: Arc<Stopping>,
     store: Arc<crate::store::Store>,
     workspaces: Arc<FakeWorkspaces>,
     task: TaskId,
@@ -82,11 +112,15 @@ impl Run {
             .unwrap()
             .tools
             .push(name.clone());
+        let backend = Arc::new(Stopping {
+            inner: ScriptedBackend::with_decisions(vec![
+                json!({"decision": "act", "tool": name, "arguments": {"path": "a"}}),
+            ]),
+            ask: std::sync::Mutex::new(None),
+        });
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store.clone(),
-            backend: Arc::new(ScriptedBackend::with_decisions(vec![
-                json!({"decision": "act", "tool": name, "arguments": {"path": "a"}}),
-            ])),
+            backend: backend.clone(),
             workspaces: workspaces.clone(),
             policy,
             ids: Arc::new(ScriptedIds::default()),
@@ -98,6 +132,7 @@ impl Run {
             context_chars: mimlys_core::limits::LIM_C1_CONTEXT_CHARS,
         })
         .unwrap();
+        let runtime = Arc::new(runtime);
         let session = Session {
             id: "s1".into(),
             os_user: "tester".into(),
@@ -125,11 +160,17 @@ impl Run {
             .task_id;
         Self {
             runtime,
+            backend,
             store,
             workspaces,
             task,
             _dir: dir,
         }
+    }
+
+    /// A first stop signal that comes while the step's model request is in flight.
+    fn stop_during_the_model_request(&self) {
+        *self.backend.ask.lock().unwrap() = Some((Arc::downgrade(&self.runtime), self.task));
     }
 
     fn step(&self) -> mimlys_core::runtime::StepResultView {
@@ -228,7 +269,7 @@ fn req_cli_005_an_action_closed_before_it_began_is_one_consistent_write() {
         tool("a_non_idempotent_read", EffectKind::ExternalRead, false),
         ExecutionOutcome::succeeded(json!({}), 1),
     );
-    run.runtime.start_no_new_action(run.task);
+    run.stop_during_the_model_request();
     let result = run.step();
     assert_eq!(result.outcome, StepOutcome::Cancelled);
     let actions = run.store.load_actions(run.task).unwrap();

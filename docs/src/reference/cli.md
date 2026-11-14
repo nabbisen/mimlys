@@ -78,13 +78,15 @@ another invocation.
 
 ## Signals
 
-Ctrl-C (and SIGTERM on Unix) once asks for a pause. Two things follow at once:
+Ctrl-C (and SIGTERM on Unix) once asks for a pause. Three things follow at once:
 
 - The step in flight **starts no new action.** If its model request returns
   and proposes an action, the action is closed `cancelled` without starting
   (nothing ran, so the record is exact), its observation says that your stop
   signal came before it began, and the task pauses. This holds for every action,
   also for one that needs no approval.
+- **No new step begins.** A step that would begin after the signal ends at once,
+  without a model request, and the task pauses.
 - The task pauses when what is in flight has finished.
 
 A step still running LIM-O1 less one second after the signal (4 seconds) has
