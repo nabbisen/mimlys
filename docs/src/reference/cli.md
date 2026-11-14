@@ -27,7 +27,7 @@ or configuration error, 2 usage error.
 | `task show <task>` | The task, its plan, grants and pending item |
 | `task list` | Every task |
 | `task resume <task> [--extend-steps N] [--extend-deadline D]` | Continue a created, paused or halted task |
-| `task pause <task>` | Pause at the next step boundary |
+| `task pause <task>` | Pause when the step in flight has finished |
 | `task cancel <task>` | Cancel |
 | `task prune [--state STATES] [--older-than D] [--audit] [--yes]` | List the finished tasks that match (`--state` takes `completed`, `failed`, `cancelled`; `--older-than` counts from the task's last change) with what each frees and the total, ask once, then delete each as `task delete` does; never a task that has not finished; a task whose promotion can still be reversed is listed as `kept: promotion reversible` and skipped; the audit stays unless `--audit`; on a failure it stops, names the failed task and the tasks it did not touch (exit 1). Without a terminal and without `--yes` it deletes nothing |
 | `task delete <task> [--audit] [--yes]` | Remove a terminal task's workspace, snapshots and outputs after showing what goes; the audit stays unless `--audit` |
@@ -82,7 +82,11 @@ Ctrl-C (and SIGTERM on Unix) once asks for a pause: the task pauses when the
 step in flight has finished. A step still running LIM-O1 less one second after
 the signal (4 seconds) has what can be undone interrupted: its model request, a
 read, a write inside the workspace (its changes are rolled back), a host write
-that made a backup. The task pauses there.
+that made a backup. The task pauses there, and the process says so:
+
+```text
+the step was still running 4 seconds after the stop signal, so it was interrupted (its workspace changes are rolled back); the task is paused
+```
 
 An action that cannot be undone is never interrupted by the first signal: an
 external write, a host write without a backup, an external read that is not

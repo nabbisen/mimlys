@@ -378,7 +378,8 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
     signal();
     assert!(
         wait_for(std::time::Duration::from_secs(60), || {
-            std::fs::read_to_string(&err_path).is_ok_and(|t| t.contains("stop signal: pausing"))
+            std::fs::read_to_string(&err_path)
+                .is_ok_and(|t| t.contains("the task pauses when the step in flight has finished"))
         }),
         "the first signal was never taken: {}",
         std::fs::read_to_string(&err_path).unwrap_or_default()
@@ -466,7 +467,7 @@ fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
     let status = run.exit(&env, secs);
     let stderr = run.stderr();
     assert!(
-        stderr.contains("pausing at the next step"),
+        stderr.contains("the task pauses when the step in flight has finished"),
         "{status:?} {stderr}"
     );
     let id = run.task_id();
@@ -495,7 +496,7 @@ fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
     // stalls for that second would make it the other case (the watchdog said so on
     // standard error): the test does not decide by that margin. Either way the
     // run exited, the task is paused, and one action ran, no further one began.
-    let expected = if stderr.contains("its execution was cancelled") {
+    let expected = if stderr.contains("so it was interrupted") {
         "cancelled"
     } else {
         "succeeded"
@@ -546,7 +547,7 @@ fn req_cli_005_one_stop_signal_during_the_model_request_pauses_after_the_step() 
     let status = run.exit(&env, "");
     let stderr = run.stderr();
     assert!(
-        stderr.contains("pausing at the next step"),
+        stderr.contains("the task pauses when the step in flight has finished"),
         "{status:?} {stderr}"
     );
     let id = run.task_id();
@@ -586,8 +587,8 @@ fn req_cli_005_one_stop_signal_cancels_a_model_request_that_outlasts_the_grace()
     let status = run.exit(&env, "");
     let stderr = run.stderr();
     assert!(
-        stderr.contains("pausing at the next step")
-            && stderr.contains("its execution was cancelled"),
+        stderr.contains("the task pauses when the step in flight has finished")
+            && stderr.contains("so it was interrupted"),
         "{status:?} {stderr}"
     );
     let id = run.task_id();
@@ -663,8 +664,8 @@ fn req_cli_005_one_stop_signal_cancels_a_step_that_outlasts_the_grace() {
     let status = run.exit(&env, secs);
     let stderr = run.stderr();
     assert!(
-        stderr.contains("pausing at the next step")
-            && stderr.contains("its execution was cancelled"),
+        stderr.contains("the task pauses when the step in flight has finished")
+            && stderr.contains("so it was interrupted"),
         "{status:?} {stderr}"
     );
     assert!(

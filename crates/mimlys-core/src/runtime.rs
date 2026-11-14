@@ -175,7 +175,7 @@ pub struct Runtime {
     policy_hash: Hash,
     exclusions: ExclusionMatcher,
     /// The interruption requests of each task with work in flight (REQ-SCHED-004).
-    cancellations: std::sync::Mutex<std::collections::HashMap<TaskId, Interruption>>,
+    interruptions: std::sync::Mutex<std::collections::HashMap<TaskId, Interruption>>,
     /// The redactor built from the configured secrets.
     redactor: crate::context::Redactor,
     /// Each task's previous request in this process, for the prefix measure (REQ-CTX-010).
@@ -214,31 +214,31 @@ impl Runtime {
             redactor,
             last_requests: std::sync::Mutex::new(std::collections::HashMap::new()),
             unpinned: std::sync::Mutex::new(std::collections::HashMap::new()),
-            cancellations: std::sync::Mutex::new(std::collections::HashMap::new()),
+            interruptions: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
     /// The token the task's model request and its actions that can be undone
-    /// observe (REQ-SCHED-004): set by [`Runtime::request_cancel`] and by
-    /// [`Runtime::request_cancel_anyway`].
-    pub fn cancellation(&self, task_id: TaskId) -> Cancellation {
+    /// observe (REQ-SCHED-004): set by [`Runtime::interrupt_step`] and by
+    /// [`Runtime::interrupt_step_anyway`].
+    pub fn step_interruption(&self, task_id: TaskId) -> Cancellation {
         self.interruption(task_id).undoable
     }
 
     fn interruption(&self, task_id: TaskId) -> Interruption {
-        self.cancellations
+        self.interruptions
             .lock()
-            .expect("cancellation registry")
+            .expect("interruption registry")
             .entry(task_id)
             .or_default()
             .clone()
     }
 
     /// The token an action's execution observes: an action that cannot be
-    /// undone is not interrupted by [`Runtime::request_cancel`], only by
-    /// [`Runtime::request_cancel_anyway`] (REQ-CLI-005). The one rule is
+    /// undone is not interrupted by [`Runtime::interrupt_step`], only by
+    /// [`Runtime::interrupt_step_anyway`] (REQ-CLI-005). The one rule is
     /// `action::after_unknown`, the rule of recovery.
-    pub(crate) fn execution_cancellation(
+    pub(crate) fn execution_interruption(
         &self,
         task_id: TaskId,
         effect: crate::action::EffectView,
@@ -254,25 +254,31 @@ impl Runtime {
     /// Asks the task's current step to stop what can be undone: the model
     /// request, or an action whose rule after `unknown` is not to halt
     /// `unknown_outcome`, ends `cancelled` and the step ends with outcome
-    /// `cancelled`; the caller then cancels or pauses the task. An action that
-    /// cannot be undone (an external write, a host write without a backup, an
-    /// external read that is not idempotent) is not interrupted: it runs to its
-    /// end, which its own deadline bounds ([`Runtime::irreversible_in_flight`]
-    /// tells the caller to wait for it). A task with no step in flight is
-    /// unaffected until its next step, which ends the same way. The request is
-    /// consumed by the step that ends `cancelled` (`run_step`): a task still
+    /// `cancelled`. It interrupts a step; it does not cancel the task, and the
+    /// caller then pauses or cancels the task. An action that cannot be undone
+    /// (an external write, a host write without a backup, an external read that
+    /// is not idempotent) is not interrupted: it runs to its end, which its own
+    /// deadline bounds ([`Runtime::irreversible_in_flight`] tells the caller to
+    /// wait for it). A task with no step in flight is unaffected until its next
+    /// step, which ends the same way.
+    ///
+    /// The request is spent by the step that ends `cancelled`: a task still
     /// `running` after it can be paused, and a pause requested then is taken at
-    /// the next boundary; a request made again is a new request. A request made
-    /// while the step ends otherwise stays for the next step.
-    pub fn request_cancel(&self, task_id: TaskId) {
+    /// the next boundary (handoff 010d). It is also cleared at every task
+    /// transition (pause, resume, halt, cancel, and the waits for the user), so
+    /// that a request made while no step runs never reaches a step that began
+    /// after a pause and a resume (handoff 010e). A request made while the step
+    /// ends otherwise, with no transition, stays for the next step.
+    pub fn interrupt_step(&self, task_id: TaskId) {
         self.interruption(task_id).undoable.cancel();
     }
 
-    /// As [`Runtime::request_cancel`], and also for an action that cannot be
+    /// As [`Runtime::interrupt_step`], and also for an action that cannot be
     /// undone: it is interrupted, its outcome is recorded unknown (action
     /// status `unknown`) and the task halts `unknown_outcome` with the action
-    /// listed, the rule of a crash (external design §16.3).
-    pub fn request_cancel_anyway(&self, task_id: TaskId) {
+    /// listed, the rule of a crash (external design §16.3). Spent and cleared
+    /// as [`Runtime::interrupt_step`] is.
+    pub fn interrupt_step_anyway(&self, task_id: TaskId) {
         let interruption = self.interruption(task_id);
         interruption.undoable.cancel();
         interruption.anyway.cancel();
@@ -295,29 +301,38 @@ impl Runtime {
             }))
     }
 
-    /// Takes the requests a `cancelled` step has acted on: the task's next
-    /// step gets fresh tokens (the execution that observed the old ones holds
-    /// its own clone). Nothing is created for a task without any.
-    fn consume_cancellation(&self, task_id: TaskId) {
+    /// Clears the task's requests: the task's next step gets fresh tokens (the
+    /// execution that observed the old ones holds its own clone). Nothing is
+    /// created for a task without any. Called by the step that ended
+    /// `cancelled`, which spends the request, and at every task transition.
+    pub(crate) fn clear_interruption(&self, task_id: TaskId) {
         if let Some(interruption) = self
-            .cancellations
+            .interruptions
             .lock()
-            .expect("cancellation registry")
+            .expect("interruption registry")
             .get_mut(&task_id)
         {
             *interruption = Interruption::default();
         }
     }
 
+    /// Clears the task's requests when its state changed between `before` and
+    /// `after`: a request never outlives a transition (handoff 010e).
+    pub(crate) fn transitioned(&self, before: &crate::task::Task, after: &crate::task::Task) {
+        if before.state != after.state {
+            self.clear_interruption(after.task_id);
+        }
+    }
+
     /// A terminal task leaves nothing behind in the runtime (REQ-SCHED-005):
-    /// its cancellation token, its previous request and its unpinned tools are
+    /// its interruption requests, its previous request and its unpinned tools are
     /// dropped. Called where a task becomes terminal and where it is deleted;
     /// a daemon keeps the runtime alive, so an entry left here would be a leak
     /// for every finished task.
     pub(crate) fn forget_task(&self, task_id: TaskId) {
-        self.cancellations
+        self.interruptions
             .lock()
-            .expect("cancellation registry")
+            .expect("interruption registry")
             .remove(&task_id);
         self.last_requests
             .lock()
