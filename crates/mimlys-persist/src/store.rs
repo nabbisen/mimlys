@@ -702,6 +702,35 @@ impl Persistence for Store {
         })
     }
 
+    fn record_not_started(
+        &self,
+        action: &Action,
+        observation: &Observation,
+        event: &EventRecord,
+    ) -> Result<(), PersistenceError> {
+        if action.status != ActionStatus::Cancelled {
+            return Err(PersistenceError::Ordering {
+                detail: "not_started requires the status cancelled".into(),
+            });
+        }
+        self.transaction("not_started", |tx| {
+            expect_status(tx, action.action_id, &["authorized"], "not_started")?;
+            upsert_action(tx, action)?;
+            tx.execute(
+                "INSERT INTO observations (observation_id, action_id, created_at, record, record_version) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    observation.observation_id.to_string(),
+                    observation.action_id.to_string(),
+                    observation.created_at.to_rfc3339(),
+                    json(observation)?,
+                    RECORD_VERSION,
+                ],
+            )
+            .map_err(storage("insert_observation"))?;
+            append_event(tx, event)
+        })
+    }
+
     fn record_action_terminal(
         &self,
         action: &Action,
@@ -1076,3 +1105,6 @@ pub(crate) mod tests;
 
 #[cfg(test)]
 mod rejection_detail_tests;
+
+#[cfg(test)]
+mod halts_tests;

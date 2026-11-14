@@ -113,7 +113,7 @@ pub fn halt_text(reason: HaltReason) -> &'static str {
         HaltReason::QuestionExpired => "a question expired",
         HaltReason::Recovered => "recovered after a restart; resume to continue",
         HaltReason::UnknownOutcome => {
-            "an action's outcome is unknown (it was running when the runtime stopped, or you interrupted it); check what it did before resuming"
+            "an action that cannot be undone did not finish by itself (the runtime stopped, it was interrupted, or it reached a limit), so what it did is unknown; check before resuming"
         }
         HaltReason::WorkspaceQuota => "the workspace quota was reached",
         HaltReason::BackendUnavailable => {
@@ -214,28 +214,53 @@ pub const SIGNAL_PAUSING: &str = "stop signal: the task pauses when the step in 
 pub const SIGNAL_CANCELLING: &str =
     "stop signal: cancelling the task, and stopping the step in flight";
 /// The step was still running `seconds` after the stop signal (the grace, LIM-O1 less one
-/// second), so what can be undone in it is interrupted.
-pub fn signal_interrupted(seconds: u64) -> String {
+/// second), so it was interrupted. Said once the step has ended `cancelled` and the pause is
+/// taken, never before; `rolled_back` only when the step wrote `workspace.rollback`.
+pub fn signal_interrupted(seconds: u64, rolled_back: bool) -> String {
+    let rolled_back = if rolled_back {
+        ", and its workspace changes were rolled back"
+    } else {
+        ""
+    };
     format!(
-        "the step was still running {seconds} seconds after the stop signal, so it was interrupted (its workspace changes are rolled back); the task is paused"
+        "the step was still running {seconds} seconds after the stop signal, so it was interrupted{rolled_back}; the task is paused"
     )
 }
 /// The first stop signal met an action that cannot be undone (REQ-CLI-005):
-/// the process waits for it, which its own deadline bounds, and says why.
-pub fn signal_waiting(tool: &str) -> String {
-    format!(
-        "waiting for {tool} to finish: it changes something outside this machine and cannot be undone; press Ctrl-C again to interrupt it anyway"
-    )
+/// the process waits for it, which its own deadline bounds, and says why, in
+/// words for the action's effect. An effect that is not one of the three that
+/// cannot be undone is not a reason the process can give: it says that it
+/// cannot tell.
+pub fn signal_waiting(tool: &str, effect: mimlys_core::action::EffectKind) -> String {
+    use mimlys_core::action::EffectKind;
+    let why = match effect {
+        EffectKind::ExternalWrite => {
+            "it changes something outside this machine and cannot be undone"
+        }
+        EffectKind::HostWrite => {
+            "it changes files outside the task's workspace and cannot be undone"
+        }
+        EffectKind::ExternalRead => {
+            "it has sent a request outside this machine that cannot be taken back"
+        }
+        _ => return signal_waiting_unknown(),
+    };
+    format!("waiting for {tool} to finish: {why}; press Ctrl-C again to interrupt it anyway")
 }
-/// What `signal_waiting` calls an action in flight when the store cannot say which one.
+/// The first stop signal found that an action is in flight, or that the store cannot say
+/// whether one is: the safe answer is to wait (REQ-CLI-005).
+pub fn signal_waiting_unknown() -> String {
+    "waiting for the action in flight to finish: mimlys cannot tell whether it can be undone; press Ctrl-C again to interrupt it anyway".to_owned()
+}
+/// What the second signal's line calls an action in flight when the store cannot say which one.
 pub const SIGNAL_UNKNOWN_ACTION: &str = "the action in flight";
-/// A further stop signal met an action that cannot be undone (REQ-CLI-005).
+/// A further stop signal met an action that cannot be undone (REQ-CLI-005). The line
+/// predicts nothing; the halt text and the unknown-action line say what came of it.
 pub fn signal_interrupting_anyway(tool: &str) -> String {
-    format!(
-        "stop signal: interrupting {tool} although it cannot be undone; its outcome will be unknown and the task halted"
-    )
+    format!("stop signal: interrupting {tool} although it cannot be undone")
 }
-/// An action whose outcome is unknown, as the commands list it (REQ-CLI-005, REQ-TASK-006).
+/// An action whose outcome is unknown, as the commands list it (REQ-CLI-005, REQ-TASK-006,
+/// REQ-PERS-008): it cannot be undone and it did not finish by itself, whatever the cause.
 pub fn unknown_action_line(
     action_id: &str,
     tool: &str,
@@ -243,7 +268,7 @@ pub fn unknown_action_line(
 ) -> String {
     let effect = serde_json::to_string(&effect).unwrap_or_default();
     format!(
-        "outcome unknown: action {action_id} ({tool}, {}) was interrupted, or running when the runtime stopped, and it cannot be undone; check what it did before relying on it",
+        "outcome unknown: action {action_id} ({tool}, {}) did not finish by itself and cannot be undone; check what it did before relying on it",
         effect.trim_matches('"')
     )
 }

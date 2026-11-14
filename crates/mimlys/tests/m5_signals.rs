@@ -10,10 +10,12 @@
 //! action listed. Declared `external_read` and idempotent it can be undone, and
 //! the first signal interrupts it once the grace (LIM-O1 less one second) has
 //! passed. `task cancel` after a process died in the middle of such a call ends
-//! the task `cancelled` and names the action. Every verdict is read from the
-//! state: the task, the actions and the events in the store, the process's exit;
-//! the holds (20 s and 7 s) are longer than the 4 s grace and than anything
-//! waited for, and no verdict is taken from a short time.
+//! the task `cancelled` and names the action. An action that cannot be undone and
+//! whose end the runtime decided (its own deadline; the connection lost after the
+//! call was sent) is unknown too (REQ-PERS-008, external design §7.5). Every
+//! verdict is read from the state: the task, the actions and the events in the
+//! store, the process's exit; the holds (20 s and 7 s) are longer than the 4 s
+//! grace and than anything waited for, and no verdict is taken from a short time.
 //!
 //! Unix only: the signals are `SIGINT`.
 #![cfg(unix)]
@@ -51,10 +53,24 @@ impl Env {
     /// As [`Env::new`], the tool's own deadline (`timeout_ms`, LIM-O5's range)
     /// being `deadline_ms`.
     fn with_deadline(ms: u64, effect: &str, deadline_ms: u64) -> Self {
+        Self::calling("slow", json!({"ms": ms}), effect, deadline_ms)
+    }
+
+    /// As [`Env::new`] for the test server's `die` tool, which exits the whole
+    /// server process as soon as it is called: a connection lost after the call
+    /// was sent.
+    fn dying(effect: &str) -> Self {
+        Self::calling("die", json!({}), effect, 60_000)
+    }
+
+    /// The test server as `rypsok`, its tool `tool` declared with `effect`
+    /// and `timeout_ms = deadline_ms`, the model proposing it with `arguments`
+    /// and then completing.
+    fn calling(tool: &str, arguments: Value, effect: &str, deadline_ms: u64) -> Self {
         let data = tempfile::tempdir().unwrap();
         let config = data.path().join("config.toml");
         let script = [
-            json!({"decision": "act", "tool": "rypsok.slow", "arguments": {"ms": ms}}),
+            json!({"decision": "act", "tool": format!("rypsok.{tool}"), "arguments": arguments}),
             json!({"decision": "complete", "summary": "done"}),
         ];
         let script_path = data.path().join("script.json");
@@ -67,11 +83,11 @@ data_dir = {data:?}
 kind = "fake"
 script = {script:?}
 [policy.profiles.workspace]
-tools = [{builtin}, "rypsok.slow"]
+tools = [{builtin}, "rypsok.{tool}"]
 [servers.rypsok]
 command = {server:?}
 env_allow = ["PATH"]
-[servers.rypsok.tools.slow]
+[servers.rypsok.tools.{tool}]
 effect = {effect:?}
 idempotent = {idempotent}
 timeout_ms = {deadline_ms}
@@ -79,6 +95,7 @@ timeout_ms = {deadline_ms}
             data = data.path().join("data").to_string_lossy(),
             script = script_path.to_string_lossy(),
             builtin = BUILTIN,
+            tool = tool,
             server = testserver().to_string_lossy(),
             idempotent = effect == "external_read",
         );
@@ -136,6 +153,12 @@ timeout_ms = {deadline_ms}
     /// The task as `task show` reports it.
     fn task(&self, id: &str) -> Value {
         self.json(&["task", "show", id]).1
+    }
+
+    /// How many times the task's halts were counted for `reason`, as `metrics` says.
+    fn halts(&self, id: &str, reason: &str) -> u64 {
+        let (_, metrics) = self.json(&["metrics", "--task", id]);
+        metrics["halts_by_reason"][reason].as_u64().unwrap_or(0)
     }
 
     /// The observations of the task, as the store holds them.
@@ -373,6 +396,11 @@ fn req_cli_005_a_second_stop_signal_interrupts_it_anyway_and_the_task_halts_unkn
                 && e["reason"] == "unknown_outcome"),
         "the halt is in the events"
     );
+    assert_eq!(
+        env.halts(&id, "unknown_outcome"),
+        1,
+        "`metrics` counts the halt"
+    );
     let listed = task["unknown_actions"].as_array().unwrap();
     assert_eq!(listed.len(), 1, "{task}");
     assert_eq!(listed[0]["tool"], "rypsok.slow", "{task}");
@@ -467,14 +495,18 @@ fn req_task_006_task_cancel_names_an_external_write_whose_outcome_is_unknown_tex
     );
 }
 
-/// REQ-CLI-005, LIM-O1 (the wait is bounded): the same `external_write` held 20 s
-/// but with its own deadline of 1 s (the bottom of LIM-O5's range). One stop
-/// signal: the process says that it waits for the tool and why, interrupts
-/// nothing, and the tool's own deadline ends the call; the pause is then taken
-/// and the task is `paused`. Judged by state: the run exits and the task is
-/// `paused` with the action ended by its deadline (not by the signal: it is
-/// `failed`, never `cancelled` or `unknown`). Without the deadline the wait would
-/// be the full 20 s.
+/// REQ-CLI-005, REQ-PERS-008, LIM-O1 (the wait is bounded, and what it ends in):
+/// the same `external_write` held 20 s but with its own deadline of 1 s (the
+/// bottom of LIM-O5's range). One stop signal: the process says that it waits for
+/// the tool and why, interrupts nothing, and the tool's own deadline ends the
+/// call. The runtime, not the tool, ended an action that cannot be undone, so its
+/// outcome is unknown (external design §7.5): the action is `unknown`, never
+/// `failed`, the task is `halted` with `unknown_outcome` rather than `paused`, the
+/// action is listed, and the halt is in the events and in `metrics`. Judged by
+/// state: the run exits (without the deadline the wait would be the full 20 s).
+/// The hold may stay as it is: the signal must reach the tool within its 1 s
+/// deadline (it is sent when the store has the action's start), and nothing here
+/// depends on how long the step takes to end after the deadline.
 #[test]
 fn req_cli_005_the_wait_for_an_action_that_cannot_be_undone_ends_at_its_own_deadline() {
     let env = Env::with_deadline(20_000, "external_write", 1_000);
@@ -485,16 +517,66 @@ fn req_cli_005_the_wait_for_an_action_that_cannot_be_undone_ends_at_its_own_dead
     let stderr = run.stderr();
     let said: Vec<&str> = stderr.lines().filter(|l| !l.starts_with('{')).collect();
     assert_eq!(said, [WAITING], "{status:?} {stderr}");
-    assert_eq!(env.task(&id)["task"]["state"], "paused", "{stderr}");
+    let task = env.task(&id);
+    assert_eq!(task["task"]["state"], "halted", "{stderr}");
+    assert_eq!(task["task"]["halt_reason"], "unknown_outcome", "{task}");
     assert_eq!(
         env.finished(&id),
-        ["failed"],
-        "ended by its deadline: {stderr}"
+        ["unknown"],
+        "ended by its deadline, which the runtime set, not by the tool: {stderr}"
     );
+    let observations = env.observations(&id);
+    assert_eq!(observations[0]["status"], "unknown", "{}", observations[0]);
+    assert_eq!(count_events(env.data.path(), "workspace.rollback"), 0);
+    let listed = task["unknown_actions"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{task}");
+    assert_eq!(listed[0]["tool"], "rypsok.slow", "{task}");
     assert!(
-        env.task(&id)["unknown_actions"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+        env.events(&id)
+            .iter()
+            .any(|e| e["event"] == "task.state_changed"
+                && e["to"] == "halted"
+                && e["reason"] == "unknown_outcome"),
+        "the halt is in the events"
     );
+    assert_eq!(env.halts(&id, "unknown_outcome"), 1);
+}
+
+/// REQ-PERS-008 (an MCP connection lost after the call was sent): the server
+/// process ends as soon as it is called (`die`), with the tool declared
+/// `external_write`. The call was sent and the connection is lost: the action
+/// may have done its work, so it is `unknown`, not `failed`; the task halts
+/// `unknown_outcome` with the action listed, and the model is not asked again.
+/// No signal is involved: the runtime's own rule (external design §7.5).
+#[test]
+fn req_pers_008_an_external_write_whose_connection_is_lost_after_the_call_is_unknown() {
+    let env = Env::dying("external_write");
+    let id = env.create();
+    let (code, value) = env.json(&["approve", &id]);
+    assert_eq!(code, 0, "{value}");
+    let task = env.task(&id);
+    assert_eq!(task["task"]["state"], "halted", "{task}");
+    assert_eq!(task["task"]["halt_reason"], "unknown_outcome", "{task}");
+    assert_eq!(env.finished(&id), ["unknown"], "{task}");
+    let observations = env.observations(&id);
+    assert_eq!(observations.len(), 1, "{observations:?}");
+    assert_eq!(observations[0]["status"], "unknown", "{}", observations[0]);
+    assert_eq!(
+        count_events(env.data.path(), "action.started"),
+        1,
+        "no retry"
+    );
+    // The termination the MCP executor reports for a connection lost after the
+    // call was sent: `host_fault{worker_died}`.
+    let conn = rusqlite::Connection::open(env.data.path().join("data/mimlys.db")).unwrap();
+    let record: String = conn
+        .query_row("select record from executions", [], |r| r.get(0))
+        .unwrap();
+    let record: Value = serde_json::from_str(&record).unwrap();
+    assert_eq!(record["termination"], "host_fault", "{record}");
+    assert_eq!(record["detail"], "worker_died", "{record}");
+    let listed = task["unknown_actions"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{task}");
+    assert_eq!(listed[0]["tool"], "rypsok.die", "{task}");
+    assert_eq!(env.halts(&id, "unknown_outcome"), 1);
 }

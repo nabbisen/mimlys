@@ -1039,6 +1039,7 @@ pub mod fake {
         remaining: Mutex<Option<u64>>,
         snapshots: Mutex<Vec<SnapshotRecord>>,
         restores: Mutex<Vec<SnapshotId>>,
+        fail_restores: Mutex<bool>,
         tree: Mutex<Option<String>>,
     }
 
@@ -1050,6 +1051,7 @@ pub mod fake {
                 remaining: Mutex::new(None),
                 snapshots: Mutex::new(Vec::new()),
                 restores: Mutex::new(Vec::new()),
+                fail_restores: Mutex::new(false),
                 tree: Mutex::new(None),
             }
         }
@@ -1058,6 +1060,11 @@ pub mod fake {
         /// manifest hash that depends on `content` alone (the default tree is empty).
         pub fn set_tree(&self, content: &str) {
             *self.tree.lock().expect("fake lock") = Some(content.to_owned());
+        }
+
+        /// From now on every restore fails with a storage error.
+        pub fn fail_restores(&self) {
+            *self.fail_restores.lock().expect("fake lock") = true;
         }
 
         /// Sets the remaining workspace bytes reported.
@@ -1176,6 +1183,11 @@ pub mod fake {
             if snapshot.task_id != task_id && snapshot.reason != SnapshotReason::Backup {
                 return Err(WorkspaceError::NotFound {
                     what: "snapshot".into(),
+                });
+            }
+            if *self.fail_restores.lock().expect("fake lock") {
+                return Err(WorkspaceError::Storage {
+                    detail: "restore".into(),
                 });
             }
             self.restores
@@ -1856,6 +1868,21 @@ pub mod fake {
             })
         }
 
+        fn record_not_started(
+            &self,
+            action: &Action,
+            observation: &Observation,
+            event: &EventRecord,
+        ) -> Result<(), PersistenceError> {
+            self.write("not_started", |i| {
+                expect_status(i, action, &["authorized"], "not_started")?;
+                upsert(&mut i.actions, action, |a| a.action_id == action.action_id);
+                i.observations.push(observation.clone());
+                i.events.push(event.clone());
+                Ok(())
+            })
+        }
+
         fn record_action_terminal(
             &self,
             action: &Action,
@@ -2311,6 +2338,17 @@ pub trait Persistence: PersistenceRead {
     fn record_execution(
         &self,
         execution: &Execution,
+        observation: &Observation,
+        event: &EventRecord,
+    ) -> Result<(), PersistenceError>;
+
+    /// An authorized action closed `cancelled` without starting, because the
+    /// user's stop signal came before it began (REQ-CLI-005): the terminal
+    /// status, the observation that says so and the event, in one write. There
+    /// is no execution: nothing ran.
+    fn record_not_started(
+        &self,
+        action: &Action,
         observation: &Observation,
         event: &EventRecord,
     ) -> Result<(), PersistenceError>;

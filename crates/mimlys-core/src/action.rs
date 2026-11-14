@@ -93,9 +93,10 @@ pub enum ActionStatus {
     },
     /// Cancelled before or during execution.
     Cancelled,
-    /// The action was running when the runtime restarted, or was interrupted
-    /// by the user's second stop signal or by a cancellation, and cannot be
-    /// undone: its effect is unknown (external design §7.1, §16.3, §19.2).
+    /// The action was running when the runtime restarted, or it cannot be
+    /// undone and its execution was ended by the runtime (a deadline, a limit,
+    /// a lost worker or connection, an interruption): what it did is unknown
+    /// (external design §7.1, §7.5, §16.3, §19.2).
     Unknown,
 }
 
@@ -145,7 +146,8 @@ pub enum ActionInput {
     Fail(FailureCause),
     /// Cancelled by the user or by a task transition.
     Cancel,
-    /// Found running at restart, or interrupted although it cannot be undone.
+    /// Found running at restart, or it cannot be undone and the runtime ended
+    /// its execution (external design §7.5).
     MarkUnknown,
 }
 
@@ -598,7 +600,10 @@ pub enum AfterUnknown {
     RedoPermitted,
     /// Restore the pre-execution snapshot, then re-execution is permitted.
     Rollback,
-    /// Undo through the tool's backup, then halt `recovered`.
+    /// A host write the tool backed up first (reserved, DR-017). The runtime
+    /// undoes no host write, even one backed up: recovery treats it as
+    /// [`AfterUnknown::Halt`] (`plan_recovery`, external design §7.2). The
+    /// variant is kept because it is recorded; a backup only spares the approval.
     UndoThenHalt,
     /// Halt `unknown_outcome` with the action listed.
     Halt,
@@ -620,14 +625,46 @@ pub fn after_unknown(effect: EffectView) -> AfterUnknown {
 }
 
 /// Whether an action of this effect can be interrupted without leaving its
-/// outcome unknown: the actions whose rule after `unknown` is not to halt
-/// `unknown_outcome` (a read, a workspace write that is rolled back, a host
-/// write with a backup, an idempotent external read). It is the one rule of
-/// recovery (`after_unknown`) read from the other side, so that a stop signal
-/// and a restart can never disagree about what can be undone (REQ-CLI-005,
-/// external design §19.2).
+/// outcome unknown: true only where the rule after `unknown` is re-execution
+/// or rollback, that is, where the runtime itself restores what an
+/// interruption left (a read, a workspace write rolled back to its snapshot,
+/// an idempotent external read). A host write is never among them, even one
+/// the tool backed up: the runtime undoes none (`plan_recovery` halts it
+/// `unknown_outcome`). It is the one rule of recovery read from the other
+/// side, so that a stop signal and a restart agree on which actions and on
+/// what is done (REQ-CLI-005, external design §7.2, §19.2).
 pub fn can_be_undone(effect: EffectView) -> bool {
-    after_unknown(effect) != AfterUnknown::Halt
+    matches!(
+        after_unknown(effect),
+        AfterUnknown::RedoPermitted | AfterUnknown::Rollback
+    )
+}
+
+/// Whether an execution that ended this way was ended by the runtime rather
+/// than by the tool: a deadline, a resource limit, a cancellation, a lost
+/// worker or connection (external design §7.5). The tool's own ends (an exit
+/// code, a trap, a structured failure) and the ends of an execution that never
+/// started (`host_fault{invalid_module}`, `host_fault{unavailable}`) are not.
+pub fn ended_by_runtime(termination: &Termination) -> bool {
+    matches!(
+        termination,
+        Termination::Deadline
+            | Termination::MemoryLimit
+            | Termination::OutputLimit
+            | Termination::ProcessLimit
+            | Termination::Cancelled
+            | Termination::HostFault {
+                detail: HostFaultDetail::WorkerDied
+            }
+    )
+}
+
+/// Whether an action's outcome is unknown when its execution ended this way:
+/// it cannot be undone and the runtime, not the tool, ended it. The action is
+/// then recorded `unknown`, never `failed` or `cancelled`, and the task halts
+/// `unknown_outcome` (external design §7.5, REQ-PERS-008).
+pub fn outcome_is_unknown(effect: EffectView, termination: &Termination) -> bool {
+    !can_be_undone(effect) && ended_by_runtime(termination)
 }
 
 /// Measurements of one execution (external design §7.4).
