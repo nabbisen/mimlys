@@ -71,6 +71,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 18 | [010c The log carries the step's ids; `debug_prompts` does what it says](./010c-logs/implementation-handoff.md) | RFC 010 | — |
 | 19 | [002d Test hygiene, follow-up](./002d-test-hygiene-follow-up/implementation-handoff.md) | RFC 002 | 002b |
 | 20 | [010d One stop signal must end `mimlys run`](./010d-one-stop-signal/implementation-handoff.md) | RFC 010 | — |
+| 21 | [010e A stop signal interrupts only what can be undone](./010e-interrupt-what-can-be-undone/implementation-handoff.md) | RFC 010 | 010d |
 
 ## Milestone M5
 

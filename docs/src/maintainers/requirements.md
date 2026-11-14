@@ -146,7 +146,7 @@ A task shall be in exactly one of `created`, `running`, `waiting_user`, `paused`
 `pause_task` from `running` shall take effect at the next step boundary: a model request in flight is cancelled, an execution in flight finishes within its budget. `resume_task` shall be valid from `created`, `paused` and `halted`; from `halted` with reason `budget_steps` or `budget_deadline` it may extend those two budgets within the ceiling and nothing else. Resumption shall add a runtime notice to the next context. (A-10)
 
 ### REQ-TASK-006 Cancel — M1 · T
-`cancel_task` shall be valid from every non-terminal state, shall abort a model request in flight, terminate an execution in flight and its process tree within LIM-O2, apply the workspace rule of REQ-WS-010, persist, and end in `cancelled`. Cancellation shall never be an advisory flag. (ED §26 of the draft)
+`cancel_task` shall be valid from every non-terminal state, shall abort a model request in flight, terminate an execution in flight and its process tree within LIM-O2, apply the workspace rule of REQ-WS-010, persist, and end in `cancelled`. An interrupted action that cannot be undone (as in REQ-CLI-005) is recorded with its outcome unknown, and the command's result names it. Cancellation shall never be an advisory flag. (ED §26 of the draft)
 
 ### REQ-TASK-007 Halt reasons — M1 · T
 A halt shall carry one reason from: `budget_steps`, `budget_rejections`, `budget_failures`, `budget_deadline`, `convergence`, `approval_rejected`, `approval_expired`, `question_expired`, `recovered`, `unknown_outcome`, `workspace_quota`, `backend_unavailable`, `tool_unavailable`, `policy`. The reason is persisted and shown to the user. (A-10)
@@ -771,7 +771,7 @@ The approval prompt shall use a fixed template, show the rendered request of REQ
 Human-readable output by default; `--json` for every command with stable field names that are part of the contract.
 
 ### REQ-CLI-005 Shutdown — M1 · T
-A stop signal shall pause running tasks at their next boundary, a second signal cancel them; the process exits within LIM-O1 with the worker terminated.
+A stop signal shall pause running tasks at their next boundary, a second signal cancel them; the process exits within LIM-O1 with the worker terminated. One exception, said to the user: while an action that cannot be undone is in flight (its outcome after an interruption would be unknown: an external write, a host write without a backup, an external read that is not idempotent), the first signal does not interrupt it; the process says that it waits for that action and why, and the wait is bounded by the action's own deadline. A second signal then interrupts it anyway: the action's outcome is recorded as unknown and the task halts `unknown_outcome` with the action listed, never `cancelled` as if nothing had happened. (Owner's decision, 2026-11-14.)
 
 ### REQ-CLI-006 Tier display — M2 · T
 `mimlys status` shall show the tier and every clause the platform cannot enforce.

@@ -109,7 +109,7 @@
 
 | ID | Parameter | Default | Range | Basis |
 |---|---|---:|---|---|
-| LIM-O1 | Time to exit after a stop signal | 5000 ms | 1000 – 30000 | Persist, then kill the worker |
+| LIM-O1 | Time to exit after a stop signal (except while an action that cannot be undone is in flight: then its own deadline bounds the wait, REQ-CLI-005) | 5000 ms | 1000 – 30000 | Persist, then kill the worker |
 | LIM-O2 | Time until a cancelled execution's tree is terminated | 2000 ms | 500 – 10000 | FR-007 of the draft |
 | LIM-O3 | Wait for the runtime lock before refusing to start | 1000 ms | fixed | Single writer |
 | LIM-O4 | Deadline of a built-in tool invocation | 30000 ms | 1000 – 300000 | File operations |
