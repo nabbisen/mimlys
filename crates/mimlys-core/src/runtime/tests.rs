@@ -182,11 +182,11 @@ impl Harness {
     }
 
     /// Whether the runtime holds an entry of the task in each of its three
-    /// per-task maps: `(cancellations, last_requests, unpinned)` (REQ-SCHED-005).
+    /// per-task maps: `(interruptions, last_requests, unpinned)` (REQ-SCHED-005).
     fn per_task_entries(&self, task_id: TaskId) -> (bool, bool, bool) {
         (
             self.runtime
-                .cancellations
+                .interruptions
                 .lock()
                 .unwrap()
                 .contains_key(&task_id),
@@ -956,7 +956,7 @@ fn req_sched_004_cancellation_reaches_the_step() {
     let h = Harness::new(vec![act("read_file", "a"), act("read_file", "b")]);
     h.tools.script("read_file", ExecutionOutcome::cancelled(1));
     let id = h.create();
-    h.runtime.request_cancel(id);
+    h.runtime.interrupt_step(id);
     let result = h.step(id);
     assert_eq!(
         result.outcome,
@@ -985,7 +985,7 @@ fn req_sched_004_cancellation_reaches_the_step() {
 /// REQ-CLI-005 / REQ-SCHED-004 (handoff 010d): the step that ends `cancelled`
 /// takes the cancellation request with it. A task still `running` after it
 /// can be paused, and the pause is taken at the next boundary (the follow
-/// mode's answer to a step that did not reach a boundary within LIM-O1); the
+/// mode's answer to a step still running after LIM-O1); the
 /// request is not met again by every later step, which kept `mimlys run` going
 /// round its loop for good. A request that arrives while a step ends otherwise
 /// stays for the next step, so that it is not lost.
@@ -996,12 +996,12 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
     h.tools
         .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
     let id = h.create();
-    h.runtime.request_cancel(id);
+    h.runtime.interrupt_step(id);
     let result = h.step(id);
     assert_eq!(result.outcome, StepOutcome::Cancelled);
     assert_eq!(result.state, TaskState::Running);
     assert!(
-        !h.runtime.cancellation(id).is_cancelled(),
+        !h.runtime.step_interruption(id).is_cancelled(),
         "the request went with the step that acted on it"
     );
     let task = h.runtime.pause_task(&h.session, id).unwrap();
@@ -1023,7 +1023,7 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
     h.tools
         .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
     let id = h.create();
-    h.runtime.request_cancel(id);
+    h.runtime.interrupt_step(id);
     assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
 
@@ -1034,7 +1034,7 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
         .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
     let id = h.create();
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
-    h.runtime.request_cancel(id);
+    h.runtime.interrupt_step(id);
     assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
     h.runtime.pause_task(&h.session, id).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Paused);
@@ -1042,7 +1042,7 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
     // The task that is cancelled afterwards leaves nothing behind.
     let h = Harness::new(vec![act("read_file", "a")]);
     let id = h.create();
-    h.runtime.request_cancel(id);
+    h.runtime.interrupt_step(id);
     assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
     h.runtime.cancel_task(&h.session, id).unwrap();
     assert!(!h.per_task_entries(id).0);
@@ -1273,7 +1273,7 @@ fn req_sched_005_a_terminal_task_holds_no_scheduler_slot() {
         assert_eq!(
             h.per_task_entries(first),
             (true, true, true),
-            "{route}: (cancellations, last_requests, unpinned) of a task with a step behind it"
+            "{route}: (interruptions, last_requests, unpinned) of a task with a step behind it"
         );
         h.step(first);
         if route == "cancelled" {
@@ -1300,7 +1300,7 @@ fn req_sched_005_a_terminal_task_holds_no_scheduler_slot() {
         assert_eq!(
             h.per_task_entries(first),
             (false, false, false),
-            "{route}: (cancellations, last_requests, unpinned) of a terminal task"
+            "{route}: (interruptions, last_requests, unpinned) of a terminal task"
         );
         assert!(
             h.persistence

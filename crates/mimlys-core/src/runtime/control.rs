@@ -631,6 +631,7 @@ impl Runtime {
                 state_changed(&task, &next),
             ),
         )?;
+        self.transitioned(&task, &next);
         Ok(next)
     }
 
@@ -742,6 +743,7 @@ impl Runtime {
             None,
             state_changed(&task, &next),
         ))?;
+        self.transitioned(&task, &next);
         Ok(next)
     }
 
@@ -802,6 +804,7 @@ impl Runtime {
             None,
             state_changed(&task, &after),
         ))?;
+        self.transitioned(&task, &after);
         Ok(after)
     }
 
@@ -858,6 +861,7 @@ impl Runtime {
             None,
             state_changed(&task, &next),
         ))?;
+        self.transitioned(&task, &next);
         Ok(next)
     }
 

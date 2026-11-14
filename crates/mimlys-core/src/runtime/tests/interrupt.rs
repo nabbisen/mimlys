@@ -12,9 +12,9 @@ use std::sync::Mutex;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ask {
     Nothing,
-    /// `Runtime::request_cancel`.
+    /// `Runtime::interrupt_step`.
     Undoable,
-    /// `Runtime::request_cancel_anyway`.
+    /// `Runtime::interrupt_step_anyway`.
     Anyway,
     /// `Runtime::cancel_task`, as a client of another thread would.
     CancelTask,
@@ -48,8 +48,8 @@ impl crate::spi::ToolProvider for Asking {
             let task = self.task.lock().unwrap().expect("task set");
             match *self.ask.lock().unwrap() {
                 Ask::Nothing => {}
-                Ask::Undoable => runtime.request_cancel(task),
-                Ask::Anyway => runtime.request_cancel_anyway(task),
+                Ask::Undoable => runtime.interrupt_step(task),
+                Ask::Anyway => runtime.interrupt_step_anyway(task),
                 Ask::CancelTask => {
                     runtime.cancel_task(&self.session, task).unwrap();
                     let view = runtime.get_task(task).unwrap();
@@ -295,7 +295,7 @@ fn req_cli_005_the_first_request_interrupts_only_what_can_be_undone() {
             );
             assert_eq!(result.outcome, StepOutcome::Continued, "{name}");
             assert!(
-                rig.runtime.cancellation(rig.task).is_cancelled(),
+                rig.runtime.step_interruption(rig.task).is_cancelled(),
                 "{name}: the request is kept for the next step, which ends cancelled at once"
             );
             let next = futures_block(rig.runtime.run_step(rig.task)).unwrap();
@@ -464,4 +464,120 @@ fn req_task_006_cancel_task_records_an_interrupted_action_that_cannot_be_undone_
             "{name}"
         );
     }
+}
+
+/// REQ-SCHED-004, REQ-TASK-005 (handoff 010e): a request made while no step runs
+/// is cleared by the pause and the resume that follow, so it never reaches a step
+/// that began after them. The task is paused and resumed, and the step after the
+/// resume runs.
+#[test]
+fn req_sched_004_a_request_made_while_no_step_runs_does_not_reach_a_step_after_a_pause_and_a_resume()
+ {
+    let h = Harness::new(vec![
+        act("read_file", "a"),
+        act("read_file", "b"),
+        act("read_file", "c"),
+    ]);
+    for _ in 0..3 {
+        h.tools
+            .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    }
+    let id = h.create();
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    // No step runs: a request is made, then the task is paused and resumed.
+    h.runtime.interrupt_step(id);
+    h.runtime.pause_task(&h.session, id).unwrap();
+    let mut paused = false;
+    for _ in 0..2 {
+        // The request ends the step that meets it; the pause is taken after it.
+        let result = h.step(id);
+        paused = result.outcome == StepOutcome::Paused;
+        if paused {
+            break;
+        }
+    }
+    assert!(paused, "the pause was taken");
+    assert_eq!(h.state(id), TaskState::Paused);
+    h.runtime.resume_task(&h.session, id, None).unwrap();
+    assert_eq!(
+        h.step(id).outcome,
+        StepOutcome::Continued,
+        "the first step after the resume is not interrupted"
+    );
+}
+
+/// REQ-SCHED-004, REQ-TASK-005 (handoff 010e): a request made while the task is
+/// paused is cleared by the resume.
+#[test]
+fn req_sched_004_a_request_made_while_the_task_is_paused_is_cleared_by_the_resume() {
+    let h = Harness::new(vec![act("read_file", "a"), act("read_file", "b")]);
+    for _ in 0..2 {
+        h.tools
+            .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    }
+    let id = h.create();
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    h.runtime.pause_task(&h.session, id).unwrap();
+    assert_eq!(h.step(id).outcome, StepOutcome::Paused);
+    h.runtime.interrupt_step(id);
+    assert!(h.runtime.step_interruption(id).is_cancelled());
+    h.runtime.resume_task(&h.session, id, None).unwrap();
+    assert!(
+        !h.runtime.step_interruption(id).is_cancelled(),
+        "the resume cleared it"
+    );
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+}
+
+/// REQ-SCHED-004, REQ-PERS-007 (handoff 010e): a request that is not spent by
+/// the step it was made for (the second request meets an action that cannot be
+/// undone: the step halts the task, it does not end `cancelled`) is cleared by
+/// the halt, so the step after the resume is not interrupted.
+#[test]
+fn req_sched_004_a_request_is_cleared_by_the_halt_it_caused() {
+    let (definition, _) = classes()
+        .into_iter()
+        .find(|(d, _)| d.name == "an_external_write")
+        .unwrap();
+    let rig = Rig::new(definition);
+    rig.ask(Ask::Anyway);
+    let result = rig.execute_the_action();
+    assert_eq!(result.outcome, StepOutcome::Halted);
+    assert!(
+        !rig.runtime.step_interruption(rig.task).is_cancelled(),
+        "the halt cleared the request"
+    );
+    rig.ask(Ask::Nothing);
+    rig.runtime
+        .resume_task(&rig.session, rig.task, None)
+        .unwrap();
+    let next = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(
+        next.outcome,
+        StepOutcome::Continued,
+        "the step after the resume runs: {next:?}"
+    );
+}
+
+/// REQ-SCHED-004, REQ-APR-007 (handoff 010e): a request made while the task waits
+/// for an approval is cleared when the user decides, so the approved action is
+/// not interrupted by a request made before the decision.
+#[test]
+fn req_sched_004_a_request_made_while_the_task_waits_is_cleared_when_the_user_decides() {
+    let (definition, _) = classes()
+        .into_iter()
+        .find(|(d, _)| d.name == "an_external_write")
+        .unwrap();
+    let rig = Rig::new(definition);
+    let waited = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(waited.outcome, StepOutcome::Waited);
+    rig.runtime.interrupt_step_anyway(rig.task);
+    rig.runtime.approve_action(&rig.session, rig.task).unwrap();
+    assert!(
+        !rig.runtime.step_interruption(rig.task).is_cancelled(),
+        "the decision cleared the request"
+    );
+    let result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(result.outcome, StepOutcome::Continued, "{result:?}");
+    assert_eq!(rig.action().status, ActionStatus::Succeeded);
 }

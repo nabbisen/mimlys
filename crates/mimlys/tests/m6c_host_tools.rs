@@ -989,7 +989,8 @@ fn req_conf_009_cancel_kills_the_whole_tree() {
     signal();
     assert!(
         wait_until(std::time::Duration::from_secs(60), || {
-            std::fs::read_to_string(&err_path).is_ok_and(|t| t.contains("stop signal: pausing"))
+            std::fs::read_to_string(&err_path)
+                .is_ok_and(|t| t.contains("the task pauses when the step in flight has finished"))
         }),
         "the first signal was never taken: {}",
         std::fs::read_to_string(&err_path).unwrap_or_default()

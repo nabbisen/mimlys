@@ -48,12 +48,12 @@ struct StepOf {
 
 impl Interrupt for StepOf {
     fn interrupt(&self) {
-        self.runtime.request_cancel(self.task_id);
+        self.runtime.interrupt_step(self.task_id);
     }
 
     fn interrupt_anyway(&self) -> Option<String> {
         let tool = self.irreversible();
-        self.runtime.request_cancel_anyway(self.task_id);
+        self.runtime.interrupt_step_anyway(self.task_id);
         tool
     }
 
@@ -135,7 +135,7 @@ impl Signals {
                             shared.say_waiting(&tool);
                         }
                         None => {
-                            eprintln!("{}", messages::SIGNAL_INTERRUPTED);
+                            eprintln!("{}", messages::signal_interrupted(grace.as_secs()));
                             step.interrupt();
                         }
                     }
@@ -277,7 +277,7 @@ pub async fn drive(
                     } else {
                         // The step was cancelled (the watchdog's request, or
                         // one that came as the pause was being applied) and
-                        // the task is still running: the boundary is here.
+                        // the task is still running: the step has ended here.
                         // The pause is requested and taken by the step that
                         // follows, which returns at once: it does no work, it
                         // calls no model and no tool, and the step that was
@@ -606,5 +606,35 @@ mod tests {
         signals.stopped(&step, grace());
         assert_eq!(fake.interrupted_anyway(), 1);
         assert_eq!(signals.stage(), CANCEL);
+    }
+
+    /// REQ-CLI-005 (handoff 010e): the messages say what happened in the user's
+    /// words, and none of them says "boundary". The interruption names how long
+    /// the step had been running (the grace, 4 seconds) and what it means for the
+    /// workspace and for the task.
+    #[test]
+    fn req_cli_005_the_messages_speak_the_users_words() {
+        assert_eq!(
+            messages::signal_interrupted(grace().as_secs()),
+            "the step was still running 4 seconds after the stop signal, so it was interrupted (its workspace changes are rolled back); the task is paused"
+        );
+        assert_eq!(
+            messages::signal_waiting("rypsok.send"),
+            "waiting for rypsok.send to finish: it changes something outside this machine and cannot be undone; press Ctrl-C again to interrupt it anyway"
+        );
+        let all = [
+            messages::SIGNAL_PAUSING.to_owned(),
+            messages::SIGNAL_CANCELLING.to_owned(),
+            messages::signal_interrupted(grace().as_secs()),
+            messages::signal_waiting("t"),
+            messages::signal_interrupting_anyway("t"),
+            messages::unknown_action_line("a", "t", mimlys_core::action::EffectKind::ExternalWrite),
+        ];
+        for message in &all {
+            assert!(
+                !message.to_lowercase().contains("boundary"),
+                "not the user's word: {message}"
+            );
+        }
     }
 }
