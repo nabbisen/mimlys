@@ -191,9 +191,10 @@ fn filesystem_state(landlock: &Result<Landlock, String>, guard: Option<&str>) ->
 }
 
 /// Clause N reads from what held: the filter alone is complete for the
-/// network (it denies the `socket` rule's bypass, `io_uring`), the Landlock
-/// layer is named when it held too, and so is the primitive that keeps Unix
-/// sockets inside the write set, without which N does not say `enforced`.
+/// network (it also denies `io_uring`, which creates sockets the `socket`
+/// rule never sees), the Landlock layer is named when it held too, and so is
+/// the primitive that keeps Unix sockets inside the write set, without which
+/// N does not say `enforced`.
 fn network_state(
     deny_network: bool,
     seccomp: bool,
