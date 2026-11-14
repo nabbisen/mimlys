@@ -199,7 +199,7 @@ fn m3_promotion() {
     assert_eq!(view["promotions"].as_array().unwrap().len(), 1);
     assert_eq!(view["footprint"]["promotions"], 1);
     // Reverse.
-    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id]);
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id, "--yes"]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(
         std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
@@ -418,6 +418,154 @@ fn req_ws_012_task_delete_removes_the_promotion_backup() {
         promoted,
         "the project is not touched by the delete"
     );
+}
+
+/// REQ-WS-012 (handoff 006b): a read-only directory under the task's workspace (a toolchain's
+/// module cache is made of them) does not keep `task delete` from removing everything: the
+/// workspace is gone, and the store holds no manifest and no object of the task, no row and no
+/// journal.
+#[cfg(unix)]
+#[test]
+fn req_ws_012_task_delete_removes_a_workspace_holding_read_only_directories() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("edit.json");
+    let scope = scope();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    // What a toolchain leaves: read-only files in read-only directories, below the tree.
+    let cache = env.tree(&id).join("pkg/mod/cache");
+    std::fs::create_dir_all(cache.join("v1")).unwrap();
+    std::fs::write(cache.join("v1/a.zip"), "a").unwrap();
+    std::fs::write(cache.join("b.zip"), "b").unwrap();
+    for path in [
+        cache.join("v1/a.zip"),
+        cache.join("b.zip"),
+        cache.join("v1"),
+        cache.clone(),
+        cache.parent().unwrap().to_path_buf(),
+    ] {
+        let mode = if path.is_dir() { 0o555 } else { 0o444 };
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let (code, value) = env.json(&["task", "delete", &id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["deleted"], true);
+    assert!(!env.tree(&id).exists());
+    assert!(
+        !env.tree(&id).parent().unwrap().exists(),
+        "the task's directory is gone"
+    );
+    let count = |dir: &str| {
+        std::fs::read_dir(env.data.path().join("data").join(dir))
+            .unwrap()
+            .count()
+    };
+    assert_eq!(
+        count("snapshots/manifests"),
+        0,
+        "no manifest of the task is left"
+    );
+    assert_eq!(
+        count("snapshots/objects"),
+        0,
+        "no object of the task is left"
+    );
+    assert_eq!(
+        count("snapshots/deleting"),
+        0,
+        "the deletion's journal is closed"
+    );
+    let conn = rusqlite::Connection::open(env.data.path().join("data/mimlys.db")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM snapshots", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+/// REQ-WS-007, REQ-SEC-015 (handoff 006b): `rollback --promotion` lists what it will restore and
+/// asks, as `promote` does: without a terminal and without `--yes` it changes nothing. A path
+/// edited since the promotion is a conflict: `--yes` alone is refused, naming it, and
+/// `--overwrite-edited` overwrites it.
+#[test]
+fn req_ws_007_rollback_of_a_promotion_lists_asks_and_refuses_edits_unless_confirmed() {
+    let env = Env::new("edit.json");
+    let scope = scope();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["promote", &id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    let promotion = value["promotion"]["promotion_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Without --yes and without a terminal: the plan, nothing changed.
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["reversed"], false);
+    let listed: Vec<(&str, &str)> = value["plan"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["path"].as_str().unwrap(), e["action"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("src/added.rs", "remove"),
+            ("src/lib.rs", "restore"),
+            ("src/old.rs", "restore"),
+        ]
+    );
+    assert_eq!(value["plan"]["conflicts"], serde_json::json!([]));
+    assert!(
+        scope.path().join("src/added.rs").exists(),
+        "nothing changed"
+    );
+    let (_, text, _) = env.run(&["rollback", &id, "--promotion", &promotion]);
+    assert!(
+        text.contains("src/added.rs") && text.contains("not confirmed"),
+        "{text}"
+    );
+    // An edit since the promotion.
+    std::fs::write(scope.path().join("src/lib.rs"), "fn a() { edited since }\n").unwrap();
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        value["plan"]["conflicts"],
+        serde_json::json!(["src/lib.rs"])
+    );
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion, "--yes"]);
+    assert_eq!(code, 1, "{value}");
+    assert_eq!(value["error"]["kind"], "conflict");
+    assert_eq!(
+        value["error"]["detail"]["paths"],
+        serde_json::json!(["src/lib.rs"])
+    );
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
+        "fn a() { edited since }\n",
+        "the edit is not overwritten"
+    );
+    assert!(
+        scope.path().join("src/added.rs").exists(),
+        "nothing was restored"
+    );
+    let (code, value) = env.json(&[
+        "rollback",
+        &id,
+        "--promotion",
+        &promotion,
+        "--yes",
+        "--overwrite-edited",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
+        "fn a() -> i32 { 0 }\n"
+    );
+    assert!(!scope.path().join("src/added.rs").exists());
 }
 
 /// RFC 006 §6: deletion needs a terminal task, shows what goes, keeps the audit unless asked.

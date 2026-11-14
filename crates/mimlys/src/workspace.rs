@@ -603,12 +603,21 @@ impl WorkspaceProvider for LocalWorkspaces {
         self.promote_apply_impl(task_id, promotion, base)
     }
 
+    fn promotion_revert_plan(
+        &self,
+        promotion: &mimlys_core::snapshot::Promotion,
+        backup: &mimlys_core::snapshot::SnapshotRecord,
+    ) -> Result<mimlys_core::snapshot::RevertPlan, WorkspaceError> {
+        self.promotion_revert_plan_impl(promotion, backup)
+    }
+
     fn revert_promotion(
         &self,
         promotion: &mimlys_core::snapshot::Promotion,
         backup: &mimlys_core::snapshot::SnapshotRecord,
+        edited: mimlys_core::spi::EditedPaths,
     ) -> Result<mimlys_core::snapshot::RestoreReport, WorkspaceError> {
-        self.revert_promotion_impl(promotion, backup)
+        self.revert_promotion_impl(promotion, backup, edited)
     }
 
     fn delete_files(

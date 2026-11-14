@@ -19,7 +19,7 @@ use crate::rejection::RejectionCode;
 use crate::snapshot::{
     Footprint, Promotion, PromotionPlan, PromotionState, SnapshotRecord, WorkspaceState,
 };
-use crate::spi::{Metrics, PositionedEvent, TaskSummary};
+use crate::spi::{EditedPaths, Metrics, PositionedEvent, TaskSummary};
 use crate::step::{Budgets, StepOutcome, StepResult};
 use crate::task::{
     CompletionCheck, Extension, ExtensionCeiling, PlanVersion, ScopeSpec, Task, TaskInput,
@@ -537,10 +537,11 @@ impl Runtime {
                 Ok(promotion)
             }
             Err(cause) => {
-                let restored = self
-                    .deps
-                    .workspaces
-                    .revert_promotion(&promotion, &backup.record);
+                let restored = self.deps.workspaces.revert_promotion(
+                    &promotion,
+                    &backup.record,
+                    EditedPaths::Keep,
+                );
                 let (kept, restore_error) = match restored {
                     Ok(report) => (report.left, None),
                     Err(e) => (Vec::new(), Some(e.to_string())),
@@ -569,14 +570,13 @@ impl Runtime {
         }
     }
 
-    /// Reverses a promotion from its backup (REQ-WS-007).
-    pub fn revert_promotion(
+    /// The promotion to reverse and its backup: an applied promotion that was not reversed.
+    fn promotion_to_revert(
         &self,
-        session: &Session,
         task_id: TaskId,
         promotion_id: crate::ids::PromotionId,
-    ) -> Result<Promotion, RuntimeError> {
-        let mut promotion = self
+    ) -> Result<(Promotion, SnapshotRecord), RuntimeError> {
+        let promotion = self
             .deps
             .persistence
             .load_promotions(task_id)?
@@ -604,7 +604,56 @@ impl Runtime {
             .ok_or(RuntimeError::NotFound {
                 what: "snapshot".into(),
             })?;
-        self.deps.workspaces.revert_promotion(&promotion, &backup)?;
+        Ok((promotion, backup))
+    }
+
+    /// What reversing a promotion would do, and which paths were edited since (REQ-WS-007).
+    /// Nothing is changed.
+    pub fn revert_plan(
+        &self,
+        task_id: TaskId,
+        promotion_id: crate::ids::PromotionId,
+    ) -> Result<crate::snapshot::RevertPlan, RuntimeError> {
+        let (promotion, backup) = self.promotion_to_revert(task_id, promotion_id)?;
+        Ok(self
+            .deps
+            .workspaces
+            .promotion_revert_plan(&promotion, &backup)?)
+    }
+
+    /// Reverses a promotion from its backup (REQ-WS-007). Paths edited since the promotion are
+    /// not overwritten: the reversal is refused, naming them, unless `overwrite_edited` says the
+    /// user confirmed.
+    pub fn revert_promotion(
+        &self,
+        session: &Session,
+        task_id: TaskId,
+        promotion_id: crate::ids::PromotionId,
+        overwrite_edited: bool,
+    ) -> Result<Promotion, RuntimeError> {
+        let (mut promotion, backup) = self.promotion_to_revert(task_id, promotion_id)?;
+        if !overwrite_edited {
+            let plan = self
+                .deps
+                .workspaces
+                .promotion_revert_plan(&promotion, &backup)?;
+            if !plan.conflicts.is_empty() {
+                return Err(RuntimeError::Workspace(
+                    crate::spi::WorkspaceError::EditedSince {
+                        paths: plan.conflicts,
+                    },
+                ));
+            }
+        }
+        self.deps.workspaces.revert_promotion(
+            &promotion,
+            &backup,
+            if overwrite_edited {
+                EditedPaths::Overwrite
+            } else {
+                EditedPaths::Keep
+            },
+        )?;
         let now = self.deps.clock.now();
         promotion.reversed_at = Some(now);
         self.deps.persistence.record_promotion(
@@ -623,7 +672,7 @@ impl Runtime {
     }
 
     /// Deletes a terminal task's workspace, snapshots, blobs and backups
-    /// (RFC 006 §6): rows first, then files; the audit stays unless `audit`.
+    /// (RFC 006 §6): the files are journaled, the rows go, then every file is removed; the audit stays unless `audit`.
     pub fn delete_task(
         &self,
         session: &Session,
@@ -651,8 +700,10 @@ impl Runtime {
                 Event::TaskDeleted { audit },
             ),
         )?;
-        self.deps.workspaces.delete_files(task_id, &rows)?;
+        // Every removal is attempted; the failures are reported together, after the task is forgotten.
+        let removed = self.deps.workspaces.delete_files(task_id, &rows);
         self.forget_task(task_id);
+        removed?;
         Ok(footprint)
     }
 

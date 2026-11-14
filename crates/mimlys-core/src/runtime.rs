@@ -166,7 +166,9 @@ impl RuntimeError {
             RuntimeError::Conflict { .. } => "conflict",
             RuntimeError::Unavailable { .. } | RuntimeError::Backend(_) => "unavailable",
             RuntimeError::Workspace(
-                WorkspaceError::Conflict { .. } | WorkspaceError::Unlisted { .. },
+                WorkspaceError::Conflict { .. }
+                | WorkspaceError::Unlisted { .. }
+                | WorkspaceError::EditedSince { .. },
             ) => "conflict",
             RuntimeError::PromotionFailed {
                 cause: WorkspaceError::Conflict { .. } | WorkspaceError::Unlisted { .. },

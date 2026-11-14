@@ -12,8 +12,8 @@ use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_model::fake::FakeBackend;
 use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved, TransportMode};
 use mimlys_persist::recovery::{
-    Recovered, RecoveredPromotion, RecoveryContext, recover_all, recover_promotions,
-    recover_snapshot_journals,
+    Recovered, RecoveredPromotion, RecoveryContext, recover_all, recover_deletions,
+    recover_promotions, recover_snapshot_journals,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -83,7 +83,8 @@ impl AppError {
             AppError::Persistence(_) | AppError::Io { .. } | AppError::Partial { .. } => "internal",
             AppError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { .. }
-                | mimlys_core::spi::WorkspaceError::Unlisted { .. },
+                | mimlys_core::spi::WorkspaceError::Unlisted { .. }
+                | mimlys_core::spi::WorkspaceError::EditedSince { .. },
             ) => "conflict",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::NotFound { .. }) => "not_found",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Refused { .. }) => "state",
@@ -110,11 +111,15 @@ impl AppError {
             }),
             AppError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { paths }
-                | mimlys_core::spi::WorkspaceError::Unlisted { paths },
+                | mimlys_core::spi::WorkspaceError::Unlisted { paths }
+                | mimlys_core::spi::WorkspaceError::NotRemoved { paths }
+                | mimlys_core::spi::WorkspaceError::EditedSince { paths },
             )
             | AppError::Runtime(RuntimeError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { paths }
-                | mimlys_core::spi::WorkspaceError::Unlisted { paths },
+                | mimlys_core::spi::WorkspaceError::Unlisted { paths }
+                | mimlys_core::spi::WorkspaceError::NotRemoved { paths }
+                | mimlys_core::spi::WorkspaceError::EditedSince { paths },
             )) => {
                 serde_json::json!({ "paths": paths })
             }
@@ -742,6 +747,19 @@ impl App {
         )?;
         for r in &recovered_promotions {
             tracing::warn!("{}", crate::messages::promotion_recovered(r));
+        }
+        // The files of a task deletion that committed and did not finish (handoff 006b).
+        let deletions = recover_deletions(
+            &store,
+            &mimlys_persist::snapshots::SnapshotFiles::open(&data_dir)?,
+            &*workspaces,
+        )?;
+        if !deletions.failed.is_empty() {
+            tracing::warn!(
+                "{} path(s) of a deleted task could not be removed and will be tried at the next start: {}",
+                deletions.failed.len(),
+                deletions.failed.join(", ")
+            );
         }
         // The last recovery step (external design 16.3, REQ-WS-012): the
         // snapshot journals a crash left, before the integrity check reads

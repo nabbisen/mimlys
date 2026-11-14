@@ -286,7 +286,7 @@ fn req_ws_014_prune_keeps_a_task_whose_promotion_is_reversible() {
     );
     assert!(!env.has_workspace(&plain));
     // Its promotion can still be reversed from the backup.
-    let (code, value) = env.json(&["rollback", &promoted, "--promotion", &promotion]);
+    let (code, value) = env.json(&["rollback", &promoted, "--promotion", &promotion, "--yes"]);
     assert_eq!(code, 0, "{value}");
     let (code, stdout, _) = env.run(&["task", "prune", "--yes"]);
     assert_eq!(code, 0);
@@ -314,32 +314,24 @@ fn req_ws_014_prune_audit_removes_the_events_too() {
 
 /// REQ-WS-014: a failure midway stops the run: the tasks before it are gone,
 /// the rest are untouched and named, the exit code says it did not finish.
-/// (A directory the user cannot write makes one deletion fail; Unix, not root.)
-#[cfg(unix)]
+/// (A trigger in the store refuses the removal of one task's snapshot rows, so that deletion
+/// fails; the journal of the files it was to remove is then dropped, REQ-WS-012.)
 #[test]
 fn req_ws_014_prune_stops_at_a_failure_and_names_the_rest() {
-    use std::os::unix::fs::PermissionsExt;
     for json in [true, false] {
         let env = Env::new();
         let first = env.completed("a");
         let second = env.completed("b");
         let third = env.completed("c");
-        let tree = env.data.join("workspaces").join(&second).join("tree");
-        std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let restore = || {
-            let _ = std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o755));
-        };
-        if std::fs::write(tree.join("probe"), b"x").is_ok() {
-            restore();
-            common::skip(
-                "req_ws_014_prune_stops_at_a_failure_and_names_the_rest",
-                "this user can write a directory without the permission (root)",
-            );
-            return;
+        {
+            let conn = rusqlite::Connection::open(env.data.join("mimlys.db")).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER refuse_one BEFORE DELETE ON snapshots WHEN old.task_id = '{second}' BEGIN SELECT RAISE(ABORT, 'refused'); END;"
+            ))
+            .unwrap();
         }
         if json {
             let (code, value) = env.json(&["task", "prune", "--yes"]);
-            restore();
             assert_eq!(code, 1, "{value}");
             assert_eq!(value["failed"]["task_id"], second.as_str(), "{value}");
             assert_eq!(
@@ -351,7 +343,6 @@ fn req_ws_014_prune_stops_at_a_failure_and_names_the_rest() {
             assert_eq!(value["deleted"][0]["task_id"], first.as_str(), "{value}");
         } else {
             let (code, stdout, stderr) = env.run(&["task", "prune", "--yes"]);
-            restore();
             assert_eq!(code, 1, "{stdout}\n{stderr}");
             assert!(stdout.contains(&format!("deleted {first}")), "{stdout}");
             assert!(stdout.contains(&format!("failed  {second}")), "{stdout}");

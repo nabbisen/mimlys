@@ -18,7 +18,7 @@ use crate::observation::Observation;
 use crate::path::CaseMode;
 use crate::question::Question;
 use crate::snapshot::{
-    Manifest, Promotion, PromotionPlan, RestoreReport, SnapshotReason, SnapshotRecord,
+    Manifest, Promotion, PromotionPlan, RestoreReport, RevertPlan, SnapshotReason, SnapshotRecord,
     WorkspaceState,
 };
 use crate::step::Step;
@@ -461,6 +461,19 @@ pub enum WorkspaceError {
         /// The unlisted entries, top-most first, sorted.
         paths: Vec<String>,
     },
+    /// A deletion left files it could not remove (RFC 006 §6): every removal was attempted, and
+    /// each failure is named. The rows are gone; the next start tries these again.
+    #[error("{} path(s) could not be removed and are left to the next start: {}", paths.len(), paths.join(", "))]
+    NotRemoved {
+        /// The paths, relative to the data directory.
+        paths: Vec<String>,
+    },
+    /// A reversal would overwrite paths edited since the promotion (REQ-WS-007).
+    #[error("reversal refused: {} path(s) were edited since the promotion: {}", paths.len(), paths.join(", "))]
+    EditedSince {
+        /// The edited paths.
+        paths: Vec<String>,
+    },
     /// The operation is not valid now (the plan is stale, the task not terminal).
     #[error("refused: {reason}")]
     Refused {
@@ -577,17 +590,35 @@ pub trait WorkspaceProvider: WorkspaceRead {
         base: &SnapshotRecord,
     ) -> Result<(), WorkspaceError>;
 
+    /// What reversing a promotion would do: the paths it restores or removes, and the ones edited
+    /// since. Nothing is changed.
+    fn promotion_revert_plan(
+        &self,
+        promotion: &Promotion,
+        backup: &SnapshotRecord,
+    ) -> Result<RevertPlan, WorkspaceError>;
+
     /// Reverses a promotion from its backup, also the part of one that was applied: a path is
-    /// restored while it holds what the promotion wrote or is missing, and a path edited since
-    /// is kept and reported in `left`.
+    /// restored while it holds what the promotion wrote or is missing. A path edited since is kept
+    /// and reported in `left`, or, with [`EditedPaths::Overwrite`], restored too.
     fn revert_promotion(
         &self,
         promotion: &Promotion,
         backup: &SnapshotRecord,
+        edited: EditedPaths,
     ) -> Result<RestoreReport, WorkspaceError>;
 
     /// Removes the files the database no longer references (RFC 006 §6).
     fn delete_files(&self, task_id: TaskId, rows: &DeletedRows) -> Result<(), WorkspaceError>;
+}
+
+/// What a reversal does with a path edited since the promotion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditedPaths {
+    /// Keeps it as it is and reports it.
+    Keep,
+    /// Restores it too: the user confirmed.
+    Overwrite,
 }
 
 /// What phase 2 of a promotion is given (REQ-WS-007).
@@ -1094,8 +1125,9 @@ pub mod fake {
         fail_restores: Mutex<bool>,
         tree: Mutex<Option<String>>,
         apply_hook: Mutex<Option<ApplyHook>>,
-        reverted: Mutex<Vec<PromotionId>>,
+        reverted: Mutex<Vec<(PromotionId, EditedPaths)>>,
         fail_reverts: Mutex<bool>,
+        edited: Mutex<Vec<String>>,
     }
 
     /// What a test runs when a promotion is applied; an error fails the apply.
@@ -1114,6 +1146,7 @@ pub mod fake {
                 apply_hook: Mutex::new(None),
                 reverted: Mutex::new(Vec::new()),
                 fail_reverts: Mutex::new(false),
+                edited: Mutex::new(Vec::new()),
             }
         }
 
@@ -1342,10 +1375,24 @@ pub mod fake {
             }
         }
 
+        fn promotion_revert_plan(
+            &self,
+            promotion: &Promotion,
+            _backup: &SnapshotRecord,
+        ) -> Result<RevertPlan, WorkspaceError> {
+            Ok(RevertPlan {
+                promotion_id: promotion.promotion_id,
+                entries: vec![],
+                conflicts: self.edited.lock().expect("fake lock").clone(),
+                edits_detected: true,
+            })
+        }
+
         fn revert_promotion(
             &self,
             promotion: &Promotion,
             _backup: &SnapshotRecord,
+            edited: EditedPaths,
         ) -> Result<RestoreReport, WorkspaceError> {
             if *self.fail_reverts.lock().expect("fake lock") {
                 return Err(WorkspaceError::Storage {
@@ -1355,7 +1402,7 @@ pub mod fake {
             self.reverted
                 .lock()
                 .expect("fake lock")
-                .push(promotion.promotion_id);
+                .push((promotion.promotion_id, edited));
             Ok(RestoreReport::default())
         }
 
@@ -1389,9 +1436,15 @@ pub mod fake {
             *self.fail_reverts.lock().expect("fake lock") = true;
         }
 
-        /// Promotions reverted from their backups, in order.
-        pub fn reverted(&self) -> Vec<PromotionId> {
+        /// Promotions reverted from their backups, in order, with how edited paths were treated.
+        pub fn reverted(&self) -> Vec<(PromotionId, EditedPaths)> {
             self.reverted.lock().expect("fake lock").clone()
+        }
+
+        /// From now on the plan of a reversal reports these paths as edited since.
+        pub fn set_edited(&self, paths: &[&str]) {
+            *self.edited.lock().expect("fake lock") =
+                paths.iter().map(|p| (*p).to_owned()).collect();
         }
     }
 

@@ -406,6 +406,40 @@ impl PromotionState {
     }
 }
 
+/// What a reversal does to one path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevertAction {
+    /// The path gets back the entry the backup holds.
+    Restore,
+    /// The path was added by the promotion: it is removed (a directory only when empty).
+    Remove,
+}
+
+/// One path a reversal changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevertEntry {
+    /// Path.
+    pub path: String,
+    /// What is done to it.
+    pub action: RevertAction,
+}
+
+/// What reversing a promotion would do, before it does it (REQ-WS-007).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevertPlan {
+    /// The promotion.
+    pub promotion_id: PromotionId,
+    /// The paths it changes, sorted.
+    pub entries: Vec<RevertEntry>,
+    /// Paths edited since the promotion: restoring them would overwrite the edit, so the
+    /// reversal is refused unless it is confirmed.
+    pub conflicts: Vec<String>,
+    /// Whether an edit can be told from the promotion's own write (a record from before 0.10
+    /// holds no entries to tell it by).
+    pub edits_detected: bool,
+}
+
 /// A promotion as recorded (REQ-WS-007).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Promotion {

@@ -229,7 +229,10 @@ fn req_ws_007_a_promotion_found_applying_is_restored_recorded_failed_and_listed(
     assert_eq!(recovered[0].promotion_id, applying.promotion_id);
     assert_eq!(recovered[0].task_id, task.task_id);
     assert!(recovered[0].kept.is_empty() && recovered[0].restore_error.is_none());
-    assert_eq!(files.reverted(), [applying.promotion_id]);
+    assert_eq!(
+        files.reverted(),
+        [(applying.promotion_id, mimlys_core::spi::EditedPaths::Keep)]
+    );
     let loaded = store.load_promotions(task.task_id).unwrap();
     assert_eq!(loaded[0].state, PromotionState::Failed);
     assert!(

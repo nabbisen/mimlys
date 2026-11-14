@@ -9,9 +9,9 @@
 
 use crate::sqlite::{create_private_dir, io, restrict_file};
 use mimlys_core::hash::{Hash, hash_bytes};
-use mimlys_core::ids::SnapshotId;
+use mimlys_core::ids::{SnapshotId, TaskId};
 use mimlys_core::snapshot::Manifest;
-use mimlys_core::spi::{PersistenceError, PersistenceRead};
+use mimlys_core::spi::{DeletedRows, PersistenceError, PersistenceRead};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -24,7 +24,7 @@ impl SnapshotFiles {
     /// `<data_dir>/snapshots/{objects,manifests,pending}`, created owner-only.
     pub fn open(data_dir: &Path) -> Result<Self, PersistenceError> {
         let root = data_dir.join("snapshots");
-        for sub in ["objects", "manifests", "pending"] {
+        for sub in ["objects", "manifests", "pending", "deleting"] {
             create_private_dir(&root.join(sub))?;
         }
         Ok(Self { root })
@@ -273,6 +273,67 @@ impl SnapshotFiles {
                 out.push(SnapshotId::from_uuid(uuid));
             }
         }
+        Ok(out)
+    }
+}
+
+impl SnapshotFiles {
+    fn deletion_path(&self, task_id: TaskId) -> PathBuf {
+        self.root.join("deleting").join(format!("{task_id}.json"))
+    }
+
+    /// Journals the files a task's deletion is to remove, fsynced, before its rows go (handoff
+    /// 006b): whatever happens to the removals, the next start finishes them.
+    pub fn begin_deletion(
+        &self,
+        task_id: TaskId,
+        rows: &DeletedRows,
+    ) -> Result<(), PersistenceError> {
+        let path = self.deletion_path(task_id);
+        let text = serde_json::to_string(rows).map_err(|_| PersistenceError::Storage {
+            detail: "deletion_journal".into(),
+        })?;
+        let mut file = std::fs::File::create(&path).map_err(io("deletion_create"))?;
+        file.write_all(text.as_bytes())
+            .map_err(io("deletion_write"))?;
+        file.sync_all().map_err(io("deletion_sync"))?;
+        sync_dir(&self.root.join("deleting"))
+    }
+
+    /// Closes the journal of a deletion, once every file it lists is gone (or the deletion did
+    /// not happen).
+    pub fn finish_deletion(&self, task_id: TaskId) -> Result<(), PersistenceError> {
+        let path = self.deletion_path(task_id);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(io("deletion_remove"))?;
+        }
+        Ok(())
+    }
+
+    /// The deletions whose journals are open. A directory that is not there reads as none.
+    pub fn pending_deletions(&self) -> Result<Vec<(TaskId, DeletedRows)>, PersistenceError> {
+        let dir = match std::fs::read_dir(self.root.join("deleting")) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io("deleting_dir")(e)),
+        };
+        let mut out = Vec::new();
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".json") else {
+                continue;
+            };
+            let Ok(uuid) = uuid::Uuid::parse_str(stem) else {
+                continue;
+            };
+            let text = std::fs::read_to_string(entry.path()).map_err(io("deletion_read"))?;
+            let rows: DeletedRows =
+                serde_json::from_str(&text).map_err(|_| PersistenceError::Storage {
+                    detail: "deletion_journal".into(),
+                })?;
+            out.push((TaskId::from_uuid(uuid), rows));
+        }
+        out.sort_by_key(|(id, _)| id.to_string());
         Ok(out)
     }
 }

@@ -1683,7 +1683,10 @@ fn req_ws_007_an_error_while_applying_restores_from_the_backup_and_records_faile
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].state, PromotionState::Failed);
     assert!(stored[0].reason.as_deref().unwrap().contains("injected"));
-    assert_eq!(h.workspaces.reverted(), [stored[0].promotion_id]);
+    assert_eq!(
+        h.workspaces.reverted(),
+        [(stored[0].promotion_id, crate::spi::EditedPaths::Keep)]
+    );
     assert!(
         h.persistence
             .load_snapshot(stored[0].backup_snapshot)
@@ -1703,9 +1706,45 @@ fn req_ws_007_an_error_while_applying_restores_from_the_backup_and_records_faile
     // A failed promotion cannot be reversed.
     let err = h
         .runtime
-        .revert_promotion(&h.session, id, stored[0].promotion_id)
+        .revert_promotion(&h.session, id, stored[0].promotion_id, false)
         .unwrap_err();
     assert_eq!(err.kind(), "state");
+}
+
+/// REQ-WS-007: a reversal that would overwrite a path edited since the promotion is refused,
+/// naming it, and nothing is restored; confirmed, it overwrites. A reversal with nothing edited
+/// goes through unasked.
+#[test]
+fn req_ws_007_a_reversal_over_edited_paths_is_refused_unless_confirmed() {
+    use crate::spi::EditedPaths;
+    let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
+    let id = h.create();
+    h.step(id);
+    let plan = one_file_plan(&h, id);
+    let promotion = h.runtime.promote_workspace(&h.session, id, &plan).unwrap();
+    h.workspaces.set_edited(&["a.txt"]);
+    let err = h
+        .runtime
+        .revert_promotion(&h.session, id, promotion.promotion_id, false)
+        .unwrap_err();
+    assert_eq!(err.kind(), "conflict");
+    assert!(err.to_string().contains("a.txt"), "{err}");
+    assert!(h.workspaces.reverted().is_empty(), "nothing was restored");
+    assert!(
+        h.persistence.load_promotions(id).unwrap()[0]
+            .reversed_at
+            .is_none(),
+        "the promotion is not recorded reversed"
+    );
+    let reversed = h
+        .runtime
+        .revert_promotion(&h.session, id, promotion.promotion_id, true)
+        .unwrap();
+    assert!(reversed.reversed_at.is_some());
+    assert_eq!(
+        h.workspaces.reverted(),
+        [(promotion.promotion_id, EditedPaths::Overwrite)]
+    );
 }
 
 /// REQ-WS-006 / REQ-WS-007 / RFC 006 §6: the user's rollback is valid when

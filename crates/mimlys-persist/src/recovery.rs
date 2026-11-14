@@ -160,6 +160,47 @@ pub fn recover_all(
     Ok(out)
 }
 
+/// What the start did with the journals of task deletions (RFC 006 §6; handoff 006b).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeletionReport {
+    /// Deletions that had committed: their files were removed now.
+    pub finished: usize,
+    /// Journals of deletions that never committed: nothing was removed, the journal is gone.
+    pub discarded: usize,
+    /// Paths a finished deletion still could not remove; its journal stays for the next start.
+    pub failed: Vec<String>,
+}
+
+/// The files of a task deletion that committed are removed, every one attempted; a journal whose
+/// deletion did not commit (its task still holds its rows) is dropped. The journal of a deletion
+/// is written, fsynced, before its rows go, so a crash or a failed removal never leaves files
+/// that no row names.
+pub fn recover_deletions(
+    store: &Store,
+    files: &SnapshotFiles,
+    workspaces: &dyn mimlys_core::spi::WorkspaceProvider,
+) -> Result<DeletionReport, PersistenceError> {
+    let mut report = DeletionReport::default();
+    for (task_id, rows) in files.pending_deletions()? {
+        let committed = store.load_task(task_id)?.is_none()
+            || store.load_workspace_state(task_id)?
+                == Some(mimlys_core::snapshot::WorkspaceState::Deleted);
+        if !committed {
+            files.finish_deletion(task_id)?;
+            report.discarded += 1;
+            continue;
+        }
+        match workspaces.delete_files(task_id, &rows) {
+            Ok(()) => report.finished += 1,
+            Err(mimlys_core::spi::WorkspaceError::NotRemoved { paths }) => {
+                report.failed.extend(paths);
+            }
+            Err(e) => report.failed.push(e.to_string()),
+        }
+    }
+    Ok(report)
+}
+
 /// What start-up did with a promotion it found `applying`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveredPromotion {
@@ -184,7 +225,11 @@ pub fn recover_promotions(
     let mut out = Vec::new();
     for mut promotion in store.promotions_applying()? {
         let restored = match store.load_snapshot(promotion.backup_snapshot)? {
-            Some(backup) => workspaces.revert_promotion(&promotion, &backup),
+            Some(backup) => workspaces.revert_promotion(
+                &promotion,
+                &backup,
+                mimlys_core::spi::EditedPaths::Keep,
+            ),
             None => Err(mimlys_core::spi::WorkspaceError::NotFound {
                 what: "snapshot".into(),
             }),

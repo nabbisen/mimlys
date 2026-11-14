@@ -16,10 +16,11 @@ use mimlys_core::path::CaseMode;
 use mimlys_core::policy::ExclusionMatcher;
 use mimlys_core::snapshot::{
     Change, ChangeKind, Entry, Manifest, Promotion, PromotionPlan, PromotionState, RestoreReport,
-    SnapshotReason, SnapshotRecord, diff, target_inside_root,
+    RevertAction, RevertEntry, RevertPlan, SnapshotReason, SnapshotRecord, diff,
+    target_inside_root,
 };
 use mimlys_core::spi::{
-    DeletedRows, PreparedSnapshot, PromotionRequest, WorkspaceError, WorkspaceInfo,
+    DeletedRows, EditedPaths, PreparedSnapshot, PromotionRequest, WorkspaceError, WorkspaceInfo,
 };
 use mimlys_core::task::ScopeSpec;
 use mimlys_persist::snapshots::SnapshotFiles;
@@ -575,6 +576,20 @@ impl LocalWorkspaces {
         for c in &changes {
             walk_parents(&project, &c.path, false)?;
         }
+        // A link whose target leaves the project is not promoted, nor skipped and recorded as
+        // promoted: the plan is refused and names it (REQ-WS-005, REQ-WS-007).
+        for c in &changes {
+            if let Some(Entry::Symlink { target, .. }) = current_by_path.get(c.path.as_str())
+                && !target_inside_root(&c.path, target)
+            {
+                return Err(WorkspaceError::Refused {
+                    reason: format!(
+                        "the workspace holds a link at {} whose target ({target}) is outside the project; it is not promoted. Remove it or point it inside the project, then plan again",
+                        c.path
+                    ),
+                });
+            }
+        }
         // Conflicts: the project's target must equal the base entry (REQ-WS-007).
         let mut conflicts = Vec::new();
         for c in &changes {
@@ -755,15 +770,52 @@ impl LocalWorkspaces {
         )
     }
 
+    /// What a reversal would do: the paths it restores or removes, and the ones edited since.
+    pub(crate) fn promotion_revert_plan_impl(
+        &self,
+        promotion: &Promotion,
+        backup: &SnapshotRecord,
+    ) -> Result<RevertPlan, WorkspaceError> {
+        let manifest = self
+            .files
+            .read_manifest(backup.snapshot_id, &backup.manifest_hash)
+            .map_err(persist)?;
+        let project = Self::scope_dir(&promotion.project_root)?;
+        let by_path = manifest.by_path();
+        let decided = revert_decisions(&project, promotion, &by_path)?;
+        let mut entries: Vec<RevertEntry> = decided
+            .wants
+            .iter()
+            .map(|w| RevertEntry {
+                path: w.path.to_owned(),
+                action: if w.entry.is_some() {
+                    RevertAction::Restore
+                } else {
+                    RevertAction::Remove
+                },
+            })
+            .collect();
+        entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+        let mut conflicts = decided.edited;
+        conflicts.sort();
+        Ok(RevertPlan {
+            promotion_id: promotion.promotion_id,
+            entries,
+            conflicts,
+            edits_detected: decided.knows_after,
+        })
+    }
+
     /// Restores the project from the backup, also the part of a promotion that was applied: a
     /// path is restored while it holds what the promotion wrote (or is missing, as in the middle
     /// of a replacement), is left alone when it already holds the backup's entry, and is kept and
-    /// reported when it holds something else, an edit made since. Only listed paths are removed,
-    /// and a directory only when it is empty.
+    /// reported when it holds something else, an edit made since (or restored too, when the user
+    /// confirmed). Only listed paths are removed, and a directory only when it is empty.
     pub(crate) fn revert_promotion_impl(
         &self,
         promotion: &Promotion,
         backup: &SnapshotRecord,
+        edited: EditedPaths,
     ) -> Result<RestoreReport, WorkspaceError> {
         let manifest = self
             .files
@@ -771,43 +823,27 @@ impl LocalWorkspaces {
             .map_err(persist)?;
         let project = Self::scope_dir(&promotion.project_root)?;
         let by_path = manifest.by_path();
-        let after: std::collections::BTreeMap<&str, &Entry> =
-            promotion.after.iter().map(|e| (e.path(), e)).collect();
-        // A record from before the entries were recorded cannot tell an edit from the promotion's
-        // own write: every path is restored.
-        let knows_after = !promotion.after.is_empty()
-            || promotion
-                .files
-                .iter()
-                .all(|c| c.kind == ChangeKind::Deleted);
+        let decided = revert_decisions(&project, promotion, &by_path)?;
         let mut report = RestoreReport::default();
-        let mut wants: Vec<Want> = Vec::with_capacity(promotion.files.len());
-        for c in &promotion.files {
-            let path = c.path.as_str();
-            let backed_up = by_path.get(path).copied();
-            if knows_after {
-                let current = if link_parent(&project, path)?.is_some() {
-                    None
-                } else {
-                    project_entry(&project, path)?
-                };
-                if matches_base(current.as_ref(), backed_up) {
-                    continue;
-                }
-                let wrote = after.get(path).copied();
-                if current.is_some() && !matches_base(current.as_ref(), wrote) {
-                    report.left.push(path.to_owned());
-                    continue;
+        let mut wants = decided.wants;
+        match edited {
+            EditedPaths::Overwrite => {
+                for c in &promotion.files {
+                    if decided.edited.contains(&c.path) {
+                        wants.push(Want {
+                            path: &c.path,
+                            entry: by_path.get(c.path.as_str()).copied(),
+                        });
+                    }
                 }
             }
-            wants.push(Want {
-                path,
-                entry: backed_up,
-            });
+            EditedPaths::Keep => {
+                report.left = decided.edited;
+                // Under a path that is kept, nothing is touched.
+                let kept = report.left.clone();
+                wants.retain(|w| !kept.iter().any(|k| w.path.starts_with(&format!("{k}/"))));
+            }
         }
-        // Under a path that is kept, nothing is touched.
-        let kept = report.left.clone();
-        wants.retain(|w| !kept.iter().any(|k| w.path.starts_with(&format!("{k}/"))));
         self.converge(
             &project,
             Source::Objects,
@@ -944,29 +980,102 @@ impl LocalWorkspaces {
         Ok(())
     }
 
+    /// Removes the files of a deleted task (RFC 006 §6; handoff 006b): the manifests, objects and
+    /// blobs only the task referenced first, then its working tree and temporary directory. A
+    /// directory is made writable before it is emptied (a toolchain may leave read-only ones),
+    /// every removal is attempted, and each failure is reported by path. The journal of the
+    /// deletion is closed only when nothing is left; otherwise the next start tries again.
     pub(crate) fn delete_files_impl(
         &self,
         task_id: TaskId,
         rows: &DeletedRows,
     ) -> Result<(), WorkspaceError> {
-        let task_dir = self.task_dir(task_id);
-        if task_dir.exists() {
-            std::fs::remove_dir_all(&task_dir).map_err(storage("remove_dir"))?;
-        }
-        self.tools.lock().expect("workspace tools").remove(&task_id);
+        let mut failed: Vec<String> = Vec::new();
         for id in &rows.snapshots {
-            self.files.remove_manifest(*id).map_err(persist)?;
+            if self.files.remove_manifest(*id).is_err() {
+                failed.push(format!("snapshots/manifests/{id}.json"));
+            }
         }
         for hash in &rows.objects_at_zero {
-            self.files.remove_object(hash).map_err(persist)?;
+            if self.files.remove_object(hash).is_err() {
+                failed.push(format!("snapshots/objects/{}", hash.as_str()));
+            }
         }
         for blob in &rows.blobs {
             let path = self.data_dir.join("blobs").join(blob.to_string());
-            if path.exists() {
-                std::fs::remove_file(&path).map_err(storage("remove_file"))?;
-            }
+            remove_tree(&path, &self.data_dir, &mut failed);
         }
-        Ok(())
+        remove_tree(&self.task_dir(task_id), &self.data_dir, &mut failed);
+        self.tools.lock().expect("workspace tools").remove(&task_id);
+        if failed.is_empty() {
+            self.files.finish_deletion(task_id).map_err(persist)?;
+            Ok(())
+        } else {
+            failed.sort();
+            failed.dedup();
+            Err(WorkspaceError::NotRemoved { paths: failed })
+        }
+    }
+}
+
+/// Removes `path` and everything below it without following links, attempting every removal;
+/// each failure is added to `failed` as a path relative to `root`.
+fn remove_tree(path: &Path, root: &Path, failed: &mut Vec<String>) {
+    let name = |p: &Path| {
+        p.strip_prefix(root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => {
+            failed.push(name(path));
+            return;
+        }
+    };
+    if meta.is_dir() {
+        make_accessible(path, &meta);
+        match std::fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    remove_tree(&entry.path(), root, failed);
+                }
+            }
+            Err(_) => failed.push(name(path)),
+        }
+        if std::fs::remove_dir(path).is_err() && std::fs::symlink_metadata(path).is_ok() {
+            failed.push(name(path));
+        }
+    } else if std::fs::remove_file(path).is_err() {
+        make_accessible(path, &meta);
+        if std::fs::remove_file(path).is_err() && std::fs::symlink_metadata(path).is_ok() {
+            failed.push(name(path));
+        }
+    }
+}
+
+/// Makes a directory readable, writable and searchable by its owner (and a file writable), so
+/// that it can be emptied and removed.
+fn make_accessible(path: &Path, meta: &std::fs::Metadata) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode();
+        let wanted = if meta.is_dir() { 0o700 } else { 0o200 };
+        if mode & wanted != wanted {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | wanted));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perms = meta.permissions();
+        if perms.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(path, perms);
+        }
     }
 }
 
@@ -1034,6 +1143,64 @@ pub(crate) fn hash_of(bytes: &[u8]) -> Hash {
 
 #[allow(dead_code)]
 fn _paths(_: PathBuf, _: &Change) {}
+
+/// What a reversal is to do, path by path.
+struct RevertDecisions<'a> {
+    /// What each path to change is to become (`None`: removed).
+    wants: Vec<Want<'a>>,
+    /// Paths that hold neither what the promotion wrote nor what it replaced: edited since.
+    edited: Vec<String>,
+    /// Whether an edit can be told from the promotion's own write.
+    knows_after: bool,
+}
+
+/// Decides, for each path of the promotion, whether the reversal restores it, leaves it (it
+/// already holds the backup's entry) or reports it as edited since.
+fn revert_decisions<'a>(
+    project: &Dir,
+    promotion: &'a Promotion,
+    backed_up: &std::collections::BTreeMap<&str, &'a Entry>,
+) -> Result<RevertDecisions<'a>, WorkspaceError> {
+    let after: std::collections::BTreeMap<&str, &Entry> =
+        promotion.after.iter().map(|e| (e.path(), e)).collect();
+    // A record from before the entries were recorded cannot tell an edit from the promotion's
+    // own write: every path is restored.
+    let knows_after = !promotion.after.is_empty()
+        || promotion
+            .files
+            .iter()
+            .all(|c| c.kind == ChangeKind::Deleted);
+    let mut wants = Vec::with_capacity(promotion.files.len());
+    let mut edited = Vec::new();
+    for c in &promotion.files {
+        let path = c.path.as_str();
+        let backup_entry = backed_up.get(path).copied();
+        if knows_after {
+            let current = if link_parent(project, path)?.is_some() {
+                None
+            } else {
+                project_entry(project, path)?
+            };
+            if matches_base(current.as_ref(), backup_entry) {
+                continue;
+            }
+            let wrote = after.get(path).copied();
+            if current.is_some() && !matches_base(current.as_ref(), wrote) {
+                edited.push(path.to_owned());
+                continue;
+            }
+        }
+        wants.push(Want {
+            path,
+            entry: backup_entry,
+        });
+    }
+    Ok(RevertDecisions {
+        wants,
+        edited,
+        knows_after,
+    })
+}
 
 /// The kind of an entry, without its content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

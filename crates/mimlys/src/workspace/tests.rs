@@ -498,7 +498,13 @@ mod snapshots {
         let err = fx.promote(&plan, &base.record).unwrap_err();
         assert!(matches!(err, WorkspaceError::Refused { .. }));
         // Reversal from the backup.
-        let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        let report =
+            fx.p.revert_promotion(
+                &promotion,
+                &backup.record,
+                mimlys_core::spi::EditedPaths::Keep,
+            )
+            .unwrap();
         assert!(report.written >= 2 && report.deleted == 1, "{report:?}");
         assert_eq!(
             std::fs::read_to_string(fx.scope.path().join("src/lib.rs")).unwrap(),
@@ -588,7 +594,12 @@ mod snapshots {
             "v1 nested"
         );
         assert!(temp_leftovers(fx.scope.path()).is_empty());
-        fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        fx.p.revert_promotion(
+            &promotion,
+            &backup.record,
+            mimlys_core::spi::EditedPaths::Keep,
+        )
+        .unwrap();
         assert!(!fx.scope.path().join(&name).exists());
         assert!(temp_leftovers(fx.scope.path()).is_empty());
     }
@@ -655,7 +666,12 @@ mod snapshots {
         let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
         fx.p.seal(backup.record.snapshot_id).unwrap();
         check(fx.scope.path(), "foo v2", "bar v2");
-        fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        fx.p.revert_promotion(
+            &promotion,
+            &backup.record,
+            mimlys_core::spi::EditedPaths::Keep,
+        )
+        .unwrap();
         check(fx.scope.path(), "foo v1", "bar v1");
         assert!(temp_leftovers(fx.scope.path()).is_empty());
     }
@@ -850,7 +866,13 @@ mod snapshots {
         let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
         fx.p.seal(backup.record.snapshot_id).unwrap();
         put(fx.scope.path(), "n/user.txt", "the user's");
-        let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        let report =
+            fx.p.revert_promotion(
+                &promotion,
+                &backup.record,
+                mimlys_core::spi::EditedPaths::Keep,
+            )
+            .unwrap();
         assert!(!fx.scope.path().join("n/f.txt").exists());
         assert_eq!(read(fx.scope.path(), "n/user.txt"), "the user's");
         assert_eq!(report.left, ["n"]);
@@ -982,7 +1004,12 @@ mod snapshots {
             std::fs::read_link(project.join("dir_to_link")).unwrap(),
             Path::new("target.txt")
         );
-        fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        fx.p.revert_promotion(
+            &promotion,
+            &backup.record,
+            mimlys_core::spi::EditedPaths::Keep,
+        )
+        .unwrap();
         assert_eq!(read(project, "dir_to_file/a"), "a");
         assert_eq!(read(project, "file_to_dir"), "was a file");
         assert_eq!(read(project, "dir_to_link/b"), "b");
@@ -1035,7 +1062,13 @@ mod snapshots {
             if n > 1 {
                 assert_ne!(project_hash(&fx), before, "n = {n}: something was written");
             }
-            let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+            let report =
+                fx.p.revert_promotion(
+                    &promotion,
+                    &backup.record,
+                    mimlys_core::spi::EditedPaths::Keep,
+                )
+                .unwrap();
             assert!(report.left.is_empty(), "{report:?}");
             assert_eq!(
                 project_hash(&fx),
@@ -1074,7 +1107,12 @@ mod snapshots {
             fx.p.seal(backup.record.snapshot_id).unwrap();
             let applied = fx.p.promote_apply(fx.task, &promotion, &base.record);
             assert!(applied.is_err(), "n = {n}");
-            fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+            fx.p.revert_promotion(
+                &promotion,
+                &backup.record,
+                mimlys_core::spi::EditedPaths::Keep,
+            )
+            .unwrap();
             assert_eq!(project_hash(&fx), before, "n = {n}");
         }
     }
@@ -1101,7 +1139,13 @@ mod snapshots {
         );
         assert_ne!(project_hash(&fx), before);
         // The next start: the same restore from the record and the backup alone.
-        let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        let report =
+            fx.p.revert_promotion(
+                &promotion,
+                &backup.record,
+                mimlys_core::spi::EditedPaths::Keep,
+            )
+            .unwrap();
         assert!(report.left.is_empty());
         assert_eq!(project_hash(&fx), before);
     }
@@ -1133,7 +1177,13 @@ mod snapshots {
                 paths: vec!["src/lib.rs".into()]
             }
         );
-        let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        let report =
+            fx.p.revert_promotion(
+                &promotion,
+                &backup.record,
+                mimlys_core::spi::EditedPaths::Keep,
+            )
+            .unwrap();
         assert_eq!(report.left, ["src/lib.rs"]);
         assert_eq!(
             read(fx.scope.path(), "src/lib.rs"),
@@ -1141,6 +1191,164 @@ mod snapshots {
             "the edit is kept"
         );
         assert!(!fx.scope.path().join("src/added.rs").exists());
+    }
+
+    /// REQ-WS-012 (handoff 006b): a read-only directory under the task's workspace is made writable
+    /// and removed; the manifests and objects go; the journal of the deletion is closed.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_012_read_only_directories_are_removed_with_the_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        let cache = fx.tree().join("pkg/mod");
+        std::fs::create_dir_all(cache.join("v1")).unwrap();
+        std::fs::write(cache.join("v1/a.zip"), "a").unwrap();
+        for path in [cache.join("v1/a.zip"), cache.join("v1"), cache.clone()] {
+            let mode = if path.is_dir() { 0o555 } else { 0o444 };
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let manifest = fx.p.manifest(&base.record).unwrap();
+        let rows = DeletedRows {
+            objects_at_zero: manifest.objects().keys().cloned().collect(),
+            snapshots: vec![base.record.snapshot_id],
+            blobs: vec![],
+        };
+        fx.p.files.begin_deletion(fx.task, &rows).unwrap();
+        fx.p.delete_files(fx.task, &rows).unwrap();
+        assert!(!fx.p.task_dir(fx.task).exists());
+        assert!(fx.p.manifest(&base.record).is_err());
+        for hash in &rows.objects_at_zero {
+            assert!(!fx.p.files.has_object(hash));
+        }
+        assert!(fx.p.files.pending_deletions().unwrap().is_empty());
+    }
+
+    /// REQ-WS-012 (handoff 006b): every removal is attempted when one fails, each failure is named
+    /// by path, and the journal of the deletion stays for the next start.
+    #[test]
+    fn req_ws_012_every_removal_is_attempted_and_each_failure_is_named() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        let manifest = fx.p.manifest(&base.record).unwrap();
+        let rows = DeletedRows {
+            objects_at_zero: manifest.objects().keys().cloned().collect(),
+            snapshots: vec![base.record.snapshot_id],
+            blobs: vec![],
+        };
+        // The manifest's path holds a non-empty directory, which no removal of a file can take.
+        let manifest_path = fx
+            .data()
+            .join("snapshots/manifests")
+            .join(format!("{}.json", base.record.snapshot_id));
+        std::fs::remove_file(&manifest_path).unwrap();
+        std::fs::create_dir_all(manifest_path.join("held")).unwrap();
+        fx.p.files.begin_deletion(fx.task, &rows).unwrap();
+        let err = fx.p.delete_files(fx.task, &rows).unwrap_err();
+        let expected = format!("snapshots/manifests/{}.json", base.record.snapshot_id);
+        assert_eq!(
+            err,
+            WorkspaceError::NotRemoved {
+                paths: vec![expected]
+            }
+        );
+        assert!(
+            !fx.p.task_dir(fx.task).exists(),
+            "the workspace went although one removal failed"
+        );
+        for hash in &rows.objects_at_zero {
+            assert!(!fx.p.files.has_object(hash), "the objects went too");
+        }
+        let pending = fx.p.files.pending_deletions().unwrap();
+        assert_eq!(pending.len(), 1, "the journal stays");
+        assert_eq!(pending[0].1, rows);
+    }
+
+    /// REQ-WS-005, REQ-WS-007: a link whose target leaves the project is refused at plan time and
+    /// named, never skipped and recorded as promoted; a link inside the project is promoted.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_005_a_link_to_outside_the_project_refuses_the_plan() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/ok.rs", "ok");
+        std::os::unix::fs::symlink("lib.rs", fx.tree().join("src/inside")).unwrap();
+        std::os::unix::fs::symlink("../../outside", fx.tree().join("src/leaves")).unwrap();
+        let err = fx.plan(&base.record).unwrap_err();
+        let WorkspaceError::Refused { reason } = &err else {
+            panic!("{err:?}")
+        };
+        assert!(reason.contains("src/leaves"), "{reason}");
+        assert!(
+            !fx.scope.path().join("src/ok.rs").exists(),
+            "nothing is written"
+        );
+        // Without it the plan lists the link inside the project and applies it.
+        std::fs::remove_file(fx.tree().join("src/leaves")).unwrap();
+        let plan = fx.plan(&base.record).unwrap();
+        assert!(plan.changes.iter().any(|c| c.path == "src/inside"));
+        fx.promote(&plan, &base.record).unwrap();
+        assert_eq!(
+            std::fs::read_link(fx.scope.path().join("src/inside")).unwrap(),
+            Path::new("lib.rs")
+        );
+    }
+
+    /// REQ-WS-007: the plan of a reversal lists what it restores and removes and which paths were
+    /// edited since; those are kept, or restored when the user confirmed.
+    #[test]
+    fn req_ws_007_the_plan_of_a_reversal_lists_its_paths_and_the_edits_since() {
+        use mimlys_core::snapshot::{RevertAction, RevertEntry};
+        use mimlys_core::spi::EditedPaths;
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        put(&fx.tree(), "src/added.rs", "added");
+        std::fs::remove_file(fx.tree().join("src/deep/x.txt")).unwrap();
+        let plan = fx.plan(&base.record).unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        let revert =
+            fx.p.promotion_revert_plan(&promotion, &backup.record)
+                .unwrap();
+        assert!(revert.conflicts.is_empty() && revert.edits_detected);
+        let entries: Vec<(&str, RevertAction)> = revert
+            .entries
+            .iter()
+            .map(|RevertEntry { path, action }| (path.as_str(), *action))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                ("src/added.rs", RevertAction::Remove),
+                ("src/deep/x.txt", RevertAction::Restore),
+                ("src/lib.rs", RevertAction::Restore),
+            ]
+        );
+        // The user edits a promoted file.
+        put(fx.scope.path(), "src/lib.rs", "fn a() { edited since }\n");
+        let revert =
+            fx.p.promotion_revert_plan(&promotion, &backup.record)
+                .unwrap();
+        assert_eq!(revert.conflicts, ["src/lib.rs"]);
+        assert!(revert.entries.iter().all(|e| e.path != "src/lib.rs"));
+        // Kept: the edit stays, the rest is restored.
+        let report =
+            fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
+                .unwrap();
+        assert_eq!(report.left, ["src/lib.rs"]);
+        assert_eq!(
+            read(fx.scope.path(), "src/lib.rs"),
+            "fn a() { edited since }\n"
+        );
+        assert!(!fx.scope.path().join("src/added.rs").exists());
+        assert_eq!(read(fx.scope.path(), "src/deep/x.txt"), "xx");
+        // Confirmed: the edit is overwritten too.
+        let report =
+            fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Overwrite)
+                .unwrap();
+        assert!(report.left.is_empty());
+        assert_eq!(read(fx.scope.path(), "src/lib.rs"), "fn a() {}\n");
     }
 
     /// REQ-TASK-004: a fork materializes the snapshot into a new tree.

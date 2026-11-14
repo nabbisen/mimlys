@@ -753,6 +753,30 @@ pub fn promotion_recovered(r: &mimlys_persist::recovery::RecoveredPromotion) -> 
     }
 }
 
+/// `rollback --promotion`: the header of what the reversal will do.
+pub fn revert_header(promotion_id: &str, paths: usize) -> String {
+    format!("Reversal of promotion {promotion_id}: {paths} path(s) will change in the project")
+}
+/// `rollback --promotion`: one path.
+pub fn revert_entry(action: &str, path: &str) -> String {
+    format!("  {action:<9} {path}")
+}
+/// `rollback --promotion`: the paths edited since the promotion.
+pub fn revert_conflicts(paths: &[String]) -> String {
+    format!(
+        "  edited since the promotion (restoring them would overwrite the edit): {}",
+        paths.join(", ")
+    )
+}
+/// `rollback --promotion`: a promotion recorded before edits could be told apart.
+pub const REVERT_EDITS_UNKNOWN: &str = "  note: this promotion was recorded before edits since could be told apart; every path above is restored, edited or not";
+/// `rollback --promotion`: the confirmation question.
+pub const REVERT_CONFIRM: &str = "Restore these paths from the backup?";
+/// `rollback --promotion`: the second question, when paths were edited since.
+pub const REVERT_OVERWRITE_CONFIRM: &str =
+    "Some of these paths were edited since the promotion. Overwrite the edits?";
+/// `rollback --promotion`: nothing was changed.
+pub const REVERT_NOT_CONFIRMED: &str = "not confirmed: nothing was changed (use --yes to confirm)";
 /// `rollback --promotion`: done.
 pub fn promotion_reversed(id: &str, files: usize) -> String {
     format!("promotion {id} reversed: {files} path(s) restored in the project")

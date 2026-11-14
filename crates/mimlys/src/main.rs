@@ -131,6 +131,12 @@ enum Command {
         /// Reverse this promotion from its backup instead.
         #[arg(long, value_name = "PROMOTION", conflicts_with = "snapshot")]
         promotion: Option<String>,
+        /// Reverse the promotion without asking (the only way without a terminal).
+        #[arg(long, requires = "promotion")]
+        yes: bool,
+        /// Also overwrite paths edited since the promotion (otherwise they refuse the reversal).
+        #[arg(long, requires = "promotion")]
+        overwrite_edited: bool,
     },
     /// Write the workspace's changes to the project after showing the diff and asking.
     Promote {
@@ -520,7 +526,18 @@ async fn dispatch(
             task,
             snapshot,
             promotion,
-        } => commands::rollback::run(app, &task, snapshot.as_deref(), promotion.as_deref(), out),
+            yes,
+            overwrite_edited,
+        } => commands::rollback::run(
+            app,
+            &task,
+            snapshot.as_deref(),
+            promotion.as_deref(),
+            yes,
+            overwrite_edited,
+            terminal,
+            out,
+        ),
         Command::Promote {
             task,
             yes,

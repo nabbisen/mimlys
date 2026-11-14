@@ -973,7 +973,11 @@ impl Persistence for Store {
             }
         }
         let id = task_id.to_string();
-        self.transaction("delete", |tx| {
+        // The files this deletion is to remove are journaled, fsynced, before any row goes: a
+        // crash or a failed removal is finished by the next start (handoff 006b).
+        let planned = self.planned_deletion(task_id, &snapshots, &releases)?;
+        files.begin_deletion(task_id, &planned)?;
+        let committed = self.transaction("delete", |tx| {
             let mut out = DeletedRows::default();
             for s in &snapshots {
                 out.snapshots.push(s.snapshot_id);
@@ -1031,11 +1035,63 @@ impl Persistence for Store {
                 append_event(tx, event)?;
             }
             Ok(out)
-        })
+        });
+        match committed {
+            Ok(out) => {
+                debug_assert_eq!(out, planned, "the journal lists what the deletion released");
+                Ok(out)
+            }
+            Err(e) => {
+                // Nothing was committed: nothing is to be removed.
+                files.finish_deletion(task_id)?;
+                Err(e)
+            }
+        }
     }
 
     fn append_event(&self, event: &EventRecord) -> Result<(), PersistenceError> {
         self.transaction("event", |tx| append_event(tx, event))
+    }
+}
+
+impl Store {
+    /// What a deletion of the task releases, read before it commits: the snapshots, the objects
+    /// whose last reference it holds, and the blobs.
+    fn planned_deletion(
+        &self,
+        task_id: TaskId,
+        snapshots: &[SnapshotRecord],
+        releases: &std::collections::BTreeMap<mimlys_core::hash::Hash, u64>,
+    ) -> Result<DeletedRows, PersistenceError> {
+        let conn = self.conn.lock().map_err(|_| poisoned())?;
+        let mut out = DeletedRows {
+            snapshots: snapshots.iter().map(|s| s.snapshot_id).collect(),
+            ..DeletedRows::default()
+        };
+        for (hash, n) in releases {
+            let refs: i64 = conn
+                .query_row(
+                    "SELECT refs FROM objects WHERE hash = ?1",
+                    params![hash.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(storage("object_refs"))?;
+            if refs <= *n as i64 {
+                out.objects_at_zero.push(hash.clone());
+            }
+        }
+        let mut stmt = conn
+            .prepare("SELECT blob_id FROM blobs WHERE task_id = ?1")
+            .map_err(storage("prepare"))?;
+        let rows = stmt
+            .query_map(params![task_id.to_string()], |r| r.get::<_, String>(0))
+            .map_err(storage("query"))?;
+        for row in rows {
+            if let Ok(uuid) = uuid::Uuid::parse_str(&row.map_err(storage("row"))?) {
+                out.blobs.push(BlobId::from_uuid(uuid));
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -1116,6 +1172,9 @@ mod rejection_detail_tests;
 
 #[cfg(test)]
 mod promotion_state_tests;
+
+#[cfg(test)]
+mod deletion_journal_tests;
 
 #[cfg(test)]
 mod halts_tests;
