@@ -641,7 +641,7 @@ pub fn can_be_undone(effect: EffectView) -> bool {
 }
 
 /// Whether an execution that ended this way was ended by the runtime rather
-/// than by the tool: a deadline, a resource limit, a cancellation, a lost
+/// than by the tool: a deadline, a resource limit (fuel included), a cancellation, a lost
 /// worker or connection (external design §7.5). The tool's own ends (an exit
 /// code, a trap, a structured failure) and the ends of an execution that never
 /// started (`host_fault{invalid_module}`, `host_fault{unavailable}`) are not.
@@ -649,6 +649,7 @@ pub fn ended_by_runtime(termination: &Termination) -> bool {
     matches!(
         termination,
         Termination::Deadline
+            | Termination::FuelExhausted
             | Termination::MemoryLimit
             | Termination::OutputLimit
             | Termination::ProcessLimit
