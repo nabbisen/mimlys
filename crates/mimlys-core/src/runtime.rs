@@ -211,9 +211,27 @@ impl Runtime {
     /// execution in flight ends `cancelled` and the step ends with outcome
     /// `cancelled`; the caller then cancels or pauses the task. A task with
     /// no step in flight is unaffected until its next step, which ends the
-    /// same way.
+    /// same way. The request is consumed by the step that ends `cancelled`
+    /// (`run_step`): a task still `running` after it can be paused, and a
+    /// pause requested then is taken at the next boundary; a request made
+    /// again is a new request. A request made while the step ends otherwise
+    /// stays for the next step.
     pub fn request_cancel(&self, task_id: TaskId) {
         self.cancellation(task_id).cancel();
+    }
+
+    /// Takes the request a `cancelled` step has acted on: the task's next
+    /// step gets a fresh token (the execution that observed the old one holds
+    /// its own clone). Nothing is created for a task without one.
+    fn consume_cancellation(&self, task_id: TaskId) {
+        if let Some(token) = self
+            .cancellations
+            .lock()
+            .expect("cancellation registry")
+            .get_mut(&task_id)
+        {
+            *token = Cancellation::new();
+        }
     }
 
     /// A terminal task leaves nothing behind in the runtime (REQ-SCHED-005):

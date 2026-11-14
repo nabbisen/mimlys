@@ -30,67 +30,129 @@ impl Signals {
     /// Installs the signal handler for `task_id`: the first signal asks for
     /// a pause, the second for a cancellation; a step that does not reach
     /// its boundary within LIM-O1 has its execution cancelled.
+    ///
+    /// The listeners are made here, once, before the task that waits on them
+    /// starts: a signal that arrives from now on is taken (the default action,
+    /// which ends the process, no longer applies to it), and one that arrives
+    /// while the first is being handled is not lost to a listener made after
+    /// it.
     pub fn install(runtime: Arc<Runtime>, task_id: TaskId) -> Arc<Self> {
-        let signals = Arc::new(Self {
-            stage: AtomicU8::new(NONE),
-        });
+        let signals = Arc::new(Self::new());
+        let Ok(mut stop) = StopSignals::new() else {
+            return signals;
+        };
         let shared = Arc::clone(&signals);
+        let cancel: Cancel = Arc::new(move || runtime.request_cancel(task_id));
         tokio::spawn(async move {
-            loop {
-                if stop_signal().await.is_err() {
-                    return;
-                }
-                match shared.stage.load(Ordering::SeqCst) {
-                    NONE => {
-                        shared.stage.store(PAUSE, Ordering::SeqCst);
-                        eprintln!("{}", messages::SIGNAL_PAUSING);
-                        let runtime = Arc::clone(&runtime);
-                        let shared = Arc::clone(&shared);
-                        tokio::spawn(async move {
-                            let grace = u64::try_from(LIM_O1_STOP_MS)
-                                .unwrap_or(5000)
-                                .saturating_sub(1000);
-                            tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
-                            if shared.stage.load(Ordering::SeqCst) == PAUSE {
-                                eprintln!("{}", messages::SIGNAL_INTERRUPTED);
-                                runtime.request_cancel(task_id);
-                            }
-                        });
-                    }
-                    _ => {
-                        shared.stage.store(CANCEL, Ordering::SeqCst);
-                        eprintln!("{}", messages::SIGNAL_CANCELLING);
-                        runtime.request_cancel(task_id);
-                    }
-                }
+            while stop.recv().await.is_ok() {
+                shared.stopped(&cancel, grace());
             }
         });
         signals
+    }
+
+    fn new() -> Self {
+        Self {
+            stage: AtomicU8::new(NONE),
+        }
+    }
+
+    /// One stop signal arrived. The first asks for a pause and starts the
+    /// watchdog, which cancels the execution after `grace` if the pause has
+    /// not been applied by then; the next ones cancel at once. `cancel` asks
+    /// the task's step in flight to stop.
+    fn stopped(self: &Arc<Self>, cancel: &Cancel, grace: std::time::Duration) {
+        match self.stage.load(Ordering::SeqCst) {
+            NONE => {
+                self.stage.store(PAUSE, Ordering::SeqCst);
+                eprintln!("{}", messages::SIGNAL_PAUSING);
+                let cancel = Arc::clone(cancel);
+                let shared = Arc::clone(self);
+                tokio::spawn(async move {
+                    tokio::time::sleep(grace).await;
+                    if shared.stage.load(Ordering::SeqCst) == PAUSE {
+                        eprintln!("{}", messages::SIGNAL_INTERRUPTED);
+                        cancel();
+                    }
+                });
+            }
+            _ => {
+                self.stage.store(CANCEL, Ordering::SeqCst);
+                eprintln!("{}", messages::SIGNAL_CANCELLING);
+                cancel();
+            }
+        }
     }
 
     fn stage(&self) -> u8 {
         self.stage.load(Ordering::SeqCst)
     }
 
-    /// Marks the pause as applied so the watchdog stands down.
+    /// Marks the pause as applied so the watchdog stands down. A second
+    /// signal that came meanwhile stays: the pause it found applied is not
+    /// the answer to it.
     fn applied(&self) {
-        self.stage.store(NONE, Ordering::SeqCst);
+        let _ = self
+            .stage
+            .compare_exchange(PAUSE, NONE, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+/// Asks the task's step in flight to stop.
+type Cancel = Arc<dyn Fn() + Send + Sync>;
+
+/// The time a pause may take before the execution is cancelled: LIM-O1 less
+/// one second, which leaves the second for the pause and the exit.
+fn grace() -> std::time::Duration {
+    let ms = u64::try_from(LIM_O1_STOP_MS)
+        .unwrap_or(5000)
+        .saturating_sub(1000);
+    std::time::Duration::from_millis(ms)
+}
+
+/// The listeners for the stop signals, made once.
+#[cfg(unix)]
+struct StopSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl StopSignals {
+    fn new() -> std::io::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+        })
+    }
+
+    /// Waits for the next SIGINT or SIGTERM; an error when neither can come.
+    async fn recv(&mut self) -> std::io::Result<()> {
+        tokio::select! {
+            r = self.interrupt.recv() => r.ok_or_else(closed),
+            r = self.terminate.recv() => r.ok_or_else(closed),
+        }
     }
 }
 
 #[cfg(unix)]
-async fn stop_signal() -> std::io::Result<()> {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = signal(SignalKind::terminate())?;
-    tokio::select! {
-        r = tokio::signal::ctrl_c() => r,
-        _ = term.recv() => Ok(()),
-    }
+fn closed() -> std::io::Error {
+    std::io::Error::other("signal stream closed")
 }
 
 #[cfg(not(unix))]
-async fn stop_signal() -> std::io::Result<()> {
-    tokio::signal::ctrl_c().await
+struct StopSignals;
+
+#[cfg(not(unix))]
+impl StopSignals {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self)
+    }
+
+    async fn recv(&mut self) -> std::io::Result<()> {
+        tokio::signal::ctrl_c().await
+    }
 }
 
 /// Runs the task until it waits for the user without an interactive
@@ -126,6 +188,14 @@ pub async fn drive(
                     if signals.stage() == CANCEL {
                         runtime.cancel_task(&app.session, task_id)?;
                     } else {
+                        // The step was cancelled (the watchdog's request, or
+                        // one that came as the pause was being applied) and
+                        // the task is still running: the boundary is here.
+                        // The pause is requested and taken by the step that
+                        // follows, which returns at once: it does no work, it
+                        // calls no model and no tool, and the step that was
+                        // cancelled took the request with it (`run_step`), so
+                        // this step finds the pause and not the request.
                         runtime.pause_task(&app.session, task_id)?;
                         signals.applied();
                         runtime.run_step(task_id).await?;
@@ -244,4 +314,95 @@ pub fn event_text(e: &PositionedEvent) -> String {
         None => String::new(),
     };
     messages::event_line(&time, e.record.event.name(), &detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A `cancel` that counts its calls.
+    fn counting() -> (Cancel, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        let cancel: Cancel = Arc::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        (cancel, calls)
+    }
+
+    /// Lets the watchdog task run after the clock moved.
+    async fn settle() {
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// REQ-CLI-005, LIM-O1: the grace is LIM-O1 less one second.
+    #[test]
+    fn req_cli_005_the_grace_is_lim_o1_less_one_second() {
+        assert_eq!(
+            grace(),
+            std::time::Duration::from_millis(u64::try_from(LIM_O1_STOP_MS).unwrap() - 1000)
+        );
+    }
+
+    /// REQ-CLI-005: one signal asks for a pause and cancels nothing while the
+    /// grace runs; a pause applied within it stands the watchdog down for good.
+    #[tokio::test(start_paused = true)]
+    async fn req_cli_005_a_pause_applied_in_time_stands_the_watchdog_down() {
+        let signals = Arc::new(Signals::new());
+        let (cancel, calls) = counting();
+        signals.stopped(&cancel, grace());
+        settle().await; // the watchdog starts its sleep
+        assert_eq!(signals.stage(), PAUSE);
+        tokio::time::advance(grace() - std::time::Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "within the grace");
+        signals.applied();
+        assert_eq!(signals.stage(), NONE);
+        tokio::time::advance(grace() * 3).await;
+        settle().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "the pause was applied");
+    }
+
+    /// REQ-CLI-005, LIM-O1: a pause not applied within the grace has the
+    /// execution cancelled, once, and only then.
+    #[tokio::test(start_paused = true)]
+    async fn req_cli_005_a_pause_not_applied_in_time_cancels_the_execution() {
+        let signals = Arc::new(Signals::new());
+        let (cancel, calls) = counting();
+        signals.stopped(&cancel, grace());
+        settle().await; // the watchdog starts its sleep
+        tokio::time::advance(grace() - std::time::Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "not before the grace");
+        tokio::time::advance(std::time::Duration::from_millis(50)).await;
+        settle().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "at the grace");
+        assert_eq!(signals.stage(), PAUSE, "the pause still stands");
+    }
+
+    /// REQ-CLI-005: the second signal cancels at once, and a pause applied
+    /// meanwhile does not take it back (a signal between `drive` reading the
+    /// stage and marking the pause applied).
+    #[tokio::test(start_paused = true)]
+    async fn req_cli_005_the_second_signal_cancels_and_is_not_taken_back() {
+        let signals = Arc::new(Signals::new());
+        let (cancel, calls) = counting();
+        signals.stopped(&cancel, grace());
+        signals.stopped(&cancel, grace());
+        assert_eq!(signals.stage(), CANCEL);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        signals.applied();
+        assert_eq!(
+            signals.stage(),
+            CANCEL,
+            "marking the pause applied leaves the cancellation"
+        );
+        // The watchdog of the first signal finds the cancel stage and stays quiet.
+        tokio::time::advance(grace() * 2).await;
+        settle().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }

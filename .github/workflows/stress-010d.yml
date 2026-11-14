@@ -35,7 +35,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/stress"
           fail=0
           for i in $(seq 1 25); do
-            if ! cargo test -p mimlys --all-features --test m6a_host_tools -- --nocapture --skip outlasts_the_grace > "$RUNNER_TEMP/stress/suite-$i.txt" 2>&1; then
+            if ! cargo test -p mimlys --all-features --test m6a_host_tools -- --nocapture > "$RUNNER_TEMP/stress/suite-$i.txt" 2>&1; then
               fail=$((fail + 1))
               echo "::group::suite run $i FAILED"
               grep -v "run thread" "$RUNNER_TEMP/stress/suite-$i.txt" | cut -c1-400 | tail -150
