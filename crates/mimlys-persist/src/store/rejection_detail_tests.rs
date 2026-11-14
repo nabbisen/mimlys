@@ -221,7 +221,7 @@ fn req_dec_009_the_feedback_of_a_stored_step_is_the_live_feedback() {
 
 /// Copies the 0.9.0 fixture (schema version 2; its data in an uncheckpointed `-wal`) into a
 /// fresh data directory.
-fn copy_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+pub(super) fn copy_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v0_9_0");
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
@@ -282,8 +282,8 @@ fn req_pers_006_a_0_9_0_store_migrates_to_schema_3_and_old_rejections_read_with_
 
     let fx = Fx::starting_at(1_000_000);
     let store = open(&data).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 3);
-    assert_eq!(crate::SCHEMA_VERSION, 3);
+    assert_eq!(store.schema_version().unwrap(), 4);
+    assert_eq!(crate::SCHEMA_VERSION, 4);
     let column_ok: i64 = store
         .with_conn(|c| {
             c.query_row(
@@ -322,7 +322,7 @@ fn req_pers_006_a_0_9_0_store_migrates_to_schema_3_and_old_rejections_read_with_
     let fresh = reject(&store, &fx, &task, next, &rejection);
     drop(store);
     let store = open(&data).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 3);
+    assert_eq!(store.schema_version().unwrap(), 4);
     let steps = store.load_steps(task_id).unwrap();
     assert_eq!(steps.len(), before.len() + 1);
     assert_eq!(steps[before.len()], fresh);
@@ -335,7 +335,7 @@ fn req_pers_006_a_0_9_0_store_migrates_to_schema_3_and_old_rejections_read_with_
 /// with the reason and touches nothing, says `migration pending` for the 0.9.0 store (version 2)
 /// without migrating it, and reads the detail of a version 3 store.
 #[test]
-fn req_pers_013_readers_refuse_version_4_and_say_pending_for_a_0_9_0_store() {
+fn req_pers_013_readers_refuse_a_newer_version_and_say_pending_for_a_0_9_0_store() {
     let (_dir, data) = copy_fixture();
     let bytes = |data: &std::path::Path| -> Vec<Vec<u8>> {
         ["mimlys.db", "mimlys.db-wal"]
@@ -344,12 +344,12 @@ fn req_pers_013_readers_refuse_version_4_and_say_pending_for_a_0_9_0_store() {
             .collect()
     };
     let before = bytes(&data);
-    let err = open_read_only(&data).expect_err("version 2 is older than 3");
+    let err = open_read_only(&data).expect_err("version 2 is older than 4");
     assert_eq!(
         err,
         PersistenceError::MigrationPending {
             found: 2,
-            supported: 3
+            supported: 4
         }
     );
     assert!(err.to_string().starts_with("migration pending"), "{err}");
@@ -380,28 +380,28 @@ fn req_pers_013_readers_refuse_version_4_and_say_pending_for_a_0_9_0_store() {
     );
     drop(reader);
 
-    // A store from a newer release: version 4.
+    // A store from a newer release: version 5.
     {
         let raw = rusqlite::Connection::open(data.join("mimlys.db")).unwrap();
-        raw.execute("UPDATE schema_version SET version = 4", [])
+        raw.execute("UPDATE schema_version SET version = 5", [])
             .unwrap();
     }
     let before = bytes(&data);
-    let err = open_read_only(&data).expect_err("version 4 is newer than 3");
+    let err = open_read_only(&data).expect_err("version 5 is newer than 4");
     assert_eq!(
         err,
         PersistenceError::NewerSchema {
-            found: 4,
-            supported: 3
+            found: 5,
+            supported: 4
         }
     );
-    assert!(err.to_string().contains('4'), "the reason is stated: {err}");
+    assert!(err.to_string().contains('5'), "the reason is stated: {err}");
     assert_eq!(bytes(&data), before, "a newer store is left as it was");
     assert_eq!(
         open(&data).map(|_| ()),
         Err(PersistenceError::NewerSchema {
-            found: 4,
-            supported: 3
+            found: 5,
+            supported: 4
         }),
         "the writer refuses it too"
     );

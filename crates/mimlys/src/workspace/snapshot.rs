@@ -15,8 +15,8 @@ use mimlys_core::limits::LIM_W3_FILE_BYTES;
 use mimlys_core::path::CaseMode;
 use mimlys_core::policy::ExclusionMatcher;
 use mimlys_core::snapshot::{
-    Change, ChangeKind, Entry, Manifest, Promotion, PromotionPlan, RestoreReport, SnapshotReason,
-    SnapshotRecord, diff, target_inside_root,
+    Change, ChangeKind, Entry, Manifest, Promotion, PromotionPlan, PromotionState, RestoreReport,
+    SnapshotReason, SnapshotRecord, diff, target_inside_root,
 };
 use mimlys_core::spi::{
     DeletedRows, PreparedSnapshot, PromotionRequest, WorkspaceError, WorkspaceInfo,
@@ -632,7 +632,9 @@ impl LocalWorkspaces {
         })
     }
 
-    pub(crate) fn promote_impl(
+    /// Step 1 of a promotion: the backup is written and the promotion made, `applying`. The
+    /// project is not touched; the runtime commits the backup before `promote_apply_impl`.
+    pub(crate) fn promote_backup_impl(
         &self,
         task_id: TaskId,
         request: &PromotionRequest<'_>,
@@ -687,32 +689,13 @@ impl LocalWorkspaces {
             },
             &backup_manifest,
         )?;
-        // Apply: listed paths only, each compared with the base entry first.
         let current_by_path = current.by_path();
-        let wants: Vec<Want> = plan
+        let after: Vec<Entry> = plan
             .changes
             .iter()
-            .filter_map(|c| match c.kind {
-                ChangeKind::Deleted => Some(Want {
-                    path: &c.path,
-                    entry: None,
-                }),
-                ChangeKind::Added | ChangeKind::Modified => {
-                    current_by_path.get(c.path.as_str()).map(|e| Want {
-                        path: &c.path,
-                        entry: Some(*e),
-                    })
-                }
-            })
+            .filter(|c| c.kind != ChangeKind::Deleted)
+            .filter_map(|c| current_by_path.get(c.path.as_str()).map(|e| (*e).clone()))
             .collect();
-        self.converge(
-            &project,
-            Source::Tree(&dir),
-            &wants,
-            Expect::Base(&base_by_path),
-            Mode::Promote,
-            &mut RestoreReport::default(),
-        )?;
         let promotion = Promotion {
             promotion_id,
             task_id,
@@ -721,10 +704,62 @@ impl LocalWorkspaces {
             files: plan.changes.clone(),
             applied_at: now,
             reversed_at: None,
+            state: PromotionState::Applying,
+            after,
+            reason: None,
         };
         Ok((backup, promotion))
     }
 
+    /// Step 2 of a promotion, once the backup is committed and the promotion recorded
+    /// `applying`: the listed paths only, each compared with its base entry first.
+    pub(crate) fn promote_apply_impl(
+        &self,
+        task_id: TaskId,
+        promotion: &Promotion,
+        base: &SnapshotRecord,
+    ) -> Result<(), WorkspaceError> {
+        let dir = self.tree_dir(task_id)?;
+        let base_manifest = self
+            .files
+            .read_manifest(base.snapshot_id, &base.manifest_hash)
+            .map_err(persist)?;
+        let base_by_path = base_manifest.by_path();
+        let project = Self::scope_dir(&promotion.project_root)?;
+        let after: std::collections::BTreeMap<&str, &Entry> =
+            promotion.after.iter().map(|e| (e.path(), e)).collect();
+        let mut wants = Vec::with_capacity(promotion.files.len());
+        for c in &promotion.files {
+            let entry = match c.kind {
+                ChangeKind::Deleted => None,
+                ChangeKind::Added | ChangeKind::Modified => Some(
+                    *after
+                        .get(c.path.as_str())
+                        .ok_or_else(|| WorkspaceError::Refused {
+                            reason: format!("the promotion record has no entry for {}", c.path),
+                        })?,
+                ),
+            };
+            wants.push(Want {
+                path: &c.path,
+                entry,
+            });
+        }
+        self.converge(
+            &project,
+            Source::Tree(&dir),
+            &wants,
+            Expect::Base(&base_by_path),
+            Mode::Promote,
+            &mut RestoreReport::default(),
+        )
+    }
+
+    /// Restores the project from the backup, also the part of a promotion that was applied: a
+    /// path is restored while it holds what the promotion wrote (or is missing, as in the middle
+    /// of a replacement), is left alone when it already holds the backup's entry, and is kept and
+    /// reported when it holds something else, an edit made since. Only listed paths are removed,
+    /// and a directory only when it is empty.
     pub(crate) fn revert_promotion_impl(
         &self,
         promotion: &Promotion,
@@ -736,17 +771,43 @@ impl LocalWorkspaces {
             .map_err(persist)?;
         let project = Self::scope_dir(&promotion.project_root)?;
         let by_path = manifest.by_path();
-        // Paths the promotion added have no backup entry: they are removed, as listed
-        // and never recursively; the rest are restored.
-        let wants: Vec<Want> = promotion
-            .files
-            .iter()
-            .map(|c| Want {
-                path: &c.path,
-                entry: by_path.get(c.path.as_str()).copied(),
-            })
-            .collect();
+        let after: std::collections::BTreeMap<&str, &Entry> =
+            promotion.after.iter().map(|e| (e.path(), e)).collect();
+        // A record from before the entries were recorded cannot tell an edit from the promotion's
+        // own write: every path is restored.
+        let knows_after = !promotion.after.is_empty()
+            || promotion
+                .files
+                .iter()
+                .all(|c| c.kind == ChangeKind::Deleted);
         let mut report = RestoreReport::default();
+        let mut wants: Vec<Want> = Vec::with_capacity(promotion.files.len());
+        for c in &promotion.files {
+            let path = c.path.as_str();
+            let backed_up = by_path.get(path).copied();
+            if knows_after {
+                let current = if link_parent(&project, path)?.is_some() {
+                    None
+                } else {
+                    project_entry(&project, path)?
+                };
+                if matches_base(current.as_ref(), backed_up) {
+                    continue;
+                }
+                let wrote = after.get(path).copied();
+                if current.is_some() && !matches_base(current.as_ref(), wrote) {
+                    report.left.push(path.to_owned());
+                    continue;
+                }
+            }
+            wants.push(Want {
+                path,
+                entry: backed_up,
+            });
+        }
+        // Under a path that is kept, nothing is touched.
+        let kept = report.left.clone();
+        wants.retain(|w| !kept.iter().any(|k| w.path.starts_with(&format!("{k}/"))));
         self.converge(
             &project,
             Source::Objects,

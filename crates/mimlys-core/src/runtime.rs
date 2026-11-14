@@ -118,9 +118,41 @@ pub enum RuntimeError {
     /// The workspace failed.
     #[error("{0}")]
     Workspace(#[from] WorkspaceError),
+    /// A promotion did not complete (REQ-WS-007): what it had written was restored from its
+    /// backup, except the paths listed, which were edited since and are left as they are.
+    #[error("{}", promotion_failed_message(cause, kept, restore_error.as_deref()))]
+    PromotionFailed {
+        /// Why the apply stopped.
+        cause: WorkspaceError,
+        /// Paths left as they are (edited since, or a directory that is not empty).
+        kept: Vec<String>,
+        /// Whether the restore itself failed.
+        restore_error: Option<String>,
+    },
     /// The backend failed.
     #[error("{0}")]
     Backend(#[from] BackendError),
+}
+
+/// The text of a promotion that did not complete: why, and what became of the project.
+fn promotion_failed_message(
+    cause: &WorkspaceError,
+    kept: &[String],
+    restore_error: Option<&str>,
+) -> String {
+    if let Some(e) = restore_error {
+        return format!(
+            "the promotion failed ({cause}), and restoring the project from its backup failed too ({e}); the backup snapshot is kept"
+        );
+    }
+    if kept.is_empty() {
+        return format!("the promotion failed ({cause}); the project was restored from its backup");
+    }
+    format!(
+        "the promotion failed ({cause}); the project was restored from its backup except {} path(s) edited since, which are left as they are: {}",
+        kept.len(),
+        kept.join(", ")
+    )
 }
 
 impl RuntimeError {
@@ -136,6 +168,11 @@ impl RuntimeError {
             RuntimeError::Workspace(
                 WorkspaceError::Conflict { .. } | WorkspaceError::Unlisted { .. },
             ) => "conflict",
+            RuntimeError::PromotionFailed {
+                cause: WorkspaceError::Conflict { .. } | WorkspaceError::Unlisted { .. },
+                ..
+            } => "conflict",
+            RuntimeError::PromotionFailed { .. } => "internal",
             RuntimeError::Workspace(WorkspaceError::NotFound { .. }) => "not_found",
             RuntimeError::Workspace(WorkspaceError::Refused { .. }) => "state",
             RuntimeError::Workspace(

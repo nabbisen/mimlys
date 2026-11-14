@@ -580,7 +580,7 @@ impl WorkspaceProvider for LocalWorkspaces {
         self.materialize_from_impl(task_id, snapshot_id, from, scope, now)
     }
 
-    fn promote(
+    fn promote_backup(
         &self,
         task_id: TaskId,
         request: &mimlys_core::spi::PromotionRequest<'_>,
@@ -591,7 +591,16 @@ impl WorkspaceProvider for LocalWorkspaces {
         ),
         WorkspaceError,
     > {
-        self.promote_impl(task_id, request)
+        self.promote_backup_impl(task_id, request)
+    }
+
+    fn promote_apply(
+        &self,
+        task_id: TaskId,
+        promotion: &mimlys_core::snapshot::Promotion,
+        base: &mimlys_core::snapshot::SnapshotRecord,
+    ) -> Result<(), WorkspaceError> {
+        self.promote_apply_impl(task_id, promotion, base)
     }
 
     fn revert_promotion(

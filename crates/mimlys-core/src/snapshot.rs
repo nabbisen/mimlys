@@ -316,7 +316,8 @@ pub struct RestoreReport {
     pub deleted: u64,
     /// Links whose target leaves the root, refused (REQ-WS-005).
     pub links_omitted: Vec<String>,
-    /// Directories kept because they hold entries the operation did not write (REQ-WS-007).
+    /// Paths kept as they are (REQ-WS-007): a directory that holds entries the operation did not
+    /// write, or a path that holds neither what the promotion wrote nor what it replaced.
     #[serde(default)]
     pub left: Vec<String>,
 }
@@ -379,6 +380,32 @@ pub struct PromotionPlan {
     pub text_diffs: Vec<(String, String)>,
 }
 
+/// Where a promotion is (external design §14.5, §16.3). A record written before the state
+/// existed reads as `applied`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionState {
+    /// Recorded after its backup was committed, before the first write to the project.
+    Applying,
+    /// Applied; the backup reverses it.
+    #[default]
+    Applied,
+    /// Not applied: what was written was restored from the backup (or, where a path had been
+    /// edited since, left as it is and listed in the reason).
+    Failed,
+}
+
+impl PromotionState {
+    /// The snake_case name.
+    pub fn name(self) -> &'static str {
+        match self {
+            PromotionState::Applying => "applying",
+            PromotionState::Applied => "applied",
+            PromotionState::Failed => "failed",
+        }
+    }
+}
+
 /// A promotion as recorded (REQ-WS-007).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Promotion {
@@ -396,6 +423,16 @@ pub struct Promotion {
     pub applied_at: Instant,
     /// Reversed at, when it was.
     pub reversed_at: Option<Instant>,
+    /// Where it is.
+    #[serde(default)]
+    pub state: PromotionState,
+    /// The entries the promotion writes (a path deleted has none). A reversal restores a path
+    /// only while it still holds what the promotion wrote. Empty in a record from before 0.10.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<Entry>,
+    /// Why it failed, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[cfg(test)]

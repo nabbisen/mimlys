@@ -730,12 +730,27 @@ mod snapshots {
             self.p.promotion_plan(self.task, base, &self.root())
         }
 
+        /// Phase 2 as the runtime runs it, without its records: the backup, its seal, the apply.
+        /// An error leaves the project as the apply left it.
         fn promote(
             &self,
             plan: &mimlys_core::snapshot::PromotionPlan,
             base: &SnapshotRecord,
         ) -> Result<(mimlys_core::spi::PreparedSnapshot, Promotion), WorkspaceError> {
-            self.p.promote(
+            let (backup, mut promotion) = self.promote_backup(plan, base)?;
+            self.p.seal(backup.record.snapshot_id)?;
+            self.p.promote_apply(self.task, &promotion, base)?;
+            promotion.state = mimlys_core::snapshot::PromotionState::Applied;
+            Ok((backup, promotion))
+        }
+
+        /// Step 1: the backup, and the promotion `applying`.
+        fn promote_backup(
+            &self,
+            plan: &mimlys_core::snapshot::PromotionPlan,
+            base: &SnapshotRecord,
+        ) -> Result<(mimlys_core::spi::PreparedSnapshot, Promotion), WorkspaceError> {
+            self.p.promote_backup(
                 self.task,
                 &mimlys_core::spi::PromotionRequest {
                     plan,
@@ -972,6 +987,160 @@ mod snapshots {
         assert_eq!(read(project, "file_to_dir"), "was a file");
         assert_eq!(read(project, "dir_to_link/b"), "b");
         assert!(temp_leftovers(project).is_empty());
+    }
+
+    /// The project as it is: its manifest hash, every entry hashed.
+    fn project_hash(fx: &Fx) -> mimlys_core::hash::Hash {
+        let dir = cap_std::fs::Dir::open_ambient_dir(fx.scope.path(), cap_std::ambient_authority())
+            .unwrap();
+        super::super::snapshot::walk_manifest(&dir, None)
+            .unwrap()
+            .hash()
+    }
+
+    /// Fails the apply of the promotion at the `n`th entry it is about to write (counting from 1).
+    fn fail_at(fx: &Fx, n: usize) {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        fx.on_apply(move |_| {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == n {
+                Err(WorkspaceError::Storage {
+                    detail: "injected".into(),
+                })
+            } else {
+                Ok(())
+            }
+        });
+    }
+
+    /// REQ-WS-007 (external design §14.5): an error after the first write restores the project from
+    /// the backup, and the backup is there.
+    #[test]
+    fn req_ws_007_an_error_after_the_first_write_restores_the_project() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        put(&fx.tree(), "src/added.rs", "added");
+        std::fs::remove_file(fx.tree().join("src/deep/x.txt")).unwrap();
+        let before = project_hash(&fx);
+        let plan = fx.plan(&base.record).unwrap();
+        // Every position of the failure: after 0, 1, 2 writes.
+        for n in 1..=3 {
+            fail_at(&fx, n);
+            let (backup, promotion) = fx.promote_backup(&plan, &base.record).unwrap();
+            fx.p.seal(backup.record.snapshot_id).unwrap();
+            let err =
+                fx.p.promote_apply(fx.task, &promotion, &base.record)
+                    .unwrap_err();
+            assert!(matches!(err, WorkspaceError::Storage { .. }), "{err:?}");
+            if n > 1 {
+                assert_ne!(project_hash(&fx), before, "n = {n}: something was written");
+            }
+            let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+            assert!(report.left.is_empty(), "{report:?}");
+            assert_eq!(
+                project_hash(&fx),
+                before,
+                "n = {n}: the project is restored"
+            );
+            assert!(
+                fx.p.manifest(&backup.record).is_ok(),
+                "the backup is present"
+            );
+            assert!(temp_leftovers(fx.scope.path()).is_empty());
+        }
+    }
+
+    /// REQ-WS-007: a failure in the middle of a type change restores the directory and what it
+    /// held, and the file it was to become is gone.
+    #[test]
+    fn req_ws_007_an_error_in_the_middle_of_a_type_change_restores_the_project() {
+        let fx = Fx::new();
+        for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            put(&root, "d/a", "a");
+            put(&root, "d/b", "b");
+            put(&root, "f", "was a file");
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::remove_dir_all(fx.tree().join("d")).unwrap();
+        put(&fx.tree(), "d", "now a file");
+        std::fs::remove_file(fx.tree().join("f")).unwrap();
+        put(&fx.tree(), "f/x", "now a directory");
+        let before = project_hash(&fx);
+        let plan = fx.plan(&base.record).unwrap();
+        // d/a, d/b, d and f are removed, then d, f and f/x are written: fail at each of the seven.
+        for n in 1..=7 {
+            fail_at(&fx, n);
+            let (backup, promotion) = fx.promote_backup(&plan, &base.record).unwrap();
+            fx.p.seal(backup.record.snapshot_id).unwrap();
+            let applied = fx.p.promote_apply(fx.task, &promotion, &base.record);
+            assert!(applied.is_err(), "n = {n}");
+            fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+            assert_eq!(project_hash(&fx), before, "n = {n}");
+        }
+    }
+
+    /// REQ-WS-007 (external design §16.3): a crash between `applying` and `applied` leaves the
+    /// project as the apply left it and no more; reverting from the backup, as the start does,
+    /// restores it. Here the apply stops after its first removals and writes, and is never
+    /// reverted by its own process.
+    #[test]
+    fn req_ws_007_a_promotion_the_apply_never_finished_is_restored_from_its_backup() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        put(&fx.tree(), "src/added.rs", "added");
+        std::fs::remove_file(fx.tree().join("src/deep/x.txt")).unwrap();
+        let before = project_hash(&fx);
+        let plan = fx.plan(&base.record).unwrap();
+        fail_at(&fx, 3);
+        let (backup, promotion) = fx.promote_backup(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        assert!(
+            fx.p.promote_apply(fx.task, &promotion, &base.record)
+                .is_err()
+        );
+        assert_ne!(project_hash(&fx), before);
+        // The next start: the same restore from the record and the backup alone.
+        let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        assert!(report.left.is_empty());
+        assert_eq!(project_hash(&fx), before);
+    }
+
+    /// REQ-WS-007: the restore of a promotion leaves a path the user edited since: the apply that
+    /// stopped at an edit does not overwrite it, and the rest is restored.
+    #[test]
+    fn req_ws_007_a_restore_leaves_a_path_edited_since() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        put(&fx.tree(), "src/added.rs", "added");
+        let plan = fx.plan(&base.record).unwrap();
+        let project = fx.scope.path().to_path_buf();
+        fx.on_apply(move |path| {
+            if path == "src/lib.rs" {
+                put(&project, "src/lib.rs", "fn a() { edited meanwhile }\n");
+            }
+            Ok(())
+        });
+        let (backup, promotion) = fx.promote_backup(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        let err =
+            fx.p.promote_apply(fx.task, &promotion, &base.record)
+                .unwrap_err();
+        assert_eq!(
+            err,
+            WorkspaceError::Conflict {
+                paths: vec!["src/lib.rs".into()]
+            }
+        );
+        let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        assert_eq!(report.left, ["src/lib.rs"]);
+        assert_eq!(
+            read(fx.scope.path(), "src/lib.rs"),
+            "fn a() { edited meanwhile }\n",
+            "the edit is kept"
+        );
+        assert!(!fx.scope.path().join("src/added.rs").exists());
     }
 
     /// REQ-TASK-004: a fork materializes the snapshot into a new tree.

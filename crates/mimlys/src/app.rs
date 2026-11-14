@@ -12,7 +12,8 @@ use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_model::fake::FakeBackend;
 use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved, TransportMode};
 use mimlys_persist::recovery::{
-    Recovered, RecoveryContext, recover_all, recover_snapshot_journals,
+    Recovered, RecoveredPromotion, RecoveryContext, recover_all, recover_promotions,
+    recover_snapshot_journals,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -117,6 +118,14 @@ impl AppError {
             )) => {
                 serde_json::json!({ "paths": paths })
             }
+            AppError::Runtime(RuntimeError::PromotionFailed { cause, kept, .. }) => {
+                let paths = match cause {
+                    mimlys_core::spi::WorkspaceError::Conflict { paths }
+                    | mimlys_core::spi::WorkspaceError::Unlisted { paths } => paths.clone(),
+                    _ => Vec::new(),
+                };
+                serde_json::json!({ "paths": paths, "kept": kept })
+            }
             _ => serde_json::json!({}),
         };
         serde_json::json!({ "error": { "kind": self.kind(), "message": self.to_string(), "detail": detail } })
@@ -201,6 +210,9 @@ pub struct App {
     backend_probe: std::sync::Mutex<Option<BackendProbe>>,
     /// What recovery did at startup.
     pub recovered: Vec<Recovered>,
+    /// The promotions found `applying` at startup, restored from their backups and recorded
+    /// `failed` (external design 16.3).
+    pub recovered_promotions: Vec<RecoveredPromotion>,
     /// The worker handle (started at the first `run_*` execution).
     pub worker: Arc<mimlys_exec::worker::Worker>,
     /// The interpreters in force.
@@ -715,6 +727,22 @@ impl App {
             },
             &*workspaces,
         )?;
+        // A promotion found `applying` did not finish: restored from its backup, recorded
+        // `failed` (external design 14.5, 16.3). Its project is not a task's workspace, so the
+        // order against the recovery of tasks does not matter.
+        let recovered_promotions = recover_promotions(
+            &store,
+            &RecoveryContext {
+                ids: &ids,
+                now,
+                policy_hash: policy.hash(),
+                recovery: policy.recovery,
+            },
+            &*workspaces,
+        )?;
+        for r in &recovered_promotions {
+            tracing::warn!("{}", crate::messages::promotion_recovered(r));
+        }
         // The last recovery step (external design 16.3, REQ-WS-012): the
         // snapshot journals a crash left, before the integrity check reads
         // the snapshots. Nothing is printed; the event records what was done.
@@ -763,6 +791,7 @@ impl App {
             openai,
             backend_probe: std::sync::Mutex::new(None),
             recovered,
+            recovered_promotions,
             worker,
             interpreters,
             servers,

@@ -235,6 +235,19 @@ pub enum Event {
         /// The files written.
         files: Vec<String>,
     },
+    /// A promotion began: its backup is committed and it is recorded `applying`, before the
+    /// first write to the project (REQ-WS-007).
+    #[serde(rename = "workspace.promotion_started")]
+    WorkspacePromotionStarted {
+        /// The files it writes or deletes.
+        files: Vec<String>,
+    },
+    /// A promotion did not complete: what it had written was restored from its backup.
+    #[serde(rename = "workspace.promotion_failed")]
+    WorkspacePromotionFailed {
+        /// Why, and what was left as it is.
+        reason: String,
+    },
     /// A task was recovered at startup.
     #[serde(rename = "task.recovered")]
     TaskRecovered {
@@ -329,6 +342,8 @@ impl Event {
             Event::WorkspaceSnapshot { .. } => "workspace.snapshot",
             Event::WorkspaceRollback { .. } => "workspace.rollback",
             Event::WorkspacePromoted { .. } => "workspace.promoted",
+            Event::WorkspacePromotionStarted { .. } => "workspace.promotion_started",
+            Event::WorkspacePromotionFailed { .. } => "workspace.promotion_failed",
             Event::TaskRecovered { .. } => "task.recovered",
             Event::ToolPinned { .. } => "tool.pinned",
             Event::ToolUnpinned { .. } => "tool.unpinned",

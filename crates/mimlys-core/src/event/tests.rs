@@ -72,6 +72,12 @@ fn every_event() -> Vec<Event> {
         Event::WorkspacePromoted {
             files: vec!["src/lib.rs".into()],
         },
+        Event::WorkspacePromotionStarted {
+            files: vec!["src/lib.rs".into()],
+        },
+        Event::WorkspacePromotionFailed {
+            reason: "restored".into(),
+        },
         Event::TaskRecovered {
             disposition: RecoveryDisposition::RolledBack,
         },
@@ -140,6 +146,8 @@ fn req_obs_001_event_vocabulary_matches_ed_17_1() {
             "workspace.snapshot",
             "workspace.rollback",
             "workspace.promoted",
+            "workspace.promotion_started",
+            "workspace.promotion_failed",
             "task.recovered",
             "tool.pinned",
             "tool.unpinned",

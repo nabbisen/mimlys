@@ -397,7 +397,7 @@ fn req_pers_001_open_pragmas_permissions_lock() {
     let data = dir.path().join("data");
     let store = open(&data).unwrap();
     assert_eq!(store.pragmas().unwrap(), ("wal".to_owned(), 2), "FULL is 2");
-    assert_eq!(store.schema_version().unwrap(), 3);
+    assert_eq!(store.schema_version().unwrap(), 4);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -431,7 +431,7 @@ fn req_pers_001_open_pragmas_permissions_lock() {
     assert!(started.elapsed() >= std::time::Duration::from_millis(LIM_O3_LOCK_WAIT_MS - 50));
     drop(store);
     let reopened = open(&data).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 3);
+    assert_eq!(reopened.schema_version().unwrap(), 4);
 }
 
 /// REQ-PERS-002: a newer schema is refused naming both versions.
@@ -452,7 +452,7 @@ fn req_pers_002_newer_schema_refused() {
         open(&data).err(),
         Some(PersistenceError::NewerSchema {
             found: 99,
-            supported: 3
+            supported: 4
         })
     );
 }
@@ -1227,10 +1227,10 @@ fn req_pers_006_a_store_written_by_0_8_0_opens_checks_lists_and_recovers() {
     let store = open(&data).unwrap();
     assert_eq!(
         store.schema_version().unwrap(),
-        3,
+        4,
         "a schema version 2 store is migrated"
     );
-    assert_eq!(crate::SCHEMA_VERSION, 3);
+    assert_eq!(crate::SCHEMA_VERSION, 4);
     integrity::check(&store, fx.now()).unwrap();
     let mut tasks = store.list_tasks().unwrap();
     tasks.sort_by_key(|t| t.task_id.to_string());
@@ -1298,7 +1298,7 @@ fn req_pers_006_a_store_written_by_0_9_0_opens_and_verifies() {
     let store = open(&data).unwrap();
     assert_eq!(
         store.schema_version().unwrap(),
-        3,
+        4,
         "migrated from 2 on open"
     );
     integrity::check(&store, fx.now()).unwrap();

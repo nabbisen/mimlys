@@ -1592,6 +1592,122 @@ fn req_ws_010_cancel_restores_unless_keep() {
     assert!(!h.persistence.load_observations(id).unwrap()[0].rolled_back);
 }
 
+/// A plan of one added file against the task's base snapshot (the fake workspace reads none).
+fn one_file_plan(h: &Harness, id: TaskId) -> crate::snapshot::PromotionPlan {
+    let base = h.persistence.load_snapshots(id).unwrap()[0].clone();
+    crate::snapshot::PromotionPlan {
+        task_id: id,
+        base_snapshot: base.snapshot_id,
+        current_hash: crate::hash::hash_bytes(b""),
+        changes: vec![crate::snapshot::Change {
+            path: "a.txt".into(),
+            kind: crate::snapshot::ChangeKind::Added,
+            bytes: 1,
+        }],
+        excluded: vec![],
+        text_diffs: vec![],
+    }
+}
+
+/// REQ-WS-007, REQ-PERS-003 (external design §14.5): nothing is written to the project before the
+/// backup's row is committed and the promotion is recorded `applying`; then `applied`.
+#[test]
+fn req_ws_007_the_backup_is_committed_and_the_promotion_recorded_before_the_project_is_written() {
+    use crate::snapshot::PromotionState;
+    let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
+    let id = h.create();
+    h.step(id);
+    let plan = one_file_plan(&h, id);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (persistence, log) = (h.persistence.clone(), seen.clone());
+    h.workspaces.on_promote_apply(Box::new(move |promotion| {
+        let backup_row = persistence
+            .load_snapshot(promotion.backup_snapshot)
+            .unwrap()
+            .is_some();
+        let recorded_applying = persistence
+            .load_promotions(promotion.task_id)
+            .unwrap()
+            .iter()
+            .any(|p| {
+                p.promotion_id == promotion.promotion_id && p.state == PromotionState::Applying
+            });
+        log.lock().unwrap().push((backup_row, recorded_applying));
+        Ok(())
+    }));
+    let promotion = h.runtime.promote_workspace(&h.session, id, &plan).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(true, true)],
+        "at the time of the apply"
+    );
+    assert_eq!(promotion.state, PromotionState::Applied);
+    let stored = h.persistence.load_promotions(id).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].state, PromotionState::Applied);
+    assert_eq!(h.runtime.get_task(id).unwrap().footprint.promotions, 1);
+    let names = h.event_names(id);
+    let at = |name: &str| names.iter().position(|n| n == name).unwrap();
+    assert!(
+        at("workspace.promotion_started") < at("workspace.promoted"),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"workspace.promotion_failed".to_owned()));
+}
+
+/// REQ-WS-007 (external design §14.5): an error while applying restores the applied entries from
+/// the backup, records the promotion `failed` with the reason, keeps the backup, and says so.
+#[test]
+fn req_ws_007_an_error_while_applying_restores_from_the_backup_and_records_failed() {
+    use crate::snapshot::PromotionState;
+    let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
+    let id = h.create();
+    h.step(id);
+    let plan = one_file_plan(&h, id);
+    h.workspaces.on_promote_apply(Box::new(|_| {
+        Err(crate::spi::WorkspaceError::Storage {
+            detail: "injected".into(),
+        })
+    }));
+    let err = h
+        .runtime
+        .promote_workspace(&h.session, id, &plan)
+        .unwrap_err();
+    assert!(
+        matches!(err, RuntimeError::PromotionFailed { .. }),
+        "{err:?}"
+    );
+    let text = err.to_string();
+    assert!(text.contains("restored from its backup"), "{text}");
+    let stored = h.persistence.load_promotions(id).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].state, PromotionState::Failed);
+    assert!(stored[0].reason.as_deref().unwrap().contains("injected"));
+    assert_eq!(h.workspaces.reverted(), [stored[0].promotion_id]);
+    assert!(
+        h.persistence
+            .load_snapshot(stored[0].backup_snapshot)
+            .unwrap()
+            .is_some(),
+        "the backup is kept"
+    );
+    assert_eq!(
+        h.runtime.get_task(id).unwrap().footprint.promotions,
+        0,
+        "a failed promotion is not one to reverse"
+    );
+    let names = h.event_names(id);
+    assert!(names.contains(&"workspace.promotion_started".to_owned()));
+    assert!(names.contains(&"workspace.promotion_failed".to_owned()));
+    assert!(!names.contains(&"workspace.promoted".to_owned()));
+    // A failed promotion cannot be reversed.
+    let err = h
+        .runtime
+        .revert_promotion(&h.session, id, stored[0].promotion_id)
+        .unwrap_err();
+    assert_eq!(err.kind(), "state");
+}
+
 /// REQ-WS-006 / REQ-WS-007 / RFC 006 §6: the user's rollback is valid when
 /// the task is not running; deletion needs a terminal task and removes the
 /// rows; the footprint is reported.

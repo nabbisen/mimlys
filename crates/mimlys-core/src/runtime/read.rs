@@ -66,7 +66,9 @@ pub(super) fn footprint(
         blob_bytes: persistence.blob_bytes(task_id)?,
         promotions: promotions
             .iter()
-            .filter(|p| p.reversed_at.is_none())
+            .filter(|p| {
+                p.reversed_at.is_none() && p.state == crate::snapshot::PromotionState::Applied
+            })
             .count() as u64,
     })
 }

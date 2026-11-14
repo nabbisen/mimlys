@@ -736,6 +736,23 @@ pub fn status_engine(version: &str) -> String {
 pub fn rolled_back(snapshot_id: &str, reason: &str) -> String {
     format!("workspace restored to snapshot {snapshot_id} ({reason})")
 }
+/// A promotion found `applying` at start, restored from its backup and recorded `failed`.
+pub fn promotion_recovered(r: &mimlys_persist::recovery::RecoveredPromotion) -> String {
+    let base = format!(
+        "promotion {} of task {} did not finish before the last stop and is recorded failed",
+        r.promotion_id, r.task_id
+    );
+    match (&r.restore_error, r.kept.is_empty()) {
+        (Some(e), _) => format!("{base}; restoring the project from its backup failed ({e})"),
+        (None, true) => format!("{base}; the project was restored from its backup"),
+        (None, false) => format!(
+            "{base}; the project was restored from its backup except {} path(s) edited since, left as they are: {}",
+            r.kept.len(),
+            r.kept.join(", ")
+        ),
+    }
+}
+
 /// `rollback --promotion`: done.
 pub fn promotion_reversed(id: &str, files: usize) -> String {
     format!("promotion {id} reversed: {files} path(s) restored in the project")
@@ -951,9 +968,18 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
             p.files.len(),
             p.applied_at.to_rfc3339(),
             if p.reversed_at.is_some() {
-                " (reversed)"
+                " (reversed)".to_owned()
+            } else if p.state != mimlys_core::snapshot::PromotionState::Applied {
+                format!(
+                    " ({}{})",
+                    p.state.name(),
+                    p.reason
+                        .as_deref()
+                        .map(|r| format!(": {r}"))
+                        .unwrap_or_default()
+                )
             } else {
-                ""
+                String::new()
             }
         ));
     }

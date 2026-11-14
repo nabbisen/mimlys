@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// The schema version this runtime writes and understands.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// LIM-O3: wait for the runtime lock before refusing to start, in milliseconds.
 pub const LIM_O3_LOCK_WAIT_MS: u64 = 1000;
@@ -32,10 +32,11 @@ pub struct Holder {
     pub since: String,
 }
 
-const MIGRATIONS: [(u32, &str); 3] = [
+const MIGRATIONS: [(u32, &str); 4] = [
     (1, include_str!("migrations/001_initial.sql")),
     (2, include_str!("migrations/002_snapshots.sql")),
     (3, include_str!("migrations/003_rejection_detail.sql")),
+    (4, include_str!("migrations/004_promotion_state.sql")),
 ];
 
 /// The SQLite store. One per data directory; holds the runtime lock for its lifetime.

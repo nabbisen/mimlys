@@ -476,6 +476,13 @@ macro_rules! persistence_read {
             )
         }
 
+        fn promotions_applying(&self) -> Result<Vec<Promotion>, PersistenceError> {
+            self.query(
+                "SELECT record FROM promotions WHERE state = 'applying' ORDER BY applied_at, rowid",
+                &[],
+            )
+        }
+
         fn object_references(
             &self,
             hashes: &[mimlys_core::hash::Hash],
@@ -931,7 +938,7 @@ impl Persistence for Store {
     ) -> Result<(), PersistenceError> {
         self.transaction("promotion", |tx| {
             tx.execute(
-                "INSERT INTO promotions (promotion_id, task_id, backup_snapshot_id, applied_at, record, record_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(promotion_id) DO UPDATE SET record = excluded.record",
+                "INSERT INTO promotions (promotion_id, task_id, backup_snapshot_id, applied_at, record, record_version, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(promotion_id) DO UPDATE SET record = excluded.record, state = excluded.state, applied_at = excluded.applied_at",
                 params![
                     promotion.promotion_id.to_string(),
                     promotion.task_id.to_string(),
@@ -939,6 +946,7 @@ impl Persistence for Store {
                     promotion.applied_at.to_rfc3339(),
                     json(promotion)?,
                     RECORD_VERSION,
+                    promotion.state.name(),
                 ],
             )
             .map_err(storage("upsert_promotion"))?;
@@ -1105,6 +1113,9 @@ pub(crate) mod tests;
 
 #[cfg(test)]
 mod rejection_detail_tests;
+
+#[cfg(test)]
+mod promotion_state_tests;
 
 #[cfg(test)]
 mod halts_tests;

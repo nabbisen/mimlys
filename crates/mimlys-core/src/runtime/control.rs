@@ -16,7 +16,9 @@ use crate::limits::{
 };
 use crate::question::Question;
 use crate::rejection::RejectionCode;
-use crate::snapshot::{Footprint, Promotion, PromotionPlan, SnapshotRecord, WorkspaceState};
+use crate::snapshot::{
+    Footprint, Promotion, PromotionPlan, PromotionState, SnapshotRecord, WorkspaceState,
+};
 use crate::spi::{Metrics, PositionedEvent, TaskSummary};
 use crate::step::{Budgets, StepOutcome, StepResult};
 use crate::task::{
@@ -443,7 +445,10 @@ impl Runtime {
         )
     }
 
-    /// Phase 2: after the user's confirmation, the backup, the writes and the record.
+    /// Phase 2: after the user's confirmation (external design §14.5). The order is the rule:
+    /// the backup is written, its row committed and sealed, the promotion recorded `applying`;
+    /// only then is the project written; then the promotion is recorded `applied`. An error
+    /// while applying restores what was applied from the backup and records `failed`.
     pub fn promote_workspace(
         &self,
         session: &Session,
@@ -466,7 +471,8 @@ impl Runtime {
             ));
         }
         let now = self.deps.clock.now();
-        let (backup, promotion) = self.deps.workspaces.promote(
+        // 1. The backup is written; the project is not touched.
+        let (backup, mut promotion) = self.deps.workspaces.promote_backup(
             task_id,
             &crate::spi::PromotionRequest {
                 plan,
@@ -477,6 +483,7 @@ impl Runtime {
                 now,
             },
         )?;
+        // 2. Its row is committed and sealed.
         self.deps.persistence.record_snapshot(
             &backup.record,
             &backup.objects,
@@ -492,6 +499,9 @@ impl Runtime {
             ),
         )?;
         self.deps.workspaces.seal(backup.record.snapshot_id)?;
+        // 3. The promotion is recorded `applying`.
+        let files: Vec<String> = promotion.files.iter().map(|c| c.path.clone()).collect();
+        promotion.state = PromotionState::Applying;
         self.deps.persistence.record_promotion(
             &promotion,
             &self.event(
@@ -499,12 +509,64 @@ impl Runtime {
                 Some(task_id),
                 None,
                 None,
-                Event::WorkspacePromoted {
-                    files: promotion.files.iter().map(|c| c.path.clone()).collect(),
+                Event::WorkspacePromotionStarted {
+                    files: files.clone(),
                 },
             ),
         )?;
-        Ok(promotion)
+        // 4. The project is written.
+        match self
+            .deps
+            .workspaces
+            .promote_apply(task_id, &promotion, &base)
+        {
+            Ok(()) => {
+                // 5. Applied.
+                promotion.state = PromotionState::Applied;
+                promotion.applied_at = self.deps.clock.now();
+                self.deps.persistence.record_promotion(
+                    &promotion,
+                    &self.event(
+                        session.actor(),
+                        Some(task_id),
+                        None,
+                        None,
+                        Event::WorkspacePromoted { files },
+                    ),
+                )?;
+                Ok(promotion)
+            }
+            Err(cause) => {
+                let restored = self
+                    .deps
+                    .workspaces
+                    .revert_promotion(&promotion, &backup.record);
+                let (kept, restore_error) = match restored {
+                    Ok(report) => (report.left, None),
+                    Err(e) => (Vec::new(), Some(e.to_string())),
+                };
+                let error = RuntimeError::PromotionFailed {
+                    cause,
+                    kept,
+                    restore_error,
+                };
+                promotion.state = PromotionState::Failed;
+                promotion.reason = Some(error.to_string());
+                self.deps.persistence.record_promotion(
+                    &promotion,
+                    &self.event(
+                        session.actor(),
+                        Some(task_id),
+                        None,
+                        None,
+                        Event::WorkspacePromotionFailed {
+                            reason: error.to_string(),
+                        },
+                    ),
+                )?;
+                Err(error)
+            }
+        }
     }
 
     /// Reverses a promotion from its backup (REQ-WS-007).
@@ -523,6 +585,12 @@ impl Runtime {
             .ok_or(RuntimeError::NotFound {
                 what: "promotion".into(),
             })?;
+        if promotion.state != PromotionState::Applied {
+            return Err(RuntimeError::State(crate::task::StateError::Illegal {
+                from: promotion.state.name(),
+                input: "revert_promotion",
+            }));
+        }
         if promotion.reversed_at.is_some() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
                 from: "reversed",

@@ -225,6 +225,156 @@ fn m3_promotion() {
     );
 }
 
+/// The names of the events of a task, in order.
+fn event_names(env: &Env, id: &str) -> Vec<String> {
+    let (_, events) = env.json(&["events", id]);
+    events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["record"]["event"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// REQ-WS-007, REQ-PERS-007 (external design §14.5, §16.3): a promotion found `applying` at start
+/// did not finish. The start restores the project from its backup, records the promotion `failed`
+/// with the reason, and it is listed with the task. The crash is made the way it leaves the
+/// files: the promotion is applied by the binary, its record is set back to `applying`, and one
+/// of the entries it wrote is put back as it was (the apply had not reached it).
+#[test]
+fn req_ws_007_a_promotion_found_applying_at_start_is_restored_and_listed() {
+    let env = Env::new("edit.json");
+    let scope = scope();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["promote", &id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    let promotion_id = value["promotion"]["promotion_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(value["promotion"]["state"], "applied");
+    assert!(scope.path().join("src/added.rs").exists());
+    // The crash.
+    let db = env.data.path().join("data/mimlys.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE promotions SET state = 'applying', record = json_set(record, '$.state', 'applying') WHERE promotion_id = ?1",
+                [&promotion_id],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+    std::fs::write(scope.path().join("src/old.rs"), "// to be deleted\n").unwrap();
+    // The next start that writes.
+    let (code, _) = env.json(&["promote", &id]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
+        "fn a() -> i32 { 0 }\n"
+    );
+    assert!(!scope.path().join("src/added.rs").exists());
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/old.rs")).unwrap(),
+        "// to be deleted\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join(".env")).unwrap(),
+        "SECRET=1"
+    );
+    let (_, view) = env.json(&["task", "show", &id]);
+    assert_eq!(view["promotions"][0]["state"], "failed");
+    assert!(
+        view["promotions"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("restored from its backup"),
+        "{view}"
+    );
+    assert_eq!(view["footprint"]["promotions"], 0);
+    let backups = view["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["reason"] == "backup")
+        .count();
+    assert_eq!(backups, 1, "the backup is kept");
+    let names = event_names(&env, &id);
+    assert!(
+        names.contains(&"workspace.promotion_failed".to_owned()),
+        "{names:?}"
+    );
+    // A failed promotion cannot be reversed again.
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id]);
+    assert_eq!(code, 1, "{value}");
+    assert_eq!(value["error"]["kind"], "state");
+}
+
+/// REQ-WS-007 (external design §14.5): an error while applying restores what was applied. A
+/// directory the user cannot write to stops the apply after another entry was already removed;
+/// the project is as it was, the promotion is `failed`, the backup is kept, and the message says
+/// so.
+#[cfg(unix)]
+#[test]
+fn req_ws_007_an_error_while_applying_restores_the_project_and_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("edit.json");
+    let scope = scope();
+    std::fs::create_dir_all(scope.path().join("zzz")).unwrap();
+    std::fs::write(scope.path().join("zzz/gone.txt"), "to be removed first").unwrap();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    std::fs::remove_file(env.tree(&id).join("zzz/gone.txt")).unwrap();
+    let src = scope.path().join("src");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let writable = std::fs::File::create(src.join(".probe")).is_ok();
+    if writable {
+        // Permissions do not bind this user (root): the failure cannot be made this way.
+        std::fs::remove_file(src.join(".probe")).unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let (code, value) = env.json(&["promote", &id, "--yes"]);
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(code, 1, "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(message.contains("restored from its backup"), "{message}");
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("zzz/gone.txt")).unwrap(),
+        "to be removed first",
+        "what was applied is restored"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
+        "fn a() -> i32 { 0 }\n"
+    );
+    assert!(scope.path().join("src/old.rs").exists());
+    assert!(!scope.path().join("src/added.rs").exists());
+    let (_, view) = env.json(&["task", "show", &id]);
+    assert_eq!(view["promotions"][0]["state"], "failed");
+    assert_eq!(view["footprint"]["promotions"], 0);
+    assert_eq!(
+        view["snapshots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["reason"] == "backup")
+            .count(),
+        1
+    );
+    let names = event_names(&env, &id);
+    let at = |n: &str| names.iter().position(|x| x == n).unwrap();
+    assert!(
+        at("workspace.promotion_started") < at("workspace.promotion_failed"),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"workspace.promoted".to_owned()));
+}
+
 /// REQ-WS-012 (promotion backups): a promoted task has a `backup` snapshot of
 /// the targets it replaced; `task delete --yes` removes that snapshot's
 /// manifest and every object only the task's snapshots referenced, so no

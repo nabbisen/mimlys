@@ -557,15 +557,29 @@ pub trait WorkspaceProvider: WorkspaceRead {
         now: crate::clock::Instant,
     ) -> Result<(WorkspaceInfo, PreparedSnapshot), WorkspaceError>;
 
-    /// Phase 2: backs the targets up (a prepared `backup` snapshot) and applies the plan; each
-    /// entry is compared with its entry in the `base` snapshot before it is written.
-    fn promote(
+    /// Phase 2, first step: backs the targets up (a prepared `backup` snapshot) and returns the
+    /// promotion, `applying`, with the entries it will write. Nothing in the project is touched:
+    /// a stale plan, or a project entry that is not its entry in the `base` snapshot, is refused.
+    /// The runtime commits the backup and records the promotion before the next step.
+    fn promote_backup(
         &self,
         task_id: TaskId,
         request: &PromotionRequest<'_>,
     ) -> Result<(PreparedSnapshot, Promotion), WorkspaceError>;
 
-    /// Reverses a promotion from its backup.
+    /// Phase 2, second step: applies a promotion that is recorded `applying`. Each entry is
+    /// compared with its entry in the `base` snapshot before it is written; nothing is removed
+    /// that the promotion does not list. An error stops it there.
+    fn promote_apply(
+        &self,
+        task_id: TaskId,
+        promotion: &Promotion,
+        base: &SnapshotRecord,
+    ) -> Result<(), WorkspaceError>;
+
+    /// Reverses a promotion from its backup, also the part of one that was applied: a path is
+    /// restored while it holds what the promotion wrote or is missing, and a path edited since
+    /// is kept and reported in `left`.
     fn revert_promotion(
         &self,
         promotion: &Promotion,
@@ -1079,7 +1093,13 @@ pub mod fake {
         restores: Mutex<Vec<SnapshotId>>,
         fail_restores: Mutex<bool>,
         tree: Mutex<Option<String>>,
+        apply_hook: Mutex<Option<ApplyHook>>,
+        reverted: Mutex<Vec<PromotionId>>,
+        fail_reverts: Mutex<bool>,
     }
+
+    /// What a test runs when a promotion is applied; an error fails the apply.
+    pub type ApplyHook = Box<dyn Fn(&Promotion) -> Result<(), WorkspaceError> + Send + Sync>;
 
     impl FakeWorkspaces {
         /// Serves `tools` for every task.
@@ -1091,6 +1111,9 @@ pub mod fake {
                 restores: Mutex::new(Vec::new()),
                 fail_restores: Mutex::new(false),
                 tree: Mutex::new(None),
+                apply_hook: Mutex::new(None),
+                reverted: Mutex::new(Vec::new()),
+                fail_reverts: Mutex::new(false),
             }
         }
 
@@ -1269,24 +1292,71 @@ pub mod fake {
             ))
         }
 
-        fn promote(
+        fn promote_backup(
+            &self,
+            task_id: TaskId,
+            request: &PromotionRequest<'_>,
+        ) -> Result<(PreparedSnapshot, Promotion), WorkspaceError> {
+            let record = SnapshotRecord {
+                snapshot_id: request.backup_id,
+                task_id,
+                reason: SnapshotReason::Backup,
+                manifest_hash: Manifest::default().hash(),
+                bytes: 0,
+                files: 0,
+                created_at: request.now,
+                action_id: None,
+                project_root: Some(request.project_root.to_owned()),
+            };
+            let promotion = Promotion {
+                promotion_id: request.promotion_id,
+                task_id,
+                backup_snapshot: request.backup_id,
+                project_root: request.project_root.to_owned(),
+                files: request.plan.changes.clone(),
+                applied_at: request.now,
+                reversed_at: None,
+                state: crate::snapshot::PromotionState::Applying,
+                after: vec![],
+                reason: None,
+            };
+            Ok((
+                PreparedSnapshot {
+                    record,
+                    objects: vec![],
+                    reused: false,
+                },
+                promotion,
+            ))
+        }
+
+        fn promote_apply(
             &self,
             _task_id: TaskId,
-            _request: &PromotionRequest<'_>,
-        ) -> Result<(PreparedSnapshot, Promotion), WorkspaceError> {
-            Err(WorkspaceError::Refused {
-                reason: "no promotion in the fake".into(),
-            })
+            promotion: &Promotion,
+            _base: &SnapshotRecord,
+        ) -> Result<(), WorkspaceError> {
+            match self.apply_hook.lock().expect("fake lock").as_ref() {
+                Some(hook) => hook(promotion),
+                None => Ok(()),
+            }
         }
 
         fn revert_promotion(
             &self,
-            _promotion: &Promotion,
+            promotion: &Promotion,
             _backup: &SnapshotRecord,
         ) -> Result<RestoreReport, WorkspaceError> {
-            Err(WorkspaceError::NotFound {
-                what: "promotion".into(),
-            })
+            if *self.fail_reverts.lock().expect("fake lock") {
+                return Err(WorkspaceError::Storage {
+                    detail: "injected".into(),
+                });
+            }
+            self.reverted
+                .lock()
+                .expect("fake lock")
+                .push(promotion.promotion_id);
+            Ok(RestoreReport::default())
         }
 
         fn delete_files(&self, task_id: TaskId, _rows: &DeletedRows) -> Result<(), WorkspaceError> {
@@ -1307,6 +1377,21 @@ pub mod fake {
         /// Restores performed, in order.
         pub fn restores(&self) -> Vec<SnapshotId> {
             self.restores.lock().expect("fake lock").clone()
+        }
+
+        /// From now on a promotion is applied by running `hook`, whose error fails the apply.
+        pub fn on_promote_apply(&self, hook: ApplyHook) {
+            *self.apply_hook.lock().expect("fake lock") = Some(hook);
+        }
+
+        /// From now on every reversal of a promotion fails with a storage error.
+        pub fn fail_reverts(&self) {
+            *self.fail_reverts.lock().expect("fake lock") = true;
+        }
+
+        /// Promotions reverted from their backups, in order.
+        pub fn reverted(&self) -> Vec<PromotionId> {
+            self.reverted.lock().expect("fake lock").clone()
         }
     }
 
@@ -1687,6 +1772,18 @@ pub mod fake {
                 .workspace_states
                 .get(&task_id)
                 .copied())
+        }
+
+        fn promotions_applying(&self) -> Result<Vec<Promotion>, PersistenceError> {
+            Ok(self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .promotions
+                .iter()
+                .filter(|p| p.state == crate::snapshot::PromotionState::Applying)
+                .cloned()
+                .collect())
         }
 
         fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError> {
@@ -2273,6 +2370,10 @@ pub trait PersistenceRead: Send + Sync {
 
     /// The task's promotions, oldest first.
     fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError>;
+
+    /// The promotions of every task that are recorded `applying`: found at start, they did not
+    /// finish (external design §16.3).
+    fn promotions_applying(&self) -> Result<Vec<Promotion>, PersistenceError>;
 
     /// How many manifests reference each of these objects, and their sizes.
     fn object_references(

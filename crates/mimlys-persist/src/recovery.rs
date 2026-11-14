@@ -160,6 +160,77 @@ pub fn recover_all(
     Ok(out)
 }
 
+/// What start-up did with a promotion it found `applying`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveredPromotion {
+    /// The task.
+    pub task_id: TaskId,
+    /// The promotion, now recorded `failed`.
+    pub promotion_id: mimlys_core::ids::PromotionId,
+    /// Paths left as they are: edited since, or a directory that is not empty.
+    pub kept: Vec<String>,
+    /// Why the restore failed, when it did; the backup snapshot is kept.
+    pub restore_error: Option<String>,
+}
+
+/// A promotion found `applying` did not finish (external design §14.5, §16.3): what it had
+/// written is restored from its backup, which was committed before the project was touched, and
+/// it is recorded `failed` with the reason. A path edited since is left as it is and listed.
+pub fn recover_promotions(
+    store: &Store,
+    ctx: &RecoveryContext<'_>,
+    workspaces: &dyn mimlys_core::spi::WorkspaceProvider,
+) -> Result<Vec<RecoveredPromotion>, PersistenceError> {
+    let mut out = Vec::new();
+    for mut promotion in store.promotions_applying()? {
+        let restored = match store.load_snapshot(promotion.backup_snapshot)? {
+            Some(backup) => workspaces.revert_promotion(&promotion, &backup),
+            None => Err(mimlys_core::spi::WorkspaceError::NotFound {
+                what: "snapshot".into(),
+            }),
+        };
+        let (kept, restore_error) = match restored {
+            Ok(report) => (report.left, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
+        let reason = match (&restore_error, kept.is_empty()) {
+            (Some(e), _) => format!(
+                "found applying at start; restoring the project from its backup failed ({e}); the backup snapshot is kept"
+            ),
+            (None, true) => {
+                "found applying at start; the project was restored from its backup".to_owned()
+            }
+            (None, false) => format!(
+                "found applying at start; the project was restored from its backup except {} path(s) edited since, which are left as they are: {}",
+                kept.len(),
+                kept.join(", ")
+            ),
+        };
+        promotion.state = mimlys_core::snapshot::PromotionState::Failed;
+        promotion.reason = Some(reason.clone());
+        store.record_promotion(
+            &promotion,
+            &EventRecord {
+                event_id: EventId::new(ctx.ids),
+                at: ctx.now,
+                actor: Actor::Runtime,
+                task_id: Some(promotion.task_id),
+                step_id: None,
+                action_id: None,
+                policy_hash: ctx.policy_hash.clone(),
+                event: Event::WorkspacePromotionFailed { reason },
+            },
+        )?;
+        out.push(RecoveredPromotion {
+            task_id: promotion.task_id,
+            promotion_id: promotion.promotion_id,
+            kept,
+            restore_error,
+        });
+    }
+    Ok(out)
+}
+
 /// The last recovery step (external design §16.3; REQ-WS-012): the snapshot
 /// journals a crash left are finished (their row exists) or undone (it does
 /// not), keeping every object a snapshot row references. The event
