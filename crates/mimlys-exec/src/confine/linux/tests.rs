@@ -71,6 +71,41 @@ fn rfc_011_descendant_walk_kills_the_tree() {
     let _ = helper.wait();
 }
 
+/// REQ-CONF-009: what a cgroup holds after `cgroup.kill` is counted from its
+/// `cgroup.procs`, until it is empty or the grace passes; a cgroup that cannot
+/// be read is an error, never a pass.
+#[test]
+fn req_conf_009_the_members_left_in_a_cgroup_are_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let procs = dir.path().join("cgroup.procs");
+    assert!(
+        cgroup_members_within(dir.path(), Duration::from_millis(50)).is_err(),
+        "an unreadable cgroup is an error"
+    );
+    std::fs::write(&procs, "").unwrap();
+    assert_eq!(
+        cgroup_members_within(dir.path(), Duration::from_millis(50)),
+        Ok(0)
+    );
+    std::fs::write(&procs, "101\n102\n").unwrap();
+    assert_eq!(
+        cgroup_members_within(dir.path(), Duration::from_millis(50)),
+        Ok(2),
+        "two are left when the grace has passed"
+    );
+    // The members leave while the count waits for them.
+    let leaving = procs.clone();
+    let emptier = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(&leaving, "").unwrap();
+    });
+    assert_eq!(
+        cgroup_members_within(dir.path(), Duration::from_secs(60)),
+        Ok(0)
+    );
+    emptier.join().unwrap();
+}
+
 /// The stat parser copes with a comm that has spaces and parentheses.
 #[test]
 fn ppid_parser_handles_odd_comm() {
