@@ -272,6 +272,85 @@ fn req_sbx_012_a_worker_that_cannot_be_established_fails_closed() {
     assert_eq!(out.metrics.fuel, None);
 }
 
+/// REQ-SEC-003 (an error in confinement means no execution): a worker whose
+/// own report of its confinement is short refuses `run_host_tool` when it is
+/// asked, whatever the runtime checked: this worker was given no confinement
+/// specification, so it reports none of the mandatory clauses, and the tool
+/// it is asked to run does nothing. The refusal carries the reason.
+#[cfg(unix)]
+#[test]
+fn req_sec_003_a_worker_with_a_short_report_refuses_run_host_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("tree");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(dir.path().join("tmp")).unwrap();
+    let declaration = mimlys_core::host_tool::HostToolDeclaration {
+        name: "writes".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "echo ran > ran.txt".into()],
+        allowed_args: vec![],
+        arg_pattern: None,
+        max_args: 0,
+        effect: mimlys_core::action::EffectKind::WorkspaceWrite,
+        reversible: true,
+        timeout_ms: 5_000,
+        read_paths: vec![],
+        env: Default::default(),
+        env_allow: vec![],
+        network: false,
+    };
+    let worker = Worker::new(WorkerConfig {
+        program: worker_bin(),
+        interpreters: vec![],
+        confinement: platform(),
+        limits: mimlys_exec::sandbox::Limits::default(),
+        spec: None,
+        host_tools: vec![declaration],
+        record: None,
+    });
+    let ids = ScriptedIds::default();
+    let out = worker.execute(
+        Execution {
+            task_id: TaskId::new(&ids),
+            execution_id: ExecutionId::new(&ids),
+            action_id: ActionId::new(&ids),
+            tool: "run_host_tool".into(),
+            arguments: serde_json::json!({"tool": "writes"}),
+            effect: mimlys_core::action::EffectView {
+                kind: mimlys_core::action::EffectKind::WorkspaceWrite,
+                reversible: true,
+                idempotent: false,
+            },
+            deadline_ms: 5_000,
+            workspace_root: workspace.to_string_lossy().into_owned(),
+            read_only: false,
+            replay: None,
+        },
+        Cancellation::new(),
+    );
+    assert_eq!(
+        out.termination,
+        Termination::HostFault {
+            detail: HostFaultDetail::Unavailable
+        }
+    );
+    assert!(!workspace.join("ran.txt").exists(), "the tool did not run");
+    let reasons: Vec<String> = out
+        .notices
+        .iter()
+        .filter_map(|n| match n {
+            mimlys_core::observation::Notice::HostToolNotStarted { reason } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        reasons.len() == 1 && reasons[0].contains("report of its confinement is short: F:"),
+        "{:?}",
+        out.notices
+    );
+    worker.shutdown();
+}
+
 /// REQ-ARCH-008 / REQ-TEST-008: the worker's death is `host_fault{worker_died}`,
 /// the runtime survives, the next execution restarts the worker; the budget
 /// LIM-X3 ends in `host_fault{unavailable}`.

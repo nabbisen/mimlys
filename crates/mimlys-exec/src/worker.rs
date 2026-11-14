@@ -154,6 +154,9 @@ pub struct Worker {
     config: WorkerConfig,
     live: Mutex<Option<Live>>,
     probe_cache: Mutex<Option<Probe>>,
+    /// When set, what the administrator accepted as best effort: every worker
+    /// this handle spawns must report the mandatory clauses before it is used.
+    require: Mutex<Option<Vec<Clause>>>,
     restarts: Mutex<BTreeMap<TaskId, u32>>,
     facts: Mutex<WorkerFacts>,
     /// The execution in flight, for the span of the log thread's lines.
@@ -167,6 +170,7 @@ impl Worker {
             config,
             live: Mutex::new(None),
             probe_cache: Mutex::new(None),
+            require: Mutex::new(None),
             restarts: Mutex::new(BTreeMap::new()),
             facts: Mutex::new(WorkerFacts::default()),
             reader_span: mimlys_core::log_span::ReaderSpan::new(),
@@ -266,6 +270,26 @@ impl Worker {
         Ok(Probe { clauses })
     }
 
+    /// From now on every worker this handle spawns must report, in its own
+    /// answer to the first request, every mandatory clause enforced (or best
+    /// effort and in `accepted`, as for the tier) before any work is sent to
+    /// it; a short report fails the spawn with the reason (REQ-SEC-003,
+    /// REQ-CONF-003). The probe that decides the tier is another process: it
+    /// says what the machine can do, not what this worker did. Called when the
+    /// runtime offers host tools; the dependency step's worker is exempt from
+    /// clause N, which it does not have by design (REQ-CONF-007).
+    pub fn require_mandatory_clauses(&self, accepted: &[Clause]) {
+        *self.require.lock().expect("require") = Some(accepted.to_vec());
+    }
+
+    /// The clauses this handle's workers are not asked for.
+    fn exempt_clauses(&self) -> Vec<Clause> {
+        match &self.config.spec {
+            Some(spec) if !spec.deny_network => vec![Clause::Network],
+            _ => vec![],
+        }
+    }
+
     /// The probe: the spawn side's clauses, merged with what a running worker
     /// reports about itself (REQ-CONF-003).
     pub fn probe(&self) -> Probe {
@@ -309,6 +333,14 @@ impl Worker {
         if let Some(spec) = &self.config.spec {
             args.push("--confine".into());
             args.push(serde_json::to_string(spec).expect("serializes"));
+        }
+        // What the administrator accepted as best effort: the worker applies
+        // the same rule to its own report before it runs a host tool.
+        if let Some(accepted) = self.require.lock().expect("require").as_ref()
+            && !accepted.is_empty()
+        {
+            args.push("--accept-best-effort".into());
+            args.push(accepted.iter().map(|c| c.letter()).collect());
         }
         if tracing::enabled!(target: "mimlys_worker", tracing::Level::DEBUG) {
             args.push("--trace".into());
@@ -383,13 +415,33 @@ impl Worker {
                 interpreters,
                 interpreter_errors,
                 cgroup,
-                ..
+                clauses,
             })) => {
                 tracing::debug!(
                     target: "mimlys_worker",
                     "worker probe answered in {} ms",
                     probing.elapsed().as_millis()
                 );
+                // The worker's own report, before any work is sent to it
+                // (REQ-SEC-003): the process that serves is the one that confined itself.
+                let short = self
+                    .require
+                    .lock()
+                    .expect("require")
+                    .as_ref()
+                    .map(|accepted| report_shortfall(&clauses, accepted, &self.exempt_clauses()))
+                    .unwrap_or_default();
+                if !short.is_empty() {
+                    live.child.kill_tree();
+                    #[cfg(target_os = "linux")]
+                    if let Some(dir) = &cgroup {
+                        let _ = crate::confine::linux::remove_cgroup(std::path::Path::new(dir));
+                    }
+                    return Err(format!(
+                        "the worker's own report of its confinement is short: {}",
+                        short.join("; ")
+                    ));
+                }
                 live.cgroup = cgroup;
                 live.facts = WorkerFacts {
                     engine_version,
@@ -688,6 +740,30 @@ fn stack_sample(_pid: u32) -> Option<String> {
     None
 }
 
+/// The mandatory clauses a worker's own report (by letter, as it sends it)
+/// does not meet, as `F: reason` lines; empty when the report is enough to
+/// run a host tool. Used by the runtime on a worker it has spawned, and by
+/// the worker on itself (REQ-SEC-003).
+pub fn report_shortfall(
+    clauses: &BTreeMap<String, ClauseState>,
+    accepted: &[Clause],
+    exempt: &[Clause],
+) -> Vec<String> {
+    let probe = Probe {
+        clauses: Clause::ALL
+            .iter()
+            .map(|c| {
+                let state = clauses
+                    .get(&c.letter().to_string())
+                    .cloned()
+                    .unwrap_or_else(|| ClauseState::unavailable("not reported"));
+                (*c, state)
+            })
+            .collect(),
+    };
+    probe.short_of_mandatory(accepted, exempt)
+}
+
 fn fault(detail: HostFaultDetail, started: Instant, note: Option<&str>) -> ExecutionOutcome {
     if let Some(n) = note {
         tracing::warn!(target: "mimlys_worker", "{n}");
@@ -756,6 +832,7 @@ fn worker_env() -> Vec<(String, String)> {
             "MIMLYS_PROBE_BEST_EFFORT",
             "MIMLYS_PROBE_NO_CGROUP",
             "MIMLYS_PROBE_MAX_LANDLOCK_ABI",
+            "MIMLYS_PROBE_FAIL_SERVING",
         ] {
             if let Ok(v) = std::env::var(name) {
                 env.push((name.to_owned(), v));

@@ -2,7 +2,7 @@
 //! tries what its first argument says and reports in its exit code and
 //! output. Built only with the `test-bins` feature; never part of a release.
 //!
-//! `read <path>`, `write <path>`, `connect <addr>`, `env <name>`,
+//! `read <path>`, `list <dir>`, `write <path>`, `write-env <VAR> <name>`, `connect <addr>`, `env <name>`,
 //! `sleep <secs>`, `setsid-sleep <secs>`, `fork <n> [hold_ms]`, `alloc <mib>`,
 //! `alloc-touch <mib>` (resident memory: every page written), `connect-name
 //! <host:port>` (resolve and connect), `cwd`, `ok`.
@@ -134,6 +134,39 @@ fn main() {
                 3
             }
         },
+        // `list <dir>`: the entries of a directory.
+        Some("list") => match std::fs::read_dir(args.get(1).map(String::as_str).unwrap_or("")) {
+            Ok(entries) => {
+                println!("list {} entries", entries.count());
+                0
+            }
+            Err(e) => {
+                println!("list failed: {}", e.kind());
+                3
+            }
+        },
+        // `write-env <VAR> <name>`: writes `<name>` in the directory the
+        // environment variable names (`HOME`, `TMPDIR`).
+        Some("write-env") => {
+            let var = args.get(1).map(String::as_str).unwrap_or("");
+            let name = args.get(2).map(String::as_str).unwrap_or("");
+            match std::env::var_os(var) {
+                None => {
+                    println!("write-env: {var} unset");
+                    2
+                }
+                Some(dir) => match std::fs::write(std::path::Path::new(&dir).join(name), b"x") {
+                    Ok(()) => {
+                        println!("wrote");
+                        0
+                    }
+                    Err(e) => {
+                        println!("write failed: {}", e.kind());
+                        3
+                    }
+                },
+            }
+        }
         Some("write") => {
             match std::fs::write(args.get(1).map(String::as_str).unwrap_or(""), b"x") {
                 Ok(()) => {
@@ -661,7 +694,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|list|write|write-env|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }

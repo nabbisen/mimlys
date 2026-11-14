@@ -217,6 +217,26 @@ impl Probe {
         }
     }
 
+    /// The mandatory clauses this report does not meet, as `F: reason`
+    /// lines: a clause that is not `enforced` (a `best_effort` one passes when
+    /// the administrator accepted it, as for the tier), except those in
+    /// `exempt`, which are not asked of the process the report is for (the
+    /// dependency step's worker has the network, so its `N` is not enforced
+    /// by design). A clause the report does not mention is short. Empty when
+    /// the report is enough to run a host tool (REQ-SEC-003, REQ-CONF-003).
+    pub fn short_of_mandatory(&self, accepted: &[Clause], exempt: &[Clause]) -> Vec<String> {
+        Clause::ALL
+            .iter()
+            .filter(|c| c.mandatory() && !exempt.contains(c))
+            .filter_map(|c| match self.clauses.get(c) {
+                Some(ClauseState::Enforced { .. }) => None,
+                Some(ClauseState::BestEffort { .. }) if accepted.contains(c) => None,
+                Some(state) => Some(format!("{}: {}", c.letter(), state.describe())),
+                None => Some(format!("{}: not reported", c.letter())),
+            })
+            .collect()
+    }
+
     /// The clauses that are not `enforced`, as `F: reason` lines for the status.
     pub fn unavailable_lines(&self) -> Vec<String> {
         Clause::ALL

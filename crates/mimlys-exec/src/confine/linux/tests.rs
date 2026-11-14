@@ -337,6 +337,30 @@ fn req_conf_005_the_abi_cap_selects_the_rung() {
     assert!(detect_abi_capped(Some(100)) == kernel);
 }
 
+/// What a thread restricted by one layer finds when it opens a path for
+/// writing, reads a file and lists a directory.
+fn open_for_write(path: &Path) -> Result<(), std::io::ErrorKind> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map(|_| ())
+        .map_err(|e| e.kind())
+}
+
+/// Applies `layer` to one thread and runs `probe` on it: a ruleset restricts
+/// the thread that applies it, so the test process is left as it was.
+fn on_restricted_thread<T: Send + 'static>(
+    layer: landlock::RulesetCreated,
+    probe: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    std::thread::spawn(move || {
+        layer.restrict_self().expect("restrict this thread");
+        probe()
+    })
+    .join()
+    .unwrap()
+}
+
 /// REQ-CONF-010: the host tools' layer holds no right on the worker's own
 /// cgroup directory, which the worker's layer does hold. The directory is a
 /// stand-in outside the write set, with the file the cgroup filesystem would
@@ -351,42 +375,188 @@ fn req_conf_010_the_tool_layer_holds_no_right_on_the_workers_cgroup() {
         return;
     };
     let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let task = data.join("workspaces").join("a");
+    std::fs::create_dir_all(task.join("tree")).unwrap();
+    std::fs::create_dir_all(task.join("tmp").join("e")).unwrap();
     let cgroup = tmp.path().join("mimlys-1");
     std::fs::create_dir_all(cgroup.join(TOOL_CGROUP)).unwrap();
     let procs = cgroup.join(TOOL_CGROUP).join("cgroup.procs");
     std::fs::write(&procs, "").unwrap();
-    let write_set = tmp.path().join("write");
-    std::fs::create_dir_all(&write_set).unwrap();
-    let own = write_set.join("own");
-    std::fs::write(&own, "").unwrap();
-    let mut spec = spec_denying_network(tmp.path());
-    spec.write_paths = vec![write_set];
-    let open_for_write = |path: &Path| {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map(|_| ())
-            .map_err(|e| e.kind())
+    let mut spec = spec_denying_network(&data);
+    spec.write_paths = vec![data.join("workspaces"), data.join("tmp")];
+    let paths = TaskPaths {
+        tree: &task.join("tree"),
+        tmp: &task.join("tmp").join("e"),
     };
-    // Each layer is made for its own thread: a ruleset is applied once.
-    let apply = |worker: bool| {
-        let layers = build_layers(&spec, Some(&cgroup), abi).expect("layers");
-        let (procs, own) = (procs.clone(), own.clone());
-        std::thread::spawn(move || {
-            let layer = if worker { layers.worker } else { layers.tool };
-            layer.restrict_self().expect("restrict this thread");
-            (open_for_write(&procs), open_for_write(&own))
-        })
-        .join()
-        .unwrap()
-    };
-    let (tool_procs, tool_own) = apply(false);
+    let tool_layer = tool_ruleset(&spec, abi, paths).expect("the tool's layer");
+    let probe_procs = procs.clone();
+    let tool = on_restricted_thread(tool_layer, move || open_for_write(&probe_procs));
     assert_eq!(
-        tool_procs,
+        tool,
         Err(std::io::ErrorKind::PermissionDenied),
         "the tool layer has no right on the worker's cgroup"
     );
-    assert_eq!(tool_own, Ok(()), "and still writes its own set");
-    let (worker_procs, _) = apply(true);
-    assert_eq!(worker_procs, Ok(()), "the worker's layer has it");
+    // The worker's layer is made as `apply_landlock` makes it, with the cgroup.
+    let (worker_layer, _) =
+        landlock_ruleset(&spec, Some(&cgroup), abi, &WORKER_ONLY_READ, true).expect("worker");
+    let worker = on_restricted_thread(worker_layer, move || open_for_write(&procs));
+    assert_eq!(worker, Ok(()), "the worker's layer has it");
+}
+
+/// REQ-CONF-006: a host tool's layer holds, of the data directory, its own
+/// task's workspace tree and the execution's temporary directory, and
+/// nothing else: it can neither list, read nor write another task's tree,
+/// nor the task's own metadata, nor the runtime's temporary directory (which
+/// it may read), nor list the tasks; and it still writes its own.
+#[test]
+fn req_conf_006_a_tool_layer_holds_only_its_own_tasks_workspace() {
+    let Some(abi) = detect_abi_capped(None) else {
+        crate::test_skip::skip(
+            "req_conf_006_a_tool_layer_holds_only_its_own_tasks_workspace",
+            "no Landlock on this kernel",
+        );
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let workspaces = data.join("workspaces");
+    for task in ["a", "b"] {
+        std::fs::create_dir_all(workspaces.join(task).join("tree")).unwrap();
+        std::fs::create_dir_all(workspaces.join(task).join("tmp").join("e")).unwrap();
+        std::fs::write(workspaces.join(task).join("tree").join("file"), task).unwrap();
+        std::fs::write(workspaces.join(task).join("info.json"), "{}").unwrap();
+    }
+    std::fs::create_dir_all(data.join("tmp")).unwrap();
+    std::fs::write(data.join("tmp").join("shared"), "x").unwrap();
+    let mut spec = spec_denying_network(&data);
+    spec.read_paths.push(data.join("tmp"));
+    spec.write_paths = vec![workspaces.clone(), data.join("tmp")];
+    let a = workspaces.join("a");
+    let paths = TaskPaths {
+        tree: &a.join("tree"),
+        tmp: &a.join("tmp").join("e"),
+    };
+    let layer = tool_ruleset(&spec, abi, paths).expect("the tool's layer");
+    let (a, b) = (workspaces.join("a"), workspaces.join("b"));
+    let seen = on_restricted_thread(layer, move || {
+        let read = |p: PathBuf| std::fs::read(p).map(|_| ()).map_err(|e| e.kind());
+        let list = |p: PathBuf| std::fs::read_dir(p).map(|_| ()).map_err(|e| e.kind());
+        [
+            // Its own: tree and temporary directory, read and write.
+            (
+                "write own tree",
+                open_for_write(&a.join("tree").join("file")),
+            ),
+            ("read own tree", read(a.join("tree").join("file"))),
+            ("list own tree", list(a.join("tree"))),
+            (
+                "write own tmp",
+                open_for_write(&a.join("tmp").join("e").join("new")).or_else(|e| {
+                    // The file does not exist yet: creating it is the write.
+                    std::fs::write(a.join("tmp").join("e").join("new"), "x").map_err(|_| e)
+                }),
+            ),
+            // Another task's, and the rest of the data directory.
+            (
+                "write another tree",
+                open_for_write(&b.join("tree").join("file")),
+            ),
+            ("read another tree", read(b.join("tree").join("file"))),
+            ("list another tree", list(b.join("tree"))),
+            (
+                "create in another tree",
+                std::fs::write(b.join("tree").join("new"), "x").map_err(|e| e.kind()),
+            ),
+            ("write own metadata", open_for_write(&a.join("info.json"))),
+            ("list the tasks", list(a.parent().unwrap().to_path_buf())),
+            (
+                "write the runtime's tmp",
+                std::fs::write(
+                    a.parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .join("tmp")
+                        .join("new"),
+                    "x",
+                )
+                .map_err(|e| e.kind()),
+            ),
+            (
+                "read the runtime's tmp",
+                read(
+                    a.parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .join("tmp")
+                        .join("shared"),
+                ),
+            ),
+        ]
+    });
+    let denied = Err(std::io::ErrorKind::PermissionDenied);
+    let expected: [(&str, Result<(), std::io::ErrorKind>); 12] = [
+        ("write own tree", Ok(())),
+        ("read own tree", Ok(())),
+        ("list own tree", Ok(())),
+        ("write own tmp", Ok(())),
+        ("write another tree", denied),
+        ("read another tree", denied),
+        ("list another tree", denied),
+        ("create in another tree", denied),
+        ("write own metadata", denied),
+        ("list the tasks", denied),
+        ("write the runtime's tmp", denied),
+        ("read the runtime's tmp", Ok(())),
+    ];
+    assert_eq!(seen, expected);
+}
+
+/// REQ-CONF-006: the layer is made only for what it says: the tree of one
+/// task directly under `<data>/workspaces`, with a temporary directory inside
+/// the same task's directory. Anything else is refused, never widened.
+#[test]
+fn req_conf_006_a_tool_layer_is_refused_for_paths_that_are_not_one_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let workspaces = data.join("workspaces");
+    for task in ["a", "b"] {
+        std::fs::create_dir_all(workspaces.join(task).join("tree")).unwrap();
+        std::fs::create_dir_all(workspaces.join(task).join("tmp")).unwrap();
+    }
+    let mut spec = spec_denying_network(&data);
+    spec.write_paths = vec![workspaces.clone(), data.join("tmp")];
+    let (a_tree, a_tmp) = (workspaces.join("a/tree"), workspaces.join("a/tmp"));
+    let ok = |tree: &Path, tmp: &Path| tool_spec(&spec, TaskPaths { tree, tmp });
+    let granted = ok(&a_tree, &a_tmp).expect("one task");
+    assert!(granted.write_paths.contains(&a_tree) && granted.write_paths.contains(&a_tmp));
+    assert!(
+        !granted
+            .write_paths
+            .iter()
+            .any(|p| p.starts_with(&data) && p != &a_tree && p != &a_tmp),
+        "nothing of the data directory but the two: {:?}",
+        granted.write_paths
+    );
+    // The temporary directory of another task, a tree that is not a tree, a
+    // task directory itself, a path outside the data directory.
+    assert!(ok(&a_tree, &workspaces.join("b/tmp")).is_err());
+    assert!(ok(&workspaces.join("a"), &a_tmp).is_err());
+    assert!(ok(&workspaces, &a_tmp).is_err());
+    assert!(ok(&tmp.path().join("elsewhere/tree"), &a_tmp).is_err());
+    assert!(ok(&a_tree, &workspaces.join("a/tmp/missing")).is_err());
+    let mut no_data_dir = spec.clone();
+    no_data_dir.data_dir = PathBuf::new();
+    assert!(
+        tool_spec(
+            &no_data_dir,
+            TaskPaths {
+                tree: &a_tree,
+                tmp: &a_tmp
+            }
+        )
+        .is_err()
+    );
 }
