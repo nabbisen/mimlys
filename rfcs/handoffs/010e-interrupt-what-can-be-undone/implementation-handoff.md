@@ -142,3 +142,35 @@ The specification now says them: external design §7.5, §8 (the notice) and §1
 CHANGELOG: Fixed (items 1 and 2). Book: `cli.md` Signals, one clause ("no new step begins").
 
 Return: `.git-exclude/review-requests/010e-4-interrupt/README.md`.
+
+## After review (2026-11-14): 010e-5
+
+010e-4 is landed. Your finding 6.1 is a real defect, verified in `crates/mimlys-mcp/src/server.rs`. `McpTools::execute` calls `current_hash` → `list()` → `ensure_started(.., None)` before every call, and that restarts a dead server **without counting** it. So LIM-X3 per task is not enforced in the product, and a server that dies at every call is restarted without end. External design §11.1 now states the rule, and the reason word below.
+
+1. **Every restart made for a task counts against it** (question 1).
+   - The pin check takes the task: `current_hash(task, tool)`. Any other path that starts a server on a task's behalf passes `Some(task)` too.
+   - A listing made for no task (`status`, the import at startup) stays uncounted. It is not a task's restart, and it must never use up a task's allowance.
+   - Past the limit, the call is not made: `host_fault{unavailable}`, the cause `tool_unavailable`, then REQ-TOOL-009's disposition, and nothing is `unknown`.
+   - The end-to-end test asked for in 010e-4, item 2, is now possible. The test server's `die`, declared `external_read` and idempotent, proposed until the limit is passed:
+     - exactly LIM-X3 restarts recorded (`server.started` events after the first);
+     - the next attempt `tool_unavailable` with the reason;
+     - no further `die` execution reaching the server;
+     - nothing `unknown`.
+
+     A second case, declared `external_write`: each death before the limit is `unknown` and halts. Show that the count survives a resume of the same task, since the count is per task, not per step.
+2. **The reason word is `restart_limit_reached`** (question 2), not `died`. `died` is what `server.stopped` says about a death. This reason is a different fact, a refusal to restart, and the user must not read it as one more death.
+3. **The other send failures** (your 6.3). The rule is whether the request was written.
+   - Check in `rmcp`'s transport what `send:transport` and `send:other` mean.
+   - When either means the request was not (completely) written, it is a call that never left: `tool_unavailable`, as `send:closed` is.
+   - When either can follow a complete write, it is a connection lost after the call: `host_fault{worker_died}`, unknown for an action that cannot be undone.
+   - Not a tool error in either case: a transport failure is not the tool's report of its end (§7.5).
+   - State what you found, with the `rmcp` source lines, and test the mapping as for `send:closed`.
+
+**Mutations:**
+- the pin check not counting;
+- a listing for no task counting;
+- `send:transport` left a tool error.
+
+CHANGELOG: Fixed (items 1 and 3), Changed (item 2).
+
+Return: `.git-exclude/review-requests/010e-5-mcp-restarts/README.md`.
