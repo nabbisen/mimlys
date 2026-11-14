@@ -83,6 +83,9 @@ fn fx() -> Fx {
         host_tools: vec![],
         record: None,
     });
+    // These tests share one worker between tasks and count its deaths; a worker
+    // made per task (the default on macOS) is tested on its own.
+    worker.bind_to_task(false);
     Fx {
         _dir: dir,
         workspace,

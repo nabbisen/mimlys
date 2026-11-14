@@ -88,6 +88,9 @@ fn side(name: &'static str, network: bool) -> Side {
         host_tools: vec![declaration],
         record: None,
     });
+    // The membership tests run workers on workspaces of their own, and compare
+    // two workers of one specification: not workers made per task.
+    worker.bind_to_task(false);
     Side {
         _data: data,
         tree,
