@@ -117,7 +117,9 @@ impl Servers {
                     vec![],
                     Some(match e {
                         ServerError::Unavailable { reason, .. } => reason,
-                        ServerError::Died { .. } => "died".to_owned(),
+                        ServerError::RestartLimitReached { .. } => {
+                            "restart_limit_reached".to_owned()
+                        }
                     }),
                 ),
             };
@@ -209,7 +211,7 @@ fn map_server_error(error: ServerError, wall_ms: i64) -> ExecutionOutcome {
         ServerError::Unavailable { reason, .. } => unavailable(&reason, metrics),
         // A refusal to restart, not one more death: `server.stopped` and
         // `status` keep `died` for a death (external design §11.1).
-        ServerError::Died { .. } => unavailable("restart_limit_reached", metrics),
+        ServerError::RestartLimitReached { .. } => unavailable("restart_limit_reached", metrics),
     }
 }
 
@@ -468,7 +470,7 @@ impl ToolProvider for McpTools {
                 Ok((_, _, h)) => Some(h),
                 // The restart limit is reached: the definitions did not change,
                 // and the call will be refused as `tool_unavailable`.
-                Err(ServerError::Died { .. }) => continue,
+                Err(ServerError::RestartLimitReached { .. }) => continue,
                 Err(_) => None,
             };
             for (name, record) in pinned {

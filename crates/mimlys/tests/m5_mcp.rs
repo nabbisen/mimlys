@@ -651,7 +651,10 @@ fn m5_cancellation_deadline_death_and_restarts() {
             )
             .await;
         assert!(
-            matches!(exhausted, Err(mimlys_mcp::server::ServerError::Died { .. })),
+            matches!(
+                exhausted,
+                Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
+            ),
             "{exhausted:?}"
         );
         let events = server.drain_events();
@@ -861,7 +864,10 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
         for _ in 0..3 {
             let refused = server.current_hash(task, "web_search").await;
             assert!(
-                matches!(refused, Err(mimlys_mcp::server::ServerError::Died { .. })),
+                matches!(
+                    refused,
+                    Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
+                ),
                 "{refused:?}"
             );
             let called = server
@@ -874,7 +880,10 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
                 )
                 .await;
             assert!(
-                matches!(called, Err(mimlys_mcp::server::ServerError::Died { .. })),
+                matches!(
+                    called,
+                    Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
+                ),
                 "{called:?}"
             );
         }
@@ -927,7 +936,7 @@ fn req_tool_009_the_relisting_at_a_step_boundary_counts_for_its_task() {
         assert!(!server.is_running().await, "not restarted past the limit");
         assert!(matches!(
             server.current_hash(task, "web_search").await,
-            Err(mimlys_mcp::server::ServerError::Died { .. })
+            Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
         ));
         assert!(
             provider

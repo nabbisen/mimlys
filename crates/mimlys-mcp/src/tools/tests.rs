@@ -130,7 +130,7 @@ fn req_pers_008_a_connection_closed_after_the_request_is_a_lost_worker() {
 /// `tool_unavailable`, and nothing is unknown for any effect.
 #[test]
 fn req_tool_009_a_server_past_its_restart_limit_is_unavailable_and_not_unknown() {
-    let died = map_server_error(ServerError::Died { server: "t".into() }, 3);
+    let died = map_server_error(ServerError::RestartLimitReached { server: "t".into() }, 3);
     assert_eq!(
         died.termination,
         Termination::HostFault {

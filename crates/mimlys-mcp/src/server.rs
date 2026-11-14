@@ -141,7 +141,7 @@ pub enum ServerError {
     /// used up: it is not restarted, so no call is made. The reason word the
     /// product gives for it is `restart_limit_reached`.
     #[error("server {server} not restarted: restart_limit_reached for the task")]
-    Died {
+    RestartLimitReached {
         /// The server.
         server: String,
     },
@@ -270,7 +270,7 @@ impl Server {
 
     /// Starts the process when it is not running. A start after the first is a
     /// restart: made for `task`, it counts against the task (LIM-X3) and, past
-    /// the limit, is refused (`ServerError::Died`) every time it is asked
+    /// the limit, is refused (`ServerError::RestartLimitReached`) every time it is asked
     /// again, not only once. A start for no task is never counted.
     async fn ensure_started(
         &self,
@@ -294,7 +294,7 @@ impl Server {
             let mut restarts = self.restarts.lock().expect("restarts lock");
             let count = restarts.entry(task).or_insert(0);
             if *count >= LIM_X3_RESTARTS {
-                return Err(ServerError::Died {
+                return Err(ServerError::RestartLimitReached {
                     server: self.config.name.clone(),
                 });
             }
