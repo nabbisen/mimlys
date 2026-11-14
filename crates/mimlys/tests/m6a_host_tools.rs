@@ -53,7 +53,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tooldir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -90,6 +90,15 @@ network = true
             config,
             extra_env: vec![],
         }
+    }
+
+    /// Replaces the backend's script, for the next task of the same data directory.
+    fn set_script(&self, script: &[Value]) {
+        std::fs::write(
+            self.data.path().join("script.json"),
+            serde_json::to_string(script).unwrap(),
+        )
+        .unwrap();
     }
 
     fn env(mut self, key: &str, value: &str) -> Self {
@@ -418,6 +427,192 @@ fn cancel_kills_the_whole_tree(no_cgroup: bool, secs: &str, primitive: Option<&s
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let (_, task) = env.json(&["task", "show", &id]);
     assert_eq!(task["task"]["state"], "cancelled");
+}
+
+/// REQ-CONF-006: a host tool writes only its own task's workspace. Task B
+/// leaves a file in its tree; task A's tool, run from the same data directory,
+/// can neither read, write nor list B's tree nor the directory of tasks, and
+/// still writes its own tree, `HOME` and `TMPDIR`.
+#[test]
+fn req_conf_006_a_host_tool_reaches_only_its_own_tasks_workspace() {
+    host_tool_reaches_only_its_own_task(
+        "req_conf_006_a_host_tool_reaches_only_its_own_tasks_workspace",
+        &[],
+    );
+}
+
+/// REQ-CONF-006: the same when the workers are made per task, as on macOS
+/// (a test-build knob chooses it here): the worker itself is confined to
+/// the one task.
+#[test]
+fn req_conf_006_a_worker_made_per_task_reaches_only_its_own_tasks_workspace() {
+    host_tool_reaches_only_its_own_task(
+        "req_conf_006_a_worker_made_per_task_reaches_only_its_own_tasks_workspace",
+        &[("MIMLYS_PROBE_WORKER_PER_TASK", "1")],
+    );
+}
+
+fn host_tool_reaches_only_its_own_task(test: &str, knobs: &[(&str, &str)]) {
+    let mut env = Env::new(&[probe(&["write", "b-owned.txt"]), complete()], "");
+    for (k, v) in knobs {
+        env = env.env(k, v);
+    }
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let run = |goal: &str| -> String {
+        let (code, value) = env.json(&[
+            "run",
+            goal,
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ]);
+        assert_eq!(code, 0, "{value}");
+        assert_eq!(value["task"]["state"], "completed", "{value}");
+        value["task"]["task_id"].as_str().unwrap().to_owned()
+    };
+    let b = run("b");
+    let b_tree = env.tree(&b);
+    assert!(b_tree.join("b-owned.txt").is_file(), "task B's own write");
+    let b_dir = b_tree.parent().unwrap().to_path_buf();
+    let workspaces = b_dir.parent().unwrap().to_path_buf();
+    let arg = |p: &Path| p.to_str().unwrap().to_owned();
+    // Each refusal is followed by an action that succeeds, so that the
+    // budget of consecutive failures does not end the task first.
+    env.set_script(&[
+        probe(&["write", "a-owned.txt"]),
+        probe(&["write-env", "HOME", "h.txt"]),
+        probe(&["write-env", "TMPDIR", "t.txt"]),
+        probe(&["read", &arg(&b_tree.join("b-owned.txt"))]),
+        probe(&["ok"]),
+        probe(&["write", &arg(&b_tree.join("a-was-here.txt"))]),
+        probe(&["ok"]),
+        probe(&["list", &arg(&b_tree)]),
+        probe(&["ok"]),
+        probe(&["list", &arg(&b_dir)]),
+        probe(&["ok"]),
+        probe(&["list", &arg(&workspaces)]),
+        probe(&["ok"]),
+        complete(),
+    ]);
+    let a = run("a");
+    let obs = env.observations(&a);
+    assert_eq!(obs.len(), 13, "{obs:?}");
+    for (i, what) in [(0, "its own tree"), (1, "its HOME"), (2, "its TMPDIR")] {
+        assert_eq!(
+            stdout_of(&obs[i]).trim(),
+            "wrote",
+            "{what}: {}",
+            stdout_of(&obs[i])
+        );
+    }
+    assert!(env.tree(&a).join("a-owned.txt").is_file());
+    for (i, expected) in [
+        (3, "read failed: permission denied"),
+        (5, "write failed: permission denied"),
+        (7, "list failed: permission denied"),
+        (9, "list failed: permission denied"),
+        (11, "list failed: permission denied"),
+    ] {
+        assert!(
+            stdout_of(&obs[i]).contains(expected),
+            "action {i} reached another task: {}",
+            stdout_of(&obs[i])
+        );
+    }
+    assert!(!b_tree.join("a-was-here.txt").exists());
+}
+
+/// REQ-SEC-003: a worker whose own report of its confinement lacks a mandatory
+/// clause is refused before any work is sent to it, with the reason; the
+/// probe that decided the tier was another process and said `full`. A test
+/// knob (`MIMLYS_PROBE_FAIL_SERVING`) makes the serving process report clause
+/// F unavailable. Nothing the tool would have done is done.
+#[test]
+fn req_sec_003_a_worker_with_a_short_report_is_refused_before_any_work() {
+    let test = "req_sec_003_a_worker_with_a_short_report_is_refused_before_any_work";
+    let env = Env::new(&[probe(&["write", "marker.txt"]), complete()], "")
+        .env("MIMLYS_PROBE_FAIL_SERVING", "F");
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let (_, stdout, stderr) = env.run(&[
+        "--json",
+        "run",
+        "write a marker",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    let value: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{stderr}"));
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 1, "{obs:?}");
+    assert_eq!(obs[0]["cause"]["cause"], "sandbox_fault", "{obs:?}");
+    assert!(
+        !env.tree(&id).join("marker.txt").exists(),
+        "the tool did not run"
+    );
+    assert!(
+        stderr.contains("report of its confinement is short: F: unavailable: injected failure"),
+        "the reason is logged: {stderr}"
+    );
+}
+
+/// REQ-SEC-003: the dependency step's worker is checked the same way, apart
+/// from clause N, which it does not have by design: the knob makes only that
+/// worker report F unavailable, the first action (the serving worker) runs,
+/// the second (the dependency step) is refused.
+#[test]
+fn req_sec_003_the_dependency_steps_worker_is_checked_too() {
+    let test = "req_sec_003_the_dependency_steps_worker_is_checked_too";
+    let env = Env::new(
+        &[
+            probe(&["ok"]),
+            json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "fetch", "args": ["read", "marker.txt"]}}),
+            complete(),
+        ],
+        "",
+    )
+    .env("MIMLYS_PROBE_FAIL_SERVING", "F@network");
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let (_, stdout, stderr) = env.run(&[
+        "--json",
+        "run",
+        "fetch nothing",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+        "--grant",
+        "host_tool:fetch",
+    ]);
+    let value: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{stderr}"));
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 2, "{obs:?}");
+    assert_eq!(exit_code_of(&obs[0]), 0, "the serving worker ran the tool");
+    assert_eq!(obs[1]["cause"]["cause"], "sandbox_fault", "{obs:?}");
+    assert!(
+        stderr.contains("report of its confinement is short: F: unavailable: injected failure"),
+        "the reason is logged: {stderr}"
+    );
 }
 
 /// Polls `done` every 25 ms until it holds or `limit` has passed (the tests

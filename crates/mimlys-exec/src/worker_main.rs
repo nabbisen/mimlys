@@ -12,11 +12,13 @@ use crate::sandbox::{
     ENGINE_VERSION, Interrupt, InterruptReason, Limits, Request as RunRequest, Sandbox,
 };
 use mimlys_core::action::{HostFaultDetail, Termination};
+use mimlys_core::confine::Clause;
 use mimlys_core::limits::LIM_S5_MODULE_BYTES;
 use mimlys_core::observation::Notice;
 use mimlys_core::path::WorkspacePath;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
@@ -39,10 +41,16 @@ struct State {
     tool_cgroup: Option<std::path::PathBuf>,
     /// The watchdogs' ceilings for the sandbox's members (macOS; empty elsewhere).
     tree_limits: crate::host_tool::TreeLimits,
+    /// Why this worker runs no host tool: its own report of its confinement is short.
+    host_tool_refusal: Option<String>,
 }
 
 /// What the worker's self-confinement produced (RFC 011 §1), set once at start.
 static APPLIED: std::sync::OnceLock<crate::confine::Applied> = std::sync::OnceLock::new();
+
+/// Whether this worker is the dependency step's, which has the network
+/// (its specification does not deny it); set once at start.
+static ALLOWS_NETWORK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Applies the confinement specification before anything else runs.
 fn confine_self(args: &[String]) -> crate::confine::Applied {
@@ -160,9 +168,13 @@ pub fn main() {
     }
     // RFC 011 §1: the worker confines itself before reading its first frame
     // (and before any thread exists); what held is what it reports.
+    ALLOWS_NETWORK.store(
+        spec_of(&args).is_some_and(|spec| !spec.deny_network),
+        Ordering::Relaxed,
+    );
     let applied = confine_self(&args);
     if args.iter().any(|a| a == "--probe") {
-        let clauses = own_clauses();
+        let clauses = own_clauses(false);
         println!(
             "{}",
             serde_json::to_string(
@@ -183,14 +195,46 @@ pub fn main() {
         .filter(|_| applied.rlimit_memory)
         .map(|s| s.memory_bytes);
     let tree_limits = tree_limits(&applied, spec_of(&args).as_ref());
-    let state = match build_state(configured, limits, host_tools, host_memory, tree_limits) {
+    let mut state = match build_state(configured, limits, host_tools, host_memory, tree_limits) {
         Ok(s) => s,
         Err(detail) => {
             eprintln!("worker: cannot start the sandbox: {detail}");
             std::process::exit(1);
         }
     };
+    state.host_tool_refusal = host_tool_refusal(&args);
     serve(state);
+}
+
+/// Why this worker runs no host tool, when its own report of its confinement
+/// is short (REQ-SEC-003: an error in confinement means no execution). The
+/// rule is the runtime's: every mandatory clause enforced, or best effort and
+/// accepted by the administrator (`--accept-best-effort`, the letters); the
+/// dependency step's worker has the network by design, so clause N is not
+/// asked of it. The report is the one this process sends the runtime.
+fn host_tool_refusal(args: &[String]) -> Option<String> {
+    let accepted: Vec<Clause> = args
+        .iter()
+        .position(|a| a == "--accept-best-effort")
+        .and_then(|i| args.get(i + 1))
+        .map(|letters| {
+            Clause::ALL
+                .into_iter()
+                .filter(|c| letters.contains(c.letter()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let exempt = match spec_of(args) {
+        Some(spec) if !spec.deny_network => vec![Clause::Network],
+        _ => vec![],
+    };
+    let short = crate::worker::report_shortfall(&own_clauses(true), &accepted, &exempt);
+    (!short.is_empty()).then(|| {
+        format!(
+            "the worker's own report of its confinement is short: {}",
+            short.join("; ")
+        )
+    })
 }
 
 /// The confinement specification the runtime passed (`--confine <json>`).
@@ -223,7 +267,7 @@ fn tree_limits(
     }
 }
 
-fn own_clauses() -> BTreeMap<String, ClauseState> {
+fn own_clauses(serving: bool) -> BTreeMap<String, ClauseState> {
     let no_new_privs = crate::confine::no_new_privs();
     // What the runtime gives the worker (`worker_env`), plus what the
     // platform's own libraries set inside the process: on macOS,
@@ -235,6 +279,7 @@ fn own_clauses() -> BTreeMap<String, ClauseState> {
         "MIMLYS_PROBE_BEST_EFFORT",
         "MIMLYS_PROBE_NO_CGROUP",
         "MIMLYS_PROBE_MAX_LANDLOCK_ABI",
+        "MIMLYS_PROBE_FAIL_SERVING",
         "SystemRoot",
         "SYSTEMROOT",
     ];
@@ -289,6 +334,24 @@ fn own_clauses() -> BTreeMap<String, ClauseState> {
                 reason: "injected failure (MIMLYS_PROBE_FAIL)".into(),
             },
         );
+    }
+    // Test builds: the process that serves, and not the one that probes,
+    // reports a clause unavailable, so that the runtime's check of a worker's
+    // own report is run on a worker the probe called fine (REQ-TEST-013).
+    // `F` is every serving worker, `F@network` the dependency step's alone.
+    if serving
+        && cfg!(debug_assertions)
+        && let Ok(value) = std::env::var("MIMLYS_PROBE_FAIL_SERVING")
+    {
+        let (letter, scope) = value.split_once('@').unwrap_or((&value, ""));
+        if scope.is_empty() || (scope == "network" && ALLOWS_NETWORK.load(Ordering::Relaxed)) {
+            m.insert(
+                letter.to_ascii_uppercase(),
+                ClauseState::Unavailable {
+                    reason: "injected failure (MIMLYS_PROBE_FAIL_SERVING)".into(),
+                },
+            );
+        }
     }
     if let Ok(letter) = std::env::var("MIMLYS_PROBE_BEST_EFFORT")
         && cfg!(debug_assertions)
@@ -386,6 +449,7 @@ fn build_state(
         host_memory,
         tool_cgroup: APPLIED.get().and_then(|a| a.tool_cgroup.clone()),
         tree_limits,
+        host_tool_refusal: None,
     })
 }
 
@@ -420,7 +484,7 @@ fn serve(state: State) {
             }
             Incoming::Frame(Ok(Request::Probe)) => {
                 let response = Response::ProbeResult {
-                    clauses: own_clauses(),
+                    clauses: own_clauses(true),
                     cgroup: APPLIED.get().and_then(|a| a.cgroup.clone()),
                     engine_version: ENGINE_VERSION.into(),
                     interpreters: state
@@ -573,6 +637,22 @@ fn execute(
     }
     let args_obj = arguments.as_object().cloned().unwrap_or_default();
     if tool == "run_host_tool" {
+        // REQ-SEC-003: an error in confinement means no execution. The
+        // runtime checks this report too, before it sends any work; a worker
+        // that is asked all the same does not run the tool.
+        if let Some(reason) = &state.host_tool_refusal {
+            return (
+                Termination::HostFault {
+                    detail: HostFaultDetail::Unavailable,
+                },
+                Vec::new(),
+                Vec::new(),
+                Default::default(),
+                vec![Notice::HostToolNotStarted {
+                    reason: reason.clone(),
+                }],
+            );
+        }
         let name = args_obj
             .get("tool")
             .and_then(|v| v.as_str())

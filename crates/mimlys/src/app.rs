@@ -665,6 +665,15 @@ impl App {
         let probe = worker.probe_confined();
         let tier = probe.tier_with(&policy.accept_best_effort);
         let host_tools_available = tier.tier == mimlys_core::event::Tier::Full;
+        // REQ-SEC-003: where host tools are offered, the worker that serves
+        // them (the dependency step's too) is checked at every spawn against its
+        // own report of its confinement, not against this probe's, which is another process.
+        if host_tools_available {
+            worker.require_mandatory_clauses(&policy.accept_best_effort);
+            if let Some(fetch) = &fetch_worker {
+                fetch.require_mandatory_clauses(&policy.accept_best_effort);
+            }
+        }
         let servers = Arc::new(mimlys_mcp::tools::Servers::new(
             config
                 .servers(&data_dir, &loaded.secrets)

@@ -116,3 +116,13 @@ pub fn visible_pids() -> Vec<i32> {
         .filter(|&pid| matches!(super::sys::see(pid), super::Seen::Alive { .. }))
         .collect()
 }
+
+/// Applies a further profile to the calling process, as a host tool would to
+/// narrow itself below the profile its worker applied: the system's answer
+/// (`Ok` if it was applied, else its message). Measured on the macOS job
+/// (REQ-CONF-006): a sandboxed process can apply no second profile.
+pub fn apply_further_profile(profile: &str) -> Result<(), String> {
+    let init =
+        super::sys::resolve_sandbox_init().ok_or_else(|| "sandbox_init is missing".to_owned())?;
+    super::sys::apply(init, profile)
+}
