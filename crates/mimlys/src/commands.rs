@@ -53,6 +53,13 @@ pub fn print_view(view: &TaskView, out: &Output) {
         &view.task.task_id.to_string(),
         &view.task.state,
     ));
+    for a in &view.unknown_actions {
+        out.line(messages::unknown_action_line(
+            &a.action_id.to_string(),
+            &a.tool,
+            a.effect,
+        ));
+    }
     out.value(view);
 }
 
