@@ -78,33 +78,73 @@ another invocation.
 
 ## Signals
 
-Ctrl-C (and SIGTERM on Unix) once asks for a pause: the task pauses when the
-step in flight has finished. A step still running LIM-O1 less one second after
-the signal (4 seconds) has what can be undone interrupted: its model request, a
-read, a write inside the workspace (its changes are rolled back), a host write
-that made a backup. The task pauses there, and the process says so:
+Ctrl-C (and SIGTERM on Unix) once asks for a pause. Two things follow at once:
+
+- The step in flight **starts no new action.** If its model request returns
+  and proposes an action, the action is closed `cancelled` without starting
+  (nothing ran, so the record is exact), its observation says that your stop
+  signal came before it began, and the task pauses. This holds for every action,
+  also for one that needs no approval.
+- The task pauses when what is in flight has finished.
+
+A step still running LIM-O1 less one second after the signal (4 seconds) has
+what can be undone interrupted: its model request, a read, a write inside the
+workspace (its changes are rolled back). The process says so once the step has
+ended and the task is paused, never before:
 
 ```text
-the step was still running 4 seconds after the stop signal, so it was interrupted (its workspace changes are rolled back); the task is paused
+the step was still running 4 seconds after the stop signal, so it was interrupted; the task is paused
 ```
 
+When the step had written changes that were rolled back, the line says it:
+`..., so it was interrupted, and its workspace changes were rolled back; the task is paused`.
+
 An action that cannot be undone is never interrupted by the first signal: an
-external write, a host write without a backup, an external read that is not
-repeatable. The process says
+external write, a host write, an external read that is not repeatable. The
+runtime undoes none of them, so an interruption would leave what they did
+unknown. The process says why it waits, in words for the action:
 
 ```text
 waiting for <tool> to finish: it changes something outside this machine and cannot be undone; press Ctrl-C again to interrupt it anyway
+waiting for <tool> to finish: it changes files outside the task's workspace and cannot be undone; press Ctrl-C again to interrupt it anyway
+waiting for <tool> to finish: it has sent a request outside this machine that cannot be taken back; press Ctrl-C again to interrupt it anyway
 ```
 
-and waits for the action to end by itself, which its own deadline bounds (60
-seconds for an external tool unless the declaration says otherwise; a host
-tool's `timeout_ms`). Then the task pauses.
+The first line is an external write, the second a host write, the third an
+external read that is not repeatable. If mimlys cannot tell whether an action is
+in flight it waits too, and says so: `waiting for the action in flight to
+finish: mimlys cannot tell whether it can be undone; press Ctrl-C again to
+interrupt it anyway`.
 
-A second signal interrupts that action anyway. What it did is then unknown, and
-the task does not pretend otherwise: the action's status is `unknown`, the task
-is `halted` with `unknown_outcome`, and the action is named, in the text and in
-`unknown_actions` of the JSON, so that you can check what it did before you
-resume. A second signal with no such action in flight cancels the task.
+The wait ends when the action ends by itself, or at its own deadline (60 seconds
+for an external tool unless the declaration says otherwise; a host tool's
+`timeout_ms`). If the deadline ends it, what it did is unknown (see below), and
+the task halts instead of pausing. Otherwise the task pauses.
+
+A second signal interrupts that action anyway (`stop signal: interrupting
+<tool> although it cannot be undone`). With no such action in flight it cancels
+the task.
+
+### When an outcome is unknown
+
+An action that cannot be undone, and whose end mimlys decided rather than the
+tool, has an unknown outcome. That is the case when it was interrupted by a
+second signal, when it reached its deadline or a resource limit, when its
+worker died, and when the connection to its server was lost after the call was
+sent. The action's status is then `unknown` (never `failed` or `cancelled`,
+which would say that nothing happened), nothing is restored, and the task is
+`halted` with `unknown_outcome`. The model is not asked to try again. The action
+is named, in the text and in `unknown_actions` of the JSON, so that you can check
+what it did before you resume:
+
+```text
+outcome unknown: action <id> (<tool>, <effect>) did not finish by itself and cannot be undone; check what it did before relying on it
+```
+
+`unknown_actions` lists such an action for the whole life of the task, a resume
+included: resuming does not tell what the action did. A workspace write that
+reaches its deadline is not in this case: it is `failed` and rolled back, as
+before.
 
 `mimlys task cancel` ends a task `cancelled` as asked; an action it finds
 interrupted that cannot be undone is recorded and named in the same way. The
@@ -117,7 +157,7 @@ contract (REQ-CLI-004):
 
 | Command | Value |
 |---|---|
-| `run`, `task new|show|resume|pause|cancel`, `approve`, `reject`, `answer` | `{task, pending_approval, pending_question, plan, grants, unknown_actions}`: the task record with its `state` (`created`, `running`, `waiting_user` + `wait_kind`, `paused`, `halted` + `halt_reason`, `recovering`, `completed` + `completion`, `failed` + `reason`, `cancelled`), `counters`, `budgets`, `versions` (the policy hash, `decision_schema_version`, `event_schema_version`, `action_schema_version`, the tool-definition hashes, `runtime_version`, the backend, the imported tools), `scope`, `profile`; `unknown_actions` is `[{action_id, tool, effect}]`, the actions whose outcome is unknown (found running at a restart, or interrupted although they cannot be undone), empty when none |
+| `run`, `task new|show|resume|pause|cancel`, `approve`, `reject`, `answer` | `{task, pending_approval, pending_question, plan, grants, unknown_actions}`: the task record with its `state` (`created`, `running`, `waiting_user` + `wait_kind`, `paused`, `halted` + `halt_reason`, `recovering`, `completed` + `completion`, `failed` + `reason`, `cancelled`), `counters`, `budgets`, `versions` (the policy hash, `decision_schema_version`, `event_schema_version`, `action_schema_version`, the tool-definition hashes, `runtime_version`, the backend, the imported tools), `scope`, `profile`; `unknown_actions` is `[{action_id, tool, effect}]`, the actions whose outcome is unknown (found running at a restart, or an action that cannot be undone and that mimlys, not the tool, ended: interrupted, past its deadline or a limit, its worker or connection lost), empty when none |
 | `task list` | `[{task_id, goal, state, created_at, updated_at}]` |
 | `grant`, `revoke` | the grant: `{grant_id, task_id, kind, issued_by, issued_at, expires_at, status}` |
 | `events` | `[{position, record: {event_id, at, actor, …, task_id, step_id, action_id, policy_hash, event, …}}]` |

@@ -142,10 +142,13 @@ fn req_pers_007_recovery_plan_table() {
         );
         assert_eq!(p.action.as_ref().unwrap().restore_snapshot, None);
     }
-    // A reversible host write undoes through the tool and halts.
+    // A host write the tool backed up is recorded as such (`UndoThenHalt`), but the
+    // runtime undoes none: nothing is restored and the task halts `unknown_outcome`.
     let hw = running_action(&task, EffectKind::HostWrite, true, false);
-    let p = plan_recovery(&task, Some(&hw), &on, None).unwrap();
-    assert_eq!(p.action.unwrap().after_unknown, AfterUnknown::UndoThenHalt);
+    let p = plan_recovery(&task, Some(&hw), &on, Some(snap)).unwrap();
+    let recovery = p.action.unwrap();
+    assert_eq!(recovery.after_unknown, AfterUnknown::UndoThenHalt);
+    assert_eq!(recovery.restore_snapshot, None);
     assert_eq!(
         p.outcome,
         TaskInput::Recovered {
@@ -153,4 +156,41 @@ fn req_pers_007_recovery_plan_table() {
             reason: HaltReason::UnknownOutcome
         }
     );
+}
+
+/// REQ-CLI-005, REQ-PERS-007 (handoff 010e-3): the stop signal and recovery agree
+/// on what is done, not only on which actions. For every effect kind and every
+/// flag, `can_be_undone` is true exactly when the plan for a running action of
+/// that effect does not give `unknown_outcome`: where the runtime itself
+/// restores what an interruption left, a first signal may interrupt; where it
+/// halts, it may not. A host write is on the second side, with a backup or
+/// without: the runtime undoes none.
+#[test]
+fn req_cli_005_can_be_undone_is_true_exactly_when_recovery_does_not_give_unknown_outcome() {
+    use crate::action::can_be_undone;
+    let task = running_task();
+    let on = Recovery { auto_resume: true };
+    let snapshot = SnapshotId::new(&ScriptedIds::starting_at(50));
+    for kind in [
+        EffectKind::None,
+        EffectKind::WorkspaceRead,
+        EffectKind::WorkspaceWrite,
+        EffectKind::HostRead,
+        EffectKind::HostWrite,
+        EffectKind::ExternalRead,
+        EffectKind::ExternalWrite,
+    ] {
+        for reversible in [false, true] {
+            for idempotent in [false, true] {
+                let action = running_action(&task, kind, reversible, idempotent);
+                let plan = plan_recovery(&task, Some(&action), &on, Some(snapshot)).unwrap();
+                let halts = plan.disposition == RecoveryDisposition::UnknownOutcome;
+                assert_eq!(
+                    can_be_undone(action.content().effect()),
+                    !halts,
+                    "{kind:?} reversible={reversible} idempotent={idempotent}"
+                );
+            }
+        }
+    }
 }
