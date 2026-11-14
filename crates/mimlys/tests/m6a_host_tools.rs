@@ -53,7 +53,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tooldir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -1842,10 +1842,17 @@ fn req_conf_012_landlock_net_layer_is_reported() {
     }
     let abi4 = mimlys_exec::confine::linux::landlock_net_supported();
     assert_eq!(table["network"]["state"], "enforced", "{table:?}");
-    let expected = if abi4 {
-        "seccomp+landlock_net"
+    // Then the primitive that keeps Unix sockets inside the write set
+    // (REQ-CONF-005): Landlock's own from ABI 9, the filter's below it.
+    let guard = if mimlys_exec::confine::linux::landlock_resolve_unix_supported() {
+        "landlock_resolve_unix"
     } else {
-        "seccomp"
+        "seccomp_no_unix_socket"
+    };
+    let expected = if abi4 {
+        format!("seccomp+landlock_net+{guard}")
+    } else {
+        format!("seccomp+{guard}")
     };
     assert_eq!(table["network"]["primitive"], expected, "{table:?}");
     if !abi4 {
@@ -2159,4 +2166,146 @@ fn req_conf_011_only_the_workers_and_the_modules_files_are_admitted() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// 0.10 (handoff 011m; REQ-CONF-001, REQ-CONF-005): a pathname Unix socket
+// is reachable only inside the write set, on both rungs.
+// ---------------------------------------------------------------------
+
+/// One run of the Unix socket scenario, with the Landlock ABI capped to
+/// `cap` (a test-build knob) or as the kernel has it. A test socket server of
+/// this test listens outside every set, in a directory of its own, and so does
+/// an abstract one; a host tool connects to each, creates a socket in its own
+/// workspace and makes a socket pair. `status` names the primitive that holds.
+fn unix_sockets_scenario(test: &str, cap: Option<&str>) {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixListener};
+    let dir = tempfile::tempdir().unwrap();
+    let outside_socket = dir.path().join("outside.sock");
+    let outside_arg = outside_socket.to_str().unwrap().to_owned();
+    assert!(outside_arg.len() < 100, "{outside_arg}");
+    let listener = UnixListener::bind(&outside_socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let name = format!(
+        "mimlys-m6a-{}-{}",
+        std::process::id(),
+        cap.unwrap_or("kernel")
+    );
+    let abstract_listener =
+        UnixListener::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+    abstract_listener.set_nonblocking(true).unwrap();
+    // The controls: the same tool, outside every confinement, reaches both.
+    let (code, line) = control(&["unix-connect", &outside_arg]);
+    assert_eq!(code, 0, "the control connects: {line}");
+    assert!(
+        accepted(|| listener.accept()),
+        "the control reached the socket"
+    );
+    let (code, line) = control(&["unix-abstract-connect", &name]);
+    assert_eq!(code, 0, "the control connects: {line}");
+    assert!(
+        accepted(|| abstract_listener.accept()),
+        "the control reached the abstract socket"
+    );
+
+    let mut env = Env::new(
+        &[
+            probe(&["unix-socket", "inside.sock"]),
+            probe(&["unix-connect", &outside_arg]),
+            probe(&["unix-abstract-connect", &name]),
+            probe(&["unix-pair"]),
+            complete(),
+        ],
+        "",
+    );
+    if let Some(cap) = cap {
+        env = env.env(mimlys_exec::confine::linux::ABI_CAP_VARIABLE, cap);
+    }
+    // The rung in force: the kernel's, unless the cap puts it below ABI 9.
+    let resolve_unix = mimlys_exec::confine::linux::landlock_resolve_unix_supported()
+        && cap.is_none_or(|c| c.parse::<i32>().unwrap() >= 9);
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let (guard, filesystem) = if resolve_unix {
+        ("landlock_resolve_unix", "landlock_resolve_unix")
+    } else {
+        ("seccomp_no_unix_socket", "landlock+seccomp_no_unix_socket")
+    };
+    assert_eq!(table["filesystem"]["state"], "enforced", "{table:?}");
+    assert_eq!(table["filesystem"]["primitive"], filesystem, "{table:?}");
+    assert_eq!(table["network"]["state"], "enforced", "{table:?}");
+    let network = table["network"]["primitive"].as_str().unwrap_or("");
+    assert!(
+        network.starts_with("seccomp") && network.ends_with(guard),
+        "N names the guard: {network}"
+    );
+
+    let obs = run_probe_script(test, &env).expect("the tier was full a moment ago");
+    // Inside the tool's own workspace a Unix socket works where Landlock
+    // handles `ResolveUnix` (the right is on the write set); below ABI 9 the
+    // filter denies the creation of any Unix socket.
+    if resolve_unix {
+        assert!(
+            stdout_of(&obs[0]).contains("unix-socket bound and connected"),
+            "{}",
+            stdout_of(&obs[0])
+        );
+    } else {
+        assert!(
+            stdout_of(&obs[0]).contains("unix-socket bind failed: permission denied"),
+            "{}",
+            stdout_of(&obs[0])
+        );
+    }
+    assert_ne!(exit_code_of(&obs[1]), 0, "{}", stdout_of(&obs[1]));
+    assert!(
+        stdout_of(&obs[1]).contains("unix-connect failed: permission denied"),
+        "{}",
+        stdout_of(&obs[1])
+    );
+    assert!(
+        stdout_of(&obs[2]).contains("unix-abstract-connect failed: permission denied"),
+        "{}",
+        stdout_of(&obs[2])
+    );
+    // A socket pair reaches no path and stays allowed.
+    assert!(
+        stdout_of(&obs[3]).contains("unix-pair created"),
+        "{}",
+        stdout_of(&obs[3])
+    );
+    // The tool has ended: a connection it had made would be waiting in the backlog.
+    assert!(
+        listener.accept().is_err(),
+        "the listener saw no connection from the host tool"
+    );
+    assert!(
+        abstract_listener.accept().is_err(),
+        "the abstract listener saw no connection from the host tool"
+    );
+}
+
+/// REQ-CONF-001, REQ-CONF-005: on the kernel's own rung (Landlock `ResolveUnix`
+/// from ABI 9, the filter below it) a host tool reaches no Unix socket outside
+/// the write set, pathname or abstract; `status` names the primitive.
+#[test]
+fn req_conf_001_unix_sockets_outside_the_write_set_are_refused() {
+    unix_sockets_scenario(
+        "req_conf_001_unix_sockets_outside_the_write_set_are_refused",
+        None,
+    );
+}
+
+/// REQ-CONF-005: the same with the ABI capped below 9, so that the rung of the
+/// older kernels runs on any kernel: the filter denies `socket(AF_UNIX, ..)`.
+#[test]
+fn req_conf_005_unix_sockets_are_refused_below_landlock_abi_9() {
+    unix_sockets_scenario(
+        "req_conf_005_unix_sockets_are_refused_below_landlock_abi_9",
+        Some("8"),
+    );
 }

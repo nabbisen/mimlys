@@ -20,7 +20,7 @@
 //! Also, for the macOS clause suite (RFC 011 Amendment 2; REQ-CONF-002,
 //! REQ-CONF-011, REQ-CONF-012): `getaddrinfo <name>` (a name lookup, which
 //! on macOS goes through a mach service and a Unix socket, an egress
-//! channel), `unix-connect <path>` (connect to an existing Unix socket), `unix-socket <path>` (bind, listen and connect a Unix socket
+//! channel), `unix-connect <path>` (connect to an existing Unix socket), `unix-pair` (a socket pair, which reaches no path), `unix-abstract-connect <name>` (Linux: an abstract-namespace socket), `unix-socket <path>` (bind, listen and connect a Unix socket
 //! there), `id` (`/usr/bin/id -u`: an ordinary `exec`), `sudo-id`
 //! (`/usr/bin/sudo -n /usr/bin/id -u`: an `exec` of a setuid binary), and on
 //! macOS only, from `mimlys_exec::confine::macos::probe`: `procargs
@@ -208,6 +208,36 @@ fn main() {
                 }
                 Err(e) => {
                     println!("unix-connect failed: {}", e.kind());
+                    3
+                }
+            }
+        }
+        // A connected pair of Unix sockets, which reaches no path.
+        #[cfg(unix)]
+        Some("unix-pair") => match std::os::unix::net::UnixStream::pair() {
+            Ok(_) => {
+                println!("unix-pair created");
+                0
+            }
+            Err(e) => {
+                println!("unix-pair failed: {}", e.kind());
+                3
+            }
+        },
+        // A connection to an abstract-namespace Unix socket (Linux).
+        #[cfg(target_os = "linux")]
+        Some("unix-abstract-connect") => {
+            use std::os::linux::net::SocketAddrExt;
+            let name = args.get(1).map(String::as_str).unwrap_or("");
+            let result = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
+                .and_then(|addr| std::os::unix::net::UnixStream::connect_addr(&addr));
+            match result {
+                Ok(_) => {
+                    println!("unix-abstract-connect connected");
+                    0
+                }
+                Err(e) => {
+                    println!("unix-abstract-connect failed: {}", e.kind());
                     3
                 }
             }
@@ -631,7 +661,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|write|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }
