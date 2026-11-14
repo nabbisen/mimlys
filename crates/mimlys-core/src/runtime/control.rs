@@ -457,14 +457,25 @@ impl Runtime {
                 input: "promote_workspace",
             }));
         }
+        let base = super::read::base_snapshot(self.deps.persistence.as_ref(), task_id)?;
+        if base.snapshot_id != plan.base_snapshot {
+            return Err(RuntimeError::Workspace(
+                crate::spi::WorkspaceError::Refused {
+                    reason: "the plan is not against the task's base snapshot; plan again".into(),
+                },
+            ));
+        }
         let now = self.deps.clock.now();
         let (backup, promotion) = self.deps.workspaces.promote(
             task_id,
-            plan,
-            &task.scope.root,
-            SnapshotId::new(self.deps.ids.as_ref()),
-            crate::ids::PromotionId::new(self.deps.ids.as_ref()),
-            now,
+            &crate::spi::PromotionRequest {
+                plan,
+                base: &base,
+                project_root: &task.scope.root,
+                backup_id: SnapshotId::new(self.deps.ids.as_ref()),
+                promotion_id: crate::ids::PromotionId::new(self.deps.ids.as_ref()),
+                now,
+            },
         )?;
         self.deps.persistence.record_snapshot(
             &backup.record,

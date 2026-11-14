@@ -10,7 +10,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use mimlys_core::clock::Instant;
 use mimlys_core::hash::{Hash, hash_bytes};
-use mimlys_core::ids::{ActionId, PromotionId, SnapshotId, TaskId};
+use mimlys_core::ids::{ActionId, SnapshotId, TaskId};
 use mimlys_core::limits::LIM_W3_FILE_BYTES;
 use mimlys_core::path::CaseMode;
 use mimlys_core::policy::ExclusionMatcher;
@@ -18,7 +18,9 @@ use mimlys_core::snapshot::{
     Change, ChangeKind, Entry, Manifest, Promotion, PromotionPlan, RestoreReport, SnapshotReason,
     SnapshotRecord, diff, target_inside_root,
 };
-use mimlys_core::spi::{DeletedRows, PreparedSnapshot, WorkspaceError, WorkspaceInfo};
+use mimlys_core::spi::{
+    DeletedRows, PreparedSnapshot, PromotionRequest, WorkspaceError, WorkspaceInfo,
+};
 use mimlys_core::task::ScopeSpec;
 use mimlys_persist::snapshots::SnapshotFiles;
 use sha2::{Digest, Sha256};
@@ -564,9 +566,16 @@ impl LocalWorkspaces {
                 changes.push(c);
             }
         }
-        // Conflicts: the project's target must equal the base entry (REQ-WS-007).
         let project = Self::scope_dir(project_root)?;
         let base_by_path = base_manifest.by_path();
+        let current_by_path = current.by_path();
+        // Nothing is written through a link: every parent of a path is a real directory
+        // (REQ-WS-005, REQ-WS-007). The path of a change is then also its resolved path,
+        // which is what the exclusion above was judged on.
+        for c in &changes {
+            walk_parents(&project, &c.path, false)?;
+        }
+        // Conflicts: the project's target must equal the base entry (REQ-WS-007).
         let mut conflicts = Vec::new();
         for c in &changes {
             let in_project = project_entry(&project, &c.path)?;
@@ -583,7 +592,11 @@ impl LocalWorkspaces {
         if !conflicts.is_empty() {
             return Err(WorkspaceError::Conflict { paths: conflicts });
         }
-        let current_by_path = current.by_path();
+        // A directory the promotion removes holds nothing the plan does not list (REQ-WS-007).
+        let unlisted = unlisted_entries(&project, &changes, &base_by_path, &current_by_path)?;
+        if !unlisted.is_empty() {
+            return Err(WorkspaceError::Unlisted { paths: unlisted });
+        }
         let mut text_diffs = Vec::new();
         for c in &changes {
             let before = in_base_text(&base_by_path, &c.path, &self.files).unwrap_or_default();
@@ -622,12 +635,16 @@ impl LocalWorkspaces {
     pub(crate) fn promote_impl(
         &self,
         task_id: TaskId,
-        plan: &PromotionPlan,
-        project_root: &str,
-        backup_id: SnapshotId,
-        promotion_id: PromotionId,
-        now: Instant,
+        request: &PromotionRequest<'_>,
     ) -> Result<(PreparedSnapshot, Promotion), WorkspaceError> {
+        let PromotionRequest {
+            plan,
+            base,
+            project_root,
+            backup_id,
+            promotion_id,
+            now,
+        } = *request;
         let dir = self.tree_dir(task_id)?;
         let current = walk_manifest(&dir, None)?;
         if current.hash() != plan.current_hash {
@@ -635,13 +652,24 @@ impl LocalWorkspaces {
                 reason: "the workspace changed since the plan was made; plan again".into(),
             });
         }
+        let base_manifest = self
+            .files
+            .read_manifest(base.snapshot_id, &base.manifest_hash)
+            .map_err(persist)?;
+        let base_by_path = base_manifest.by_path();
         let project = Self::scope_dir(project_root)?;
-        // Backup: the project's current versions of every path the plan touches.
+        // Backup: the project's current versions of every path the plan touches. Each is
+        // the base entry, or the plan is stale (REQ-WS-007).
         let mut backup_entries = Vec::new();
         for c in &plan.changes {
-            if let Some(entry) = project_entry(&project, &c.path)? {
-                backup_entries.push(entry);
+            walk_parents(&project, &c.path, false)?;
+            let entry = project_entry(&project, &c.path)?;
+            if !matches_base(entry.as_ref(), base_by_path.get(c.path.as_str()).copied()) {
+                return Err(WorkspaceError::Conflict {
+                    paths: vec![c.path.clone()],
+                });
             }
+            backup_entries.extend(entry);
         }
         let backup_manifest = Manifest::new(backup_entries);
         let backup = self.store_snapshot(
@@ -659,71 +687,32 @@ impl LocalWorkspaces {
             },
             &backup_manifest,
         )?;
-        // Apply: temp-and-rename writes, directories created, deletions, inside links only.
+        // Apply: listed paths only, each compared with the base entry first.
         let current_by_path = current.by_path();
-        for c in &plan.changes {
-            match c.kind {
-                ChangeKind::Deleted => {
-                    if project.symlink_metadata(&c.path).is_ok() {
-                        if project.is_dir(&c.path)
-                            && project
-                                .symlink_metadata(&c.path)
-                                .map(|m| !m.is_symlink())
-                                .unwrap_or(false)
-                        {
-                            project
-                                .remove_dir_all(&c.path)
-                                .map_err(storage("remove_dir"))?;
-                        } else {
-                            project
-                                .remove_file(&c.path)
-                                .map_err(storage("remove_file"))?;
-                        }
-                    }
-                }
+        let wants: Vec<Want> = plan
+            .changes
+            .iter()
+            .filter_map(|c| match c.kind {
+                ChangeKind::Deleted => Some(Want {
+                    path: &c.path,
+                    entry: None,
+                }),
                 ChangeKind::Added | ChangeKind::Modified => {
-                    if let Some(parent) = Path::new(&c.path)
-                        .parent()
-                        .filter(|p| !p.as_os_str().is_empty())
-                    {
-                        project
-                            .create_dir_all(parent)
-                            .map_err(storage("create_dir"))?;
-                    }
-                    match current_by_path.get(c.path.as_str()) {
-                        Some(Entry::File {
-                            hash, executable, ..
-                        }) => {
-                            if project.is_dir(&c.path) {
-                                project
-                                    .remove_dir_all(&c.path)
-                                    .map_err(storage("remove_dir"))?;
-                            }
-                            Self::copy_verified(&dir, &project, &c.path, hash, *executable)?;
-                        }
-                        Some(Entry::Dir { .. }) => {
-                            if !project.is_dir(&c.path) {
-                                project
-                                    .create_dir_all(&c.path)
-                                    .map_err(storage("create_dir"))?;
-                            }
-                        }
-                        Some(Entry::Symlink { target, .. }) => {
-                            if !target_inside_root(&c.path, target) {
-                                continue;
-                            }
-                            if project.symlink_metadata(&c.path).is_ok() {
-                                project
-                                    .remove_file(&c.path)
-                                    .map_err(storage("remove_file"))?;
-                            }
-                            super::recreate_symlink_in(&project, &c.path, Path::new(target))?;
-                        }
-                        None => {}
-                    }
+                    current_by_path.get(c.path.as_str()).map(|e| Want {
+                        path: &c.path,
+                        entry: Some(*e),
+                    })
                 }
-            }
-        }
+            })
+            .collect();
+        self.converge(
+            &project,
+            Source::Tree(&dir),
+            &wants,
+            Expect::Base(&base_by_path),
+            Mode::Promote,
+            &mut RestoreReport::default(),
+        )?;
         let promotion = Promotion {
             promotion_id,
             task_id,
@@ -747,61 +736,151 @@ impl LocalWorkspaces {
             .map_err(persist)?;
         let project = Self::scope_dir(&promotion.project_root)?;
         let by_path = manifest.by_path();
+        // Paths the promotion added have no backup entry: they are removed, as listed
+        // and never recursively; the rest are restored.
+        let wants: Vec<Want> = promotion
+            .files
+            .iter()
+            .map(|c| Want {
+                path: &c.path,
+                entry: by_path.get(c.path.as_str()).copied(),
+            })
+            .collect();
         let mut report = RestoreReport::default();
-        // Paths the promotion added have no backup entry: they are removed; the rest restored.
-        for c in &promotion.files {
-            match by_path.get(c.path.as_str()) {
-                None => {
-                    if project.symlink_metadata(&c.path).is_ok() {
-                        if project.is_dir(&c.path) {
-                            project
-                                .remove_dir_all(&c.path)
-                                .map_err(storage("remove_dir"))?;
-                        } else {
-                            project
-                                .remove_file(&c.path)
-                                .map_err(storage("remove_file"))?;
+        self.converge(
+            &project,
+            Source::Objects,
+            &wants,
+            Expect::Nothing,
+            Mode::Revert,
+            &mut report,
+        )?;
+        Ok(report)
+    }
+
+    /// The test hook of the apply of a promotion; nothing outside tests.
+    fn before_entry(&self, expect: &Expect<'_>, path: &str) -> Result<(), WorkspaceError> {
+        #[cfg(test)]
+        if matches!(expect, Expect::Base(_))
+            && let Some(hook) = self.apply_hook.lock().expect("hook").as_ref()
+        {
+            return hook(path);
+        }
+        let _ = (expect, path);
+        Ok(())
+    }
+
+    /// Makes each wanted path of `project` what is wanted of it, and nothing else
+    /// (REQ-WS-007): a path is removed only when it is listed, deepest first, a
+    /// directory only when it is empty; then the entries are written, parents first.
+    /// Before the first change to a path, it is compared with the entry expected of it.
+    /// Nothing is written through a link.
+    fn converge(
+        &self,
+        project: &Dir,
+        source: Source<'_>,
+        wants: &[Want<'_>],
+        expect: Expect<'_>,
+        mode: Mode,
+        report: &mut RestoreReport,
+    ) -> Result<(), WorkspaceError> {
+        let mut checked: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // Removals: what is there and is not what is wanted.
+        let mut removals: Vec<(&str, Kind)> = Vec::new();
+        for w in wants {
+            if let Some(link) = link_parent(project, w.path)? {
+                let replaced = mode == Mode::Revert
+                    && wants
+                        .iter()
+                        .any(|x| x.path == link && x.entry.map(Kind::of) != Some(Kind::Symlink));
+                if replaced {
+                    continue;
+                }
+                return Err(link_refused(&link, w.path));
+            }
+            if let Some(kind) = project_kind(project, w.path)?
+                && w.entry.map(Kind::of) != Some(kind)
+            {
+                removals.push((w.path, kind));
+            }
+        }
+        removals.sort_by(|a, b| {
+            depth(b.0)
+                .cmp(&depth(a.0))
+                .then_with(|| b.0.as_bytes().cmp(a.0.as_bytes()))
+        });
+        for (path, kind) in removals {
+            self.before_entry(&expect, path)?;
+            recheck(project, path, &expect, &mut checked)?;
+            match kind {
+                Kind::Dir => match project.remove_dir(path) {
+                    Ok(()) => report.deleted += 1,
+                    Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => match mode {
+                        Mode::Revert => report.left.push(path.to_owned()),
+                        Mode::Promote => {
+                            return Err(WorkspaceError::Refused {
+                                reason: format!(
+                                    "{path} holds entries the plan does not list; nothing was removed from it"
+                                ),
+                            });
                         }
-                        report.deleted += 1;
-                    }
-                }
-                Some(Entry::File {
-                    hash, executable, ..
-                }) => {
-                    if let Some(parent) = Path::new(&c.path)
-                        .parent()
-                        .filter(|p| !p.as_os_str().is_empty())
-                    {
-                        project
-                            .create_dir_all(parent)
-                            .map_err(storage("create_dir"))?;
-                    }
-                    self.write_object(&project, &c.path, hash, *executable)?;
-                    report.written += 1;
-                }
-                Some(Entry::Dir { .. }) => {
-                    if !project.is_dir(&c.path) {
-                        project
-                            .create_dir_all(&c.path)
-                            .map_err(storage("create_dir"))?;
-                    }
-                }
-                Some(Entry::Symlink { target, .. }) => {
-                    if target_inside_root(&c.path, target) {
-                        if project.symlink_metadata(&c.path).is_ok() {
-                            project
-                                .remove_file(&c.path)
-                                .map_err(storage("remove_file"))?;
-                        }
-                        super::recreate_symlink_in(&project, &c.path, Path::new(target))?;
-                        report.written += 1;
-                    } else {
-                        report.links_omitted.push(c.path.clone());
-                    }
+                    },
+                    Err(e) => return Err(storage("remove_dir")(e)),
+                },
+                Kind::File | Kind::Symlink => {
+                    project.remove_file(path).map_err(storage("remove_file"))?;
+                    report.deleted += 1;
                 }
             }
         }
-        Ok(report)
+        // Writes, parents first.
+        let mut writes: Vec<(&str, &Entry)> = wants
+            .iter()
+            .filter_map(|w| w.entry.map(|e| (w.path, e)))
+            .collect();
+        writes.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        for (path, entry) in writes {
+            if report
+                .left
+                .iter()
+                .any(|l| path.starts_with(&format!("{l}/")) || l == path)
+            {
+                continue;
+            }
+            self.before_entry(&expect, path)?;
+            walk_parents(project, path, true)?;
+            recheck(project, path, &expect, &mut checked)?;
+            match entry {
+                Entry::Dir { .. } => {
+                    if project_kind(project, path)? != Some(Kind::Dir) {
+                        project.create_dir(path).map_err(storage("create_dir"))?;
+                    }
+                }
+                Entry::File {
+                    hash, executable, ..
+                } => {
+                    match &source {
+                        Source::Tree(tree) => {
+                            Self::copy_verified(tree, project, path, hash, *executable)?
+                        }
+                        Source::Objects => self.write_object(project, path, hash, *executable)?,
+                    }
+                    report.written += 1;
+                }
+                Entry::Symlink { target, .. } => {
+                    if !target_inside_root(path, target) {
+                        report.links_omitted.push(path.to_owned());
+                        continue;
+                    }
+                    if project_kind(project, path)?.is_some() {
+                        project.remove_file(path).map_err(storage("remove_file"))?;
+                    }
+                    super::recreate_symlink_in(project, path, Path::new(target))?;
+                    report.written += 1;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn delete_files_impl(
@@ -894,3 +973,214 @@ pub(crate) fn hash_of(bytes: &[u8]) -> Hash {
 
 #[allow(dead_code)]
 fn _paths(_: PathBuf, _: &Change) {}
+
+/// The kind of an entry, without its content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    File,
+    Dir,
+    Symlink,
+}
+
+impl Kind {
+    fn of(entry: &Entry) -> Self {
+        match entry {
+            Entry::File { .. } => Kind::File,
+            Entry::Dir { .. } => Kind::Dir,
+            Entry::Symlink { .. } => Kind::Symlink,
+        }
+    }
+}
+
+/// What the project's entry at a path is to become (`None`: absent).
+struct Want<'a> {
+    path: &'a str,
+    entry: Option<&'a Entry>,
+}
+
+/// Where the content of a written file comes from.
+enum Source<'a> {
+    /// The task's working tree.
+    Tree(&'a Dir),
+    /// The snapshot objects.
+    Objects,
+}
+
+/// What the project's entry is expected to be before it is first changed.
+enum Expect<'a> {
+    /// Nothing is checked.
+    Nothing,
+    /// The entry of the base manifest, or absent when the base has none.
+    Base(&'a std::collections::BTreeMap<&'a str, &'a Entry>),
+}
+
+/// What converges the project: a promotion, or the reversal of one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// A directory that is not empty stops the promotion, and so does a link as a parent.
+    Promote,
+    /// A directory that is not empty is kept and reported; a link that is itself replaced is
+    /// removed first and then nothing is below it.
+    Revert,
+}
+
+/// The number of components above the last.
+fn depth(path: &str) -> usize {
+    path.matches('/').count()
+}
+
+/// The kind of the project's entry at `rel` (a link is a link), or `None` when absent. The
+/// parents of `rel` are real directories (`walk_parents`).
+fn project_kind(project: &Dir, rel: &str) -> Result<Option<Kind>, WorkspaceError> {
+    match project.symlink_metadata(rel) {
+        Ok(m) if m.is_symlink() => Ok(Some(Kind::Symlink)),
+        Ok(m) if m.is_dir() => Ok(Some(Kind::Dir)),
+        Ok(_) => Ok(Some(Kind::File)),
+        // Nothing lies below a file.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(storage("stat")(e)),
+    }
+}
+
+/// The first parent of `rel` in the project that is a link, found one parent at a time without
+/// following links.
+fn link_parent(project: &Dir, rel: &str) -> Result<Option<String>, WorkspaceError> {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let mut prefix = String::new();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(part);
+        match project_kind(project, &prefix)? {
+            Some(Kind::Symlink) => return Ok(Some(prefix)),
+            Some(Kind::Dir) => {}
+            // Nothing lies below a file or an absent parent.
+            Some(Kind::File) | None => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+fn link_refused(link: &str, rel: &str) -> WorkspaceError {
+    WorkspaceError::Refused {
+        reason: format!(
+            "the project holds a link at {link}, a parent of {rel}; nothing is written through a link"
+        ),
+    }
+}
+
+/// Checks the parents of `rel` in the project (REQ-WS-005, REQ-WS-007): a link as a parent is
+/// refused and named. With `create`, a missing parent is made and a parent that is not a
+/// directory is refused.
+fn walk_parents(project: &Dir, rel: &str, create: bool) -> Result<(), WorkspaceError> {
+    if let Some(link) = link_parent(project, rel)? {
+        return Err(link_refused(&link, rel));
+    }
+    if !create {
+        return Ok(());
+    }
+    let parts: Vec<&str> = rel.split('/').collect();
+    let mut prefix = String::new();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(part);
+        match project_kind(project, &prefix)? {
+            Some(Kind::Dir) => {}
+            Some(_) => {
+                return Err(WorkspaceError::Refused {
+                    reason: format!("{prefix}, a parent of {rel}, is not a directory"),
+                });
+            }
+            None => project.create_dir(&prefix).map_err(storage("create_dir"))?,
+        }
+    }
+    Ok(())
+}
+
+/// The top-most entries of the project that lie in a directory the plan removes and that the
+/// plan does not list as deleted (REQ-WS-007).
+fn unlisted_entries(
+    project: &Dir,
+    changes: &[Change],
+    base: &std::collections::BTreeMap<&str, &Entry>,
+    current: &std::collections::BTreeMap<&str, &Entry>,
+) -> Result<Vec<String>, WorkspaceError> {
+    let listed: std::collections::BTreeSet<&str> = changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::Deleted)
+        .map(|c| c.path.as_str())
+        .collect();
+    let mut out = Vec::new();
+    for c in changes {
+        let removed_dir = matches!(base.get(c.path.as_str()), Some(Entry::Dir { .. }))
+            && !matches!(current.get(c.path.as_str()), Some(Entry::Dir { .. }));
+        if removed_dir && project_kind(project, &c.path)? == Some(Kind::Dir) {
+            unlisted_in(project, &c.path, &listed, &mut out)?;
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn unlisted_in(
+    project: &Dir,
+    dir: &str,
+    listed: &std::collections::BTreeSet<&str>,
+    out: &mut Vec<String>,
+) -> Result<(), WorkspaceError> {
+    for entry in project.read_dir(dir).map_err(storage("walk"))? {
+        let entry = entry.map_err(storage("walk"))?;
+        let child = join(dir, &entry.file_name().to_string_lossy());
+        if !listed.contains(child.as_str()) {
+            out.push(child);
+            continue;
+        }
+        if entry.file_type().map_err(storage("walk"))?.is_dir() {
+            unlisted_in(project, &child, listed, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether the project's entry is the base entry (both absent counts).
+fn matches_base(project: Option<&Entry>, base: Option<&Entry>) -> bool {
+    match (project, base) {
+        (None, None) => true,
+        (Some(p), Some(b)) => entry_equal(p, b),
+        _ => false,
+    }
+}
+
+/// Before a path is first changed, compares the project's entry with the one expected.
+fn recheck<'a>(
+    project: &Dir,
+    path: &'a str,
+    expect: &Expect<'_>,
+    checked: &mut std::collections::BTreeSet<&'a str>,
+) -> Result<(), WorkspaceError> {
+    let Expect::Base(base) = expect else {
+        return Ok(());
+    };
+    if !checked.insert(path) {
+        return Ok(());
+    }
+    let entry = project_entry(project, path)?;
+    if matches_base(entry.as_ref(), base.get(path).copied()) {
+        Ok(())
+    } else {
+        Err(WorkspaceError::Conflict {
+            paths: vec![path.to_owned()],
+        })
+    }
+}

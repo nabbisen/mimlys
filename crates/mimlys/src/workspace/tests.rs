@@ -203,7 +203,7 @@ mod snapshots {
     use super::*;
     use mimlys_core::clock::Instant;
     use mimlys_core::snapshot::Entry;
-    use mimlys_core::snapshot::{ChangeKind, SnapshotReason};
+    use mimlys_core::snapshot::{ChangeKind, Promotion, SnapshotReason, SnapshotRecord};
     use mimlys_core::spi::DeletedRows;
 
     struct Fx {
@@ -475,16 +475,7 @@ mod snapshots {
                 .iter()
                 .any(|(p, d)| p == "src/lib.rs" && d.contains("+fn a() -> i32 { 1 }"))
         );
-        let (backup, promotion) =
-            fx.p.promote(
-                fx.task,
-                &plan,
-                &root,
-                mimlys_core::ids::SnapshotId::new(&fx.ids),
-                mimlys_core::ids::PromotionId::new(&fx.ids),
-                fx.now(),
-            )
-            .unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
         fx.p.seal(backup.record.snapshot_id).unwrap();
         assert_eq!(backup.record.reason, SnapshotReason::Backup);
         assert_eq!(
@@ -504,16 +495,7 @@ mod snapshots {
         assert_eq!(promotion.files.len(), 3);
         // A stale plan is refused.
         std::fs::write(fx.tree().join("src/lib.rs"), "fn a() -> i32 { 2 }\n").unwrap();
-        let err =
-            fx.p.promote(
-                fx.task,
-                &plan,
-                &root,
-                mimlys_core::ids::SnapshotId::new(&fx.ids),
-                mimlys_core::ids::PromotionId::new(&fx.ids),
-                fx.now(),
-            )
-            .unwrap_err();
+        let err = fx.promote(&plan, &base.record).unwrap_err();
         assert!(matches!(err, WorkspaceError::Refused { .. }));
         // Reversal from the backup.
         let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
@@ -595,16 +577,7 @@ mod snapshots {
         let root = fx.scope.path().to_string_lossy().into_owned();
         let plan = fx.p.promotion_plan(fx.task, &base.record, &root).unwrap();
         assert!(plan.changes.iter().any(|c| c.path == name));
-        let (backup, promotion) =
-            fx.p.promote(
-                fx.task,
-                &plan,
-                &root,
-                mimlys_core::ids::SnapshotId::new(&fx.ids),
-                mimlys_core::ids::PromotionId::new(&fx.ids),
-                fx.now(),
-            )
-            .unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
         fx.p.seal(backup.record.snapshot_id).unwrap();
         assert_eq!(
             std::fs::read_to_string(fx.scope.path().join(&name)).unwrap(),
@@ -679,16 +652,7 @@ mod snapshots {
         // Promote what the tree holds now; the project holds the base.
         let root = fx.scope.path().to_string_lossy().into_owned();
         let plan = fx.p.promotion_plan(fx.task, &base.record, &root).unwrap();
-        let (backup, promotion) =
-            fx.p.promote(
-                fx.task,
-                &plan,
-                &root,
-                mimlys_core::ids::SnapshotId::new(&fx.ids),
-                mimlys_core::ids::PromotionId::new(&fx.ids),
-                fx.now(),
-            )
-            .unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
         fx.p.seal(backup.record.snapshot_id).unwrap();
         check(fx.scope.path(), "foo v2", "bar v2");
         fx.p.revert_promotion(&promotion, &backup.record).unwrap();
@@ -741,6 +705,273 @@ mod snapshots {
         drop(a);
         drop(b);
         assert!(temp_leftovers(&fx.tree()).is_empty());
+    }
+
+    /// Writes `text` at `rel` under `root`, making the directories.
+    fn put(root: &Path, rel: &str, text: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn read(root: &Path, rel: &str) -> String {
+        std::fs::read_to_string(root.join(rel)).unwrap()
+    }
+
+    impl Fx {
+        fn root(&self) -> String {
+            self.scope.path().to_string_lossy().into_owned()
+        }
+
+        fn plan(
+            &self,
+            base: &SnapshotRecord,
+        ) -> Result<mimlys_core::snapshot::PromotionPlan, WorkspaceError> {
+            self.p.promotion_plan(self.task, base, &self.root())
+        }
+
+        fn promote(
+            &self,
+            plan: &mimlys_core::snapshot::PromotionPlan,
+            base: &SnapshotRecord,
+        ) -> Result<(mimlys_core::spi::PreparedSnapshot, Promotion), WorkspaceError> {
+            self.p.promote(
+                self.task,
+                &mimlys_core::spi::PromotionRequest {
+                    plan,
+                    base,
+                    project_root: &self.root(),
+                    backup_id: mimlys_core::ids::SnapshotId::new(&self.ids),
+                    promotion_id: mimlys_core::ids::PromotionId::new(&self.ids),
+                    now: self.now(),
+                },
+            )
+        }
+
+        /// Installs the step into the apply of a promotion.
+        fn on_apply(
+            &self,
+            hook: impl Fn(&str) -> Result<(), WorkspaceError> + Send + Sync + 'static,
+        ) {
+            *self.p.apply_hook.lock().unwrap() = Some(Box::new(hook));
+        }
+    }
+
+    /// REQ-WS-007: a directory the promotion would remove, or replace by a file, holds entries the
+    /// plan does not list (a file of the project that was never materialized, a file added since):
+    /// the plan is refused, names them, and the project is unchanged. Once they are dealt with,
+    /// the plan applies.
+    #[test]
+    fn req_ws_007_a_deleted_directory_with_unlisted_entries_is_refused() {
+        for replaced_by_file in [false, true] {
+            let fx = Fx::new();
+            for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+                put(&root, "d/a.txt", "a");
+            }
+            put(fx.scope.path(), "d/.env", "SECRET=3");
+            let base = fx.snap(SnapshotReason::Base, None);
+            put(fx.scope.path(), "d/new.txt", "added since");
+            std::fs::remove_dir_all(fx.tree().join("d")).unwrap();
+            if replaced_by_file {
+                put(&fx.tree(), "d", "now a file");
+            }
+            let err = fx.plan(&base.record).unwrap_err();
+            assert_eq!(
+                err,
+                WorkspaceError::Unlisted {
+                    paths: vec!["d/.env".into(), "d/new.txt".into()]
+                },
+                "replaced_by_file: {replaced_by_file}"
+            );
+            let text = err.to_string();
+            assert!(
+                text.contains("d/.env") && text.contains("d/new.txt"),
+                "{text}"
+            );
+            assert_eq!(read(fx.scope.path(), "d/a.txt"), "a");
+            assert_eq!(read(fx.scope.path(), "d/.env"), "SECRET=3");
+            assert_eq!(read(fx.scope.path(), "d/new.txt"), "added since");
+            // The user deals with the two entries; the plan then lists what it removes.
+            std::fs::remove_file(fx.scope.path().join("d/.env")).unwrap();
+            std::fs::remove_file(fx.scope.path().join("d/new.txt")).unwrap();
+            let plan = fx.plan(&base.record).unwrap();
+            fx.promote(&plan, &base.record).unwrap();
+            if replaced_by_file {
+                assert_eq!(read(fx.scope.path(), "d"), "now a file");
+            } else {
+                assert!(!fx.scope.path().join("d").exists());
+            }
+        }
+    }
+
+    /// REQ-WS-007: the apply removes a directory only when it is empty, whatever the plan said:
+    /// an entry that appeared after the plan stays.
+    #[test]
+    fn req_ws_007_an_entry_that_appeared_after_the_plan_is_not_removed() {
+        let fx = Fx::new();
+        for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            put(&root, "d/a.txt", "a");
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::remove_dir_all(fx.tree().join("d")).unwrap();
+        let plan = fx.plan(&base.record).unwrap();
+        put(fx.scope.path(), "d/late.txt", "written after the plan");
+        let err = fx.promote(&plan, &base.record).unwrap_err();
+        assert!(matches!(err, WorkspaceError::Refused { .. }), "{err:?}");
+        assert_eq!(
+            read(fx.scope.path(), "d/late.txt"),
+            "written after the plan"
+        );
+    }
+
+    /// REQ-WS-007: reversing a promotion removes only the paths it wrote; a directory it made that
+    /// has since received an entry of the user's stays, and is reported.
+    #[test]
+    fn req_ws_007_a_reversal_removes_only_what_the_promotion_wrote() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "n/f.txt", "promoted");
+        let plan = fx.plan(&base.record).unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        put(fx.scope.path(), "n/user.txt", "the user's");
+        let report = fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        assert!(!fx.scope.path().join("n/f.txt").exists());
+        assert_eq!(read(fx.scope.path(), "n/user.txt"), "the user's");
+        assert_eq!(report.left, ["n"]);
+        assert_eq!(report.deleted, 1);
+    }
+
+    /// REQ-WS-007: an edit made in the project after the plan, here while the promotion is being
+    /// applied, stops the promotion at that entry, names it, and is not overwritten.
+    #[test]
+    fn req_ws_007_an_edit_made_after_the_plan_stops_the_promotion_and_names_it() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        put(&fx.tree(), "src/added.rs", "added");
+        let plan = fx.plan(&base.record).unwrap();
+        let project = fx.scope.path().to_path_buf();
+        fx.on_apply(move |path| {
+            if path == "src/added.rs" {
+                put(&project, "src/lib.rs", "fn a() { edited meanwhile }\n");
+            }
+            Ok(())
+        });
+        let err = fx.promote(&plan, &base.record).unwrap_err();
+        assert_eq!(
+            err,
+            WorkspaceError::Conflict {
+                paths: vec!["src/lib.rs".into()]
+            }
+        );
+        assert_eq!(
+            read(fx.scope.path(), "src/lib.rs"),
+            "fn a() { edited meanwhile }\n"
+        );
+    }
+
+    /// REQ-WS-007: an edit made after the plan and before the backup is refused before anything
+    /// is written, naming the entry.
+    #[test]
+    fn req_ws_007_an_edit_made_before_the_backup_is_refused_before_any_write() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        put(&fx.tree(), "src/added.rs", "added");
+        let plan = fx.plan(&base.record).unwrap();
+        put(fx.scope.path(), "src/lib.rs", "fn a() { edited }\n");
+        let err = fx.promote(&plan, &base.record).unwrap_err();
+        assert_eq!(
+            err,
+            WorkspaceError::Conflict {
+                paths: vec!["src/lib.rs".into()]
+            }
+        );
+        assert!(!fx.scope.path().join("src/added.rs").exists());
+    }
+
+    /// REQ-WS-005, REQ-WS-007: a link in the project is never a parent of a path the promotion
+    /// writes: the plan is refused and names the link, and nothing is written behind it.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_path_below_a_link_in_the_project_is_refused_at_plan_time() {
+        let fx = Fx::new();
+        std::fs::create_dir_all(fx.scope.path().join(".git/hooks")).unwrap();
+        for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            std::os::unix::fs::symlink(".git/hooks", root.join("hk")).unwrap();
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::remove_file(fx.tree().join("hk")).unwrap();
+        put(&fx.tree(), "hk/pre-commit", "#!/bin/sh\n");
+        let err = fx.plan(&base.record).unwrap_err();
+        let WorkspaceError::Refused { reason } = &err else {
+            panic!("{err:?}")
+        };
+        assert!(reason.contains("hk"), "{reason}");
+        assert!(!fx.scope.path().join(".git/hooks/pre-commit").exists());
+    }
+
+    /// REQ-WS-005, REQ-WS-007: a parent that became a link after the plan is not written through
+    /// either: the apply checks each parent as it writes.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_parent_that_became_a_link_is_not_written_through() {
+        let fx = Fx::new();
+        std::fs::create_dir_all(fx.scope.path().join(".git/hooks")).unwrap();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "newdir/file", "content");
+        let plan = fx.plan(&base.record).unwrap();
+        let project = fx.scope.path().to_path_buf();
+        fx.on_apply(move |path| {
+            if path == "newdir/file" {
+                std::fs::remove_dir(project.join("newdir")).unwrap();
+                std::os::unix::fs::symlink(".git/hooks", project.join("newdir")).unwrap();
+            }
+            Ok(())
+        });
+        let err = fx.promote(&plan, &base.record).unwrap_err();
+        assert!(matches!(err, WorkspaceError::Refused { .. }), "{err:?}");
+        assert!(!fx.scope.path().join(".git/hooks/file").exists());
+    }
+
+    /// REQ-WS-007: a directory replaced by a file, a file replaced by a directory, and (Unix) a
+    /// directory replaced by a link are applied, and reversed.
+    #[test]
+    fn req_ws_007_type_changes_are_applied_and_reversed() {
+        let fx = Fx::new();
+        for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            put(&root, "dir_to_file/a", "a");
+            put(&root, "file_to_dir", "was a file");
+            put(&root, "dir_to_link/b", "b");
+            put(&root, "target.txt", "t");
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::remove_dir_all(fx.tree().join("dir_to_file")).unwrap();
+        put(&fx.tree(), "dir_to_file", "now a file");
+        std::fs::remove_file(fx.tree().join("file_to_dir")).unwrap();
+        put(&fx.tree(), "file_to_dir/x", "now a directory");
+        #[cfg(unix)]
+        {
+            std::fs::remove_dir_all(fx.tree().join("dir_to_link")).unwrap();
+            std::os::unix::fs::symlink("target.txt", fx.tree().join("dir_to_link")).unwrap();
+        }
+        let plan = fx.plan(&base.record).unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        let project = fx.scope.path();
+        assert_eq!(read(project, "dir_to_file"), "now a file");
+        assert_eq!(read(project, "file_to_dir/x"), "now a directory");
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::read_link(project.join("dir_to_link")).unwrap(),
+            Path::new("target.txt")
+        );
+        fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        assert_eq!(read(project, "dir_to_file/a"), "a");
+        assert_eq!(read(project, "file_to_dir"), "was a file");
+        assert_eq!(read(project, "dir_to_link/b"), "b");
+        assert!(temp_leftovers(project).is_empty());
     }
 
     /// REQ-TASK-004: a fork materializes the snapshot into a new tree.

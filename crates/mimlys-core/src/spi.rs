@@ -395,6 +395,23 @@ pub trait ToolProvider: Send + Sync {
     ) -> BoxFuture<'a, ExecutionOutcome>;
 }
 
+/// The text of a refusal that names unlisted entries: the first few, then how many more.
+fn unlisted_message(paths: &[String]) -> String {
+    const SHOWN: usize = 10;
+    let shown: Vec<&str> = paths.iter().take(SHOWN).map(String::as_str).collect();
+    let more = paths.len().saturating_sub(SHOWN);
+    let mut text = format!(
+        "the project holds {} entr{} the plan does not list, in a directory it would remove: {}",
+        paths.len(),
+        if paths.len() == 1 { "y" } else { "ies" },
+        shown.join(", ")
+    );
+    if more > 0 {
+        text.push_str(&format!(" and {more} more"));
+    }
+    text
+}
+
 /// A workspace could not be provided.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case")]
@@ -435,6 +452,13 @@ pub enum WorkspaceError {
     #[error("promotion refused: {} file(s) changed in the project since the task started", paths.len())]
     Conflict {
         /// The conflicting paths.
+        paths: Vec<String>,
+    },
+    /// A directory the promotion would remove holds project entries the plan does not list
+    /// (REQ-WS-007): the top-most unlisted entries are named, so that the user decides.
+    #[error("promotion refused: {}", unlisted_message(paths))]
+    Unlisted {
+        /// The unlisted entries, top-most first, sorted.
         paths: Vec<String>,
     },
     /// The operation is not valid now (the plan is stale, the task not terminal).
@@ -533,15 +557,12 @@ pub trait WorkspaceProvider: WorkspaceRead {
         now: crate::clock::Instant,
     ) -> Result<(WorkspaceInfo, PreparedSnapshot), WorkspaceError>;
 
-    /// Phase 2: backs the targets up (a prepared `backup` snapshot) and applies the plan.
+    /// Phase 2: backs the targets up (a prepared `backup` snapshot) and applies the plan; each
+    /// entry is compared with its entry in the `base` snapshot before it is written.
     fn promote(
         &self,
         task_id: TaskId,
-        plan: &PromotionPlan,
-        project_root: &str,
-        backup_id: SnapshotId,
-        promotion_id: PromotionId,
-        now: crate::clock::Instant,
+        request: &PromotionRequest<'_>,
     ) -> Result<(PreparedSnapshot, Promotion), WorkspaceError>;
 
     /// Reverses a promotion from its backup.
@@ -553,6 +574,23 @@ pub trait WorkspaceProvider: WorkspaceRead {
 
     /// Removes the files the database no longer references (RFC 006 §6).
     fn delete_files(&self, task_id: TaskId, rows: &DeletedRows) -> Result<(), WorkspaceError>;
+}
+
+/// What phase 2 of a promotion is given (REQ-WS-007).
+#[derive(Clone, Copy, Debug)]
+pub struct PromotionRequest<'a> {
+    /// The plan the user confirmed.
+    pub plan: &'a PromotionPlan,
+    /// The task's base snapshot, which the project's entries are compared with.
+    pub base: &'a SnapshotRecord,
+    /// The project root.
+    pub project_root: &'a str,
+    /// The identifier of the backup snapshot.
+    pub backup_id: SnapshotId,
+    /// The identifier of the promotion.
+    pub promotion_id: PromotionId,
+    /// When.
+    pub now: crate::clock::Instant,
 }
 
 /// A snapshot whose files are durable and whose journal is open until the
@@ -1234,11 +1272,7 @@ pub mod fake {
         fn promote(
             &self,
             _task_id: TaskId,
-            _plan: &PromotionPlan,
-            _project_root: &str,
-            _backup_id: SnapshotId,
-            _promotion_id: PromotionId,
-            _now: crate::clock::Instant,
+            _request: &PromotionRequest<'_>,
         ) -> Result<(PreparedSnapshot, Promotion), WorkspaceError> {
             Err(WorkspaceError::Refused {
                 reason: "no promotion in the fake".into(),

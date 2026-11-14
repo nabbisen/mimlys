@@ -36,7 +36,14 @@ pub struct LocalWorkspaces {
     sandbox: Option<SandboxTools>,
     external: Option<Arc<mimlys_mcp::tools::Servers>>,
     files: mimlys_persist::snapshots::SnapshotFiles,
+    /// Test only: called with the path of each entry a promotion is about to apply; an error stops it there.
+    #[cfg(test)]
+    apply_hook: Mutex<Option<ApplyHook>>,
 }
+
+/// A test's step into the apply of a promotion.
+#[cfg(test)]
+type ApplyHook = Box<dyn Fn(&str) -> Result<(), WorkspaceError> + Send + Sync>;
 
 /// The built-in (and sandbox) tools of a task beside its external tools
 /// (RFC 009): a tool with a dot in its name belongs to a server.
@@ -126,6 +133,8 @@ impl LocalWorkspaces {
             sandbox: None,
             external: None,
             files,
+            #[cfg(test)]
+            apply_hook: Mutex::new(None),
         })
     }
 
@@ -143,6 +152,8 @@ impl LocalWorkspaces {
             sandbox: None,
             external: None,
             files,
+            #[cfg(test)]
+            apply_hook: Mutex::new(None),
         }
     }
 
@@ -572,11 +583,7 @@ impl WorkspaceProvider for LocalWorkspaces {
     fn promote(
         &self,
         task_id: TaskId,
-        plan: &mimlys_core::snapshot::PromotionPlan,
-        project_root: &str,
-        backup_id: mimlys_core::ids::SnapshotId,
-        promotion_id: mimlys_core::ids::PromotionId,
-        now: mimlys_core::clock::Instant,
+        request: &mimlys_core::spi::PromotionRequest<'_>,
     ) -> Result<
         (
             mimlys_core::spi::PreparedSnapshot,
@@ -584,7 +591,7 @@ impl WorkspaceProvider for LocalWorkspaces {
         ),
         WorkspaceError,
     > {
-        self.promote_impl(task_id, plan, project_root, backup_id, promotion_id, now)
+        self.promote_impl(task_id, request)
     }
 
     fn revert_promotion(

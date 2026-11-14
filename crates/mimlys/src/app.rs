@@ -80,7 +80,10 @@ impl AppError {
             AppError::Runtime(e) => e.kind(),
             AppError::Permissions(_) | AppError::Download(_) => "unavailable",
             AppError::Persistence(_) | AppError::Io { .. } | AppError::Partial { .. } => "internal",
-            AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { .. }) => "conflict",
+            AppError::Workspace(
+                mimlys_core::spi::WorkspaceError::Conflict { .. }
+                | mimlys_core::spi::WorkspaceError::Unlisted { .. },
+            ) => "conflict",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::NotFound { .. }) => "not_found",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::Refused { .. }) => "state",
             AppError::Workspace(_) => "internal",
@@ -104,9 +107,13 @@ impl AppError {
                 "url": e.url,
                 "last_status": e.last_status,
             }),
-            AppError::Workspace(mimlys_core::spi::WorkspaceError::Conflict { paths })
+            AppError::Workspace(
+                mimlys_core::spi::WorkspaceError::Conflict { paths }
+                | mimlys_core::spi::WorkspaceError::Unlisted { paths },
+            )
             | AppError::Runtime(RuntimeError::Workspace(
-                mimlys_core::spi::WorkspaceError::Conflict { paths },
+                mimlys_core::spi::WorkspaceError::Conflict { paths }
+                | mimlys_core::spi::WorkspaceError::Unlisted { paths },
             )) => {
                 serde_json::json!({ "paths": paths })
             }

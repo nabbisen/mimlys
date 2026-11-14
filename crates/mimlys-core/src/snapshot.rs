@@ -316,6 +316,9 @@ pub struct RestoreReport {
     pub deleted: u64,
     /// Links whose target leaves the root, refused (REQ-WS-005).
     pub links_omitted: Vec<String>,
+    /// Directories kept because they hold entries the operation did not write (REQ-WS-007).
+    #[serde(default)]
+    pub left: Vec<String>,
 }
 
 /// A workspace's lifecycle state (REQ-WS-009). `archived` is derived from

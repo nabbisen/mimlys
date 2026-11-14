@@ -133,7 +133,9 @@ impl RuntimeError {
             RuntimeError::Denied { .. } => "denied",
             RuntimeError::Conflict { .. } => "conflict",
             RuntimeError::Unavailable { .. } | RuntimeError::Backend(_) => "unavailable",
-            RuntimeError::Workspace(WorkspaceError::Conflict { .. }) => "conflict",
+            RuntimeError::Workspace(
+                WorkspaceError::Conflict { .. } | WorkspaceError::Unlisted { .. },
+            ) => "conflict",
             RuntimeError::Workspace(WorkspaceError::NotFound { .. }) => "not_found",
             RuntimeError::Workspace(WorkspaceError::Refused { .. }) => "state",
             RuntimeError::Workspace(
