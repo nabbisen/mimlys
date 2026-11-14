@@ -125,6 +125,89 @@ fn walk(
     Ok(())
 }
 
+/// The number of temporary names made by this process.
+static TEMP_NAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many names are tried before a write gives up (a name is taken only by a leftover of a crashed process).
+const TEMP_ATTEMPTS: u32 = 64;
+
+/// A temporary file beside the entry it will replace (REQ-WS-006, REQ-WS-007).
+///
+/// Its name is short and unique per write and is never derived from the
+/// entry's name, so it fits wherever the entry fits. It is made with
+/// `create_new`, so an existing file or link of any name is never opened or
+/// followed. It is removed when dropped, unless it was placed.
+pub(super) struct TempFile<'a> {
+    dir: &'a Dir,
+    path: String,
+    placed: bool,
+}
+
+impl<'a> TempFile<'a> {
+    /// Makes a new temporary file in the directory of `rel`, opened for writing.
+    pub(super) fn create(
+        dir: &'a Dir,
+        rel: &str,
+    ) -> Result<(Self, cap_std::fs::File), WorkspaceError> {
+        let parent = rel.rfind('/').map(|i| &rel[..=i]).unwrap_or("");
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        for _ in 0..TEMP_ATTEMPTS {
+            let n = TEMP_NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = format!("{parent}.mimlys-tmp-{:x}-{n:x}", std::process::id());
+            match dir.open_with(&path, &options) {
+                Ok(file) => {
+                    return Ok((
+                        Self {
+                            dir,
+                            path,
+                            placed: false,
+                        },
+                        file,
+                    ));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(storage("create")(e)),
+            }
+        }
+        Err(storage("create")(std::io::ErrorKind::AlreadyExists.into()))
+    }
+
+    /// Sets the mode: executable or not (Unix).
+    fn set_mode(&self, executable: bool) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if executable { 0o755 } else { 0o644 };
+            let _ = self.dir.set_permissions(
+                &self.path,
+                cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(mode)),
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = executable;
+        }
+    }
+
+    /// Renames the file onto `rel` in the same directory.
+    fn place(mut self, rel: &str) -> Result<(), WorkspaceError> {
+        self.dir
+            .rename(&self.path, self.dir, rel)
+            .map_err(storage("rename"))?;
+        self.placed = true;
+        Ok(())
+    }
+}
+
+impl Drop for TempFile<'_> {
+    fn drop(&mut self) {
+        if !self.placed {
+            let _ = self.dir.remove_file(&self.path);
+        }
+    }
+}
+
 impl LocalWorkspaces {
     fn tree_dir(&self, task_id: TaskId) -> Result<Dir, WorkspaceError> {
         Dir::open_ambient_dir(self.tree_path(task_id), ambient_authority())
@@ -178,7 +261,7 @@ impl LocalWorkspaces {
         })
     }
 
-    /// Copies an object into `dir` at `rel` through a temporary name, verifying its hash.
+    /// Copies an object into `dir` at `rel` through a temporary file, verifying its hash.
     fn write_object(
         &self,
         dir: &Dir,
@@ -187,8 +270,7 @@ impl LocalWorkspaces {
         executable: bool,
     ) -> Result<(), WorkspaceError> {
         let mut source = self.files.open_object(hash).map_err(persist)?;
-        let tmp = format!("{rel}.mimlys-tmp");
-        let mut out = dir.create(&tmp).map_err(storage("create"))?;
+        let (tmp, mut out) = TempFile::create(dir, rel)?;
         let mut hasher = Sha256::default();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -205,30 +287,16 @@ impl LocalWorkspaces {
             .map(|b| format!("{b:02x}"))
             .collect();
         if actual != hash.as_str() {
-            let _ = dir.remove_file(&tmp);
             return Err(WorkspaceError::Storage {
                 detail: "object_hash_mismatch".into(),
             });
         }
         drop(out);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = if executable { 0o755 } else { 0o644 };
-            let _ = dir.set_permissions(
-                &tmp,
-                cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(mode)),
-            );
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = executable;
-        }
-        dir.rename(&tmp, dir, rel).map_err(storage("rename"))?;
-        Ok(())
+        tmp.set_mode(executable);
+        tmp.place(rel)
     }
 
-    /// Copies a file from one handle to another through a temporary name, verifying its hash.
+    /// Copies a file from one handle to another through a temporary file, verifying its hash.
     fn copy_verified(
         src: &Dir,
         dst: &Dir,
@@ -237,8 +305,7 @@ impl LocalWorkspaces {
         executable: bool,
     ) -> Result<(), WorkspaceError> {
         let mut source = src.open(rel).map_err(storage("open"))?;
-        let tmp = format!("{rel}.mimlys-tmp");
-        let mut out = dst.create(&tmp).map_err(storage("create"))?;
+        let (tmp, mut out) = TempFile::create(dst, rel)?;
         let mut hasher = Sha256::default();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -255,27 +322,13 @@ impl LocalWorkspaces {
             .map(|b| format!("{b:02x}"))
             .collect();
         if actual != hash.as_str() {
-            let _ = dst.remove_file(&tmp);
             return Err(WorkspaceError::Refused {
                 reason: "the workspace changed while promoting; plan again".into(),
             });
         }
         drop(out);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = if executable { 0o755 } else { 0o644 };
-            let _ = dst.set_permissions(
-                &tmp,
-                cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(mode)),
-            );
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = executable;
-        }
-        dst.rename(&tmp, dst, rel).map_err(storage("rename"))?;
-        Ok(())
+        tmp.set_mode(executable);
+        tmp.place(rel)
     }
 
     /// Makes `dir` equal to `manifest` (REQ-WS-006): extras deleted, objects

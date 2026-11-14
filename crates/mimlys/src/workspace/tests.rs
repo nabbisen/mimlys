@@ -202,7 +202,6 @@ fn target_inside_scope_is_lexical() {
 mod snapshots {
     use super::*;
     use mimlys_core::clock::Instant;
-    #[cfg(unix)]
     use mimlys_core::snapshot::Entry;
     use mimlys_core::snapshot::{ChangeKind, SnapshotReason};
     use mimlys_core::spi::DeletedRows;
@@ -270,6 +269,10 @@ mod snapshots {
 
         fn tree(&self) -> PathBuf {
             self.p.tree_path(self.task)
+        }
+
+        fn data(&self) -> &Path {
+            self._data.path()
         }
     }
 
@@ -524,6 +527,220 @@ mod snapshots {
             std::fs::read_to_string(fx.scope.path().join("src/deep/x.txt")).unwrap(),
             "xx"
         );
+    }
+
+    /// The names of the temporary files left under `root` (none are left by a write that ended).
+    fn temp_leftovers(root: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(".mimlys-tmp-") {
+                    found.push(name);
+                }
+                if entry.file_type().unwrap().is_dir() {
+                    stack.push(entry.path());
+                }
+            }
+        }
+        found
+    }
+
+    /// REQ-WS-006, REQ-WS-007, REQ-WS-003: a tree that holds a name of 255 bytes restores, forks and
+    /// promotes; the temporary name of a write does not depend on the name of the entry.
+    #[test]
+    fn req_ws_006_a_name_of_255_bytes_restores_forks_and_promotes() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        let name = "n".repeat(255);
+        std::fs::write(fx.tree().join(&name), "v1").unwrap();
+        std::fs::write(fx.tree().join("src").join(&name), "v1 nested").unwrap();
+        let after = fx.snap(SnapshotReason::After, Some(&base.record));
+        // Restore: the entries are changed, then made equal to the snapshot again.
+        std::fs::write(fx.tree().join(&name), "v2").unwrap();
+        std::fs::write(fx.tree().join("src").join(&name), "v2").unwrap();
+        fx.p.restore(fx.task, &after.record).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.tree().join(&name)).unwrap(),
+            "v1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fx.tree().join("src").join(&name)).unwrap(),
+            "v1 nested"
+        );
+        assert_eq!(walk(&fx).hash(), after.record.manifest_hash);
+        assert!(temp_leftovers(&fx.tree()).is_empty());
+        // Fork.
+        let new_task = TaskId::new(&fx.ids);
+        let (_, prepared) =
+            fx.p.materialize_from(
+                new_task,
+                mimlys_core::ids::SnapshotId::new(&fx.ids),
+                &after.record,
+                &ScopeSpec {
+                    root: fx.scope.path().to_string_lossy().into_owned(),
+                    include: vec![],
+                },
+                fx.now(),
+            )
+            .unwrap();
+        fx.p.seal(prepared.record.snapshot_id).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.p.tree_path(new_task).join(&name)).unwrap(),
+            "v1"
+        );
+        assert!(temp_leftovers(&fx.p.tree_path(new_task)).is_empty());
+        // Promote, and reverse.
+        let root = fx.scope.path().to_string_lossy().into_owned();
+        let plan = fx.p.promotion_plan(fx.task, &base.record, &root).unwrap();
+        assert!(plan.changes.iter().any(|c| c.path == name));
+        let (backup, promotion) =
+            fx.p.promote(
+                fx.task,
+                &plan,
+                &root,
+                mimlys_core::ids::SnapshotId::new(&fx.ids),
+                mimlys_core::ids::PromotionId::new(&fx.ids),
+                fx.now(),
+            )
+            .unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.scope.path().join(&name)).unwrap(),
+            "v1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fx.scope.path().join("src").join(&name)).unwrap(),
+            "v1 nested"
+        );
+        assert!(temp_leftovers(fx.scope.path()).is_empty());
+        fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        assert!(!fx.scope.path().join(&name).exists());
+        assert!(temp_leftovers(fx.scope.path()).is_empty());
+    }
+
+    /// REQ-WS-006, REQ-WS-007: an entry whose name ends as the old temporary names did is an entry
+    /// like any other: a restore and a promotion leave it as it is, and the entry beside it is right.
+    #[test]
+    fn req_ws_006_an_entry_named_like_a_temporary_file_is_untouched() {
+        let fx = Fx::new();
+        for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            std::fs::write(root.join("foo"), "foo v1").unwrap();
+            std::fs::write(root.join("foo.mimlys-tmp"), "keep").unwrap();
+            std::fs::write(root.join("other"), "other v1").unwrap();
+            #[cfg(unix)]
+            {
+                std::fs::write(root.join("bar"), "bar v1").unwrap();
+                std::os::unix::fs::symlink("other", root.join("bar.mimlys-tmp")).unwrap();
+            }
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        // Restore.
+        std::fs::write(fx.tree().join("foo"), "foo v2").unwrap();
+        #[cfg(unix)]
+        std::fs::write(fx.tree().join("bar"), "bar v2").unwrap();
+        let after = fx.snap(SnapshotReason::After, Some(&base.record));
+        std::fs::write(fx.tree().join("foo"), "foo v3").unwrap();
+        #[cfg(unix)]
+        std::fs::write(fx.tree().join("bar"), "bar v3").unwrap();
+        fx.p.restore(fx.task, &after.record).unwrap();
+        let check = |root: &Path, foo: &str, bar: &str| {
+            assert_eq!(std::fs::read_to_string(root.join("foo")).unwrap(), foo);
+            assert_eq!(
+                std::fs::read_to_string(root.join("foo.mimlys-tmp")).unwrap(),
+                "keep"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("other")).unwrap(),
+                "other v1"
+            );
+            #[cfg(unix)]
+            {
+                assert_eq!(std::fs::read_to_string(root.join("bar")).unwrap(), bar);
+                assert!(
+                    root.join("bar.mimlys-tmp")
+                        .symlink_metadata()
+                        .unwrap()
+                        .file_type()
+                        .is_symlink(),
+                    "the link is still a link"
+                );
+                assert_eq!(
+                    std::fs::read_link(root.join("bar.mimlys-tmp")).unwrap(),
+                    Path::new("other")
+                );
+            }
+            #[cfg(not(unix))]
+            let _ = bar;
+        };
+        check(&fx.tree(), "foo v2", "bar v2");
+        assert!(temp_leftovers(&fx.tree()).is_empty());
+        // Promote what the tree holds now; the project holds the base.
+        let root = fx.scope.path().to_string_lossy().into_owned();
+        let plan = fx.p.promotion_plan(fx.task, &base.record, &root).unwrap();
+        let (backup, promotion) =
+            fx.p.promote(
+                fx.task,
+                &plan,
+                &root,
+                mimlys_core::ids::SnapshotId::new(&fx.ids),
+                mimlys_core::ids::PromotionId::new(&fx.ids),
+                fx.now(),
+            )
+            .unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        check(fx.scope.path(), "foo v2", "bar v2");
+        fx.p.revert_promotion(&promotion, &backup.record).unwrap();
+        check(fx.scope.path(), "foo v1", "bar v1");
+        assert!(temp_leftovers(fx.scope.path()).is_empty());
+    }
+
+    /// REQ-WS-006: a write that fails leaves no temporary file behind (an object that does not
+    /// match its name is refused after it was written to its temporary file).
+    #[test]
+    fn req_ws_006_a_failed_write_leaves_no_temporary_file() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::write(fx.tree().join("src/lib.rs"), "fn a() { changed }\n").unwrap();
+        // The stored object of the file the restore will write is damaged.
+        let manifest = fx.p.manifest(&base.record).unwrap();
+        let hash = manifest
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                Entry::File { path, hash, .. } if path == "src/lib.rs" => Some(hash.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let object = fx.data().join("snapshots/objects").join(hash.as_str());
+        let mut perms = std::fs::metadata(&object).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&object, perms).unwrap();
+        std::fs::write(&object, "damaged").unwrap();
+        let err = fx.p.restore(fx.task, &base.record).unwrap_err();
+        assert!(matches!(err, WorkspaceError::Storage { .. }), "{err:?}");
+        assert!(temp_leftovers(&fx.tree()).is_empty());
+        assert_eq!(
+            std::fs::read_to_string(fx.tree().join("src/lib.rs")).unwrap(),
+            "fn a() { changed }\n",
+            "the file is as it was"
+        );
+    }
+
+    /// REQ-WS-006: the temporary file of a write is removed when the write is not completed.
+    #[test]
+    fn req_ws_006_a_temporary_file_that_is_not_placed_is_removed() {
+        let fx = Fx::new();
+        let dir =
+            cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority()).unwrap();
+        let (a, _) = super::super::snapshot::TempFile::create(&dir, "src/lib.rs").unwrap();
+        let (b, _) = super::super::snapshot::TempFile::create(&dir, "src/lib.rs").unwrap();
+        assert_eq!(temp_leftovers(&fx.tree()).len(), 2, "two names, both new");
+        drop(a);
+        drop(b);
+        assert!(temp_leftovers(&fx.tree()).is_empty());
     }
 
     /// REQ-TASK-004: a fork materializes the snapshot into a new tree.
