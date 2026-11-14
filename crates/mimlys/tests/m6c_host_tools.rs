@@ -92,7 +92,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
-allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "sandbox-nested", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -644,6 +644,34 @@ fn req_conf_005_name_lookup_is_denied() {
     assert_ne!(exit_code_of(&obs[0]), 0, "{}", stdout_of(&obs[0]));
     assert!(
         stdout_of(&obs[0]).contains("getaddrinfo failed"),
+        "{}",
+        stdout_of(&obs[0])
+    );
+}
+
+/// REQ-CONF-006 (the measurement behind the worker per task): a host tool,
+/// sandboxed by its worker's profile, cannot narrow itself with a profile of
+/// its own (it would leave out another task's workspace). The system's
+/// answer is in the failure message of this test if it ever changes: a tool
+/// that could apply a second profile would make the worker per task needless.
+#[test]
+fn req_conf_006_a_sandboxed_tool_cannot_apply_a_second_profile() {
+    let test = "req_conf_006_a_sandboxed_tool_cannot_apply_a_second_profile";
+    let env = Env::new(
+        &[probe(&["sandbox-nested", "/private/tmp"]), complete()],
+        "",
+    );
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_ne!(
+        exit_code_of(&obs[0]),
+        0,
+        "the system now lets a sandboxed tool apply a second profile: {}",
+        stdout_of(&obs[0])
+    );
+    assert!(
+        stdout_of(&obs[0]).contains("sandbox-nested refused:"),
         "{}",
         stdout_of(&obs[0])
     );
