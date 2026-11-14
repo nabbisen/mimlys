@@ -288,3 +288,51 @@ fn req_conf_011_case_insensitive_comparison() {
         Ok(())
     );
 }
+
+/// REQ-CONF-006 (no shell is involved): a command whose file is a batch
+/// script, `.cmd` or `.bat` in any case, is refused by the declaration's own
+/// check, on every platform, naming the key, the reason and the remedy.
+#[test]
+fn req_conf_006_a_batch_script_command_is_refused() {
+    for command in [
+        "x.cmd",
+        "X.CMD",
+        "run.Bat",
+        "tools/build.bat",
+        "C:\\tools\\build.cmd",
+        "~/bin/x.cmd",
+        "x.cmd.",
+        "x.cmd ",
+        ".cmd",
+    ] {
+        let mut d = cargo_test();
+        d.command = command.into();
+        let e = d.check().expect_err(command);
+        assert_eq!(e.key, "host_tools.cargo_test.command", "{command}");
+        assert!(
+            e.reason.contains("no shell is involved")
+                && e.reason.contains("REQ-CONF-006")
+                && e.reason.contains("declare the program the script runs"),
+            "{command}: {}",
+            e.reason
+        );
+        assert!(is_batch_script(command), "{command}");
+    }
+    for command in [
+        "cargo",
+        "x.exe",
+        "x.cmdx",
+        "x.batch",
+        "xcmd",
+        "bat",
+        "cmd",
+        "dir.cmd/tool",
+        "dir.bat\\tool",
+        "~/.cargo/bin/cargo",
+    ] {
+        let mut d = cargo_test();
+        d.command = command.into();
+        d.check().expect(command);
+        assert!(!is_batch_script(command), "{command}");
+    }
+}
