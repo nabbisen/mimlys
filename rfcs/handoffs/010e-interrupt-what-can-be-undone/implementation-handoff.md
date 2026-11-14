@@ -113,3 +113,32 @@ With 4 and 5 the 7 s and 1 s tests no longer depend on the step ending within 3 
 - the halt event omitted for `tool_unavailable`.
 
 Return: `.git-exclude/review-requests/010e-3-interrupt/README.md`.
+
+## After review (2026-11-14): 010e-4
+
+010e-3 is landed. The review answered your six questions:
+- 1, 2 and 5: accepted as you did them;
+- 3, 4 and 6: three small changes, below.
+
+The specification now says them: external design §7.5, §8 (the notice) and §19.2, and REQ-CLI-005.
+
+1. **No new step begins after a stop signal** (question 4). `run_step`'s boundary also reads the weakest request. A step that would begin after the first signal then ends `cancelled` at once, without a model request, and `drive` pauses as after any cancelled step. It is the same rule as "starts no new action", applied one phase earlier. The request is spent by that step, as the others are.
+   - Test, in `interrupt.rs`: `start_no_new_action` on a running task with no step in flight. The next `run_step` makes no model request (the backend counts the calls) and ends `cancelled`, `pause_task` then gives `Paused`, and the step after that begins normally.
+2. **A call that never left is `tool_unavailable`, not `worker_died`** (question 3). In `crates/mimlys-mcp/src/tools.rs`, two outcomes become what `ServerError::Unavailable` already gives: termination `host_fault{unavailable}`, cause `tool_unavailable`.
+   - `send:closed`: the request was not written.
+   - `ServerError::Died`: the restart limit LIM-X3 was reached in `ensure_started`, so no call was made.
+
+   `call:closed` stays `worker_died`, since the request was written. Then §7.5's "nothing was started" holds for them, and the table's rule for a server not reachable applies (REQ-TOOL-009, then halt `tool_unavailable`). An honest record beats a safe-looking one: the user checks for nothing when nothing was sent.
+   - Tests:
+     - a unit test of `map_outcome` for `send:closed` and `call:closed`;
+     - a case where the restart limit is reached: the test server's `die` repeated past LIM-X3 (or a lowered limit in the test), the last attempt `tool_unavailable` and nothing `unknown`.
+3. **`fuel_exhausted` is an end by the runtime** (question 6). LIM-S1 is a resource limit, as `memory_limit` is, and `trapped` stays the guest's own. No action that cannot be undone runs as WASM today, so this changes no run. It keeps `ended_by_runtime` the list §7.5 states.
+   - Test: add it to the table of item 5's test.
+
+**Mutations:**
+- the boundary not reading the weakest request;
+- `send:closed` back to `worker_died`.
+
+CHANGELOG: Fixed (items 1 and 2). Book: `cli.md` Signals, one clause ("no new step begins").
+
+Return: `.git-exclude/review-requests/010e-4-interrupt/README.md`.
