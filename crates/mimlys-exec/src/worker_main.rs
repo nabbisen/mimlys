@@ -234,6 +234,7 @@ fn own_clauses() -> BTreeMap<String, ClauseState> {
         "MIMLYS_PROBE_FAIL",
         "MIMLYS_PROBE_BEST_EFFORT",
         "MIMLYS_PROBE_NO_CGROUP",
+        "MIMLYS_PROBE_MAX_LANDLOCK_ABI",
         "SystemRoot",
         "SYSTEMROOT",
     ];
