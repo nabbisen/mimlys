@@ -368,6 +368,21 @@ fn req_cli_005_the_second_request_leaves_the_outcome_unknown_and_halts() {
             !events.contains(&"workspace.rollback".to_owned()),
             "{name}: nothing is restored, as in recovery: {events:?}"
         );
+        let last_change = rig
+            .persistence
+            .events()
+            .into_iter()
+            .filter(|e| e.task_id == Some(rig.task))
+            .filter_map(|e| match e.event {
+                crate::event::Event::TaskStateChanged { to, reason, .. } => Some((to, reason)),
+                _ => None,
+            })
+            .next_back();
+        assert_eq!(
+            last_change,
+            Some(("halted".to_owned(), Some(HaltReason::UnknownOutcome))),
+            "{name}: the halt is in the events"
+        );
         let view = rig.runtime.get_task(rig.task).unwrap();
         assert_eq!(
             view.unknown_actions.len(),

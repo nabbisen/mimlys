@@ -359,6 +359,14 @@ fn req_cli_005_a_second_stop_signal_interrupts_it_anyway_and_the_task_halts_unkn
         ["unknown"],
         "never `cancelled`: {stderr}"
     );
+    assert!(
+        env.events(&id)
+            .iter()
+            .any(|e| e["event"] == "task.state_changed"
+                && e["to"] == "halted"
+                && e["reason"] == "unknown_outcome"),
+        "the halt is in the events"
+    );
     let listed = task["unknown_actions"].as_array().unwrap();
     assert_eq!(listed.len(), 1, "{task}");
     assert_eq!(listed[0]["tool"], "rypsok.slow", "{task}");
