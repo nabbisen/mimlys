@@ -1319,6 +1319,15 @@ impl Runtime {
             step.phase = StepPhase::Evaluate;
             if interrupted_anyway {
                 let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
+                // The halt is recorded here: the step's end below sees the task
+                // already halted and would not say that it changed state.
+                persistence.append_event(&self.event(
+                    Actor::Runtime,
+                    Some(task.task_id),
+                    None,
+                    None,
+                    state_changed(&task, &halted),
+                ))?;
                 return Ok((step, Some(ActionOutcome::Failed), halted));
             }
             let Some(cause) = cause else {
