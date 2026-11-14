@@ -207,8 +207,9 @@ fn map_server_error(error: ServerError, wall_ms: i64) -> ExecutionOutcome {
     };
     match error {
         ServerError::Unavailable { reason, .. } => unavailable(&reason, metrics),
-        // The same fixed word `status` shows for it.
-        ServerError::Died { .. } => unavailable("died", metrics),
+        // A refusal to restart, not one more death: `server.stopped` and
+        // `status` keep `died` for a death (external design §11.1).
+        ServerError::Died { .. } => unavailable("restart_limit_reached", metrics),
     }
 }
 
@@ -291,12 +292,25 @@ impl McpTools {
             // (`host_fault{unavailable}`, the cause `tool_unavailable`), not a
             // lost worker: an unknown outcome would send the user to check an
             // effect that cannot exist (external design §7.5, REQ-TOOL-009).
-            CallOutcome::Failed { reason } if reason.starts_with("send:closed") => {
+            // Every `send:` reason is this: the SDK returns from the send only
+            // once the request is queued for the transport (`rmcp` 3.9.0
+            // `service.rs` 875 to 930), so what fails there precedes any write.
+            // `send:closed` is the only kind it gives a client; `send:transport`
+            // and `send:other` have no source there and are mapped the same way,
+            // so that none is ever a tool error. A write that fails arrives with
+            // the response (`call:transport`, below).
+            CallOutcome::Failed { reason } if reason.starts_with("send:") => {
                 unavailable(&reason, metrics)
             }
-            // The connection closed after the request was written: the call
-            // may have taken effect, the worker is lost.
-            CallOutcome::Failed { reason } if reason.starts_with("call:closed") => {
+            // The connection closed after the request was written, or the write
+            // of it failed (`call:transport`: `rmcp` 3.9.0 `service.rs` 1470 to
+            // 1473 gives the failed write as the request's response). Whether any
+            // byte of the line reached the server cannot be told, and a line
+            // complete but for the pipe closing is a call. The call may have
+            // taken effect: the worker is lost.
+            CallOutcome::Failed { reason }
+                if reason.starts_with("call:closed") || reason.starts_with("call:transport") =>
+            {
                 ExecutionOutcome {
                     termination: Termination::HostFault {
                         detail: HostFaultDetail::WorkerDied,
@@ -446,9 +460,17 @@ impl ToolProvider for McpTools {
                 continue;
             }
             let handle = self.handle.clone();
-            let current = tokio::task::block_in_place(|| handle.block_on(server.list()))
-                .ok()
-                .map(|(_, _, h)| h);
+            // On this task's behalf: a restart the relisting makes counts
+            // against the task (LIM-X3).
+            let current = match tokio::task::block_in_place(|| {
+                handle.block_on(server.list_for(self.task_id))
+            }) {
+                Ok((_, _, h)) => Some(h),
+                // The restart limit is reached: the definitions did not change,
+                // and the call will be refused as `tool_unavailable`.
+                Err(ServerError::Died { .. }) => continue,
+                Err(_) => None,
+            };
             for (name, record) in pinned {
                 if record.server != server.name() || record.unavailable.is_some() {
                     continue;
@@ -488,18 +510,29 @@ impl ToolProvider for McpTools {
                 return ExecutionOutcome::tool_error("unknown_server", Value::Null, 0);
             };
             // Second line of pinning (RFC 009 §7): the hash at call time.
-            if let Some(record) = self.imported.get(&name).map(|i| &i.record)
-                && server.current_hash(tool).await.as_ref() != Some(&record.hash)
-            {
-                self.unpinned
-                    .lock()
-                    .expect("unpinned lock")
-                    .insert(name.clone());
-                return ExecutionOutcome::tool_error(
-                    "definition_changed",
-                    json!({"hint": "a new task pins the new definition"}),
-                    started.elapsed().as_millis() as i64,
-                );
+            // The listing is made for this task: a restart it makes counts
+            // against the task (LIM-X3).
+            if let Some(record) = self.imported.get(&name).map(|i| &i.record) {
+                let current = match server.current_hash(self.task_id, tool).await {
+                    Ok(current) => current,
+                    // The server cannot serve (it could not start, or its restart
+                    // limit is reached for this task): the call is not made, and
+                    // the tool is not unpinned for a definition that did not change.
+                    Err(error) => {
+                        return map_server_error(error, started.elapsed().as_millis() as i64);
+                    }
+                };
+                if current.as_ref() != Some(&record.hash) {
+                    self.unpinned
+                        .lock()
+                        .expect("unpinned lock")
+                        .insert(name.clone());
+                    return ExecutionOutcome::tool_error(
+                        "definition_changed",
+                        json!({"hint": "a new task pins the new definition"}),
+                        started.elapsed().as_millis() as i64,
+                    );
+                }
             }
             let outcome = server
                 .call(

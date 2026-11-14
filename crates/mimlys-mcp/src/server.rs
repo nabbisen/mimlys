@@ -137,8 +137,10 @@ pub enum ServerError {
         /// A fixed-vocabulary reason.
         reason: String,
     },
-    /// The process died and the task's restart budget is used up.
-    #[error("server {server} died; restarts exhausted for the task")]
+    /// The process is not running and the task's restart budget (LIM-X3) is
+    /// used up: it is not restarted, so no call is made. The reason word the
+    /// product gives for it is `restart_limit_reached`.
+    #[error("server {server} not restarted: restart_limit_reached for the task")]
     Died {
         /// The server.
         server: String,
@@ -160,8 +162,13 @@ struct Live {
 pub struct Server {
     config: ServerConfig,
     live: tokio::sync::Mutex<Option<Live>>,
-    /// Restarts per task (LIM-X3).
+    /// Restarts per task (LIM-X3): every start of a server that had started
+    /// before, made for the task (a listing for no task is not counted).
     restarts: Mutex<HashMap<TaskId, u32>>,
+    /// Whether the process was started at least once: a start after that is a
+    /// restart, whatever ended the process before (its death, the kill after
+    /// LIM-O2).
+    started_once: std::sync::atomic::AtomicBool,
     /// Events produced and not yet drained (RFC 009 §1).
     events: Mutex<Vec<Event>>,
     /// Whether the last known list may be stale (`list_changed` or a
@@ -178,6 +185,7 @@ impl Server {
             config,
             live: tokio::sync::Mutex::new(None),
             restarts: Mutex::new(HashMap::new()),
+            started_once: std::sync::atomic::AtomicBool::new(false),
             events: Mutex::new(Vec::new()),
             dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last: Mutex::new(None),
@@ -222,10 +230,23 @@ impl Server {
         self.events.lock().expect("events lock").push(event);
     }
 
-    /// Starts the process if needed and returns the current list.
+    /// Starts the process if needed and returns the current list, for no
+    /// task (`status`, the import at startup): a restart it makes is not
+    /// counted against any task.
     pub async fn list(&self) -> Result<Listing, ServerError> {
+        self.list_counted(None).await
+    }
+
+    /// As [`Server::list`], on behalf of `task`: a restart it makes counts
+    /// against the task's allowance (LIM-X3), and past the limit the server is
+    /// not started.
+    pub async fn list_for(&self, task: TaskId) -> Result<Listing, ServerError> {
+        self.list_counted(Some(task)).await
+    }
+
+    async fn list_counted(&self, task: Option<TaskId>) -> Result<Listing, ServerError> {
         let mut live = self.live.lock().await;
-        self.ensure_started(&mut live, None).await?;
+        self.ensure_started(&mut live, task).await?;
         let l = live.as_mut().expect("started");
         if self.dirty.swap(false, std::sync::atomic::Ordering::SeqCst) {
             match l.connection.list_tools().await {
@@ -247,8 +268,10 @@ impl Server {
         Ok(snapshot)
     }
 
-    /// Starts the process when it is not running; counts a restart against
-    /// `task` when it had died.
+    /// Starts the process when it is not running. A start after the first is a
+    /// restart: made for `task`, it counts against the task (LIM-X3) and, past
+    /// the limit, is refused (`ServerError::Died`) every time it is asked
+    /// again, not only once. A start for no task is never counted.
     async fn ensure_started(
         &self,
         live: &mut Option<Live>,
@@ -258,22 +281,24 @@ impl Server {
             if !l.connection.is_closed() {
                 return Ok(());
             }
-            // Died: count against the task, record, and restart.
+            // Died: record it; the restart below is counted.
             self.push_event(Event::ServerStopped {
                 server: self.config.name.clone(),
                 reason: "died".into(),
             });
             *live = None;
-            if let Some(task) = task {
-                let mut restarts = self.restarts.lock().expect("restarts lock");
-                let count = restarts.entry(task).or_insert(0);
-                if *count >= LIM_X3_RESTARTS {
-                    return Err(ServerError::Died {
-                        server: self.config.name.clone(),
-                    });
-                }
-                *count += 1;
+        }
+        if let Some(task) = task
+            && self.started_once.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            let mut restarts = self.restarts.lock().expect("restarts lock");
+            let count = restarts.entry(task).or_insert(0);
+            if *count >= LIM_X3_RESTARTS {
+                return Err(ServerError::Died {
+                    server: self.config.name.clone(),
+                });
             }
+            *count += 1;
         }
         let startup = Duration::from_millis(self.config.startup_ms.max(1) as u64);
         let connection = tokio::time::timeout(
@@ -306,6 +331,8 @@ impl Server {
             version: info.version.clone(),
         });
         self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.started_once
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         *live = Some(Live {
             connection,
             info,
@@ -325,9 +352,15 @@ impl Server {
     }
 
     /// The current hash of `tool` as the server lists it now (refreshing a
-    /// dirty list), or `None` when the tool is gone or the server is down.
-    pub async fn current_hash(&self, tool: &str) -> Option<Hash> {
-        self.list().await.ok()?.2.get(tool).cloned()
+    /// dirty list), `None` when the tool is gone. The listing is made for
+    /// `task`: a restart it makes counts against the task (LIM-X3), and a
+    /// server that cannot serve is the error, not a missing tool.
+    pub async fn current_hash(
+        &self,
+        task: TaskId,
+        tool: &str,
+    ) -> Result<Option<Hash>, ServerError> {
+        Ok(self.list_for(task).await?.2.get(tool).cloned())
     }
 
     /// Calls `tool` for `task` with the deadline; cancellation sends
