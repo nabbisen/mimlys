@@ -517,6 +517,25 @@ fn main() {
             );
             0
         }
+        // `sandbox-nested <dir>`: tries to narrow the tool's own sandbox, as a
+        // tool would to leave out another task's workspace, with a profile
+        // that denies writing under `<dir>`; says what the system answered.
+        #[cfg(target_os = "macos")]
+        Some("sandbox-nested") => {
+            let dir = args.get(1).map(String::as_str).unwrap_or("/");
+            let profile =
+                format!("(version 1)\n(allow default)\n(deny file-write* (subpath \"{dir}\"))\n");
+            match mimlys_exec::confine::macos::probe::apply_further_profile(&profile) {
+                Ok(()) => {
+                    println!("sandbox-nested applied");
+                    0
+                }
+                Err(message) => {
+                    println!("sandbox-nested refused: {message}");
+                    3
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         Some("proclist") => match mimlys_exec::confine::macos::probe::process_list_size() {
             Ok(bytes) => {
@@ -694,7 +713,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|list|write|write-env|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|list|write|write-env|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|fork|alloc|alloc-touch|orphan|proclist|sandbox-nested|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }
