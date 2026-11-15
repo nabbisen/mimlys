@@ -1347,8 +1347,20 @@ impl Runtime {
                             rolled_back = true;
                             notices.push(crate::observation::Notice::RolledBack);
                         }
-                        // A failed restore leaves the outcome unknown: the task halts (REQ-PERS-008).
-                        Err(_) => unknown_after_restore = true,
+                        // A failed restore leaves the outcome unknown: the task halts
+                        // (REQ-PERS-008), whether the execution failed or was cancelled
+                        // (REQ-WS-010). The observation keeps `rolled_back: false`.
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "mimlys_core",
+                                task_id = %task.task_id,
+                                action_id = %action.action_id,
+                                snapshot_id = %before,
+                                %error,
+                                "the workspace could not be restored; the action was not rolled back"
+                            );
+                            unknown_after_restore = true;
+                        }
                     }
                 } else if status == ObservationStatus::Succeeded {
                     let after = self.take_snapshot(
@@ -1439,6 +1451,12 @@ impl Runtime {
                 let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
                 return Ok((step, Some(ActionOutcome::Failed), halted));
             }
+            // Read before the early return for an execution without a cause (a
+            // cancelled one): a restore that failed halts the task for either.
+            if unknown_after_restore {
+                let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
+                return Ok((step, Some(ActionOutcome::Failed), halted));
+            }
             let Some(cause) = cause else {
                 return Ok((
                     step,
@@ -1446,10 +1464,6 @@ impl Runtime {
                     task,
                 ));
             };
-            if unknown_after_restore {
-                let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
-                return Ok((step, Some(ActionOutcome::Failed), halted));
-            }
             let d = disposition(
                 &cause,
                 authorized.effect(),

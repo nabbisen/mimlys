@@ -1057,3 +1057,81 @@ fn req_obs_001_a_failed_restore_halts_the_task_and_the_halt_is_in_the_events() {
         Some(("halted".to_owned(), Some(HaltReason::UnknownOutcome)))
     );
 }
+
+/// REQ-WS-010: a restore that fails after a cancelled
+/// write is not silent. The execution was cancelled and `on_cancel` is
+/// `rollback`, so the workspace was to be restored; it was not. The task halts
+/// `unknown_outcome` as it does after a failed write, the observation says that
+/// nothing was rolled back (and no `workspace.rollback` is recorded), and the
+/// log line names the action and the snapshot.
+#[test]
+fn req_ws_010_a_failed_restore_after_a_cancelled_write_halts_the_task() {
+    let buffers = super::per_thread_log();
+    let me = std::thread::current().id();
+    buffers.lock().unwrap().remove(&me);
+
+    let rig = Rig::ending(
+        effect_tool("a_workspace_write", EffectKind::WorkspaceWrite, true, false),
+        ExecutionOutcome::cancelled(1),
+    );
+    rig.workspaces.fail_restores();
+    let result = rig.execute_the_action();
+
+    assert_eq!(
+        result.state,
+        TaskState::Halted {
+            halt_reason: HaltReason::UnknownOutcome
+        }
+    );
+    assert_eq!(result.outcome, StepOutcome::Halted);
+    assert_eq!(
+        rig.last_state_change(),
+        Some(("halted".to_owned(), Some(HaltReason::UnknownOutcome)))
+    );
+    let action = rig.action();
+    assert_eq!(action.status, ActionStatus::Cancelled);
+    let observations = rig.persistence.load_observations(rig.task).unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].status, ObservationStatus::Cancelled);
+    assert!(!observations[0].rolled_back, "it says: not rolled back");
+    assert!(!observations[0].notices.contains(&Notice::RolledBack));
+    assert!(!rig.events().contains(&"workspace.rollback".to_owned()));
+    assert!(rig.workspaces.restores().is_empty());
+
+    let written = buffers.lock().unwrap().remove(&me).unwrap_or_default();
+    let log = String::from_utf8(written).unwrap();
+    let line: serde_json::Value = log
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("one JSON log line"))
+        .find(|l| l["level"] == "WARN")
+        .unwrap_or_else(|| panic!("a warning was logged: {log}"));
+    let fields = &line["fields"];
+    assert_eq!(fields["action_id"], action.action_id.to_string(), "{line}");
+    assert_eq!(
+        fields["snapshot_id"],
+        action.snapshot_before.unwrap().to_string(),
+        "{line}"
+    );
+    assert!(
+        fields["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("restore")),
+        "{line}"
+    );
+}
+
+/// REQ-WS-010: a cancelled write whose restore succeeds is rolled back and the
+/// task is not halted (the step ends `cancelled`, as before).
+#[test]
+fn req_ws_010_a_restore_that_succeeds_after_a_cancelled_write_leaves_the_task_running() {
+    let rig = Rig::ending(
+        effect_tool("a_workspace_write", EffectKind::WorkspaceWrite, true, false),
+        ExecutionOutcome::cancelled(1),
+    );
+    let result = rig.execute_the_action();
+    assert_eq!(result.outcome, StepOutcome::Cancelled);
+    assert_eq!(result.state, TaskState::Running);
+    let observations = rig.persistence.load_observations(rig.task).unwrap();
+    assert!(observations[0].rolled_back);
+    assert_eq!(rig.workspaces.restores().len(), 1);
+}
