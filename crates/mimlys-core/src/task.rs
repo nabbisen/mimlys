@@ -44,6 +44,10 @@ pub enum HaltReason {
     UnknownOutcome,
     /// LIM-W1 or LIM-W2 breached.
     WorkspaceQuota,
+    /// Part of the task's tree could not be read, so a snapshot, a rollback or the quota
+    /// check could not be made; the user restores the permissions of the path named in
+    /// `workspace.unreadable`, then resumes.
+    WorkspaceUnreadable,
     /// The model backend could not be reached after retries.
     BackendUnavailable,
     /// A tool could not be reached after retries.
@@ -54,7 +58,7 @@ pub enum HaltReason {
 
 impl HaltReason {
     /// Every reason, in the order of external design §5.2.
-    pub const ALL: [HaltReason; 14] = [
+    pub const ALL: [HaltReason; 15] = [
         HaltReason::BudgetSteps,
         HaltReason::BudgetRejections,
         HaltReason::BudgetFailures,
@@ -66,6 +70,7 @@ impl HaltReason {
         HaltReason::Recovered,
         HaltReason::UnknownOutcome,
         HaltReason::WorkspaceQuota,
+        HaltReason::WorkspaceUnreadable,
         HaltReason::BackendUnavailable,
         HaltReason::ToolUnavailable,
         HaltReason::Policy,

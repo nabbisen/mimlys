@@ -457,6 +457,7 @@ fn req_task_007_halt_reasons_are_the_fourteen_of_ed_5_2() {
             "recovered",
             "unknown_outcome",
             "workspace_quota",
+            "workspace_unreadable",
             "backend_unavailable",
             "tool_unavailable",
             "policy"

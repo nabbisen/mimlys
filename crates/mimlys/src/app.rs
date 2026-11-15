@@ -87,7 +87,10 @@ impl AppError {
                 | mimlys_core::spi::WorkspaceError::EditedSince { .. },
             ) => "conflict",
             AppError::Workspace(mimlys_core::spi::WorkspaceError::NotFound { .. }) => "not_found",
-            AppError::Workspace(mimlys_core::spi::WorkspaceError::Refused { .. }) => "state",
+            AppError::Workspace(
+                mimlys_core::spi::WorkspaceError::Refused { .. }
+                | mimlys_core::spi::WorkspaceError::Unreadable { .. },
+            ) => "state",
             AppError::Workspace(_) => "internal",
             AppError::TaskRef {
                 not_found: true, ..
@@ -122,6 +125,12 @@ impl AppError {
                 | mimlys_core::spi::WorkspaceError::EditedSince { paths },
             )) => {
                 serde_json::json!({ "paths": paths })
+            }
+            AppError::Workspace(mimlys_core::spi::WorkspaceError::Unreadable { path })
+            | AppError::Runtime(RuntimeError::Workspace(
+                mimlys_core::spi::WorkspaceError::Unreadable { path },
+            )) => {
+                serde_json::json!({ "paths": [path] })
             }
             AppError::Runtime(RuntimeError::PromotionFailed { cause, kept, .. }) => {
                 let paths = match cause {

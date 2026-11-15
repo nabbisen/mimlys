@@ -53,7 +53,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tooldir:?}]
-allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect", "detach"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "chmod", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect", "detach"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -2770,4 +2770,103 @@ fn req_conf_005_unix_sockets_are_refused_below_landlock_abi_9() {
         "req_conf_005_unix_sockets_are_refused_below_landlock_abi_9",
         Some("8"),
     );
+}
+
+/// REQ-WS-004, REQ-WS-006, REQ-WS-008: a host tool makes a directory of the workspace
+/// unreadable (`chmod 000`). The next walk of the tree cannot read it: the task halts
+/// `workspace_unreadable` with the path and the remedy, not an internal error that leaves it
+/// `running`; no action is left running. After the permissions are restored, `resume` goes
+/// on and the task completes. Not run as the superuser (its reads ignore the mode).
+#[test]
+fn m6a_a_directory_made_unreadable_halts_the_task_and_the_resume_goes_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let name = "m6a_a_directory_made_unreadable_halts_the_task_and_the_resume_goes_on";
+    let env = Env::new(&[probe(&["chmod", "000", "src"]), complete()], "");
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(name, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "make src unreadable",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    let id = value["task"]["task_id"].as_str().unwrap_or("").to_owned();
+    let tree_src = env.tree(&id).join("src");
+    let _restore = Restorer(tree_src.clone());
+    if std::fs::read_dir(&tree_src).is_ok() {
+        common::skip(name, "the permissions do not apply to this user");
+        return;
+    }
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "halted", "{value}");
+    assert_eq!(
+        value["task"]["halt_reason"], "workspace_unreadable",
+        "{value}"
+    );
+    assert_eq!(value["unreadable"], "src", "{value}");
+
+    // The state, the remedy and the path in words; the store holds no running action.
+    let (code, text, stderr) = env.run(&["task", "show", &id]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        text.contains(
+            "halted: part of the workspace could not be read; restore its permissions, then resume"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "workspace path that could not be read: src; restore its permissions, then resume"
+        ),
+        "{text}"
+    );
+    let events = env.events(&id);
+    let unreadable: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["event"] == "workspace.unreadable")
+        .collect();
+    assert_eq!(unreadable.len(), 1, "{events:?}");
+    assert_eq!(unreadable[0]["path"], "src");
+    let (_, listed) = env.json(&["task", "list"]);
+    assert_eq!(listed[0]["state"], "halted", "not left running: {listed}");
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 1);
+    assert_eq!(exit_code_of(&obs[0]), 0, "the action ran and succeeded");
+
+    // A rollback cannot read the tree either: it says so, naming the path, and changes nothing.
+    let (code, value) = env.json(&["rollback", &id]);
+    assert_eq!(code, 1, "{value}");
+    assert_eq!(value["error"]["kind"], "state", "{value}");
+    assert_eq!(value["error"]["detail"]["paths"], json!(["src"]), "{value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("src") && m.contains("restore its permissions")),
+        "{value}"
+    );
+
+    // The user restores the permissions and resumes.
+    std::fs::set_permissions(&tree_src, std::fs::Permissions::from_mode(0o755)).unwrap();
+    env.set_script(&[probe(&["ok"]), complete()]);
+    let (code, value) = env.json(&["task", "resume", &id]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    assert!(value.get("unreadable").is_none(), "{value}");
+}
+
+/// Gives the permissions back when dropped, so that a failed assertion leaves a tree that
+/// can be removed.
+struct Restorer(PathBuf);
+
+impl Drop for Restorer {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
 }

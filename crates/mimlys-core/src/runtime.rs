@@ -180,7 +180,9 @@ impl RuntimeError {
             } => "conflict",
             RuntimeError::PromotionFailed { .. } => "internal",
             RuntimeError::Workspace(WorkspaceError::NotFound { .. }) => "not_found",
-            RuntimeError::Workspace(WorkspaceError::Refused { .. }) => "state",
+            RuntimeError::Workspace(
+                WorkspaceError::Refused { .. } | WorkspaceError::Unreadable { .. },
+            ) => "state",
             RuntimeError::Workspace(
                 WorkspaceError::TooLarge { .. }
                 | WorkspaceError::ScopeNotFound

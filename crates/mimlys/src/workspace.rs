@@ -20,6 +20,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod snapshot;
+use snapshot::unreadable;
 
 /// The metadata file beside a task's tree.
 const INFO_FILE: &str = "workspace.json";
@@ -302,15 +303,15 @@ impl LocalWorkspaces {
         let mut total = 0;
         for entry in dir
             .read_dir(if rel.is_empty() { "." } else { rel })
-            .map_err(Self::storage("walk"))?
+            .map_err(unreadable(rel))?
         {
-            let entry = entry.map_err(Self::storage("walk"))?;
-            let ty = entry.file_type().map_err(Self::storage("walk"))?;
+            let entry = entry.map_err(unreadable(rel))?;
             let child = join(rel, &entry.file_name().to_string_lossy());
+            let ty = entry.file_type().map_err(unreadable(&child))?;
             if ty.is_dir() {
                 total += Self::tree_size(dir, &child)?;
             } else if ty.is_file() {
-                total += entry.metadata().map_err(Self::storage("walk"))?.len();
+                total += entry.metadata().map_err(unreadable(&child))?.len();
             }
         }
         Ok(total)

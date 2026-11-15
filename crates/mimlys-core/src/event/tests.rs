@@ -78,6 +78,7 @@ fn every_event() -> Vec<Event> {
         Event::WorkspacePromotionFailed {
             reason: "restored".into(),
         },
+        Event::WorkspaceUnreadable { path: "d".into() },
         Event::TaskRecovered {
             disposition: RecoveryDisposition::RolledBack,
         },
@@ -148,6 +149,7 @@ fn req_obs_001_event_vocabulary_matches_ed_17_1() {
             "workspace.promoted",
             "workspace.promotion_started",
             "workspace.promotion_failed",
+            "workspace.unreadable",
             "task.recovered",
             "tool.pinned",
             "tool.unpinned",

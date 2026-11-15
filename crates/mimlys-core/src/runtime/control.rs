@@ -75,6 +75,10 @@ pub struct TaskView {
     /// external design §19.2). The user, not the record, decides what happened
     /// to them.
     pub unknown_actions: Vec<UnknownAction>,
+    /// The path whose permissions the user restores, while the task is halted
+    /// `workspace_unreadable`: the last `workspace.unreadable` event of the task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<String>,
 }
 
 /// An action whose outcome is unknown (REQ-CLI-005).

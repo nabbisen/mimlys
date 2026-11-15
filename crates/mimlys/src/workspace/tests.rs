@@ -373,6 +373,121 @@ mod snapshots {
         );
     }
 
+    /// Gives the permissions back when dropped, so that a failed assertion leaves a tree
+    /// that can be removed.
+    #[cfg(unix)]
+    struct Restore(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    /// REQ-WS-004, REQ-WS-006, REQ-WS-008: a directory the task cannot read is named by every
+    /// walk of the tree (the snapshot, the restore, the quota check) as `Unreadable` with its
+    /// path, relative to the tree, and so is a file; none of them is the storage failure
+    /// `walk`. With the permissions restored, each works again. Unix only; the permissions do
+    /// not stop the superuser, and the test then has nothing to show and returns.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_004_an_unreadable_directory_or_file_is_named_by_every_walk() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        let unreadable = |path: &str| WorkspaceError::Unreadable { path: path.into() };
+        for (path, mode_on_directory) in [("src/deep", true), ("src/lib.rs", false)] {
+            let target = fx.tree().join(path);
+            let _restore = Restore(target.clone());
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let readable = if mode_on_directory {
+                std::fs::read_dir(&target).is_ok()
+            } else {
+                std::fs::read(&target).is_ok()
+            };
+            if readable {
+                eprintln!("skipped: the permissions do not apply to this user");
+                return;
+            }
+            let dir = cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority())
+                .unwrap();
+            assert_eq!(
+                super::super::snapshot::walk_manifest(&dir, None).unwrap_err(),
+                unreadable(path)
+            );
+            assert_eq!(
+                fx.p.snapshot(
+                    fx.task,
+                    mimlys_core::ids::SnapshotId::new(&fx.ids),
+                    SnapshotReason::Before,
+                    None,
+                    Some(&base.record),
+                    fx.now(),
+                )
+                .unwrap_err(),
+                unreadable(path),
+                "a snapshot names {path}"
+            );
+            assert_eq!(
+                fx.p.restore(fx.task, &base.record).unwrap_err(),
+                unreadable(path),
+                "a restore names {path}"
+            );
+            if mode_on_directory {
+                assert_eq!(
+                    fx.p.remaining_bytes(fx.task).unwrap_err(),
+                    unreadable(path),
+                    "the quota check names {path}"
+                );
+            } else {
+                // The size of a file is its metadata: its permissions do not stop it.
+                fx.p.remaining_bytes(fx.task).unwrap();
+            }
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+            fx.p.remaining_bytes(fx.task).unwrap();
+            fx.p.restore(fx.task, &base.record).unwrap();
+            assert!(
+                fx.p.snapshot(
+                    fx.task,
+                    mimlys_core::ids::SnapshotId::new(&fx.ids),
+                    SnapshotReason::Before,
+                    None,
+                    Some(&base.record),
+                    fx.now(),
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    /// The path of an `Unreadable` error is one clean line: a name with control or
+    /// bidirectional characters is cleaned, and a long one is bounded.
+    #[test]
+    fn req_ws_004_the_path_of_an_unreadable_error_is_cleaned_and_bounded() {
+        let error = super::super::snapshot::unreadable("a/\u{1b}[31mred\u{202e}b\nc")(
+            std::io::ErrorKind::PermissionDenied.into(),
+        );
+        let WorkspaceError::Unreadable { path } = error else {
+            panic!("{error:?}")
+        };
+        assert!(!path.contains('\u{1b}') && !path.contains('\u{202e}') && !path.contains('\n'));
+        let long = "x".repeat(10_000);
+        let WorkspaceError::Unreadable { path } =
+            super::super::snapshot::unreadable(&long)(std::io::ErrorKind::PermissionDenied.into())
+        else {
+            panic!()
+        };
+        assert!(path.chars().count() <= mimlys_core::limits::LIM_I5_MESSAGE_CHARS);
+        let WorkspaceError::Unreadable { path } =
+            super::super::snapshot::unreadable("")(std::io::ErrorKind::PermissionDenied.into())
+        else {
+            panic!()
+        };
+        assert_eq!(path, ".", "the root of the tree");
+    }
+
     fn walk(fx: &Fx) -> mimlys_core::snapshot::Manifest {
         let dir =
             cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority()).unwrap();

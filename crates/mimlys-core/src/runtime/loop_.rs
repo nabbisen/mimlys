@@ -222,7 +222,19 @@ impl Runtime {
                     state: halted.state,
                 });
             }
-            Err(e) => return Err(e),
+            // Part of the tree cannot be read (the quota is measured by walking it): the task
+            // halts with the path named, it does not stay `running` (REQ-WS-008).
+            Err(e) => match unreadable_path(&e) {
+                Some(path) => {
+                    let halted = self.halt_unreadable(&task, None, None, path, now)?;
+                    self.persist_task(&task, &halted)?;
+                    return Ok(StepResultView {
+                        outcome: StepOutcome::Halted,
+                        state: halted.state,
+                    });
+                }
+                None => return Err(e),
+            },
         };
         // An approved action continues its own step from line 4.
         if let Some(approval) = self.deps.persistence.load_pending_approval(task_id)?
@@ -731,7 +743,10 @@ impl Runtime {
                 let action = action
                     .transition(ActionInput::Authorize, now)
                     .map_err(ordering)?;
-                let action = self.snapshot_before(&task, action, &authorized, now)?;
+                let action = match self.snapshot_before(&task, action, &authorized, now)? {
+                    Ok(action) => action,
+                    Err(unreadable) => return self.end_unreadable(task, step, unreadable, now),
+                };
                 persistence.record_authorized(
                     &action,
                     None,
@@ -959,7 +974,25 @@ impl Runtime {
         let action = action
             .transition(ActionInput::Authorize, now)
             .map_err(ordering)?;
-        let action = self.snapshot_before(&task, action, &authorized, now)?;
+        let action = match self.snapshot_before(&task, action, &authorized, now)? {
+            Ok(action) => action,
+            // The action stays approved and its step open: the resume continues it, as it
+            // continues any approved action, once the path can be read.
+            Err(unreadable) => {
+                let halted = self.halt_unreadable(
+                    &task,
+                    Some(step.step_id),
+                    Some(unreadable.action.action_id),
+                    &unreadable.path,
+                    now,
+                )?;
+                self.persist_task(&task, &halted)?;
+                return Ok(StepResultView {
+                    outcome: StepOutcome::Halted,
+                    state: halted.state,
+                });
+            }
+        };
         step.phase = StepPhase::Execute;
         persistence.record_authorized(
             &action,
@@ -1167,7 +1200,10 @@ impl Runtime {
         let action = action
             .transition(ActionInput::Authorize, now)
             .map_err(ordering)?;
-        let action = self.snapshot_before(&task, action, &authorized, now)?;
+        let action = match self.snapshot_before(&task, action, &authorized, now)? {
+            Ok(action) => action,
+            Err(unreadable) => return self.end_unreadable(task, step, unreadable, now),
+        };
         persistence.record_authorized(
             &action,
             None,
@@ -1220,6 +1256,9 @@ impl Runtime {
         };
         let mut unknown_after_restore = false;
         loop {
+            // Part of the tree could not be read when the action's workspace was restored or
+            // snapshotted after it: the task halts naming the path.
+            let mut unreadable_after: Option<String> = None;
             step.phase = StepPhase::Execute;
             // The step in flight starts no new action once a stop signal has
             // come (REQ-CLI-005, external design §19.2): read here, before the
@@ -1360,16 +1399,24 @@ impl Runtime {
                                 "the workspace could not be restored; the action was not rolled back"
                             );
                             unknown_after_restore = true;
+                            unreadable_after = unreadable_path(&error).map(str::to_owned);
                         }
                     }
                 } else if status == ObservationStatus::Succeeded {
-                    let after = self.take_snapshot(
+                    match self.take_snapshot(
                         &task,
                         SnapshotReason::After,
                         Some(action.action_id),
                         now,
-                    )?;
-                    snapshot_after = Some(after.snapshot_id);
+                    ) {
+                        Ok(after) => snapshot_after = Some(after.snapshot_id),
+                        // The action ran and is recorded as it ended; there is no snapshot
+                        // of what it left, and the task halts naming the path.
+                        Err(error) => match unreadable_path(&error) {
+                            Some(path) => unreadable_after = Some(path.to_owned()),
+                            None => return Err(error),
+                        },
+                    }
                 }
             }
             let execution = Execution {
@@ -1452,10 +1499,26 @@ impl Runtime {
                 return Ok((step, Some(ActionOutcome::Failed), halted));
             }
             // Read before the early return for an execution without a cause (a
-            // cancelled one): a restore that failed halts the task for either.
-            if unknown_after_restore {
-                let halted = task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?;
-                return Ok((step, Some(ActionOutcome::Failed), halted));
+            // cancelled one): a restore that failed halts the task for either. When the
+            // restore, or the snapshot after a success, could not read part of the tree, the
+            // reason is the one that names the path.
+            if unknown_after_restore || unreadable_after.is_some() {
+                let outcome = if status == ObservationStatus::Succeeded {
+                    ActionOutcome::Succeeded
+                } else {
+                    ActionOutcome::Failed
+                };
+                let halted = match &unreadable_after {
+                    Some(path) => self.halt_unreadable(
+                        &task,
+                        Some(step.step_id),
+                        Some(action.action_id),
+                        path,
+                        ended,
+                    )?,
+                    None => task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?,
+                };
+                return Ok((step, Some(outcome), halted));
             }
             let Some(cause) = cause else {
                 return Ok((
@@ -1551,13 +1614,88 @@ impl Runtime {
         mut action: Action,
         authorized: &AuthorizedAction,
         now: Instant,
-    ) -> Result<Action, RuntimeError> {
+    ) -> Result<Result<Action, Unreadable>, RuntimeError> {
         if authorized.effect().kind.is_write() && action.snapshot_before.is_none() {
-            let record =
-                self.take_snapshot(task, SnapshotReason::Before, Some(action.action_id), now)?;
-            action.snapshot_before = Some(record.snapshot_id);
+            match self.take_snapshot(task, SnapshotReason::Before, Some(action.action_id), now) {
+                Ok(record) => action.snapshot_before = Some(record.snapshot_id),
+                Err(error) => {
+                    return match unreadable_path(&error) {
+                        Some(path) => Ok(Err(Unreadable {
+                            path: path.to_owned(),
+                            action,
+                        })),
+                        None => Err(error),
+                    };
+                }
+            }
         }
-        Ok(action)
+        Ok(Ok(action))
+    }
+
+    /// Logs that part of the tree could not be read, records `workspace.unreadable` with the
+    /// path, and returns the task halted `workspace_unreadable`; the caller records the
+    /// halt. The path is cleaned and bounded, with the configured secrets redacted.
+    fn halt_unreadable(
+        &self,
+        task: &Task,
+        step_id: Option<StepId>,
+        action_id: Option<ActionId>,
+        path: &str,
+        now: Instant,
+    ) -> Result<Task, RuntimeError> {
+        let path = bounded_message(path, Some(&self.redactor));
+        tracing::warn!(
+            target: "mimlys_core",
+            task_id = %task.task_id,
+            path = %path,
+            "part of the workspace could not be read; the task is halted"
+        );
+        self.deps.persistence.append_event(&self.event(
+            Actor::Runtime,
+            Some(task.task_id),
+            step_id,
+            action_id,
+            Event::WorkspaceUnreadable { path },
+        ))?;
+        Ok(task.transition(TaskInput::Halt(HaltReason::WorkspaceUnreadable), now)?)
+    }
+
+    /// An action whose snapshot before it could not be taken has not begun: it is closed
+    /// `cancelled` (nothing ran), the task halts naming the path, and the step ends
+    /// `halted`.
+    fn end_unreadable(
+        &self,
+        task: Task,
+        mut step: Step,
+        unreadable: Unreadable,
+        now: Instant,
+    ) -> Result<StepResultView, RuntimeError> {
+        let Unreadable { action, path } = unreadable;
+        let cancelled = action
+            .transition(ActionInput::Cancel, now)
+            .map_err(ordering)?;
+        self.deps.persistence.record_action_terminal(
+            &cancelled,
+            &self.event(
+                Actor::Runtime,
+                Some(task.task_id),
+                Some(step.step_id),
+                Some(action.action_id),
+                Event::ActionFinished {
+                    status: cancelled.status.name().to_owned(),
+                    cause: None,
+                },
+            ),
+        )?;
+        let halted = self.halt_unreadable(
+            &task,
+            Some(step.step_id),
+            Some(action.action_id),
+            &path,
+            now,
+        )?;
+        step.phase = StepPhase::Evaluate;
+        self.finish_step_after(task, halted, step, StepOutcome::Halted, None, now)
     }
 
     /// Takes a snapshot and records it: files first, the row, then the seal
@@ -1687,11 +1825,25 @@ impl Runtime {
         if let (Some(reason), TaskState::Running) = (budget, &after.state) {
             after = after.transition(TaskInput::Halt(reason), now)?;
         }
-        // REQ-WS-008: the quota is read from the latest snapshot at the boundary.
-        if after.state == TaskState::Running
-            && self.deps.workspaces.remaining_bytes(after.task_id)? == Some(0)
-        {
-            after = after.transition(TaskInput::Halt(HaltReason::WorkspaceQuota), now)?;
+        // REQ-WS-008: the quota is measured at the boundary. A tree that cannot be read
+        // halts the task naming the path; it does not leave the step open.
+        if after.state == TaskState::Running {
+            match self.deps.workspaces.remaining_bytes(after.task_id) {
+                Ok(Some(0)) => {
+                    after = after.transition(TaskInput::Halt(HaltReason::WorkspaceQuota), now)?;
+                }
+                Ok(_) => {}
+                Err(crate::spi::WorkspaceError::Unreadable { path }) => {
+                    after = self.halt_unreadable(
+                        &after,
+                        Some(step.step_id),
+                        step.action_id,
+                        &path,
+                        now,
+                    )?;
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         let outcome = if matches!(after.state, TaskState::Halted { .. }) {
             StepOutcome::Halted
@@ -1772,6 +1924,23 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::InvalidRequest {
                 detail: format!("profile {} is not in the policy", task.profile),
             })
+    }
+}
+
+/// A write action whose snapshot before it could not be taken, because part of the tree
+/// could not be read.
+struct Unreadable {
+    /// The action, not yet recorded as authorized.
+    action: Action,
+    /// The path, as the workspace named it.
+    path: String,
+}
+
+/// The path of a tree that could not be read, when `error` says so.
+fn unreadable_path(error: &RuntimeError) -> Option<&str> {
+    match error {
+        RuntimeError::Workspace(crate::spi::WorkspaceError::Unreadable { path }) => Some(path),
+        _ => None,
     }
 }
 

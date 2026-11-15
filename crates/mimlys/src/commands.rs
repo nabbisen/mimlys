@@ -53,6 +53,9 @@ pub fn print_view(view: &TaskView, out: &Output) {
         &view.task.task_id.to_string(),
         &view.task.state,
     ));
+    if let Some(path) = &view.unreadable {
+        out.line(messages::unreadable_line(path));
+    }
     for a in &view.unknown_actions {
         out.line(messages::unknown_action_line(
             &a.action_id.to_string(),
