@@ -171,6 +171,17 @@ fn req_conf_006_allow_paths_admits_what_the_pattern_admits() {
     ] {
         assert!(d.validate_args(&[path.to_owned()]).is_ok(), "{path}");
     }
+    // The override of 0.10 and earlier is gone: a pattern that names `/` or `\.`
+    // admits no path by itself (such a declaration fails `check`, below); only
+    // `allow_paths` does.
+    let mut named = cargo_test();
+    named.arg_pattern = Some("[A-Za-z0-9_./-]+".into());
+    assert!(named.validate_args(&["src/lib.rs".into()]).is_ok());
+    for path in ["../x", "/etc/passwd", "a/../b"] {
+        assert!(named.validate_args(&[path.to_owned()]).is_err(), "{path}");
+    }
+    named.allow_paths = true;
+    assert!(named.validate_args(&["../x".into()]).is_ok());
     let mut narrow = cargo_test();
     narrow.allow_paths = true;
     assert!(narrow.validate_args(&["../x".into()]).is_err());
