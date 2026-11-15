@@ -291,7 +291,12 @@ impl Runtime {
         task: &Task,
         tools: &dyn ToolProvider,
     ) -> Result<Vec<(String, String)>, RuntimeError> {
-        let changed = self.guard(PROVIDER, || tools.refresh_pins(&task.versions.tool_imports))?;
+        // At a step boundary no action is in flight: the weakest request, which
+        // every stronger one implies, ends the wait for a listing.
+        let interruption = self.boundary_interruption(task.task_id);
+        let changed = self.guard(PROVIDER, || {
+            tools.refresh_pins(&task.versions.tool_imports, &interruption)
+        })?;
         self.record_provider_events(tools)?;
         let mut unpinned = self.unpinned.lock().expect("unpinned lock");
         let set = unpinned.entry(task.task_id).or_default();

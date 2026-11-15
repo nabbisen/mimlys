@@ -8,15 +8,62 @@
 use crate::server::{Listed, ServerConfig, ServerInfo};
 use mimlys_core::spi::Cancellation;
 use rmcp::ClientHandler;
-use rmcp::model::{CallToolRequestParams, ClientRequest, ServerResult};
-use rmcp::service::{NotificationContext, PeerRequestOptions, RoleClient, RunningService};
+use rmcp::model::{CallToolRequestParams, ClientRequest, PaginatedRequestParams, ServerResult};
+use rmcp::service::{NotificationContext, Peer, PeerRequestOptions, RoleClient, RunningService};
 use serde_json::{Map, Value};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// How often cancellation is polled while a call is in flight.
+/// How often cancellation is polled while a request is in flight.
 const CANCEL_POLL: Duration = Duration::from_millis(100);
+
+/// The most pages one listing may take. Proposed: rypsok lists three tools
+/// in one page; the bound awaits registration as a limit.
+pub const LIST_MAX_PAGES: usize = 16;
+
+/// The most tools one listing may hold. Proposed: rypsok lists three; a
+/// model is shown a few dozen at most (LIM-I1); the bound awaits registration
+/// as a limit.
+pub const LIST_MAX_TOOLS: usize = 256;
+
+/// Why a bounded wait ended before its future did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Interrupted {
+    /// The time allowed passed.
+    Deadline,
+    /// The caller's interruption was requested.
+    Cancelled,
+}
+
+/// Waits for `fut` for at most `within`, looking at `cancel` (when given)
+/// before the first poll and then every [`CANCEL_POLL`]. A request future
+/// dropped here is cancelled towards the server by the SDK.
+pub(crate) async fn bounded<F: std::future::Future>(
+    fut: F,
+    within: Duration,
+    cancel: Option<&Cancellation>,
+) -> Result<F::Output, Interrupted> {
+    let cancelled = || cancel.is_some_and(Cancellation::is_cancelled);
+    if cancelled() {
+        return Err(Interrupted::Cancelled);
+    }
+    let deadline = tokio::time::Instant::now() + within;
+    tokio::pin!(fut);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::select! {
+            out = &mut fut => return Ok(out),
+            () = tokio::time::sleep(left.min(CANCEL_POLL)) => {}
+        }
+        if cancelled() {
+            return Err(Interrupted::Cancelled);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Interrupted::Deadline);
+        }
+    }
+}
 
 /// The client handler: records `list_changed`.
 #[derive(Clone)]
@@ -91,10 +138,19 @@ impl Drop for ChildGuard {
     }
 }
 
-/// One live connection.
-pub struct Connection {
+/// What ends the connection: the service task and the child. Taken, once,
+/// by the shutdown or by the kill; requests go through the peer and never
+/// touch it.
+struct Closer {
     service: RunningService<RoleClient, Handler>,
     child: ChildGuard,
+}
+
+/// One live connection. Every request goes through the peer, which is shared:
+/// nothing here is held across a wait.
+pub struct Connection {
+    peer: Peer<RoleClient>,
+    closer: Mutex<Option<Closer>>,
     process_id: Option<u32>,
     info: ServerInfo,
     dirty: Arc<AtomicBool>,
@@ -183,9 +239,10 @@ impl Connection {
             instructions: peer_info.as_ref().and_then(|i| i.instructions.clone()),
         };
         drop(starting);
+        let peer = service.peer().clone();
         Ok(Self {
-            service,
-            child,
+            peer,
+            closer: Mutex::new(Some(Closer { service, child })),
             process_id,
             info,
             dirty,
@@ -210,28 +267,63 @@ impl Connection {
 
     /// Whether the transport is gone.
     pub fn is_closed(&self) -> bool {
-        self.service.is_closed() || self.service.peer().is_transport_closed()
+        self.peer.is_transport_closed()
+            || self
+                .closer
+                .lock()
+                .expect("closer lock")
+                .as_ref()
+                .is_none_or(|c| c.service.is_closed())
     }
 
-    /// `tools/list`, every page.
-    pub async fn list_tools(&self) -> Result<Vec<Listed>, String> {
+    /// `tools/list`, every page, within `within` (each page and the whole
+    /// listing), observing `cancel`. It stops at [`LIST_MAX_PAGES`] pages and
+    /// at [`LIST_MAX_TOOLS`] tools. The reasons are `list:timeout`,
+    /// `list:cancelled`, `list:too_many_pages`, `list:too_many_tools` and
+    /// `list:<kind>` of the SDK's error.
+    pub async fn list_tools(
+        &self,
+        within: Duration,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Vec<Listed>, String> {
         let _in_flight = self.reader_span.begin();
-        let tools = self
-            .service
-            .peer()
-            .list_all_tools()
-            .await
-            .map_err(|e| format!("list:{}", kind_of(&e)))?;
-        Ok(tools
-            .into_iter()
-            .map(|t| Listed {
+        let started = tokio::time::Instant::now();
+        let mut listed: Vec<Listed> = Vec::new();
+        let mut cursor = None;
+        for _ in 0..LIST_MAX_PAGES {
+            let left = within.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                return Err("list:timeout".into());
+            }
+            let page = bounded(
+                self.peer
+                    .list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor))),
+                left,
+                cancel,
+            )
+            .await;
+            let page = match page {
+                Ok(Ok(page)) => page,
+                Ok(Err(e)) => return Err(format!("list:{}", kind_of(&e))),
+                Err(Interrupted::Deadline) => return Err("list:timeout".into()),
+                Err(Interrupted::Cancelled) => return Err("list:cancelled".into()),
+            };
+            listed.extend(page.tools.into_iter().map(|t| Listed {
                 name: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()),
                 input_schema: Value::Object((*t.input_schema).clone()),
                 output_schema: t.output_schema.map(|s| Value::Object((*s).clone())),
                 annotations: t.annotations.and_then(|a| serde_json::to_value(a).ok()),
-            })
-            .collect())
+            }));
+            if listed.len() > LIST_MAX_TOOLS {
+                return Err("list:too_many_tools".into());
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                return Ok(listed);
+            }
+        }
+        Err("list:too_many_pages".into())
     }
 
     /// One `tools/call` within `deadline`; cancellation sends the
@@ -249,8 +341,7 @@ impl Connection {
             CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments),
         ));
         let handle = match self
-            .service
-            .peer()
+            .peer
             .send_cancellable_request(request, PeerRequestOptions::no_options())
             .await
         {
@@ -319,26 +410,34 @@ impl Connection {
         }
     }
 
-    /// Ends the service task; dropping the connection kills the process
-    /// group or Job Object (clause K, through the child guard).
+    /// Ends the service task and kills the process group or Job Object
+    /// (clause K, through the child guard). Requests in flight on the peer
+    /// fail at once.
     fn kill(&self) {
-        self.service.cancellation_token().cancel();
+        let closer = self.closer.lock().expect("closer lock").take();
+        if let Some(closer) = closer {
+            closer.service.cancellation_token().cancel();
+            drop(closer);
+        }
     }
 
     /// Closes the transport (the child's stdin) and waits up to `grace`
     /// for the process to exit by itself; what remains is killed with the
-    /// group when the connection drops (REQ-MCP-001).
-    pub async fn shutdown(mut self, grace: Duration) {
+    /// group (REQ-MCP-001). It waits for no request: a listing or a call in
+    /// flight on another task ends with the transport.
+    pub async fn shutdown(&self, grace: Duration) {
+        let closer = self.closer.lock().expect("closer lock").take();
+        let Some(mut closer) = closer else { return };
         let deadline = tokio::time::Instant::now() + grace;
         // Closing the service drops the child's standard input.
-        let _ = self.service.close_with_timeout(grace).await;
-        if let Some(child) = self.child.child.as_mut() {
+        let _ = closer.service.close_with_timeout(grace).await;
+        if let Some(child) = closer.child.child.as_mut() {
             let ended = tokio::time::timeout_at(deadline, child.wait()).await;
             if matches!(ended, Ok(Ok(_))) {
                 // It ended by itself: nothing to kill.
-                self.child.child = None;
+                closer.child.child = None;
             }
-            // Otherwise the guard kills the group as `self` drops.
+            // Otherwise the guard kills the group as `closer` drops.
         }
     }
 }

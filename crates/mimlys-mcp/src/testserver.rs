@@ -39,6 +39,14 @@
 //! (`change_definition` creates the file; a test may create it to stand for an
 //! upgrade or another configuration); `MIMLYS_TESTSERVER_FAIL_LIST_FILE=<path>`
 //! answers every `tools/list` with an error while that file exists;
+//! `MIMLYS_TESTSERVER_HANG_LIST_AFTER=<n>` answers the first `n` `tools/list`
+//! requests and reads every later one without ever answering it (a server
+//! that listed once and then stops answering the listing; its calls and pings
+//! are still served); `MIMLYS_TESTSERVER_ENDLESS_PAGES=1` answers every
+//! `tools/list` with one more page and a `nextCursor`, for ever (the first page
+//! holds the tools above, each later one a single tool); and
+//! `MIMLYS_TESTSERVER_EXTRA_TOOLS=<n>` lists `n` more tools, named `extra_<i>`,
+//! in the same page;
 //! `MIMLYS_TESTSERVER_DIE_LOG=<path>` appends a line to the file for every
 //! `die` call that reaches the server (to count the executions that did, across
 //! the processes the tool ends);
@@ -218,6 +226,18 @@ fn tool_list(changed: bool) -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": props},
         }));
     }
+    if let Some(extra) = std::env::var("MIMLYS_TESTSERVER_EXTRA_TOOLS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        for i in 0..extra {
+            tools.push(json!({
+                "name": format!("extra_{i}"),
+                "description": "One more tool.",
+                "inputSchema": {"type": "object", "additionalProperties": false},
+            }));
+        }
+    }
     tools
 }
 
@@ -362,6 +382,14 @@ pub fn main() {
                     use std::io::Write as _;
                     let _ = writeln!(file, "tools/list {}", seen + 1);
                 }
+                if std::env::var("MIMLYS_TESTSERVER_HANG_LIST_AFTER")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .is_some_and(|n| seen >= n)
+                {
+                    // Never answered; the loop goes on reading.
+                    continue;
+                }
                 let fail_after = std::env::var("MIMLYS_TESTSERVER_FAIL_LIST_AFTER")
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok());
@@ -380,6 +408,21 @@ pub fn main() {
                     let mut result = json!({"tools": tool_list(
                         changed.load(Ordering::SeqCst) || changed_on_disk
                     )});
+                    if env_flag("MIMLYS_TESTSERVER_ENDLESS_PAGES") {
+                        let page = params
+                            .get("cursor")
+                            .and_then(Value::as_str)
+                            .and_then(|c| c.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if page > 0 {
+                            result = json!({"tools": [{
+                                "name": format!("page_{page}"),
+                                "description": "A tool on a later page.",
+                                "inputSchema": {"type": "object", "additionalProperties": false},
+                            }]});
+                        }
+                        result["nextCursor"] = json!((page + 1).to_string());
+                    }
                     if let Some(ttl) = std::env::var("MIMLYS_TESTSERVER_LIST_TTL_MS")
                         .ok()
                         .and_then(|v| v.parse::<u64>().ok())
