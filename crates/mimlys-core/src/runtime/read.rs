@@ -76,10 +76,22 @@ pub(super) fn get_task(
     task_id: TaskId,
 ) -> Result<TaskView, RuntimeError> {
     let task = load_task(persistence, task_id)?;
-    let pending_approval = match task.pending {
+    let mut pending_approval = match task.pending {
         Some(PendingItem::Approval { .. }) => persistence.load_pending_approval(task_id)?,
         _ => None,
     };
+    // A request recorded before the arguments were (a task that waited across
+    // an upgrade) has none: the action holds them, without the tool's paths
+    // resolved (REQ-APR-002: the user can always see every argument).
+    if let Some(approval) = pending_approval.as_mut().filter(|a| a.arguments.is_none())
+        && let Some(action) = persistence
+            .load_actions(task_id)?
+            .into_iter()
+            .find(|a| a.action_id == approval.action_id)
+        && let Some(arguments) = action.content().arguments().as_object()
+    {
+        approval.arguments = Some(crate::approval::argument_views(arguments, &[], &[], None));
+    }
     let pending_question = match task.pending {
         Some(PendingItem::Question { .. }) => persistence.load_pending_question(task_id)?,
         _ => None,

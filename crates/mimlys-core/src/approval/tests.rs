@@ -8,6 +8,8 @@ use crate::tool::{Param, ParamSchema, ParamType, Provider, ResourceProfile};
 use crate::validate::permissive::PermissiveHooks;
 use crate::validate::{Outcome, ValidationContext, validate};
 
+mod card;
+
 fn delete_tool() -> ToolDefinition {
     ToolDefinition {
         name: "delete_path".into(),
@@ -69,7 +71,9 @@ fn request(action: &AuthorizedAction, tool: &ToolDefinition) -> (ApprovalRequest
         &["tool:delete_path".into()],
         None,
         None,
-    );
+        action.reason(),
+    )
+    .expect("the arguments fit");
     let r = ApprovalRequest::new(
         ApprovalId::new(&ids),
         TaskId::new(&ids),

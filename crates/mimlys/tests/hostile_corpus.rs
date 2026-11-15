@@ -592,7 +592,9 @@ fn approval_display(c: ApprovalDisplay) -> Result<(), String> {
         &["tool:delete_path".into()],
         None,
         None,
-    );
+        action.reason(),
+    )
+    .map_err(|e| e.to_string())?;
     let request = ApprovalRequest::new(
         ApprovalId::new(&ids),
         TaskId::new(&ids),
@@ -634,7 +636,7 @@ struct UnchangedLine {
 #[serde(deny_unknown_fields)]
 struct BoundedExpect {
     max_chars: Value,
-    ellipsis_on_line: usize,
+    cut_marker_on_line: usize,
     unchanged_line: UnchangedLine,
 }
 
@@ -647,16 +649,26 @@ struct ApprovalBounded {
 
 fn approval_bounded(c: ApprovalBounded) -> Result<(), String> {
     let action = authorized_delete(&bytes(&c.input)?)?;
-    let rendered = render(&action, &delete_tool(), "/w", &[], None, None);
+    let rendered = render(
+        &action,
+        &delete_tool(),
+        "/w",
+        &[],
+        None,
+        None,
+        action.reason(),
+    )
+    .map_err(|e| e.to_string())?;
     let max = count(&c.expect.max_chars)?;
     let chars = rendered.text().chars().count();
     ensure(chars <= max, || {
         format!("{chars} characters shown, the bound is {max}")
     })?;
-    let cut = &rendered.lines[c.expect.ellipsis_on_line].value;
-    ensure(cut.ends_with('…'), || {
-        format!("line {} is not cut: {cut}", c.expect.ellipsis_on_line)
-    })?;
+    let cut = &rendered.lines[c.expect.cut_marker_on_line].value;
+    ensure(
+        cut.contains("… (") && cut.contains(" more characters)"),
+        || format!("line {} is not cut: {cut}", c.expect.cut_marker_on_line),
+    )?;
     ensure_eq(
         "a fixed line",
         rendered.lines[c.expect.unchanged_line.index].value.as_str(),
