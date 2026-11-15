@@ -38,6 +38,12 @@ tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 wat = "1"
 
+[target.'cfg(unix)'.dev-dependencies]
+# A pseudo-terminal and a signal for the tests of the prompts (REQ-CLI-005),
+# in safe code. The crate is already built for mimlys-exec; the `pty` feature
+# is the only addition.
+rustix = { version = "1", features = ["pty", "process", "fs"] }
+
 [features]
 # REQ-TEST-007: forwards the persistence crate's crash injection to the test harness binary.
 crash-injection = ["mimlys-persist/crash-injection"]
