@@ -409,18 +409,18 @@ fn req_mcp_005_a_destination_that_is_not_a_string_is_not_granted_at_stage_7() {
         args.insert("url".into(), url);
         hooks.check(fetch, &args)
     };
-    for forged in [
+    for value in [
         json!(["https://example.org/x"]),
         json!({"url": "https://example.org/x"}),
         json!(443),
         json!(true),
         Value::Null,
     ] {
-        let denial = check(forged.clone()).unwrap_err();
+        let denial = check(value.clone()).unwrap_err();
         assert_eq!(
             denial.reason,
             DeniedReason::DestinationNotGranted,
-            "{forged}"
+            "{value}"
         );
     }
     assert!(check(json!("https://example.org/x")).is_ok());
