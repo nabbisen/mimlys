@@ -998,17 +998,17 @@ mod snapshots {
     #[test]
     fn req_ws_007_a_path_below_a_junction_in_the_project_is_refused_at_plan_time() {
         let fx = Fx::new();
-        let hooks = fx.scope.path().join(".git/hooks");
-        std::fs::create_dir_all(&hooks).unwrap();
-        make_junction(&fx.scope.path().join("hk"), &hooks);
+        let other = fx.scope.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        make_junction(&fx.scope.path().join("jn"), &other);
         let base = fx.snap(SnapshotReason::Base, None);
-        put(&fx.tree(), "hk/pre-commit", "#!/bin/sh\n");
+        put(&fx.tree(), "jn/inner.txt", "content");
         let err = fx.plan(&base.record).unwrap_err();
         let WorkspaceError::Refused { reason } = &err else {
             panic!("{err:?}")
         };
-        assert!(reason.contains("hk"), "{reason}");
-        assert!(!hooks.join("pre-commit").exists());
+        assert!(reason.contains("jn"), "{reason}");
+        assert!(!other.join("inner.txt").exists());
     }
 
     /// REQ-WS-005, REQ-WS-007 (Windows): a parent that became a junction after the plan is not
@@ -1017,8 +1017,8 @@ mod snapshots {
     #[test]
     fn req_ws_007_a_parent_that_became_a_junction_is_not_written_through() {
         let fx = Fx::new();
-        let hooks = fx.scope.path().join(".git/hooks");
-        std::fs::create_dir_all(&hooks).unwrap();
+        let other = fx.scope.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
         let base = fx.snap(SnapshotReason::Base, None);
         put(&fx.tree(), "newdir/file", "content");
         let plan = fx.plan(&base.record).unwrap();
@@ -1026,13 +1026,13 @@ mod snapshots {
         fx.on_apply(move |path| {
             if path == "newdir/file" {
                 std::fs::remove_dir(project.join("newdir")).unwrap();
-                make_junction(&project.join("newdir"), &project.join(".git/hooks"));
+                make_junction(&project.join("newdir"), &project.join("other"));
             }
             Ok(())
         });
         let err = fx.promote(&plan, &base.record).unwrap_err();
         assert!(matches!(err, WorkspaceError::Refused { .. }), "{err:?}");
-        assert!(!hooks.join("file").exists());
+        assert!(!other.join("file").exists());
     }
 
     /// REQ-WS-007: a directory replaced by a file, a file replaced by a directory, and (Unix) a
