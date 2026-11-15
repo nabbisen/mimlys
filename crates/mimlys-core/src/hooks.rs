@@ -42,7 +42,8 @@ pub struct PolicyHooks<'a> {
 }
 
 impl GrantCheck for PolicyHooks<'_> {
-    /// Stage 7: excluded workspace paths, ungranted destinations and ungranted host tools.
+    /// Stage 7: excluded workspace paths, ungranted destinations (a destination that
+    /// is not a string among them) and ungranted host tools.
     /// Escapes and absolute paths were denied before this hook (REQ-DEC-007).
     fn check(&self, tool: &ToolDefinition, args: &Map<String, Value>) -> Result<(), Denial> {
         for name in tool.input.path_params() {
@@ -59,18 +60,27 @@ impl GrantCheck for PolicyHooks<'_> {
             }
         }
         for name in &tool.destination_arguments {
-            if let Some(Value::String(url)) = args.get(name)
-                && crate::grant::GrantSet::is_plain_http(url)
-            {
-                return Err(Denial::new(DeniedReason::SchemeNotHttps));
-            }
-            if let Some(Value::String(url)) = args.get(name)
-                && !self.grants.permits_destination(url, self.task.now)
-            {
-                return Err(Denial::grant(
-                    DeniedReason::DestinationNotGranted,
-                    "network",
-                ));
+            match args.get(name) {
+                None => {}
+                Some(Value::String(url)) => {
+                    if crate::grant::GrantSet::is_plain_http(url) {
+                        return Err(Denial::new(DeniedReason::SchemeNotHttps));
+                    }
+                    if !self.grants.permits_destination(url, self.task.now) {
+                        return Err(Denial::grant(
+                            DeniedReason::DestinationNotGranted,
+                            "network",
+                        ));
+                    }
+                }
+                // A destination is a string (REQ-MCP-005): any other value is
+                // not covered by a grant.
+                Some(_) => {
+                    return Err(Denial::grant(
+                        DeniedReason::DestinationNotGranted,
+                        "network",
+                    ));
+                }
             }
         }
         if tool.name == "run_host_tool"

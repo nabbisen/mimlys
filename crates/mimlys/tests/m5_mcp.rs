@@ -509,6 +509,54 @@ fn m5_output_validation_and_import_reasons() {
     );
 }
 
+/// REQ-MCP-005 (handoff 009g, item 2): a destination declared on a parameter
+/// that is not a string (`max_results`, an integer) makes the tool unavailable
+/// at import: `status` shows it with the reason, the task's import record has it,
+/// and the model's proposal of the tool is `unknown_tool`.
+#[test]
+fn req_mcp_005_a_destination_that_is_not_a_string_is_unavailable_and_status_says_why() {
+    let env = Env::new(
+        &[act("rypsok.web_search", json!({"query": "x"})), complete()],
+        "",
+        &[],
+    );
+    let text = std::fs::read_to_string(&env.config).unwrap();
+    let declared = "[servers.rypsok.tools.web_search]\neffect = \"external_read\"\n";
+    assert!(text.contains(declared));
+    std::fs::write(
+        &env.config,
+        text.replace(
+            declared,
+            &format!("{declared}destination_arguments = [\"max_results\"]\n"),
+        ),
+    )
+    .unwrap();
+    let scope = env.scope();
+    let (code, value) = env.json(&["run", "x", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        value["task"]["versions"]["tool_imports"]["rypsok.web_search"]["unavailable"],
+        "destination_not_string:max_results"
+    );
+    let rejected: Vec<String> = env
+        .events(&id)
+        .iter()
+        .filter(|e| e["event"] == "decision.rejected")
+        .map(|e| e["code"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(rejected, ["unknown_tool"]);
+    // `status` lists the server once a task has made the data directory.
+    let (_, status) = env.json(&["status"]);
+    let unavailable = status["servers"][0]["unavailable"].as_array().unwrap();
+    assert!(
+        unavailable
+            .iter()
+            .any(|u| u[0] == "rypsok.web_search" && u[1] == "destination_not_string:max_results"),
+        "{unavailable:?}"
+    );
+}
+
 /// REQ-MCP-004 / THR-26: an undeclared tool is `external_write` and needs
 /// approval even though the server marks it read-only.
 #[test]
