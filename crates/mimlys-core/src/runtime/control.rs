@@ -1188,7 +1188,7 @@ impl Runtime {
             }
             return Ok(after);
         }
-        let again = ApprovalRequest::new(
+        let mut again = ApprovalRequest::new(
             crate::ids::ApprovalId::new(self.deps.ids.as_ref()),
             task.task_id,
             action.action_id,
@@ -1199,6 +1199,7 @@ impl Runtime {
             now,
             crate::limits::LIM_A1_EXPIRY_MS.and_then(|ms| now.plus_millis(ms).ok()),
         );
+        again.arguments = approval.arguments.clone();
         persistence.record_approval_request(
             task,
             &action,

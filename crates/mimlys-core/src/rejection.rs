@@ -143,11 +143,14 @@ pub enum DeniedReason {
     PromoteNotAllowed,
     /// A host tool argument is neither an allowed literal nor a pattern match (RFC 011 §6).
     ArgumentNotAllowed,
+    /// The approval request cannot name every argument within LIM-I6, so the user
+    /// cannot be asked (REQ-APR-002).
+    ArgumentsDoNotFit,
 }
 
 impl DeniedReason {
     /// Every reason, in the order of external design §6.4.
-    pub const ALL: [DeniedReason; 8] = [
+    pub const ALL: [DeniedReason; 9] = [
         DeniedReason::PathOutsideWorkspace,
         DeniedReason::PathExcluded,
         DeniedReason::GrantMissing,
@@ -156,6 +159,7 @@ impl DeniedReason {
         DeniedReason::EffectNotAllowed,
         DeniedReason::PromoteNotAllowed,
         DeniedReason::ArgumentNotAllowed,
+        DeniedReason::ArgumentsDoNotFit,
     ];
 
     /// The hint of the fixed table for this reason (CLR-5): what the model may change.
@@ -184,6 +188,9 @@ impl DeniedReason {
             }
             DeniedReason::ArgumentNotAllowed => {
                 "Pass only the declared literals or values matching the declared pattern, and no more arguments than declared; no paths, no other flags."
+            }
+            DeniedReason::ArgumentsDoNotFit => {
+                "This tool's argument names are too long to put to the user for approval; use another tool, or ask the user."
             }
         }
     }
@@ -236,6 +243,7 @@ impl DeniedReason {
             DeniedReason::EffectNotAllowed => "effect_not_allowed",
             DeniedReason::PromoteNotAllowed => "promote_not_allowed",
             DeniedReason::ArgumentNotAllowed => "argument_not_allowed",
+            DeniedReason::ArgumentsDoNotFit => "arguments_do_not_fit",
         }
     }
 }

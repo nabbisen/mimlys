@@ -13,6 +13,8 @@ use crate::validate::AuthorizedAction;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod arguments;
+
 /// One labelled line of a rendered request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderedLine {
@@ -46,11 +48,42 @@ impl Rendered {
     }
 }
 
+/// The label before the model's reason on the approval screen.
+const REASON_LABEL: &str = "Model's stated reason (untrusted): ";
+
+/// The model's reason as the request keeps it: sanitized and bounded by LIM-D2.
+fn bounded_reason(reason: &str) -> String {
+    let (clean, _) = sanitize(reason);
+    clean.chars().take(LIM_D2_REASON_CHARS).collect()
+}
+
+/// The arguments of an action cannot all be named within LIM-I6 together with
+/// the fixed lines and the model's reason: the request is not put to the user
+/// (REQ-APR-002).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the arguments cannot all be named within LIM-I6: {needed} characters are needed, {available} are left"
+)]
+pub struct ArgumentsDoNotFit {
+    /// Characters the argument names and the markers of the cut values need.
+    pub needed: usize,
+    /// Characters LIM-I6 leaves for the arguments line.
+    pub available: usize,
+}
+
 /// Renders an authorized action: tool, effect flags, what will happen,
 /// arguments with resolved absolute paths, grants used, expiry. Every
 /// external value is JSON-quoted, so a newline or a quote cannot start a
-/// new line or a fake label (REQ-APR-003, THR-21). The whole rendering is
-/// bounded by LIM-I6; only argument values are cut to fit.
+/// new line or a fake label (REQ-APR-003, THR-21).
+///
+/// The request, with the model's `reason` that follows it on the screen
+/// ([`ApprovalRequest::display_text`]), is at most LIM-I6 characters, and no
+/// argument is left out by that bound (REQ-APR-002): every argument is named, in
+/// an order that puts destinations and paths first; each value has its own
+/// share of what the fixed lines and the reason leave, and a value that does
+/// not fit says that it is cut and how many characters are left out. The whole
+/// arguments are in [`argument_views`]. When even the names and those markers
+/// do not fit, the request cannot be made and the caller refuses the action.
 pub fn render(
     action: &AuthorizedAction,
     tool: &ToolDefinition,
@@ -58,8 +91,15 @@ pub fn render(
     grants_used: &[String],
     expires_at: Option<Instant>,
     tier: Option<&str>,
-) -> Rendered {
+    reason: Option<&str>,
+) -> Result<Rendered, ArgumentsDoNotFit> {
     let effect = action.effect();
+    let mut grants: Vec<&str> = Vec::new();
+    for g in grants_used {
+        if !grants.contains(&g.as_str()) {
+            grants.push(g);
+        }
+    }
     let mut lines = vec![
         RenderedLine {
             label: "Tool".into(),
@@ -85,14 +125,14 @@ pub fn render(
     let arguments_index = lines.len();
     lines.push(RenderedLine {
         label: "Arguments".into(),
-        value: render_arguments(action, tool, workspace_root),
+        value: String::new(),
     });
     lines.push(RenderedLine {
         label: "Grants used".into(),
-        value: if grants_used.is_empty() {
+        value: if grants.is_empty() {
             "none (implicit workspace rights)".to_owned()
         } else {
-            grants_used.join(", ")
+            grants.join(", ")
         },
     });
     if let Some(tier) = tier {
@@ -108,15 +148,22 @@ pub fn render(
         value: expires_at.map_or_else(|| "never".to_owned(), |t| t.to_rfc3339()),
     });
     let mut rendered = Rendered { lines };
-    let total = rendered.text().chars().count();
-    if total > LIM_I6_APPROVAL_CHARS {
-        let over = total - LIM_I6_APPROVAL_CHARS;
-        let value = &rendered.lines[arguments_index].value;
-        let keep = value.chars().count().saturating_sub(over + 1);
-        let cut: String = value.chars().take(keep).collect();
-        rendered.lines[arguments_index].value = format!("{cut}…");
-    }
-    rendered
+    // What is left for the arguments line: LIM-I6 less the other lines, as the
+    // text lays them out, and less the reason that follows them.
+    let reason_chars = reason.map_or(0, |r| {
+        let quoted = serde_json::to_string(&bounded_reason(r)).expect("a string serializes");
+        1 + REASON_LABEL.chars().count() + quoted.chars().count()
+    });
+    let fixed = rendered.text().chars().count() + reason_chars;
+    let available = LIM_I6_APPROVAL_CHARS.saturating_sub(fixed);
+    let views = argument_views(
+        action.arguments(),
+        &tool.destination_arguments,
+        &tool.input.path_params().collect::<Vec<_>>(),
+        Some(workspace_root),
+    );
+    rendered.lines[arguments_index].value = arguments::fit(&views, available)?;
+    Ok(rendered)
 }
 
 /// Characters of a path shown inside the "Will" sentence.
@@ -174,36 +221,88 @@ fn will_sentence(tool: &ToolDefinition, action: &AuthorizedAction) -> String {
     }
 }
 
-fn render_arguments(
-    action: &AuthorizedAction,
-    tool: &ToolDefinition,
-    workspace_root: &str,
-) -> String {
-    let path_params: Vec<&str> = tool.input.path_params().collect();
-    let root = workspace_root.trim_end_matches(['/', '\\']);
-    let mut parts = Vec::new();
-    for (name, value) in action.arguments() {
-        let shown = quote_value(value);
-        if path_params.contains(&name.as_str()) {
-            let relative = value.as_str().unwrap_or("");
-            let resolved = if relative.is_empty() {
-                root.to_owned()
-            } else {
-                format!("{root}/{relative}")
-            };
-            parts.push(format!(
-                "{name} = {shown} (resolved: {})",
-                quote_str(&resolved)
-            ));
-        } else {
-            parts.push(format!("{name} = {shown}"));
+/// One argument of an action, in full and sanitized (REQ-APR-002): what the
+/// user can read before deciding, whatever the approval screen had room for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgumentView {
+    /// The argument's name, sanitized.
+    pub name: String,
+    /// The value as the screen shows it: a string JSON-quoted, any other
+    /// value as its JSON text; sanitized.
+    pub value: String,
+    /// For a path parameter, the resolved absolute path, JSON-quoted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<String>,
+}
+
+impl ArgumentView {
+    /// The argument on one line: `name = value`, with the resolved path of a
+    /// path parameter after it.
+    pub fn text(&self) -> String {
+        let mut text = format!("{} = {}", arguments::shown_name(&self.name), self.value);
+        if let Some(resolved) = &self.resolved {
+            text.push_str(&format!(" (resolved: {resolved})"));
         }
+        text
     }
-    if parts.is_empty() {
-        "none".to_owned()
-    } else {
-        parts.join(" · ")
+}
+
+/// Every argument of an action, in full and sanitized, in the order the
+/// approval screen names them: the destination arguments, then the path
+/// parameters (each group by name), then the others, the shortest value first
+/// (by name among equals), so that what identifies the action comes before
+/// what is long. `root` resolves the path parameters, when it is known.
+pub fn argument_views(
+    arguments: &serde_json::Map<String, Value>,
+    destinations: &[String],
+    path_params: &[&str],
+    root: Option<&str>,
+) -> Vec<ArgumentView> {
+    let root = root.map(|r| r.trim_end_matches(['/', '\\']));
+    let mut views: Vec<(u8, usize, ArgumentView)> = arguments
+        .iter()
+        .map(|(name, value)| {
+            let shown = quote_value(value);
+            let is_path = path_params.contains(&name.as_str());
+            let resolved = root.filter(|_| is_path).map(|root| {
+                let relative = value.as_str().unwrap_or("");
+                quote_str(&if relative.is_empty() {
+                    root.to_owned()
+                } else {
+                    format!("{root}/{relative}")
+                })
+            });
+            let group = if destinations.contains(name) {
+                0
+            } else if is_path {
+                1
+            } else {
+                2
+            };
+            let length = if group == 2 { shown.chars().count() } else { 0 };
+            let view = ArgumentView {
+                name: sanitize(name).0,
+                value: shown,
+                resolved,
+            };
+            (group, length, view)
+        })
+        .collect();
+    views.sort_by(|a, b| (a.0, a.1, &a.2.name).cmp(&(b.0, b.1, &b.2.name)));
+    views.into_iter().map(|(_, _, view)| view).collect()
+}
+
+/// The arguments as `[v]iew` and `task show --arguments` print them: one
+/// line per argument, none cut.
+pub fn arguments_text(arguments: &[ArgumentView]) -> String {
+    if arguments.is_empty() {
+        return "none".to_owned();
     }
+    arguments
+        .iter()
+        .map(ArgumentView::text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn quote_str(s: &str) -> String {
@@ -302,6 +401,11 @@ pub struct ApprovalRequest {
     pub rendered: Rendered,
     /// The model's stated reason, sanitized and bounded; display-only.
     pub model_reason: Option<String>,
+    /// Every argument of the action in full and sanitized, in the order of the
+    /// rendering (REQ-APR-002). A request made before this was recorded has none
+    /// here; the control API fills it in from the action when it shows the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<ArgumentView>>,
     /// When requested.
     pub requested_at: Instant,
     /// Expiry, when any (LIM-A1).
@@ -334,10 +438,7 @@ impl ApprovalRequest {
         now: Instant,
         expires_at: Option<Instant>,
     ) -> Self {
-        let model_reason = model_reason.map(|r| {
-            let (clean, _) = sanitize(r);
-            clean.chars().take(LIM_D2_REASON_CHARS).collect()
-        });
+        let model_reason = model_reason.map(bounded_reason);
         Self {
             approval_id,
             task_id,
@@ -346,6 +447,7 @@ impl ApprovalRequest {
             grant_set_hash,
             rendered,
             model_reason,
+            arguments: None,
             requested_at: now,
             expires_at,
             status: ApprovalStatus::Pending,
@@ -357,12 +459,21 @@ impl ApprovalRequest {
         }
     }
 
+    /// Records every argument of the action in full (REQ-APR-002).
+    #[must_use]
+    pub fn with_arguments(mut self, arguments: Vec<ArgumentView>) -> Self {
+        self.arguments = Some(arguments);
+        self
+    }
+
     /// The canonical text shown to the user: the rendering, then the model's
-    /// reason labelled as untrusted (REQ-APR-002).
+    /// reason labelled as untrusted (REQ-APR-002). At most LIM-I6 characters
+    /// when the rendering was made with this request's reason ([`render`]).
     pub fn display_text(&self) -> String {
         let mut text = self.rendered.text();
         if let Some(reason) = &self.model_reason {
-            text.push_str("\nModel's stated reason (untrusted): ");
+            text.push('\n');
+            text.push_str(REASON_LABEL);
             text.push_str(&serde_json::to_string(reason).expect("a string serializes"));
         }
         text

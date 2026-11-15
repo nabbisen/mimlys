@@ -13,7 +13,10 @@ use crate::action::{
     Action, ActionInput, DispositionKind, Execution, FailureCause, Proposal, Termination,
     disposition, outcome_is_unknown,
 };
-use crate::approval::{ApprovalError, ApprovalRequest, ApprovalStatus, InvalidationReason, render};
+use crate::approval::{
+    ApprovalError, ApprovalRequest, ApprovalStatus, ArgumentView, ArgumentsDoNotFit,
+    InvalidationReason, Rendered, argument_views, render,
+};
 use crate::clock::Instant;
 use crate::decision::DECISION_SCHEMA_VERSION;
 use crate::event::{Actor, Event};
@@ -67,6 +70,14 @@ struct Decided {
     measures: Option<StepMeasures>,
     transport: DecisionTransport,
     text_chars: Option<u64>,
+}
+
+/// What the user is shown of an action that needs approval (REQ-APR-002).
+struct Card {
+    rendered: Rendered,
+    arguments: Vec<ArgumentView>,
+    /// The model's reason, which the rendering left room for.
+    reason: Option<String>,
 }
 
 /// What one step runs under: the grants, the visible tools and the policy
@@ -608,6 +619,26 @@ impl Runtime {
 
         step.phase = StepPhase::Validate;
         let outcome = env.validate(self, &task, task.pending.is_some(), &raw, now);
+        // An action that needs the user's approval is put to the user only when
+        // the request can name every argument (REQ-APR-002): else it is refused
+        // here, like any decision that fails validation, before it is recorded.
+        let (outcome, card) = match outcome {
+            Outcome::Authorized(authorized) if authorized.approval_required() => {
+                match self.card(&authorized, env, now) {
+                    Ok(card) => (Outcome::Authorized(authorized), Some(card)),
+                    Err(_) => (
+                        Outcome::Rejected {
+                            rejection: Rejection::denied(Denial::new(
+                                DeniedReason::ArgumentsDoNotFit,
+                            )),
+                            decision_hash: Some(authorized.decision_hash().clone()),
+                        },
+                        None,
+                    ),
+                }
+            }
+            other => (other, None),
+        };
         step.decision_hash = outcome.decision_hash().cloned();
         let received = step.decision_hash.clone().map(|hash| {
             self.event(
@@ -689,8 +720,8 @@ impl Runtime {
                         },
                     ),
                 )?; // 2
-                if authorized.approval_required() {
-                    return self.request_approval(task, step, action, &authorized, env, now);
+                if let Some(card) = card {
+                    return self.request_approval(task, step, action, card, env, now);
                 }
                 let action = action
                     .transition(ActionInput::Authorize, now)
@@ -750,20 +781,15 @@ impl Runtime {
         )
     }
 
-    /// Line 3: the approval request; the task waits (REQ-APR-001..006).
-    fn request_approval(
+    /// What the user is shown of an action that needs approval: the rendering
+    /// and every argument in full (REQ-APR-002). Fails when the arguments
+    /// cannot all be named within LIM-I6.
+    fn card(
         &self,
-        task: Task,
-        mut step: Step,
-        action: Action,
         authorized: &AuthorizedAction,
         env: &StepEnv,
         now: Instant,
-    ) -> Result<StepResultView, RuntimeError> {
-        let persistence = &self.deps.persistence;
-        let waiting_action = action
-            .transition(ActionInput::RequireApproval, now)
-            .map_err(ordering)?;
+    ) -> Result<Card, ArgumentsDoNotFit> {
         let tool = env
             .visible
             .iter()
@@ -800,18 +826,47 @@ impl Runtime {
             &used,
             None,
             tier.as_deref(),
+            authorized.reason(),
+        )?;
+        let arguments = argument_views(
+            authorized.arguments(),
+            &tool.destination_arguments,
+            &tool.input.path_params().collect::<Vec<_>>(),
+            Some(&env.workspace_root),
         );
+        Ok(Card {
+            rendered,
+            arguments,
+            reason: authorized.reason().map(str::to_owned),
+        })
+    }
+
+    /// Line 3: the approval request; the task waits (REQ-APR-001..006).
+    fn request_approval(
+        &self,
+        task: Task,
+        mut step: Step,
+        action: Action,
+        card: Card,
+        env: &StepEnv,
+        now: Instant,
+    ) -> Result<StepResultView, RuntimeError> {
+        let persistence = &self.deps.persistence;
+        let waiting_action = action
+            .transition(ActionInput::RequireApproval, now)
+            .map_err(ordering)?;
         let approval = ApprovalRequest::new(
             ApprovalId::new(self.deps.ids.as_ref()),
             task.task_id,
             action.action_id,
             action.content().action_hash().clone(),
             env.grants.hash(now),
-            rendered,
-            authorized.reason(),
+            card.rendered,
+            card.reason.as_deref(),
             now,
             LIM_A1_EXPIRY_MS.and_then(|ms| now.plus_millis(ms).ok()),
-        );
+        )
+        .with_arguments(card.arguments);
         let waiting = task.transition(
             TaskInput::NeedsUser(PendingItem::Approval {
                 action_id: action.action_id,
