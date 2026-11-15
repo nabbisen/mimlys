@@ -109,3 +109,32 @@ fn req_ws_005_target_rule() {
     assert!(!target_inside_root("a/link", "..\\..\\x"));
     assert!(!target_inside_root("link", "\\\\server\\share"));
 }
+
+/// REQ-WS-007: a promotion record without `restored` reads as restored; the field is written
+/// only when the restore of a failed promotion failed; a failed promotion can be reversed by its
+/// backup only then.
+#[test]
+fn req_ws_007_the_restored_flag_defaults_to_true_and_marks_the_way_back() {
+    let record = r#"{"promotion_id":"00000000-0000-7000-8000-00000000f00d","task_id":"00000000-0000-7000-8000-000000000001","backup_snapshot":"00000000-0000-7000-8000-00000000beef","project_root":"/p","files":[],"applied_at":"2025-01-01T00:00:00Z","reversed_at":null,"state":"failed"}"#;
+    let mut promotion: Promotion = serde_json::from_str(record).unwrap();
+    assert!(promotion.restored);
+    assert!(!promotion.can_be_reversed(), "its project was restored");
+    assert!(
+        !serde_json::to_string(&promotion)
+            .unwrap()
+            .contains("restored")
+    );
+    promotion.restored = false;
+    assert!(promotion.can_be_reversed());
+    let written = serde_json::to_string(&promotion).unwrap();
+    assert!(written.contains(r#""restored":false"#), "{written}");
+    assert_eq!(
+        serde_json::from_str::<Promotion>(&written).unwrap(),
+        promotion
+    );
+    promotion.reversed_at = Some(promotion.applied_at);
+    assert!(!promotion.can_be_reversed());
+    promotion.reversed_at = None;
+    promotion.state = PromotionState::Applying;
+    assert!(!promotion.can_be_reversed());
+}

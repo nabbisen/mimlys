@@ -462,9 +462,12 @@ pub enum WorkspaceError {
         paths: Vec<String>,
     },
     /// A deletion left files it could not remove (RFC 006 §6): every removal was attempted, and
-    /// each failure is named. The rows are gone; the next start tries these again.
-    #[error("{} path(s) could not be removed and are left to the next start: {}", paths.len(), paths.join(", "))]
+    /// each failure is named. The task is deleted (its rows are gone); the next start tries
+    /// these paths again.
+    #[error("task {task_id} is deleted; {} path(s) could not be removed and are left to the next start: {}", paths.len(), paths.join(", "))]
     NotRemoved {
+        /// The deleted task.
+        task_id: TaskId,
         /// The paths, relative to the data directory.
         paths: Vec<String>,
     },
@@ -1352,6 +1355,7 @@ pub mod fake {
                 state: crate::snapshot::PromotionState::Applying,
                 after: vec![],
                 reason: None,
+                restored: true,
             };
             Ok((
                 PreparedSnapshot {
@@ -1434,6 +1438,11 @@ pub mod fake {
         /// From now on every reversal of a promotion fails with a storage error.
         pub fn fail_reverts(&self) {
             *self.fail_reverts.lock().expect("fake lock") = true;
+        }
+
+        /// From now on reversals of a promotion work again.
+        pub fn allow_reverts(&self) {
+            *self.fail_reverts.lock().expect("fake lock") = false;
         }
 
         /// Promotions reverted from their backups, in order, with how edited paths were treated.

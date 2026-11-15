@@ -722,6 +722,7 @@ impl LocalWorkspaces {
             state: PromotionState::Applying,
             after,
             reason: None,
+            restored: true,
         };
         Ok((backup, promotion))
     }
@@ -1013,7 +1014,10 @@ impl LocalWorkspaces {
         } else {
             failed.sort();
             failed.dedup();
-            Err(WorkspaceError::NotRemoved { paths: failed })
+            Err(WorkspaceError::NotRemoved {
+                task_id,
+                paths: failed,
+            })
         }
     }
 }

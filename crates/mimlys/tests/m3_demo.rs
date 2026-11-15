@@ -313,6 +313,213 @@ fn req_ws_007_a_promotion_found_applying_at_start_is_restored_and_listed() {
     assert_eq!(value["error"]["kind"], "state");
 }
 
+/// The object files of the store, set aside; `put_back` returns them. A restore from the backup
+/// then fails the way a damaged store makes it fail.
+fn set_objects_aside(env: &Env) -> Vec<(PathBuf, PathBuf)> {
+    let objects = env.data.path().join("data/snapshots/objects");
+    let away = env.data.path().join("away");
+    std::fs::create_dir_all(&away).unwrap();
+    let mut moved = Vec::new();
+    for entry in std::fs::read_dir(&objects).unwrap() {
+        let from = entry.unwrap().path();
+        let to = away.join(from.file_name().unwrap());
+        std::fs::rename(&from, &to).unwrap();
+        moved.push((from, to));
+    }
+    assert!(!moved.is_empty());
+    moved
+}
+
+fn put_back(moved: Vec<(PathBuf, PathBuf)>) {
+    for (from, to) in moved {
+        std::fs::rename(to, from).unwrap();
+    }
+}
+
+/// REQ-WS-007, REQ-PERS-007 (external design §14.5, "There is always a way back"): a promotion
+/// found `applying` at start whose restore fails is recorded `failed` with `restored: false`.
+/// The start lists it once, with the command; a later start does not try again; `rollback
+/// --promotion` restores the project from the kept backup, with the same listing and
+/// confirmation, and then the promotion is reversed.
+#[test]
+fn req_ws_007_a_restore_that_failed_at_start_can_be_restored_by_rollback() {
+    let env = Env::new("edit.json");
+    let scope = scope();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["promote", &id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    let promotion_id = value["promotion"]["promotion_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The crash, as in the test above; and a store that cannot give the backup's objects.
+    let db = env.data.path().join("data/mimlys.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE promotions SET state = 'applying', record = json_set(record, '$.state', 'applying') WHERE promotion_id = ?1",
+            [&promotion_id],
+        )
+        .unwrap();
+    }
+    let moved = set_objects_aside(&env);
+    // (The command itself is refused: the project changed since the task started.)
+    let (code, _, stderr) = env.run(&["promote", &id]);
+    assert_eq!(code, 1, "{stderr}");
+    let command = format!("mimlys rollback {id} --promotion {promotion_id} to restore the project");
+    assert!(stderr.contains(&command), "the start lists it: {stderr}");
+    let (_, view) = env.json(&["task", "show", &id]);
+    let promotion = &view["promotions"][0];
+    assert_eq!(promotion["state"], "failed");
+    assert_eq!(promotion["restored"], false);
+    assert!(
+        promotion["reason"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("the backup is kept: run {command}")),
+        "{promotion}"
+    );
+    assert_eq!(
+        view["footprint"]["promotions"], 1,
+        "its backup is the way back"
+    );
+    let lib = scope.path().join("src/lib.rs");
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "fn a() -> i32 { 1 }\n",
+        "the project was not restored"
+    );
+    // The command fails while the objects are missing, and the promotion stays restorable.
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id, "--yes"]);
+    assert_eq!(code, 1, "{value}");
+    put_back(moved);
+    // A later start does not try again by itself, and does not list it again.
+    let (code, _, stderr) = env.run(&["promote", &id]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(!stderr.contains(&command), "listed once: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "fn a() -> i32 { 1 }\n"
+    );
+    // Without confirmation it lists and changes nothing.
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["reversed"], false);
+    assert!(value["plan"]["entries"].as_array().unwrap().len() >= 2);
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "fn a() -> i32 { 1 }\n"
+    );
+    // Confirmed, it restores the project from the backup.
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "fn a() -> i32 { 0 }\n"
+    );
+    assert!(!scope.path().join("src/added.rs").exists());
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/old.rs")).unwrap(),
+        "// to be deleted\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join(".env")).unwrap(),
+        "SECRET=1"
+    );
+    let (_, view) = env.json(&["task", "show", &id]);
+    assert!(view["promotions"][0]["reversed_at"].is_string());
+    assert_eq!(view["footprint"]["promotions"], 0);
+    // Restored once: not again.
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id, "--yes"]);
+    assert_eq!(code, 1, "{value}");
+    assert_eq!(value["error"]["kind"], "state");
+}
+
+/// REQ-WS-007 (external design §14.5, "There is always a way back"): an error while applying
+/// whose restore fails too. The first change removes an entry; the object that restores it is
+/// damaged, so the restore fails. The promotion is `failed` with `restored: false`, the message
+/// names the command, and the command restores the project once the store gives the object.
+#[cfg(unix)]
+#[test]
+fn req_ws_007_a_restore_that_failed_after_a_failed_apply_can_be_restored_by_rollback() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("edit.json");
+    let scope = scope();
+    std::fs::create_dir_all(scope.path().join("zzz")).unwrap();
+    std::fs::write(scope.path().join("zzz/gone.txt"), "to be removed first").unwrap();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    std::fs::remove_file(env.tree(&id).join("zzz/gone.txt")).unwrap();
+    let src = scope.path().join("src");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let writable = std::fs::File::create(src.join(".probe")).is_ok();
+    if writable {
+        // Permissions do not bind this user (root): the failure cannot be made this way.
+        std::fs::remove_file(src.join(".probe")).unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    // The object that restores `zzz/gone.txt` is damaged.
+    let objects = env.data.path().join("data/snapshots/objects");
+    let mut damaged = Vec::new();
+    for entry in std::fs::read_dir(&objects).unwrap() {
+        let path = entry.unwrap().path();
+        let original = std::fs::read(&path).unwrap();
+        if original == b"to be removed first" {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, b"damaged").unwrap();
+            damaged.push((path, original));
+        }
+    }
+    assert_eq!(damaged.len(), 1);
+    let (code, value) = env.json(&["promote", &id, "--yes"]);
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(code, 1, "{value}");
+    let (_, view) = env.json(&["task", "show", &id]);
+    let promotion = &view["promotions"][0];
+    let promotion_id = promotion["promotion_id"].as_str().unwrap().to_owned();
+    assert_eq!(promotion["state"], "failed");
+    assert_eq!(promotion["restored"], false);
+    let message = value["error"]["message"].as_str().unwrap();
+    let command = format!(
+        "the backup is kept: run mimlys rollback {id} --promotion {promotion_id} to restore the project"
+    );
+    assert!(
+        message.contains("restoring the project from its backup failed too"),
+        "{message}"
+    );
+    assert!(message.ends_with(&command), "{message}");
+    assert!(promotion["reason"].as_str().unwrap().ends_with(&command));
+    assert!(
+        !scope.path().join("zzz/gone.txt").exists(),
+        "the entry the apply removed is not back"
+    );
+    assert_eq!(view["footprint"]["promotions"], 1);
+    // The store gives the object again; the command restores the project.
+    for (path, original) in damaged {
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(path, original).unwrap();
+    }
+    let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("zzz/gone.txt")).unwrap(),
+        "to be removed first"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
+        "fn a() -> i32 { 0 }\n"
+    );
+    assert!(scope.path().join("src/old.rs").exists());
+    assert!(!scope.path().join("src/added.rs").exists());
+    let (_, view) = env.json(&["task", "show", &id]);
+    assert!(view["promotions"][0]["reversed_at"].is_string());
+    assert_eq!(view["footprint"]["promotions"], 0);
+}
+
 /// REQ-WS-007 (external design §14.5): an error while applying restores what was applied. A
 /// directory the user cannot write to stops the apply after another entry was already removed;
 /// the project is as it was, the promotion is `failed`, the backup is kept, and the message says

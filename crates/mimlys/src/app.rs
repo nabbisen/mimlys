@@ -112,13 +112,13 @@ impl AppError {
             AppError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { paths }
                 | mimlys_core::spi::WorkspaceError::Unlisted { paths }
-                | mimlys_core::spi::WorkspaceError::NotRemoved { paths }
+                | mimlys_core::spi::WorkspaceError::NotRemoved { paths, .. }
                 | mimlys_core::spi::WorkspaceError::EditedSince { paths },
             )
             | AppError::Runtime(RuntimeError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { paths }
                 | mimlys_core::spi::WorkspaceError::Unlisted { paths }
-                | mimlys_core::spi::WorkspaceError::NotRemoved { paths }
+                | mimlys_core::spi::WorkspaceError::NotRemoved { paths, .. }
                 | mimlys_core::spi::WorkspaceError::EditedSince { paths },
             )) => {
                 serde_json::json!({ "paths": paths })

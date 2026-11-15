@@ -70,6 +70,7 @@ fn promoted(
         reversed_at: None,
         state,
         after: vec![],
+        restored: true,
         reason: None,
     };
     store
@@ -149,6 +150,7 @@ fn req_pers_006_a_0_9_0_store_migrates_to_schema_4_and_its_promotions_read_as_ap
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].state, PromotionState::Applied);
     assert!(loaded[0].after.is_empty() && loaded[0].reason.is_none());
+    assert!(loaded[0].restored, "an older record reads as restored");
     assert!(store.promotions_applying().unwrap().is_empty());
     let kept: String = store
         .with_conn(|c| {
@@ -284,4 +286,20 @@ fn req_ws_007_a_failed_restore_at_start_is_recorded_and_the_backup_is_kept() {
             .contains("restoring the project from its backup failed")
     );
     assert!(store.load_snapshot(backup.snapshot_id).unwrap().is_some());
+    // The project is not as the backup holds it: the record says so, and names the command.
+    assert!(!loaded[0].restored);
+    let command = format!(
+        "the backup is kept: run mimlys rollback {} --promotion {} to restore the project",
+        task.task_id, applying.promotion_id
+    );
+    assert!(loaded[0].reason.as_deref().unwrap().ends_with(&command));
+    assert_eq!(recovered[0].restore_hint.as_deref(), Some(command.as_str()));
+    assert!(loaded[0].can_be_reversed());
+    // A later start does not try again, even when the restore would now work, and lists nothing:
+    // a lasting error does not repeat at every start.
+    files.allow_reverts();
+    let again = recover_promotions(&store, &context(&fx, &ids), &files).unwrap();
+    assert!(again.is_empty());
+    assert!(files.reverted().is_empty(), "no second attempt");
+    assert!(!store.load_promotions(task.task_id).unwrap()[0].restored);
 }

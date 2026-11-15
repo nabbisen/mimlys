@@ -196,3 +196,30 @@ fn req_ws_014_a_failure_midway_leaves_the_rest_untouched_and_named() {
     assert!(outcome.failed.is_none() && outcome.untouched.is_empty());
     assert!(!seen.contains(&found[2].task_id));
 }
+
+/// REQ-WS-014, RFC 006 §6: a deletion that left files behind has deleted the task, and the line
+/// says so, naming the task and the paths left to the next start; any other error is `failed`.
+#[test]
+fn req_ws_014_a_deletion_that_left_files_says_the_task_is_deleted() {
+    let task = TaskId::from_uuid(uuid::Uuid::from_u128(7));
+    let left = AppError::Runtime(mimlys_core::runtime::RuntimeError::Workspace(
+        mimlys_core::spi::WorkspaceError::NotRemoved {
+            task_id: task,
+            paths: vec!["tasks/a".into(), "tasks/b".into()],
+        },
+    ));
+    assert_eq!(
+        failure_line(&task.to_string(), &left),
+        format!(
+            "task {task} is deleted; 2 path(s) could not be removed and are left to the next start: tasks/a, tasks/b"
+        )
+    );
+    let other = AppError::Io {
+        detail: "disk on fire".into(),
+    };
+    assert!(
+        failure_line(&task.to_string(), &other).starts_with(&format!("failed  {task}: ")),
+        "{}",
+        failure_line(&task.to_string(), &other)
+    );
+}

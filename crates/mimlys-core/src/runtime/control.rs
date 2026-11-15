@@ -546,9 +546,12 @@ impl Runtime {
                     Ok(report) => (report.left, None),
                     Err(e) => (Vec::new(), Some(e.to_string())),
                 };
+                // A restore that failed leaves the backup as the way back (`restore_hint`).
+                promotion.restored = restore_error.is_none();
                 let error = RuntimeError::PromotionFailed {
                     cause,
                     kept,
+                    restore_hint: promotion.restore_hint(),
                     restore_error,
                 };
                 promotion.state = PromotionState::Failed;
@@ -570,7 +573,8 @@ impl Runtime {
         }
     }
 
-    /// The promotion to reverse and its backup: an applied promotion that was not reversed.
+    /// The promotion to reverse and its backup: an applied promotion that was not reversed, or a
+    /// failed one whose own restore failed too.
     fn promotion_to_revert(
         &self,
         task_id: TaskId,
@@ -585,15 +589,17 @@ impl Runtime {
             .ok_or(RuntimeError::NotFound {
                 what: "promotion".into(),
             })?;
-        if promotion.state != PromotionState::Applied {
-            return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: promotion.state.name(),
-                input: "revert_promotion",
-            }));
-        }
+        // An applied promotion, or one that failed and whose own restore failed too: the
+        // project is not as the backup holds it, and the backup is kept to restore it from.
         if promotion.reversed_at.is_some() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
                 from: "reversed",
+                input: "revert_promotion",
+            }));
+        }
+        if !promotion.can_be_reversed() {
+            return Err(RuntimeError::State(crate::task::StateError::Illegal {
+                from: promotion.state.name(),
                 input: "revert_promotion",
             }));
         }
@@ -656,6 +662,7 @@ impl Runtime {
         )?;
         let now = self.deps.clock.now();
         promotion.reversed_at = Some(now);
+        promotion.restored = true;
         self.deps.persistence.record_promotion(
             &promotion,
             &self.event(

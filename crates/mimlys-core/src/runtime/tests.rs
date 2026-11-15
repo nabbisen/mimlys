@@ -1711,6 +1711,86 @@ fn req_ws_007_an_error_while_applying_restores_from_the_backup_and_records_faile
     assert_eq!(err.kind(), "state");
 }
 
+/// REQ-WS-007 (external design §14.5, "There is always a way back"): an error while applying
+/// whose restore fails too is recorded `failed` with `restored: false`; the backup is kept, the
+/// message and the record name the command that restores the project from it, and
+/// `rollback --promotion` runs that restore, with the same listing and the edited-path rule.
+#[test]
+fn req_ws_007_a_failed_promotion_whose_restore_failed_can_be_restored_by_rollback() {
+    use crate::snapshot::PromotionState;
+    let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
+    let id = h.create();
+    h.step(id);
+    let plan = one_file_plan(&h, id);
+    h.workspaces.on_promote_apply(Box::new(|_| {
+        Err(crate::spi::WorkspaceError::Storage {
+            detail: "injected".into(),
+        })
+    }));
+    h.workspaces.fail_reverts();
+    let err = h
+        .runtime
+        .promote_workspace(&h.session, id, &plan)
+        .unwrap_err();
+    assert!(
+        matches!(err, RuntimeError::PromotionFailed { .. }),
+        "{err:?}"
+    );
+    let stored = h.persistence.load_promotions(id).unwrap();
+    let promotion = &stored[0];
+    assert_eq!(promotion.state, PromotionState::Failed);
+    assert!(!promotion.restored, "the restore failed");
+    let command = format!(
+        "the backup is kept: run mimlys rollback {id} --promotion {} to restore the project",
+        promotion.promotion_id
+    );
+    assert!(err.to_string().ends_with(&command), "{err}");
+    assert!(
+        promotion.reason.as_deref().unwrap().ends_with(&command),
+        "the record names the command"
+    );
+    assert!(
+        h.persistence
+            .load_snapshot(promotion.backup_snapshot)
+            .unwrap()
+            .is_some(),
+        "the backup is kept"
+    );
+    assert_eq!(
+        h.runtime.get_task(id).unwrap().footprint.promotions,
+        1,
+        "the way back is counted: deleting the task would lose it"
+    );
+    // The project is restored by the command; edited paths are refused unless confirmed.
+    h.workspaces.set_edited(&["a.txt"]);
+    let err = h
+        .runtime
+        .revert_promotion(&h.session, id, promotion.promotion_id, false)
+        .unwrap_err();
+    assert_eq!(err.kind(), "conflict");
+    h.workspaces.set_edited(&[]);
+    h.workspaces.allow_reverts();
+    assert!(h.runtime.revert_plan(id, promotion.promotion_id).is_ok());
+    let reversed = h
+        .runtime
+        .revert_promotion(&h.session, id, promotion.promotion_id, false)
+        .unwrap();
+    assert!(reversed.reversed_at.is_some() && reversed.restored);
+    assert_eq!(
+        h.workspaces.reverted().last().map(|r| r.0),
+        Some(promotion.promotion_id)
+    );
+    let stored = h.persistence.load_promotions(id).unwrap();
+    assert!(stored[0].reversed_at.is_some() && stored[0].restored);
+    assert_eq!(h.runtime.get_task(id).unwrap().footprint.promotions, 0);
+    // Once restored, it cannot be restored again.
+    let err = h
+        .runtime
+        .revert_promotion(&h.session, id, promotion.promotion_id, false)
+        .unwrap_err();
+    assert_eq!(err.kind(), "state");
+}
+
 /// REQ-WS-007: a reversal that would overwrite a path edited since the promotion is refused,
 /// naming it, and nothing is restored; confirmed, it overwrites. A reversal with nothing edited
 /// goes through unasked.

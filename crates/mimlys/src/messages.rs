@@ -743,7 +743,10 @@ pub fn promotion_recovered(r: &mimlys_persist::recovery::RecoveredPromotion) -> 
         r.promotion_id, r.task_id
     );
     match (&r.restore_error, r.kept.is_empty()) {
-        (Some(e), _) => format!("{base}; restoring the project from its backup failed ({e})"),
+        (Some(e), _) => format!(
+            "{base}; restoring the project from its backup failed ({e}); {}",
+            r.restore_hint.as_deref().unwrap_or_default()
+        ),
         (None, true) => format!("{base}; the project was restored from its backup"),
         (None, false) => format!(
             "{base}; the project was restored from its backup except {} path(s) edited since, left as they are: {}",

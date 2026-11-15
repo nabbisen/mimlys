@@ -120,7 +120,7 @@ pub enum RuntimeError {
     Workspace(#[from] WorkspaceError),
     /// A promotion did not complete (REQ-WS-007): what it had written was restored from its
     /// backup, except the paths listed, which were edited since and are left as they are.
-    #[error("{}", promotion_failed_message(cause, kept, restore_error.as_deref()))]
+    #[error("{}", promotion_failed_message(cause, kept, restore_error.as_deref(), restore_hint))]
     PromotionFailed {
         /// Why the apply stopped.
         cause: WorkspaceError,
@@ -128,6 +128,9 @@ pub enum RuntimeError {
         kept: Vec<String>,
         /// Whether the restore itself failed.
         restore_error: Option<String>,
+        /// The command that restores the project from the kept backup (see
+        /// `Promotion::restore_hint`).
+        restore_hint: String,
     },
     /// The backend failed.
     #[error("{0}")]
@@ -139,10 +142,11 @@ fn promotion_failed_message(
     cause: &WorkspaceError,
     kept: &[String],
     restore_error: Option<&str>,
+    restore_hint: &str,
 ) -> String {
     if let Some(e) = restore_error {
         return format!(
-            "the promotion failed ({cause}), and restoring the project from its backup failed too ({e}); the backup snapshot is kept"
+            "the promotion failed ({cause}), and restoring the project from its backup failed too ({e}); {restore_hint}"
         );
     }
     if kept.is_empty() {

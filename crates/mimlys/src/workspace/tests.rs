@@ -1249,8 +1249,17 @@ mod snapshots {
         assert_eq!(
             err,
             WorkspaceError::NotRemoved {
-                paths: vec![expected]
+                task_id: fx.task,
+                paths: vec![expected.clone()]
             }
+        );
+        // The message says first that the task is deleted, then what is left to the next start.
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "task {} is deleted; 1 path(s) could not be removed and are left to the next start: {expected}",
+                fx.task
+            )
         );
         assert!(
             !fx.p.task_dir(fx.task).exists(),

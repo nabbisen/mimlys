@@ -192,7 +192,7 @@ pub fn recover_deletions(
         }
         match workspaces.delete_files(task_id, &rows) {
             Ok(()) => report.finished += 1,
-            Err(mimlys_core::spi::WorkspaceError::NotRemoved { paths }) => {
+            Err(mimlys_core::spi::WorkspaceError::NotRemoved { paths, .. }) => {
                 report.failed.extend(paths);
             }
             Err(e) => report.failed.push(e.to_string()),
@@ -212,6 +212,8 @@ pub struct RecoveredPromotion {
     pub kept: Vec<String>,
     /// Why the restore failed, when it did; the backup snapshot is kept.
     pub restore_error: Option<String>,
+    /// The command that restores the project from the kept backup, when the restore failed.
+    pub restore_hint: Option<String>,
 }
 
 /// A promotion found `applying` did not finish (external design §14.5, §16.3): what it had
@@ -240,7 +242,8 @@ pub fn recover_promotions(
         };
         let reason = match (&restore_error, kept.is_empty()) {
             (Some(e), _) => format!(
-                "found applying at start; restoring the project from its backup failed ({e}); the backup snapshot is kept"
+                "found applying at start; restoring the project from its backup failed ({e}); {}",
+                promotion.restore_hint()
             ),
             (None, true) => {
                 "found applying at start; the project was restored from its backup".to_owned()
@@ -252,6 +255,9 @@ pub fn recover_promotions(
             ),
         };
         promotion.state = mimlys_core::snapshot::PromotionState::Failed;
+        // A restore that failed is not tried again by a later start; the user's command is
+        // the way back (`rollback --promotion`).
+        promotion.restored = restore_error.is_none();
         promotion.reason = Some(reason.clone());
         store.record_promotion(
             &promotion,
@@ -270,6 +276,7 @@ pub fn recover_promotions(
             task_id: promotion.task_id,
             promotion_id: promotion.promotion_id,
             kept,
+            restore_hint: restore_error.as_ref().map(|_| promotion.restore_hint()),
             restore_error,
         });
     }

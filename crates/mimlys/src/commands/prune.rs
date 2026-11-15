@@ -110,6 +110,20 @@ impl Candidate {
     }
 }
 
+/// The line for a task whose deletion returned an error. A deletion that left files behind has
+/// deleted the task: its message says so and names the task, so it is not labelled `failed`.
+pub fn failure_line(task_id: &str, error: &AppError) -> String {
+    if matches!(
+        error,
+        AppError::Runtime(mimlys_core::runtime::RuntimeError::Workspace(
+            mimlys_core::spi::WorkspaceError::NotRemoved { .. }
+        ))
+    ) {
+        return error.to_string();
+    }
+    messages::prune_failed(task_id, &error.to_string())
+}
+
 /// The tasks to delete, in the order given.
 pub fn to_delete(candidates: &[Candidate]) -> Vec<&Candidate> {
     candidates.iter().filter(|c| c.kept.is_none()).collect()
@@ -236,7 +250,7 @@ pub fn run(
         },
         |c, result| match result {
             Ok(f) => out.line(messages::prune_deleted(&c.task_id, f)),
-            Err(e) => out.line(messages::prune_failed(&c.task_id, &e.to_string())),
+            Err(e) => out.line(failure_line(&c.task_id, e)),
         },
     );
     let freed: u64 = outcome

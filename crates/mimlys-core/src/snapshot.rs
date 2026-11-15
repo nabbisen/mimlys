@@ -467,6 +467,41 @@ pub struct Promotion {
     /// Why it failed, once it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Whether the project is as the backup holds it, once the promotion has failed. `false`
+    /// only when the restore from the backup failed too: the backup is kept and
+    /// `rollback --promotion` restores the project from it. A record without it reads `true`.
+    #[serde(default = "restored_default", skip_serializing_if = "is_true")]
+    pub restored: bool,
+}
+
+impl Promotion {
+    /// Whether its backup can still reverse it: applied, or failed with a restore that failed
+    /// too, and not reversed yet.
+    pub fn can_be_reversed(&self) -> bool {
+        self.reversed_at.is_none()
+            && match self.state {
+                PromotionState::Applied => true,
+                PromotionState::Failed => !self.restored,
+                PromotionState::Applying => false,
+            }
+    }
+
+    /// What to say when the restore of the project from the backup failed: the backup is kept,
+    /// and this command restores the project from it.
+    pub fn restore_hint(&self) -> String {
+        format!(
+            "the backup is kept: run mimlys rollback {} --promotion {} to restore the project",
+            self.task_id, self.promotion_id
+        )
+    }
+}
+
+fn restored_default() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[cfg(test)]
