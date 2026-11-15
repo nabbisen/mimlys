@@ -1616,3 +1616,52 @@ fn req_conf_006_a_path_argument_is_denied_unless_the_declaration_allows_paths() 
         account(&obs)
     );
 }
+
+// Handoff 011n (release 0.11, phase 1): the runtime's budget for the answer.
+// ---------------------------------------------------------------------
+
+/// REQ-TOOL-006, REQ-CONF-009 (handoff 011n item 10; the CI flake "no
+/// termination recorded" of `m6b_deadline_kills_the_whole_tree`): a tool whose
+/// deadline passes and whose tree takes longer than LIM-O2 to end
+/// (`MIMLYS_PROBE_TREE_KILL_DELAY_MS`: 2.5 s) is still recorded `deadline`,
+/// by the worker, which is not replaced; the runtime's log carries the
+/// request, its budget and the time each frame arrived.
+#[test]
+fn req_tool_006_a_slow_tree_kill_after_the_deadline_still_records_deadline() {
+    let env = Env::new(&[probe(&["setsid-sleep", "60"]), complete()], "")
+        .env("MIMLYS_PROBE_TREE_KILL_DELAY_MS", "2500")
+        .ready();
+    let scope = env.scope();
+    let (code, stdout, log) = env.run(&[
+        "--json",
+        "run",
+        "slow tree kill",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{log}");
+    let value: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 1, "{log}");
+    assert_eq!(
+        obs[0]["payload"]["termination"],
+        "deadline",
+        "{}\n{log}",
+        account(&obs)
+    );
+    assert!(
+        log.contains("request sent for execution") && log.contains("frame from the worker after"),
+        "the frames are timed in the log:\n{log}"
+    );
+    assert!(
+        log.contains("the runtime waits 14000 ms for the answer"),
+        "the deadline of 10 s and two LIM-O2:\n{log}"
+    );
+    assert!(
+        !log.contains("did not answer within"),
+        "the worker answered; it was not ended:\n{log}"
+    );
+}
