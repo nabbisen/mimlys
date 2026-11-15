@@ -890,7 +890,7 @@ fn req_test_007_crash_at_every_point_recovers() {
                 .output()
                 .unwrap();
             // The child ran its test and the process aborted at the point: a
-            // child that found no test, or ran to its end, injected nothing.
+            // child that found no test, or ran to its end, crashed nowhere.
             let stdout = String::from_utf8_lossy(&child.stdout);
             assert!(
                 stdout.contains("running 1 test") && !stdout.contains("running 0 tests"),

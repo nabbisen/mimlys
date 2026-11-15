@@ -490,7 +490,7 @@ mod snapshots {
 
     /// REQ-WS-004: only a refused permission is `Unreadable`, which asks the user to restore
     /// the permissions. Any other failure of a read of the walk names the path with the kind
-    /// of the failure and gives no such advice. The errors are injected where the walk maps
+    /// of the failure and gives no such advice. The errors are made up where the walk maps
     /// them.
     #[test]
     fn req_ws_004_only_a_permission_error_asks_to_restore_permissions() {
