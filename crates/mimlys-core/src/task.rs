@@ -45,8 +45,8 @@ pub enum HaltReason {
     /// LIM-W1 or LIM-W2 breached.
     WorkspaceQuota,
     /// Part of the task's tree could not be read, so a snapshot, a rollback or the quota
-    /// check could not be made; the user restores the permissions of the path named in
-    /// `workspace.unreadable`, then resumes.
+    /// check could not be made; the user makes the path named in `workspace.unreadable`
+    /// readable again (usually by restoring its permissions), then resumes.
     WorkspaceUnreadable,
     /// The model backend could not be reached after retries.
     BackendUnavailable,

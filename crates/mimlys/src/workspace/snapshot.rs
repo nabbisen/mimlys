@@ -36,13 +36,21 @@ fn storage(detail: &'static str) -> impl Fn(std::io::Error) -> WorkspaceError {
 
 /// A read of the tree that failed at `path` (relative to the tree; "" is its root): the
 /// error names the path, cleaned of control characters and bounded, so that the task can halt
-/// with the path to restore the permissions of.
+/// with it. A refused permission is `Unreadable`, which asks the user to restore the
+/// permissions; any other failure is `ReadFailed`, with the kind of the failure and no advice.
 pub(super) fn unreadable(path: &str) -> impl Fn(std::io::Error) -> WorkspaceError + '_ {
-    move |_| WorkspaceError::Unreadable {
-        path: mimlys_core::panic_text::bounded_message(
+    move |error| {
+        let path = mimlys_core::panic_text::bounded_message(
             if path.is_empty() { "." } else { path },
             None,
-        ),
+        );
+        match error.kind() {
+            std::io::ErrorKind::PermissionDenied => WorkspaceError::Unreadable { path },
+            kind => WorkspaceError::ReadFailed {
+                path,
+                kind: kind.to_string(),
+            },
+        }
     }
 }
 

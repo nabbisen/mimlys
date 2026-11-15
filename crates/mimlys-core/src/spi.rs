@@ -500,6 +500,16 @@ pub enum WorkspaceError {
         /// The path, relative to the task's tree; cleaned of control characters and bounded.
         path: String,
     },
+    /// As `Unreadable`, for a read that failed for a reason other than permissions (an entry
+    /// that vanished, a failing device): the error names the path and the kind of the failure,
+    /// and gives no advice it cannot back. The task halts the same way.
+    #[error("part of the workspace could not be read: {path} ({kind})")]
+    ReadFailed {
+        /// The path, relative to the task's tree; cleaned of control characters and bounded.
+        path: String,
+        /// The kind of the I/O error, in words (`entity not found`).
+        kind: String,
+    },
 }
 
 /// What a materialized workspace is.
@@ -1144,7 +1154,7 @@ pub mod fake {
         snapshots: Mutex<Vec<SnapshotRecord>>,
         restores: Mutex<Vec<SnapshotId>>,
         fail_restores: Mutex<bool>,
-        unreadable: Mutex<Option<(String, bool)>>,
+        unreadable: Mutex<Option<(String, bool, Option<String>)>>,
         tree: Mutex<Option<String>>,
         apply_hook: Mutex<Option<ApplyHook>>,
         reverted: Mutex<Vec<(PromotionId, EditedPaths)>>,
@@ -1192,13 +1202,20 @@ pub mod fake {
         /// From now on the tree has a part at `path` that cannot be read: a snapshot, a
         /// restore and the quota check fail with `Unreadable`, until `make_readable`.
         pub fn make_unreadable(&self, path: &str) {
-            *self.unreadable.lock().expect("fake lock") = Some((path.to_owned(), true));
+            *self.unreadable.lock().expect("fake lock") = Some((path.to_owned(), true, None));
         }
 
         /// As `make_unreadable`, for a snapshot and a restore only: the quota check, which
         /// measures the tree, still reads it.
         pub fn make_unreadable_to_snapshots(&self, path: &str) {
-            *self.unreadable.lock().expect("fake lock") = Some((path.to_owned(), false));
+            *self.unreadable.lock().expect("fake lock") = Some((path.to_owned(), false, None));
+        }
+
+        /// As `make_unreadable_to_snapshots`, for a part that fails to read for a reason other
+        /// than its permissions (`kind` is the reason's name): `ReadFailed`, not `Unreadable`.
+        pub fn make_unreadable_to_snapshots_for_another_reason(&self, path: &str, kind: &str) {
+            *self.unreadable.lock().expect("fake lock") =
+                Some((path.to_owned(), false, Some(kind.to_owned())));
         }
 
         /// The permissions are restored: the tree can be read again.
@@ -1208,9 +1225,10 @@ pub mod fake {
 
         fn readable(&self, measuring: bool) -> Result<(), WorkspaceError> {
             match self.unreadable.lock().expect("fake lock").clone() {
-                Some((path, everything)) if everything || !measuring => {
-                    Err(WorkspaceError::Unreadable { path })
-                }
+                Some((path, everything, kind)) if everything || !measuring => Err(match kind {
+                    None => WorkspaceError::Unreadable { path },
+                    Some(kind) => WorkspaceError::ReadFailed { path, kind },
+                }),
                 _ => Ok(()),
             }
         }

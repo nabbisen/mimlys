@@ -181,7 +181,9 @@ impl RuntimeError {
             RuntimeError::PromotionFailed { .. } => "internal",
             RuntimeError::Workspace(WorkspaceError::NotFound { .. }) => "not_found",
             RuntimeError::Workspace(
-                WorkspaceError::Refused { .. } | WorkspaceError::Unreadable { .. },
+                WorkspaceError::Refused { .. }
+                | WorkspaceError::Unreadable { .. }
+                | WorkspaceError::ReadFailed { .. },
             ) => "state",
             RuntimeError::Workspace(
                 WorkspaceError::TooLarge { .. }

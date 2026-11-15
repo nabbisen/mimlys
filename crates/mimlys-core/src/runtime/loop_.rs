@@ -1848,7 +1848,10 @@ impl Runtime {
                     after = after.transition(TaskInput::Halt(HaltReason::WorkspaceQuota), now)?;
                 }
                 Ok(_) => {}
-                Err(crate::spi::WorkspaceError::Unreadable { path }) => {
+                Err(
+                    crate::spi::WorkspaceError::Unreadable { path }
+                    | crate::spi::WorkspaceError::ReadFailed { path, .. },
+                ) => {
                     after = self.halt_unreadable(
                         &after,
                         Some(step.step_id),
@@ -1945,7 +1948,10 @@ impl Runtime {
 /// The path of a tree that could not be read, when `error` says so.
 fn unreadable_path(error: &RuntimeError) -> Option<&str> {
     match error {
-        RuntimeError::Workspace(crate::spi::WorkspaceError::Unreadable { path }) => Some(path),
+        RuntimeError::Workspace(
+            crate::spi::WorkspaceError::Unreadable { path }
+            | crate::spi::WorkspaceError::ReadFailed { path, .. },
+        ) => Some(path),
         _ => None,
     }
 }

@@ -488,6 +488,56 @@ mod snapshots {
         assert_eq!(path, ".", "the root of the tree");
     }
 
+    /// REQ-WS-004: only a refused permission is `Unreadable`, which asks the user to restore
+    /// the permissions. Any other failure of a read of the walk names the path with the kind
+    /// of the failure and gives no such advice. The errors are injected where the walk maps
+    /// them.
+    #[test]
+    fn req_ws_004_only_a_permission_error_asks_to_restore_permissions() {
+        use std::io::ErrorKind;
+        let map = super::super::snapshot::unreadable("src/deep");
+
+        let permission = map(ErrorKind::PermissionDenied.into());
+        assert_eq!(
+            permission,
+            WorkspaceError::Unreadable {
+                path: "src/deep".into()
+            }
+        );
+        assert_eq!(
+            permission.to_string(),
+            "part of the workspace could not be read: src/deep; restore its permissions, then try again"
+        );
+
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::TimedOut,
+            ErrorKind::InvalidData,
+            ErrorKind::Other,
+        ] {
+            let error = map(kind.into());
+            let words = kind.to_string();
+            assert_eq!(
+                error,
+                WorkspaceError::ReadFailed {
+                    path: "src/deep".into(),
+                    kind: words.clone()
+                },
+                "{kind:?}"
+            );
+            assert_eq!(
+                error.to_string(),
+                format!("part of the workspace could not be read: src/deep ({words})"),
+                "{kind:?}"
+            );
+            assert!(!words.is_empty() && !error.to_string().contains("permission"));
+        }
+        assert_eq!(
+            map(ErrorKind::NotFound.into()).to_string(),
+            "part of the workspace could not be read: src/deep (entity not found)"
+        );
+    }
+
     fn walk(fx: &Fx) -> mimlys_core::snapshot::Manifest {
         let dir =
             cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority()).unwrap();

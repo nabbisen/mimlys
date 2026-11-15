@@ -248,8 +248,8 @@ pub enum Event {
         /// Why, and what was left as it is.
         reason: String,
     },
-    /// Part of the task's tree could not be read, and the task halted for it: the path to
-    /// restore the permissions of.
+    /// Part of the task's tree could not be read, and the task halted for it: the path that
+    /// could not be read.
     #[serde(rename = "workspace.unreadable")]
     WorkspaceUnreadable {
         /// The path, relative to the task's tree; cleaned and bounded.

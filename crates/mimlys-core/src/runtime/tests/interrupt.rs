@@ -1243,6 +1243,37 @@ fn req_ws_004_a_tree_that_cannot_be_read_before_a_write_halts_the_task() {
     assert_eq!(next.outcome, StepOutcome::Continued, "{next:?}");
 }
 
+/// REQ-WS-004: a read of the tree that fails for a reason other than its permissions
+/// (`ReadFailed`, which names the path and the kind of the failure and asks for nothing) halts
+/// the task the same way as an unreadable path does: the same halt reason, the same event with
+/// the path, the same field of the view, the action closed `cancelled`, the step `halted`.
+#[test]
+fn req_ws_004_a_read_that_fails_for_another_reason_halts_the_task_the_same_way() {
+    let rig = Rig::new(effect_tool(
+        "a_workspace_write",
+        EffectKind::WorkspaceWrite,
+        true,
+        true,
+    ));
+    rig.workspaces
+        .make_unreadable_to_snapshots_for_another_reason("d", "entity not found");
+
+    let result = rig.execute_the_action();
+
+    rig.halted_for_the_path(&result, "d");
+    assert_eq!(rig.statuses(), [ActionStatus::Cancelled]);
+    assert_eq!(rig.calls(), 0, "the tool received no call");
+    assert_eq!(rig.unreadable_events(), [("d".to_owned(), true)]);
+
+    rig.workspaces.make_readable();
+    rig.runtime
+        .resume_task(&rig.session, rig.task, None)
+        .unwrap();
+    assert_eq!(rig.runtime.get_task(rig.task).unwrap().unreadable, None);
+    let next = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(next.outcome, StepOutcome::Continued, "{next:?}");
+}
+
 /// REQ-WS-004: part of the tree cannot be read when the snapshot after a write is taken
 /// (the action itself changed the permissions). The action ran and succeeded: it is
 /// recorded as it ended, and the task halts `workspace_unreadable` with the path; the task

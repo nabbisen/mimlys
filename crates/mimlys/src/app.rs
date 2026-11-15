@@ -89,7 +89,8 @@ impl AppError {
             AppError::Workspace(mimlys_core::spi::WorkspaceError::NotFound { .. }) => "not_found",
             AppError::Workspace(
                 mimlys_core::spi::WorkspaceError::Refused { .. }
-                | mimlys_core::spi::WorkspaceError::Unreadable { .. },
+                | mimlys_core::spi::WorkspaceError::Unreadable { .. }
+                | mimlys_core::spi::WorkspaceError::ReadFailed { .. },
             ) => "state",
             AppError::Workspace(_) => "internal",
             AppError::TaskRef {
@@ -126,9 +127,13 @@ impl AppError {
             )) => {
                 serde_json::json!({ "paths": paths })
             }
-            AppError::Workspace(mimlys_core::spi::WorkspaceError::Unreadable { path })
+            AppError::Workspace(
+                mimlys_core::spi::WorkspaceError::Unreadable { path }
+                | mimlys_core::spi::WorkspaceError::ReadFailed { path, .. },
+            )
             | AppError::Runtime(RuntimeError::Workspace(
-                mimlys_core::spi::WorkspaceError::Unreadable { path },
+                mimlys_core::spi::WorkspaceError::Unreadable { path }
+                | mimlys_core::spi::WorkspaceError::ReadFailed { path, .. },
             )) => {
                 serde_json::json!({ "paths": [path] })
             }
