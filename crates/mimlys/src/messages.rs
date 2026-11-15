@@ -516,19 +516,27 @@ pub fn dependency_step_reads(files: &[String]) -> String {
     )
 }
 /// One configured MCP server in `status` (RFC 009 §8).
+///
+/// What the server says of itself and of its tools is its own text: it is
+/// shown cleaned, on one line, bounded (a name, a version, a revision, a tool, a
+/// reason).
 pub fn server_line(s: &mimlys_mcp::ServerStatus) -> String {
-    let mut line = format!("server          {} ({})", s.name, s.state.replace('_', " "));
+    let mut line = format!(
+        "server          {} ({})",
+        shown(&s.name),
+        s.state.replace('_', " ")
+    );
     if let Some(d) = &s.detail {
-        line.push_str(&format!(": {d}"));
+        line.push_str(&format!(": {}", shown(d)));
     }
     if let (Some(name), Some(version)) = (&s.server_name, &s.server_version) {
-        line.push_str(&format!("; {name} {version}"));
+        line.push_str(&format!("; {} {}", shown(name), shown(version)));
     }
     if let Some(r) = &s.revision {
-        line.push_str(&format!("; revision {r}"));
+        line.push_str(&format!("; revision {}", shown(r)));
     }
     if !s.declared.is_empty() {
-        line.push_str(&format!("; declared tools: {}", s.declared.join(", ")));
+        line.push_str(&format!("; declared tools: {}", shown_list(&s.declared)));
         return line;
     }
     line.push_str(&format!(
@@ -536,7 +544,7 @@ pub fn server_line(s: &mimlys_mcp::ServerStatus) -> String {
         if s.tools.is_empty() {
             "none".to_owned()
         } else {
-            s.tools.join(", ")
+            shown_list(&s.tools)
         }
     ));
     if s.list_changed {
@@ -546,7 +554,19 @@ pub fn server_line(s: &mimlys_mcp::ServerStatus) -> String {
 }
 /// A listed tool the import refused (RFC 009 §2).
 pub fn server_unavailable(tool: &str, reason: &str) -> String {
-    format!("  unavailable   {tool}: {reason}")
+    format!("  unavailable   {}: {}", shown(tool), shown(reason))
+}
+/// Text that came from a server, for the terminal: one line, without
+/// invisible or control characters, bounded.
+fn shown(text: &str) -> String {
+    mimlys_core::panic_text::bounded_message(text, None)
+}
+fn shown_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|i| shown(i))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 /// A declared tool the server does not list.
 pub fn server_undeclared(tool: &str) -> String {

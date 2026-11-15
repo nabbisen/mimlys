@@ -168,8 +168,10 @@ pub struct Observation {
 }
 
 impl Observation {
-    /// Normalizes an execution outcome: lossy decoding, sanitization and
-    /// excerpting of both streams with the matching notices.
+    /// Normalizes an execution outcome: lossy decoding, sanitization,
+    /// redaction and excerpting of both streams with the matching notices. The
+    /// whole stream is redacted before it is cut, so that no part of a secret
+    /// that lies across the cut is left in the excerpt (REQ-CTX-007).
     pub fn from_outcome(
         observation_id: ObservationId,
         action_id: ActionId,
@@ -177,6 +179,7 @@ impl Observation {
         outcome: &ExecutionOutcome,
         verdict: Verdict,
         now: Instant,
+        redactor: &crate::context::Redactor,
     ) -> Self {
         let Verdict {
             status,
@@ -184,8 +187,8 @@ impl Observation {
             rolled_back,
         } = verdict;
         let mut notices = outcome.notices.clone();
-        let stdout = normalize_stream(&outcome.stdout, Stream::Stdout, &mut notices);
-        let stderr = normalize_stream(&outcome.stderr, Stream::Stderr, &mut notices);
+        let stdout = normalize_stream(&outcome.stdout, Stream::Stdout, redactor, &mut notices);
+        let stderr = normalize_stream(&outcome.stderr, Stream::Stderr, redactor, &mut notices);
         if rolled_back {
             notices.push(Notice::RolledBack);
         }
@@ -240,6 +243,9 @@ impl Observation {
             return;
         }
         let mut names = redactor.redact_value(&mut self.payload);
+        if let Some(cause) = &mut self.cause {
+            names.extend(redactor.redact_cause(cause));
+        }
         for text in [&mut self.stdout, &mut self.stderr] {
             let (clean, found) = redactor.redact(text);
             if !found.is_empty() {
@@ -256,15 +262,28 @@ impl Observation {
                 }
             }
         }
-        names.sort();
-        names.dedup();
-        for name in names {
-            self.notices.push(Notice::SecretRedacted { name });
+        add_secret_notices(&mut self.notices, names);
+    }
+}
+
+/// One `secret_redacted` notice for each name, unless the notices have it.
+pub fn add_secret_notices(notices: &mut Vec<Notice>, mut names: Vec<String>) {
+    names.sort();
+    names.dedup();
+    for name in names {
+        let notice = Notice::SecretRedacted { name };
+        if !notices.contains(&notice) {
+            notices.push(notice);
         }
     }
 }
 
-fn normalize_stream(bytes: &[u8], stream: Stream, notices: &mut Vec<Notice>) -> String {
+fn normalize_stream(
+    bytes: &[u8],
+    stream: Stream,
+    redactor: &crate::context::Redactor,
+    notices: &mut Vec<Notice>,
+) -> String {
     let (text, replaced) = decode_lossy(bytes);
     if replaced {
         notices.push(Notice::InvalidUtf8Replaced { stream });
@@ -275,6 +294,9 @@ fn normalize_stream(bytes: &[u8], stream: Stream, notices: &mut Vec<Notice>) -> 
             count: removed as u64,
         });
     }
+    // The whole text, before the cut.
+    let (clean, found) = redactor.redact(&clean);
+    add_secret_notices(notices, found);
     let (excerpt, total) = excerpt(&clean, LIM_C2_EXCERPT_HEAD_CHARS, LIM_C2_EXCERPT_TAIL_CHARS);
     if total.is_some() {
         notices.push(Notice::OutputTruncated {

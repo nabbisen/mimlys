@@ -54,6 +54,16 @@
 //! and `echo_env` write `<text>` as a line on standard error, then wait 5000 ms
 //! before it answers (so that the client's reader has read the line while the
 //! call is still in flight).
+//!
+//! `MIMLYS_TESTSERVER_CONTROL_TEXT=1` gives the server a name and a version, and
+//! lists a tool whose name, with a parameter whose name, carry control sequences
+//! (a clear-screen and a window-title sequence).
+//!
+//! `MIMLYS_TESTSERVER_LEAK=<variable>` lists two tools that put the value of that
+//! environment variable in what they answer: `leak` fails with a message that
+//! holds the value and an object whose key is the value; `leak_long` answers with
+//! a text longer than any answer is kept in, with the value across the point
+//! where it is cut.
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -116,6 +126,25 @@ pub const INSTRUCTIONS: &str = "rypsok searches the web and reads pages. Everyth
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "1")
+}
+
+/// The name and version the server reports.
+fn server_info() -> Value {
+    if env_flag("MIMLYS_TESTSERVER_CONTROL_TEXT") {
+        json!({
+            "name": "srv\u{1b}[2J\u{1b}]0;title\u{7}name",
+            "version": "1.0\u{1b}[31m\u{202e}",
+        })
+    } else {
+        json!({"name": "mimlys-testserver", "version": "0.7.0-test"})
+    }
+}
+
+/// The value `leak` and `leak_long` put in their answers, when asked for.
+fn leak_value() -> Option<String> {
+    std::env::var("MIMLYS_TESTSERVER_LEAK")
+        .ok()
+        .and_then(|name| std::env::var(name).ok())
 }
 
 /// The request of a recorded call.
@@ -215,6 +244,28 @@ fn tool_list(changed: bool) -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {"x": {"anyOf": [{"type": "string"}, {"type": "integer"}]}}},
         }));
     }
+    if env_flag("MIMLYS_TESTSERVER_CONTROL_TEXT") {
+        tools.push(json!({
+            "name": "odd\u{1b}[2J\u{1b}]0;title\u{7}tool",
+            "description": "A tool whose name carries control sequences.",
+            "inputSchema": {"type": "object", "properties": {"p\u{1b}[31m": {"type": "string"}}},
+        }));
+    }
+    if std::env::var_os("MIMLYS_TESTSERVER_LEAK").is_some() {
+        for (name, description) in [
+            ("leak", "Fails with a message that holds the value."),
+            (
+                "leak_long",
+                "Answers with a long text that holds the value.",
+            ),
+        ] {
+            tools.push(json!({
+                "name": name,
+                "description": description,
+                "inputSchema": {"type": "object", "additionalProperties": false},
+            }));
+        }
+    }
     if env_flag("MIMLYS_TESTSERVER_WIDE") {
         let mut props = Map::new();
         for i in 0..9 {
@@ -274,6 +325,30 @@ fn call(name: &str, arguments: &Map<String, Value>) -> Value {
             })
         }
         "engine_status" => from("engine-status"),
+        "leak" => {
+            let value = leak_value().unwrap_or_default();
+            json!({
+                "content": [{"type": "text", "text": "failed"}],
+                "structuredContent": {
+                    "error": {"kind": "denied", "message": format!("token {value} is not accepted")},
+                    value: 1,
+                },
+                "isError": true,
+            })
+        }
+        "leak_long" => {
+            // The answer is cut to its head and its tail at 64 000 characters
+            // (LIM-C2): the value starts four characters before the head ends.
+            let value = leak_value().unwrap_or_default();
+            let head = 64_000 * 3 / 4;
+            let mut text = "a".repeat(head - 4);
+            text.push_str(&value);
+            text.push_str(&"b".repeat(70_000));
+            json!({
+                "content": [{"type": "text", "text": "long"}],
+                "structuredContent": {"text": text},
+            })
+        }
         "echo_env" => {
             let env: Map<String, Value> = std::env::vars()
                 .map(|(k, v)| (k, Value::String(v)))
@@ -348,7 +423,7 @@ pub fn main() {
                 "instructions": INSTRUCTIONS,
                 "ttlMs": 0,
                 "cacheScope": "private",
-                "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "mimlys-testserver", "version": "0.7.0-test"}}
+                "_meta": {"io.modelcontextprotocol/serverInfo": server_info()}
             })),
             "initialize" => {
                 let requested = params
@@ -365,7 +440,7 @@ pub fn main() {
                 reply(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": true}},
-                    "serverInfo": {"name": "mimlys-testserver", "version": "0.7.0-test"},
+                    "serverInfo": server_info(),
                     "instructions": INSTRUCTIONS,
                 }));
             }

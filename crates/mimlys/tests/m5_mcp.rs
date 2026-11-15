@@ -343,6 +343,141 @@ fn m5_errors_are_mapped_by_kind() {
     assert_eq!(rejected, ["denied"]);
 }
 
+/// Lets the child server see `name` (the config's `env_allow`), so that a test
+/// can hand it a knob of the stand-in through the process's environment.
+fn let_the_server_see(env: &Env, name: &str) {
+    let text = std::fs::read_to_string(&env.config).unwrap();
+    let text = text.replace(
+        "env_allow = [\"PATH\",",
+        &format!("env_allow = [\"PATH\", {name:?},"),
+    );
+    std::fs::write(&env.config, text).unwrap();
+}
+
+/// Every record of `table` of the task's store, as text.
+fn records(env: &Env, table: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(env.data.path().join("data/mimlys.db")).unwrap();
+    let mut stmt = conn
+        .prepare(&format!("select record from {table} order by rowid"))
+        .unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// REQ-CTX-007 (handoff 009g, item 5), end to end: a server's error that echoes a
+/// configured secret, in its message and as the key of an object; and an answer
+/// that holds the secret across the point where it is cut. The secret is in
+/// neither the observation (what the model reads), nor the action, nor the
+/// events, nor the command's output; no part of it is in the cut answer.
+#[test]
+fn req_ctx_007_a_secret_a_server_echoes_is_redacted_in_the_cause_the_keys_and_the_cut() {
+    let env = Env::new(
+        &[
+            act("rypsok.leak", json!({})),
+            act("rypsok.leak_long", json!({})),
+            complete(),
+        ],
+        "env_secrets = { TOKEN = \"env:MIMLYS_TEST_TOKEN\" }\n\
+         [servers.rypsok.tools.leak]\neffect = \"external_read\"\nidempotent = true\n\
+         [servers.rypsok.tools.leak_long]\neffect = \"external_read\"\nidempotent = true\n",
+        &["rypsok.leak", "rypsok.leak_long"],
+    )
+    .env("MIMLYS_TEST_TOKEN", "tok-9f8e7d6c5b4a")
+    .env("MIMLYS_TESTSERVER_LEAK", "TOKEN");
+    let_the_server_see(&env, "MIMLYS_TESTSERVER_LEAK");
+    let scope = env.scope();
+    let (code, stdout, stderr) =
+        env.run(&["--json", "run", "leak", "--scope", scope.to_str().unwrap()]);
+    let value: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}\n{stderr}"));
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let secret = "tok-9f8e7d6c5b4a";
+    assert!(!stdout.contains(secret) && !stderr.contains(secret));
+    let events = serde_json::to_string(&env.events(&id)).unwrap();
+    assert!(!events.contains(secret), "the event log");
+    for table in ["observations", "actions"] {
+        for record in records(&env, table) {
+            assert!(!record.contains(secret), "{table}: {record}");
+            for part in ["tok-", "5b4a"] {
+                // The cut answer is the only text with the secret near its end.
+                assert!(!record.contains(part), "{table} holds {part}: {record}");
+            }
+        }
+    }
+    let observations: Vec<Value> = records(&env, "observations")
+        .iter()
+        .map(|r| serde_json::from_str(r).unwrap())
+        .collect();
+    let leak = observations
+        .iter()
+        .find(|o| o["tool"] == "rypsok.leak")
+        .expect("the failing call");
+    assert_eq!(
+        leak["cause"]["detail"],
+        "denied: token [redacted:servers.rypsok.env.TOKEN] is not accepted",
+        "{leak}"
+    );
+    assert!(
+        leak["payload"]
+            .as_object()
+            .unwrap()
+            .contains_key("[redacted:servers.rypsok.env.TOKEN]"),
+        "{leak}"
+    );
+    let long = observations
+        .iter()
+        .find(|o| o["tool"] == "rypsok.leak_long")
+        .expect("the long answer");
+    assert!(
+        long["payload"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("characters omitted"),
+        "it was cut"
+    );
+}
+
+/// REQ-CLI-005, REQ-CTX-008 (handoff 009g, item 6): a server whose name and
+/// version carry a clear-screen and a window-title sequence, and a tool whose
+/// name does: `status` prints them cleaned, in its text and in its JSON, with no
+/// control character in either.
+#[test]
+fn req_ctx_008_status_prints_what_a_server_says_of_itself_cleaned() {
+    let env = Env::new(&[complete()], "", &[]).env("MIMLYS_TESTSERVER_CONTROL_TEXT", "1");
+    let_the_server_see(&env, "MIMLYS_TESTSERVER_CONTROL_TEXT");
+    // The data directory exists once a task has been made.
+    let scope = env.scope();
+    let (code, _) = env.json(&["run", "x", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    let (code, text, stderr) = env.run(&["status"]);
+    assert_eq!(code, 0, "{stderr}");
+    let (code, json_text, _) = env.run(&["--json", "status"]);
+    assert_eq!(code, 0);
+    for (what, output) in [("text", &text), ("json", &json_text)] {
+        assert!(
+            !output.chars().any(|c| c.is_control() && c != '\n'),
+            "{what}: a control character is printed: {output:?}"
+        );
+        assert!(!output.contains('\u{202e}'), "{what}");
+    }
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("server"))
+        .expect("the server line");
+    assert!(
+        line.contains("srv[2J]0;titlename 1.0[31m"),
+        "the name and the version, cleaned: {line}"
+    );
+    let odd = text
+        .lines()
+        .find(|l| l.contains("unavailable") && l.contains("odd"))
+        .expect("the tool the import refused");
+    assert!(odd.contains("odd[2J]0;titletool"), "{odd}");
+}
+
 /// REQ-PRIV-003 / REQ-TEST-015 / THR-24 / INV-14 (external design §21.2):
 /// the child sees only `env_allow` and `env_secrets`; the operator's key is
 /// absent from its environment; the secret's value is redacted from the

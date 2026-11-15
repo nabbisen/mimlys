@@ -228,15 +228,23 @@ impl Connection {
             .await;
         let child = std::mem::replace(&mut guard, ChildGuard { child: None });
         let peer_info = service.peer().peer_info();
+        // What the server says of itself is cleaned where it enters: it is shown
+        // by `status` and recorded in `server.started`.
+        let shown = |text: &str| mimlys_core::panic_text::bounded_message(text, None);
         let info = ServerInfo {
-            revision: peer_info.as_ref().map(|i| i.protocol_version.to_string()),
+            revision: peer_info
+                .as_ref()
+                .map(|i| shown(&i.protocol_version.to_string())),
             name: peer_info
                 .as_ref()
-                .and_then(|i| i.server_info.as_ref().map(|s| s.name.clone())),
+                .and_then(|i| i.server_info.as_ref().map(|s| shown(&s.name))),
             version: peer_info
                 .as_ref()
-                .and_then(|i| i.server_info.as_ref().map(|s| s.version.clone())),
-            instructions: peer_info.as_ref().and_then(|i| i.instructions.clone()),
+                .and_then(|i| i.server_info.as_ref().map(|s| shown(&s.version))),
+            instructions: peer_info
+                .as_ref()
+                .and_then(|i| i.instructions.as_deref())
+                .map(|text| mimlys_core::observation::sanitize(text).0),
         };
         drop(starting);
         let peer = service.peer().clone();

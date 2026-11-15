@@ -9,6 +9,7 @@ use crate::client::CallOutcome;
 use crate::import::{Imported, import};
 use crate::server::{Server, ServerError, ServerInfo};
 use mimlys_core::action::{ExecutionMetrics, FailureCause, HostFaultDetail, Termination};
+use mimlys_core::context::Redactor;
 use mimlys_core::event::Event;
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::{LIM_C2_EXCERPT_CEILING_CHARS, LIM_I5_MESSAGE_CHARS};
@@ -134,9 +135,10 @@ impl Servers {
                     server.config().tools.get(&l.name),
                     server.config().max_call_ms,
                 );
+                // The names and the reasons come from the server: shown cleaned.
                 match imported.record.unavailable {
-                    Some(reason) => unavailable.push((imported.name, reason)),
-                    None => tools.push(imported.name),
+                    Some(reason) => unavailable.push((shown(&imported.name), shown(&reason))),
+                    None => tools.push(shown(&imported.name)),
                 }
             }
             let undeclared = server
@@ -180,6 +182,12 @@ impl Servers {
     pub fn drain_events(&self) -> Vec<Event> {
         self.servers.iter().flat_map(|s| s.drain_events()).collect()
     }
+}
+
+/// Text that came from a server, as `status` shows it: one line, cleaned of
+/// invisible and control characters, and bounded.
+fn shown(text: &str) -> String {
+    mimlys_core::panic_text::bounded_message(text, None)
 }
 
 /// What a call that never left gives: the server could not be reached, its
@@ -264,6 +272,7 @@ impl McpTools {
         outcome: CallOutcome,
         wall_ms: i64,
         remaining: Duration,
+        redactor: &Redactor,
     ) -> ExecutionOutcome {
         let metrics = ExecutionMetrics {
             wall_ms,
@@ -355,13 +364,17 @@ impl McpTools {
                     },
                 };
                 let mut notices = Vec::new();
-                bound_strings(&mut payload, &mut notices);
+                let mut found = Vec::new();
+                bound_strings(&mut payload, &mut notices, redactor, &mut found);
+                mimlys_core::observation::add_secret_notices(&mut notices, found);
                 if is_error {
-                    let kind = payload
+                    let kind: String = payload
                         .pointer("/error/kind")
                         .and_then(Value::as_str)
                         .unwrap_or("error")
-                        .to_owned();
+                        .chars()
+                        .take(LIM_I5_MESSAGE_CHARS)
+                        .collect();
                     let message: String = payload
                         .pointer("/error/message")
                         .and_then(Value::as_str)
@@ -438,8 +451,16 @@ impl McpTools {
     }
 }
 
-/// Sanitizes and bounds every string of a payload (REQ-MCP-006, REQ-TOOL-008).
-fn bound_strings(value: &mut Value, notices: &mut Vec<Notice>) {
+/// Sanitizes, redacts and bounds every string of a payload, and every key of
+/// its objects (REQ-MCP-006, REQ-TOOL-008, REQ-CTX-007). The whole text is
+/// redacted before it is cut, so that no part of a secret that lies across the
+/// cut is left; the names of the secrets found are added to `found`.
+fn bound_strings(
+    value: &mut Value,
+    notices: &mut Vec<Notice>,
+    redactor: &Redactor,
+    found: &mut Vec<String>,
+) {
     match value {
         Value::String(s) => {
             let (clean, removed) = sanitize(s);
@@ -448,6 +469,9 @@ fn bound_strings(value: &mut Value, notices: &mut Vec<Notice>) {
                     count: removed as u64,
                 });
             }
+            let (clean, names) = redactor.redact(&clean);
+            let redacted = !names.is_empty();
+            found.extend(names);
             let total = clean.chars().count();
             if total > LIM_C2_EXCERPT_CEILING_CHARS {
                 let (cut, _) = excerpt(
@@ -459,21 +483,57 @@ fn bound_strings(value: &mut Value, notices: &mut Vec<Notice>) {
                     total_chars: total as u64,
                 });
                 *s = cut;
-            } else if removed > 0 {
+            } else if removed > 0 || redacted {
                 *s = clean;
             }
         }
         Value::Array(items) => {
             for item in items {
-                bound_strings(item, notices);
+                bound_strings(item, notices, redactor, found);
             }
         }
         Value::Object(map) => {
-            for item in map.values_mut() {
-                bound_strings(item, notices);
+            let entries = std::mem::take(map);
+            for (key, mut item) in entries {
+                bound_strings(&mut item, notices, redactor, found);
+                let mut key = bound_key(&key, notices, redactor, found);
+                // Two keys that clean to one text keep both values.
+                let mut n = 1;
+                while map.contains_key(&key) {
+                    n += 1;
+                    key = format!("{key}#{n}");
+                }
+                map.insert(key, item);
             }
         }
         _ => {}
+    }
+}
+
+/// A key of an object in a payload, as the model reads it: sanitized,
+/// redacted and cut to the bound of a message (LIM-I5).
+fn bound_key(
+    key: &str,
+    notices: &mut Vec<Notice>,
+    redactor: &Redactor,
+    found: &mut Vec<String>,
+) -> String {
+    let (clean, removed) = sanitize(key);
+    if removed > 0 {
+        notices.push(Notice::CharactersRemoved {
+            count: removed as u64,
+        });
+    }
+    let (clean, names) = redactor.redact(&clean);
+    found.extend(names);
+    let total = clean.chars().count();
+    if total > LIM_I5_MESSAGE_CHARS {
+        notices.push(Notice::ContentTruncated {
+            total_chars: total as u64,
+        });
+        clean.chars().take(LIM_I5_MESSAGE_CHARS).collect()
+    } else {
+        clean
     }
 }
 
@@ -600,6 +660,7 @@ impl ToolProvider for McpTools {
                         o,
                         wall_ms,
                         deadline.saturating_sub(started.elapsed()),
+                        &context.redactor,
                     )
                     .await
                 }
