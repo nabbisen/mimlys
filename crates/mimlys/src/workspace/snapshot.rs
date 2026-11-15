@@ -1266,7 +1266,6 @@ fn depth(path: &str) -> usize {
 fn project_kind(project: &Dir, rel: &str) -> Result<Option<Kind>, WorkspaceError> {
     match project.symlink_metadata(rel) {
         Ok(m) if m.is_symlink() => Ok(Some(Kind::Symlink)),
-        Ok(m) if m.is_dir() && is_junction(project, rel) => Ok(Some(Kind::Symlink)),
         Ok(m) if m.is_dir() => Ok(Some(Kind::Dir)),
         Ok(_) => Ok(Some(Kind::File)),
         // Nothing lies below a file.
@@ -1286,11 +1285,13 @@ fn project_kind(project: &Dir, rel: &str) -> Result<Option<Kind>, WorkspaceError
 /// as a link does), which the directory metadata may report as a plain directory. A junction can
 /// be read as a link; a directory cannot. Nothing is a junction elsewhere.
 #[cfg(windows)]
+#[allow(dead_code)]
 fn is_junction(project: &Dir, rel: &str) -> bool {
     project.read_link(rel).is_ok()
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 fn is_junction(_project: &Dir, _rel: &str) -> bool {
     false
 }
