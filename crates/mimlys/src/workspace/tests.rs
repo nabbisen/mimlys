@@ -975,10 +975,12 @@ mod snapshots {
     /// A Windows junction at `link` to the directory `target` (no privilege is needed).
     #[cfg(windows)]
     fn make_junction(link: &Path, target: &Path) {
+        // mklink refuses a path with a forward slash.
+        let native = |p: &Path| p.to_string_lossy().replace('/', "\\");
         let out = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
+            .arg(native(link))
+            .arg(native(target))
             .output()
             .unwrap();
         assert!(
