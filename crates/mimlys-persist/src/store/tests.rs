@@ -106,7 +106,7 @@ impl Fx {
         )
     }
 
-    fn action(
+    pub(crate) fn action(
         &self,
         task: &Task,
         step: &Step,

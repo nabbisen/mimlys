@@ -7,6 +7,7 @@ use mimlys_core::event::Event;
 use mimlys_core::hash::hash_bytes;
 use mimlys_core::policy::Recovery;
 use mimlys_core::spi::{Persistence, PersistenceError, PersistenceRead};
+use mimlys_core::task::TaskInput;
 use std::marker::PhantomData;
 
 /// Whether `T` implements the writer's trait, decided at compile time: the
@@ -204,6 +205,36 @@ fn req_pers_013_the_reader_runs_no_recovery() {
     drop(writer);
     let reader = open_read_only(&data).unwrap();
     assert!(!reader.recovery_pending().unwrap());
+}
+
+/// REQ-PERS-013, REQ-PERS-007: a store whose runtime ended during a recovery (a task
+/// `recovering`) needs recovery too, and the reader says so without running it.
+#[test]
+fn req_pers_013_a_task_found_recovering_is_recovery_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let fx = Fx::new();
+    {
+        let writer = open(&data).unwrap();
+        let (task, _) = sequence(&writer, &fx, 0, false);
+        let recovering = task.transition(TaskInput::StartRecovery, fx.now()).unwrap();
+        writer
+            .record_task_transition(
+                &recovering,
+                &fx.event(
+                    &recovering,
+                    Event::TaskStateChanged {
+                        from: "running".into(),
+                        to: "recovering".into(),
+                        reason: None,
+                    },
+                ),
+            )
+            .unwrap();
+    }
+    let reader = open_read_only(&data).unwrap();
+    assert!(reader.tasks_in_state("running").unwrap().is_empty());
+    assert!(reader.recovery_pending().unwrap());
 }
 
 /// REQ-PERS-013: a schema newer than the reader knows is refused with the

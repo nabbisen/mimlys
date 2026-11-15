@@ -64,6 +64,39 @@ impl Store {
         crash::maybe(point, "after");
         Ok(result)
     }
+
+    /// The action an earlier recovery pass of a task found `recovering` marked `unknown`: the one
+    /// whose `action.finished` event follows the task's last entry into `recovering` (§16.3). A
+    /// recovery that ended after the mark is finished from it, not from "no action in flight".
+    pub(crate) fn load_marked_by_recovery(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<Action>, PersistenceError> {
+        self.query_one(
+            "SELECT a.record FROM actions a WHERE a.task_id = ?1 AND a.status = 'unknown'
+               AND EXISTS (SELECT 1 FROM events e WHERE e.action_id = a.action_id
+                 AND e.name = 'action.finished'
+                 AND e.position > (SELECT COALESCE(MAX(position), 0) FROM events
+                   WHERE task_id = ?1 AND name = 'task.state_changed'
+                     AND json_extract(record, '$.to') = 'recovering'))
+             ORDER BY a.rowid DESC",
+            &[&task_id.to_string()],
+        )
+    }
+
+    /// Whether `task.recovered` was recorded since the task's last entry into `recovering`.
+    pub(crate) fn recovered_recorded(&self, task_id: TaskId) -> Result<bool, PersistenceError> {
+        let conn = self.conn.lock().map_err(|_| poisoned())?;
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND name = 'task.recovered'
+               AND position > (SELECT COALESCE(MAX(position), 0) FROM events
+                 WHERE task_id = ?1 AND name = 'task.state_changed'
+                   AND json_extract(record, '$.to') = 'recovering'))",
+            [task_id.to_string()],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(storage("query"))
+    }
 }
 
 fn append_event(tx: &Transaction<'_>, event: &EventRecord) -> Result<(), PersistenceError> {
