@@ -44,6 +44,13 @@
 | LIM-I7 | Entries returned by `list_dir` or `search_files` | 500 | 50–5000 | Context budget |
 | LIM-I8 | Tasks listed in the text of `status --storage` (the JSON lists all) | 10 | 1–1000 | Interface size (handoff 013) |
 | LIM-I9 | A string of a rejection's `detail`, and the entries of one of its lists (`visible_tools`, `allowed`), as the model reads it | 200 characters; 32 entries | fixed | Context budget; LIM-I5's length for a string; every tool name stays in the capability note (handoff 002c) |
+| LIM-I10 | Name of one parameter of a tool, or of a nested key | 64 characters | fixed | As a tool's name; with LIM-I3 and LIM-I6, every argument of an imported tool can be named on the approval card (handoff 009g) |
+| LIM-I11 | Pages of one MCP tool listing | 16 | fixed | rypsok lists in one page (handoff 009g) |
+| LIM-I12 | Tools of one MCP server's listing | 256 | fixed | rypsok lists 3; LIM-I1 shows about 20 (handoff 009g) |
+| LIM-I13 | Nodes of one imported output schema | 1024 | fixed | rypsok's schemas have 48 to 60 (measured, handoff 009g) |
+| LIM-I14 | Entries of one list of an output schema (`properties`, `required`, `enum`, `anyOf`, `oneOf`, `$defs`) | 128 | fixed | rypsok's widest is under 10 (handoff 009g) |
+| LIM-I15 | Cost of the alternatives that apply to one value, in visits, references followed | 64 | fixed | rypsok's costliest definition is 14 (measured, handoff 009g) |
+| LIM-I16 | Visits of one output validation | 100000 | fixed | Linear in the value once LIM-I15 holds; rypsok's largest answer takes a few hundred (handoff 009g) |
 
 ## Context
 

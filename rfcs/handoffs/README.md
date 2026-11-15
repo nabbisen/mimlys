@@ -72,6 +72,11 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 19 | [002d Test hygiene, follow-up](./002d-test-hygiene-follow-up/implementation-handoff.md) | RFC 002 | 002b |
 | 20 | [010d One stop signal must end `mimlys run`](./010d-one-stop-signal/implementation-handoff.md) | RFC 010 | — |
 | 21 | [010e A stop signal interrupts only what can be undone](./010e-interrupt-what-can-be-undone/implementation-handoff.md) | RFC 010 | 010d |
+| 22 | [011m No Unix socket outside the write set; a tool's tree ends with it; a tool writes only its own task's workspace](./011m-unix-sockets-tool-tree-task-write-set/implementation-handoff.md) | RFC 011 | — |
+| 23 | [006b Promotion is always reversible; snapshots survive unusual names](./006b-promotion-always-reversible/implementation-handoff.md) | RFC 006 | — |
+| 24 | [003b The approval card hides no argument; a stop signal at a prompt ends the process](./003b-approval-card-and-prompts/implementation-handoff.md) | RFC 003, RFC 010 | — |
+| 25 | [009g Every MCP request is bounded; a destination is a string; what a server sends is cleaned](./009g-mcp-requests-bounded/implementation-handoff.md) | RFC 009 | — |
+| 26 | [002e A failed restore is never silent; recovery survives a crash; a built-in never blocks](./002e-loop-and-built-ins-audit/implementation-handoff.md) | RFC 002, RFC 004 | — |
 
 ## Milestone M5
 
