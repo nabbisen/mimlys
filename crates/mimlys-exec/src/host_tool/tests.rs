@@ -127,7 +127,7 @@ fn req_conf_005_the_address_space_limit_is_the_childs_not_the_workers() {
     // another thread then executes fails with "text file busy").
     const CHILD: &str = "MIMLYS_RLIMIT_TEST_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .env(CHILD, "1")
             .args([
                 "--exact",
@@ -135,9 +135,26 @@ fn req_conf_005_the_address_space_limit_is_the_childs_not_the_workers() {
                 "--test-threads=1",
                 "--nocapture",
             ])
-            .status()
+            .spawn()
             .unwrap();
-        assert!(status.success(), "the test, run alone, failed");
+        // Bounded: a limit lowered in the process that runs the spawns can
+        // starve its own threads, and that must fail the test, not hang it.
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if started.elapsed() > Duration::from_secs(120) {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(
+            status.is_some_and(|s| s.success()),
+            "the test, run alone, failed or did not end ({status:?})"
+        );
         return;
     }
     let root = tempfile::tempdir().unwrap();
