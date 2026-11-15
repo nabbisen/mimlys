@@ -142,8 +142,30 @@ pub(crate) fn sequence(
     upto: usize,
     with_approval: bool,
 ) -> (Task, Option<Action>) {
+    sequence_with(store, fx, upto, with_approval, false)
+}
+
+/// [`sequence`], with the approval carrying the hash of the task's real grant
+/// set (`true`) instead of a made-up one, so that every state the sequence
+/// passes through, an open approval included, is consistent (CONS-06).
+fn sequence_with(
+    store: &dyn Persistence,
+    fx: &Fx,
+    upto: usize,
+    with_approval: bool,
+    real_grant_hash: bool,
+) -> (Task, Option<Action>) {
     let task = fx.task();
     let grants = vec![fx.grant(&task, "write_file")];
+    let grant_set_hash = if real_grant_hash {
+        let mut set = mimlys_core::grant::GrantSet::new();
+        for g in &grants {
+            set.add(g.clone());
+        }
+        set.hash(fx.now())
+    } else {
+        hash_bytes(b"grants")
+    };
     store
         .create_task(&task, &grants, &fx.event(&task, Event::TaskCreated))
         .unwrap();
@@ -221,7 +243,7 @@ pub(crate) fn sequence(
             task.task_id,
             action.action_id,
             action.content().action_hash().clone(),
-            hash_bytes(b"grants"),
+            grant_set_hash.clone(),
             Rendered { lines: vec![] },
             None,
             fx.now(),
@@ -263,7 +285,7 @@ pub(crate) fn sequence(
             )
             .unwrap(); // 3b
         approval
-            .consume(action.content().action_hash(), &hash_bytes(b"grants"))
+            .consume(action.content().action_hash(), &grant_set_hash)
             .unwrap();
         store
             .record_approval_decision(
@@ -855,9 +877,10 @@ fn req_test_007_crash_at_every_point_recovers() {
         for phase in ["before", "after"] {
             let dir = tempfile::tempdir().unwrap();
             let data = dir.path().join("data");
-            let status = std::process::Command::new(&exe)
+            let child = std::process::Command::new(&exe)
                 .args([
-                    "crash_child_sequence",
+                    // `--exact` takes the full path of the test.
+                    "store::tests::crash_child_sequence",
                     "--exact",
                     "--nocapture",
                     "--test-threads=1",
@@ -866,7 +889,21 @@ fn req_test_007_crash_at_every_point_recovers() {
                 .env("MIMLYS_CRASH_DIR", &data)
                 .output()
                 .unwrap();
-            let fx = Fx::new();
+            // The child ran its test and the process aborted at the point: a
+            // child that found no test, or ran to its end, injected nothing.
+            let stdout = String::from_utf8_lossy(&child.stdout);
+            assert!(
+                stdout.contains("running 1 test") && !stdout.contains("running 0 tests"),
+                "the child ran its test at {point}.{phase}:\n{stdout}"
+            );
+            assert!(
+                !child.status.success() && !stdout.contains("test result"),
+                "the child crashed at {point}.{phase}: {:?}\n{stdout}",
+                child.status
+            );
+            // Identifiers above those the child made: the recovery writes events
+            // into the store the child left, which already holds the child's.
+            let fx = Fx::starting_at(1_000_000);
             let store = open(&data).unwrap_or_else(|e| panic!("reopen after {point}.{phase}: {e}"));
             integrity::check(&store, fx.now())
                 .unwrap_or_else(|e| panic!("integrity after {point}.{phase}: {e}"));
@@ -891,7 +928,6 @@ fn req_test_007_crash_at_every_point_recovers() {
                     "{point}.{phase}"
                 );
             }
-            let _ = status;
         }
     }
 }
@@ -905,7 +941,7 @@ fn crash_child_sequence() {
     };
     let store = open(std::path::Path::new(&dir)).unwrap();
     let fx = Fx::new();
-    let (task, _) = sequence(&store, &fx, 8, true);
+    let (task, _) = sequence_with(&store, &fx, 8, true, true);
     store.put_blob(task.task_id, b"out").unwrap();
     // M3 points: a snapshot (files first, then the row) and a deletion (rows first, then files).
     {
@@ -948,6 +984,25 @@ fn crash_child_sequence() {
             )
             .unwrap();
         files.finish(id).unwrap();
+        // The promotion point: a promotion recorded against that snapshot.
+        store
+            .record_promotion(
+                &mimlys_core::snapshot::Promotion {
+                    promotion_id: mimlys_core::ids::PromotionId::new(&fx.ids),
+                    task_id: task.task_id,
+                    backup_snapshot: id,
+                    project_root: "/project".into(),
+                    files: vec![],
+                    applied_at: fx.now(),
+                    reversed_at: None,
+                    state: mimlys_core::snapshot::PromotionState::Applied,
+                    after: vec![],
+                    restored: true,
+                    reason: None,
+                },
+                &fx.event(&task, Event::WorkspacePromotionStarted { files: vec![] }),
+            )
+            .unwrap();
         let other = fx.task();
         store
             .create_task(&other, &[], &fx.event(&other, Event::TaskCreated))
