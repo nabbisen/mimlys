@@ -1024,12 +1024,16 @@ mod tests {
     /// prompt has returned).
     #[tokio::test(start_paused = true)]
     async fn req_cli_005_a_stop_signal_at_a_prompt_ends_the_wait_and_asks_nothing_of_the_step() {
-        use crate::prompt::{Input, Lines};
+        use crate::prompt::Input;
         let (signals, mut queue) = at_a_prompt();
         let (fake, step) = step();
         assert!(signals.begin_prompt());
         signals.stopped(&step, grace());
-        assert_eq!(queue.next(), Input::Stop, "the wait was ended");
+        assert_eq!(
+            queue.next_within(std::time::Duration::from_secs(60)),
+            Some(Input::Stop),
+            "the wait was ended"
+        );
         assert!(signals.end_prompt(), "the prompt knows that it was stopped");
         // A further signal is taken the same way: the process is leaving.
         signals.stopped(&step, grace());

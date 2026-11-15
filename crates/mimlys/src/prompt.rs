@@ -177,6 +177,12 @@ impl Queue {
         Self { tx, rx }
     }
 
+    /// The next input, or `None` when none comes within `bound`: for tests, so
+    /// that a wait that is not ended fails instead of hanging.
+    pub fn next_within(&mut self, bound: std::time::Duration) -> Option<Input> {
+        self.rx.recv_timeout(bound).ok()
+    }
+
     /// A sender to put inputs to this queue.
     pub fn sender(&self) -> Sender<Input> {
         self.tx.clone()
