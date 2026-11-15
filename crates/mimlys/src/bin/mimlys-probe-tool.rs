@@ -167,6 +167,29 @@ fn main() {
                 },
             }
         }
+        // `chmod <octal mode> <path>`: changes the permissions of a path (Unix).
+        #[cfg(unix)]
+        Some("chmod") => {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = u32::from_str_radix(args.get(1).map(String::as_str).unwrap_or(""), 8);
+            let path = args.get(2).map(String::as_str).unwrap_or("");
+            match mode
+                .map(|mode| std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)))
+            {
+                Ok(Ok(())) => {
+                    println!("changed");
+                    0
+                }
+                Ok(Err(e)) => {
+                    println!("chmod failed: {}", e.kind());
+                    3
+                }
+                Err(_) => {
+                    println!("chmod: not a mode");
+                    2
+                }
+            }
+        }
         Some("write") => {
             match std::fs::write(args.get(1).map(String::as_str).unwrap_or(""), b"x") {
                 Ok(()) => {

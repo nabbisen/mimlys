@@ -248,6 +248,13 @@ pub enum Event {
         /// Why, and what was left as it is.
         reason: String,
     },
+    /// Part of the task's tree could not be read, and the task halted for it: the path to
+    /// restore the permissions of.
+    #[serde(rename = "workspace.unreadable")]
+    WorkspaceUnreadable {
+        /// The path, relative to the task's tree; cleaned and bounded.
+        path: String,
+    },
     /// A task was recovered at startup.
     #[serde(rename = "task.recovered")]
     TaskRecovered {
@@ -344,6 +351,7 @@ impl Event {
             Event::WorkspacePromoted { .. } => "workspace.promoted",
             Event::WorkspacePromotionStarted { .. } => "workspace.promotion_started",
             Event::WorkspacePromotionFailed { .. } => "workspace.promotion_failed",
+            Event::WorkspaceUnreadable { .. } => "workspace.unreadable",
             Event::TaskRecovered { .. } => "task.recovered",
             Event::ToolPinned { .. } => "tool.pinned",
             Event::ToolUnpinned { .. } => "tool.unpinned",

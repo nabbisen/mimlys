@@ -490,6 +490,16 @@ pub enum WorkspaceError {
         /// Why.
         reason: String,
     },
+    /// Part of the task's tree could not be read, so it could not be walked (a snapshot, a
+    /// rollback, the quota check): a directory or a file whose permissions forbid it. Nothing
+    /// was changed; the user restores the permissions of the path and tries again.
+    #[error(
+        "part of the workspace could not be read: {path}; restore its permissions, then try again"
+    )]
+    Unreadable {
+        /// The path, relative to the task's tree; cleaned of control characters and bounded.
+        path: String,
+    },
 }
 
 /// What a materialized workspace is.
@@ -1134,6 +1144,7 @@ pub mod fake {
         snapshots: Mutex<Vec<SnapshotRecord>>,
         restores: Mutex<Vec<SnapshotId>>,
         fail_restores: Mutex<bool>,
+        unreadable: Mutex<Option<(String, bool)>>,
         tree: Mutex<Option<String>>,
         apply_hook: Mutex<Option<ApplyHook>>,
         reverted: Mutex<Vec<(PromotionId, EditedPaths)>>,
@@ -1153,6 +1164,7 @@ pub mod fake {
                 snapshots: Mutex::new(Vec::new()),
                 restores: Mutex::new(Vec::new()),
                 fail_restores: Mutex::new(false),
+                unreadable: Mutex::new(None),
                 tree: Mutex::new(None),
                 apply_hook: Mutex::new(None),
                 reverted: Mutex::new(Vec::new()),
@@ -1175,6 +1187,32 @@ pub mod fake {
         /// Sets the remaining workspace bytes reported.
         pub fn set_remaining(&self, bytes: Option<u64>) {
             *self.remaining.lock().expect("fake lock") = bytes;
+        }
+
+        /// From now on the tree has a part at `path` that cannot be read: a snapshot, a
+        /// restore and the quota check fail with `Unreadable`, until `make_readable`.
+        pub fn make_unreadable(&self, path: &str) {
+            *self.unreadable.lock().expect("fake lock") = Some((path.to_owned(), true));
+        }
+
+        /// As `make_unreadable`, for a snapshot and a restore only: the quota check, which
+        /// measures the tree, still reads it.
+        pub fn make_unreadable_to_snapshots(&self, path: &str) {
+            *self.unreadable.lock().expect("fake lock") = Some((path.to_owned(), false));
+        }
+
+        /// The permissions are restored: the tree can be read again.
+        pub fn make_readable(&self) {
+            *self.unreadable.lock().expect("fake lock") = None;
+        }
+
+        fn readable(&self, measuring: bool) -> Result<(), WorkspaceError> {
+            match self.unreadable.lock().expect("fake lock").clone() {
+                Some((path, everything)) if everything || !measuring => {
+                    Err(WorkspaceError::Unreadable { path })
+                }
+                _ => Ok(()),
+            }
         }
     }
 
@@ -1229,6 +1267,7 @@ pub mod fake {
         }
 
         fn remaining_bytes(&self, _task_id: TaskId) -> Result<Option<u64>, WorkspaceError> {
+            self.readable(true)?;
             Ok(*self.remaining.lock().expect("fake lock"))
         }
 
@@ -1241,6 +1280,7 @@ pub mod fake {
             previous: Option<&SnapshotRecord>,
             now: crate::clock::Instant,
         ) -> Result<PreparedSnapshot, WorkspaceError> {
+            self.readable(false)?;
             let manifest_hash = match self.tree.lock().expect("fake lock").as_deref() {
                 Some(content) => crate::hash::hash_bytes(content.as_bytes()),
                 None => Manifest::default().hash(),
@@ -1290,6 +1330,7 @@ pub mod fake {
                     what: "snapshot".into(),
                 });
             }
+            self.readable(false)?;
             if *self.fail_restores.lock().expect("fake lock") {
                 return Err(WorkspaceError::Storage {
                     detail: "restore".into(),

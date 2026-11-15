@@ -39,6 +39,8 @@ struct Asking {
     saw_cancelled: Mutex<Vec<bool>>,
     /// The task's state and the actions' statuses right after `cancel_task`.
     after_cancel_task: Mutex<Option<(TaskState, Vec<ActionStatus>)>>,
+    /// What the next action does to the world while it runs (a test's own effect), once.
+    effect: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 impl crate::spi::ToolProvider for Asking {
@@ -81,6 +83,9 @@ impl crate::spi::ToolProvider for Asking {
                         .collect();
                     *self.after_cancel_task.lock().unwrap() = Some((view.task.state, statuses));
                 }
+            }
+            if let Some(effect) = self.effect.lock().unwrap().take() {
+                effect();
             }
             let cancelled = context.cancel.is_cancelled();
             self.saw_cancelled.lock().unwrap().push(cancelled);
@@ -226,6 +231,7 @@ impl Rig {
             ask_at_definitions: Mutex::new(Ask::Nothing),
             saw_cancelled: Mutex::new(Vec::new()),
             after_cancel_task: Mutex::new(None),
+            effect: Mutex::new(None),
         });
         provider.inner.script(&name, outcome);
         let mut policy = Policy::shipped();
@@ -1134,4 +1140,246 @@ fn req_ws_010_a_restore_that_succeeds_after_a_cancelled_write_leaves_the_task_ru
     let observations = rig.persistence.load_observations(rig.task).unwrap();
     assert!(observations[0].rolled_back);
     assert_eq!(rig.workspaces.restores().len(), 1);
+}
+
+impl Rig {
+    /// What the action does to the world while it runs.
+    fn effect(&self, effect: impl Fn() + Send + 'static) {
+        *self.provider.effect.lock().unwrap() = Some(Box::new(effect));
+    }
+
+    fn unreadable_events(&self) -> Vec<(String, bool)> {
+        self.persistence
+            .events()
+            .into_iter()
+            .filter(|e| e.task_id == Some(self.task))
+            .filter_map(|e| match e.event {
+                crate::event::Event::WorkspaceUnreadable { path } => {
+                    Some((path, e.action_id.is_some()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// No action is left that will never finish: every action is closed, or waits for
+    /// the user to resume (an approved action).
+    fn statuses(&self) -> Vec<ActionStatus> {
+        self.persistence
+            .load_actions(self.task)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.status)
+            .collect()
+    }
+
+    fn halted_for_the_path(&self, result: &StepResultView, path: &str) {
+        assert_eq!(result.outcome, StepOutcome::Halted);
+        assert_eq!(
+            result.state,
+            TaskState::Halted {
+                halt_reason: HaltReason::WorkspaceUnreadable
+            }
+        );
+        assert_eq!(
+            self.runtime.get_task(self.task).unwrap().task.state,
+            result.state,
+            "the halt is the stored state"
+        );
+        assert_eq!(
+            self.last_state_change(),
+            Some(("halted".to_owned(), Some(HaltReason::WorkspaceUnreadable)))
+        );
+        assert_eq!(
+            self.runtime.get_task(self.task).unwrap().unreadable,
+            Some(path.to_owned()),
+            "the view names the path to restore"
+        );
+        assert!(
+            self.persistence
+                .load_running_action(self.task)
+                .unwrap()
+                .is_none(),
+            "no action is left running"
+        );
+    }
+}
+
+/// REQ-WS-004: part of the tree cannot be read when the snapshot before a write is taken.
+/// The action has not begun: it is closed `cancelled` (nothing ran, the tool received no
+/// call), the task halts `workspace_unreadable` with the path in `workspace.unreadable`,
+/// and the step ends `halted`. When the permissions are restored, the resume goes on.
+#[test]
+fn req_ws_004_a_tree_that_cannot_be_read_before_a_write_halts_the_task() {
+    let rig = Rig::new(effect_tool(
+        "a_workspace_write",
+        EffectKind::WorkspaceWrite,
+        true,
+        true,
+    ));
+    rig.workspaces.make_unreadable_to_snapshots("d");
+
+    let result = rig.execute_the_action();
+
+    rig.halted_for_the_path(&result, "d");
+    assert_eq!(rig.statuses(), [ActionStatus::Cancelled]);
+    assert_eq!(rig.calls(), 0, "the tool received no call");
+    assert!(!rig.events().contains(&"action.started".to_owned()));
+    assert_eq!(rig.unreadable_events(), [("d".to_owned(), true)]);
+    let steps = rig.persistence.load_steps(rig.task).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(
+        steps[0].outcome,
+        Some(StepOutcome::Halted),
+        "the step ended"
+    );
+
+    rig.workspaces.make_readable();
+    rig.runtime
+        .resume_task(&rig.session, rig.task, None)
+        .unwrap();
+    assert_eq!(rig.runtime.get_task(rig.task).unwrap().unreadable, None);
+    let next = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(next.outcome, StepOutcome::Continued, "{next:?}");
+}
+
+/// REQ-WS-004: part of the tree cannot be read when the snapshot after a write is taken
+/// (the action itself changed the permissions). The action ran and succeeded: it is
+/// recorded as it ended, and the task halts `workspace_unreadable` with the path; the task
+/// is not left `running` with an action that never finishes. The resume goes on.
+#[test]
+fn req_ws_004_a_tree_that_cannot_be_read_after_a_write_halts_the_task() {
+    let rig = Rig::new(effect_tool(
+        "a_workspace_write",
+        EffectKind::WorkspaceWrite,
+        true,
+        true,
+    ));
+    let workspaces = rig.workspaces.clone();
+    rig.effect(move || workspaces.make_unreadable_to_snapshots("d/inner"));
+
+    let result = rig.execute_the_action();
+
+    rig.halted_for_the_path(&result, "d/inner");
+    assert_eq!(rig.statuses(), [ActionStatus::Succeeded]);
+    assert_eq!(rig.calls(), 1);
+    let observations = rig.persistence.load_observations(rig.task).unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].status, ObservationStatus::Succeeded);
+    assert_eq!(rig.unreadable_events(), [("d/inner".to_owned(), true)]);
+
+    rig.workspaces.make_readable();
+    rig.runtime
+        .resume_task(&rig.session, rig.task, None)
+        .unwrap();
+    let next = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(next.outcome, StepOutcome::Continued, "{next:?}");
+}
+
+/// REQ-WS-006: a failed write whose restore cannot read part of the tree halts the task
+/// `workspace_unreadable` with the path (not `unknown_outcome`: the tree, not the outcome,
+/// is what the user can fix); the observation says that nothing was rolled back.
+#[test]
+fn req_ws_006_a_restore_that_cannot_read_the_tree_halts_with_the_path() {
+    let rig = Rig::ending(
+        effect_tool("a_workspace_write", EffectKind::WorkspaceWrite, true, false),
+        ExecutionOutcome::tool_error("rejected", json!({}), 1),
+    );
+    let workspaces = rig.workspaces.clone();
+    rig.effect(move || workspaces.make_unreadable("d"));
+
+    let result = rig.execute_the_action();
+
+    rig.halted_for_the_path(&result, "d");
+    assert_eq!(
+        rig.statuses(),
+        [ActionStatus::Failed {
+            cause: crate::action::FailureCause::ToolError {
+                detail: "rejected".into()
+            }
+        }]
+    );
+    let observations = rig.persistence.load_observations(rig.task).unwrap();
+    assert!(!observations[0].rolled_back);
+    assert!(!rig.events().contains(&"workspace.rollback".to_owned()));
+}
+
+/// REQ-WS-008: the quota is measured by walking the tree. At the start of a step, part of
+/// it that cannot be read halts the task with the path before the step begins; no model
+/// request is made and no step is left open. The resume goes on.
+#[test]
+fn req_ws_008_a_tree_that_cannot_be_read_at_the_start_of_a_step_halts_the_task() {
+    let rig = Rig::new(effect_tool("a_read", EffectKind::WorkspaceRead, true, true));
+    rig.workspaces.make_unreadable("d");
+
+    let result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+
+    rig.halted_for_the_path(&result, "d");
+    assert!(rig.statuses().is_empty(), "no action was proposed");
+    assert!(rig.persistence.load_steps(rig.task).unwrap().is_empty());
+    assert_eq!(rig.unreadable_events(), [("d".to_owned(), false)]);
+
+    rig.workspaces.make_readable();
+    rig.runtime
+        .resume_task(&rig.session, rig.task, None)
+        .unwrap();
+    let next = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(next.outcome, StepOutcome::Continued, "{next:?}");
+}
+
+/// REQ-WS-008: at the end of a step (an action that is not a write: no snapshot is taken)
+/// the quota check meets a tree that cannot be read: the task halts with the path; the
+/// action, which succeeded, is recorded as it ended.
+#[test]
+fn req_ws_008_a_tree_that_cannot_be_read_at_the_end_of_a_step_halts_the_task() {
+    let rig = Rig::new(effect_tool("a_read", EffectKind::WorkspaceRead, true, true));
+    let workspaces = rig.workspaces.clone();
+    rig.effect(move || workspaces.make_unreadable("d"));
+
+    let result = rig.execute_the_action();
+
+    rig.halted_for_the_path(&result, "d");
+    assert_eq!(rig.statuses(), [ActionStatus::Succeeded]);
+    let steps = rig.persistence.load_steps(rig.task).unwrap();
+    assert_eq!(
+        steps[0].outcome,
+        Some(StepOutcome::Halted),
+        "the step ended"
+    );
+}
+
+/// REQ-WS-004, REQ-APR-008: an approved action whose snapshot cannot be taken because part
+/// of the tree cannot be read is not closed: the task halts with the path, the action stays
+/// approved with its step open, and the resume continues it as it continues any approved
+/// action.
+#[test]
+fn req_ws_004_an_approved_action_continues_after_the_tree_can_be_read_again() {
+    let (definition, _) = classes()
+        .into_iter()
+        .find(|(d, _)| d.name == "an_external_write")
+        .unwrap();
+    let rig = Rig::new(definition);
+    let waited = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(waited.outcome, StepOutcome::Waited);
+    rig.runtime.approve_action(&rig.session, rig.task).unwrap();
+    rig.workspaces.make_unreadable_to_snapshots("d");
+
+    let result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+
+    rig.halted_for_the_path(&result, "d");
+    assert_eq!(rig.calls(), 0);
+    assert!(
+        !rig.action().status.is_terminal(),
+        "the action is not closed: {:?}",
+        rig.action().status
+    );
+
+    rig.workspaces.make_readable();
+    rig.runtime
+        .resume_task(&rig.session, rig.task, None)
+        .unwrap();
+    let next = futures_block(rig.runtime.run_step(rig.task)).unwrap();
+    assert_eq!(next.outcome, StepOutcome::Continued, "{next:?}");
+    assert_eq!(rig.action().status, ActionStatus::Succeeded);
+    assert_eq!(rig.calls(), 1);
 }

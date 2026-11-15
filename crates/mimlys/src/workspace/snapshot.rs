@@ -34,6 +34,18 @@ fn storage(detail: &'static str) -> impl Fn(std::io::Error) -> WorkspaceError {
     }
 }
 
+/// A read of the tree that failed at `path` (relative to the tree; "" is its root): the
+/// error names the path, cleaned of control characters and bounded, so that the task can halt
+/// with the path to restore the permissions of.
+pub(super) fn unreadable(path: &str) -> impl Fn(std::io::Error) -> WorkspaceError + '_ {
+    move |_| WorkspaceError::Unreadable {
+        path: mimlys_core::panic_text::bounded_message(
+            if path.is_empty() { "." } else { path },
+            None,
+        ),
+    }
+}
+
 fn persist(e: mimlys_core::spi::PersistenceError) -> WorkspaceError {
     WorkspaceError::Storage {
         detail: e.to_string(),
@@ -42,12 +54,12 @@ fn persist(e: mimlys_core::spi::PersistenceError) -> WorkspaceError {
 
 /// Hashes a file through a capability handle, streaming.
 fn hash_file(dir: &Dir, rel: &str) -> Result<(Hash, u64), WorkspaceError> {
-    let mut file = dir.open(rel).map_err(storage("open"))?;
+    let mut file = dir.open(rel).map_err(unreadable(rel))?;
     let mut hasher = Sha256::default();
     let mut buf = vec![0u8; 64 * 1024];
     let mut size = 0u64;
     loop {
-        let n = file.read(&mut buf).map_err(storage("read"))?;
+        let n = file.read(&mut buf).map_err(unreadable(rel))?;
         if n == 0 {
             break;
         }
@@ -92,19 +104,17 @@ fn walk(
 ) -> Result<(), WorkspaceError> {
     for entry in dir
         .read_dir(if rel.is_empty() { "." } else { rel })
-        .map_err(storage("walk"))?
+        .map_err(unreadable(rel))?
     {
-        let entry = entry.map_err(storage("walk"))?;
+        let entry = entry.map_err(unreadable(rel))?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let child = join(rel, &name);
         if matcher.is_some_and(|m| is_excluded(m, &child)) {
             continue;
         }
-        let ty = entry.file_type().map_err(storage("walk"))?;
+        let ty = entry.file_type().map_err(unreadable(&child))?;
         if ty.is_symlink() {
-            let target = dir
-                .read_link_contents(&child)
-                .map_err(storage("read_link"))?;
+            let target = dir.read_link_contents(&child).map_err(unreadable(&child))?;
             out.push(Entry::Symlink {
                 path: child,
                 target: target.to_string_lossy().replace('\\', "/"),
@@ -115,7 +125,7 @@ fn walk(
             });
             walk(dir, &child, matcher, out)?;
         } else if ty.is_file() {
-            let meta = entry.metadata().map_err(storage("walk"))?;
+            let meta = entry.metadata().map_err(unreadable(&child))?;
             let (hash, size) = hash_file(dir, &child)?;
             out.push(Entry::File {
                 path: child,
@@ -244,7 +254,7 @@ impl LocalWorkspaces {
             if let Entry::File { path, hash, .. } = entry
                 && !self.files.has_object(hash)
             {
-                let file = dir.open(path).map_err(storage("open"))?;
+                let file = dir.open(path).map_err(unreadable(path))?;
                 self.files.put_object(hash, file).map_err(persist)?;
             }
         }

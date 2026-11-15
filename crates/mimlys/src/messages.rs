@@ -70,6 +70,10 @@ pub fn task_created(id: &str, state: &TaskState) -> String {
 pub fn task_state(id: &str, state: &TaskState) -> String {
     format!("task {id}: {}", state_text(state))
 }
+/// The path a task halted `workspace_unreadable` is waiting for: the remedy, naming it.
+pub fn unreadable_line(path: &str) -> String {
+    format!("workspace path that could not be read: {path}; restore its permissions, then resume")
+}
 /// The human reading of a state.
 pub fn state_text(state: &TaskState) -> String {
     match state {
@@ -116,6 +120,9 @@ pub fn halt_text(reason: HaltReason) -> &'static str {
             "an action that cannot be undone did not finish by itself (the runtime stopped, it was interrupted, or it reached a limit), so what it did is unknown; check before resuming"
         }
         HaltReason::WorkspaceQuota => "the workspace quota was reached",
+        HaltReason::WorkspaceUnreadable => {
+            "part of the workspace could not be read; restore its permissions, then resume"
+        }
         HaltReason::BackendUnavailable => {
             "the model backend could not be reached; check the backend and resume"
         }
@@ -1014,6 +1021,9 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         lines.push(format!("forked    from task {source}"));
     }
     lines.push(footprint_line(&view.footprint));
+    if let Some(path) = &view.unreadable {
+        lines.push(unreadable_line(path));
+    }
     for a in &view.unknown_actions {
         lines.push(unknown_action_line(
             &a.action_id.to_string(),

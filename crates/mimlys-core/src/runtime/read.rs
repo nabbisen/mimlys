@@ -11,10 +11,11 @@ use super::RuntimeError;
 use super::control::{TaskView, UnknownAction};
 use crate::action::ActionStatus;
 use crate::clock::{Clock, Instant};
+use crate::event::Event;
 use crate::ids::TaskId;
 use crate::snapshot::{Footprint, Promotion, PromotionPlan, SnapshotRecord};
 use crate::spi::{Metrics, PersistenceRead, PositionedEvent, TaskSummary, WorkspaceRead};
-use crate::task::{PendingItem, Task, TaskState, WaitKind};
+use crate::task::{HaltReason, PendingItem, Task, TaskState, WaitKind};
 use std::sync::Arc;
 
 pub(super) fn load_task(
@@ -115,6 +116,12 @@ pub(super) fn get_task(
             effect: a.content().effect().kind,
         })
         .collect();
+    let unreadable = match task.state {
+        TaskState::Halted {
+            halt_reason: HaltReason::WorkspaceUnreadable,
+        } => unreadable_path(persistence, task_id)?,
+        _ => None,
+    };
     Ok(TaskView {
         task,
         pending_approval,
@@ -125,7 +132,29 @@ pub(super) fn get_task(
         promotions,
         footprint,
         unknown_actions,
+        unreadable,
     })
+}
+
+/// The path of the task's last `workspace.unreadable` event.
+fn unreadable_path(
+    persistence: &dyn PersistenceRead,
+    task_id: TaskId,
+) -> Result<Option<String>, RuntimeError> {
+    let mut found = None;
+    let mut position = 0;
+    loop {
+        let page = persistence.events_since(position, Some(task_id), 1_000)?;
+        let Some(last) = page.last() else {
+            return Ok(found);
+        };
+        position = last.position;
+        for event in &page {
+            if let Event::WorkspaceUnreadable { path } = &event.record.event {
+                found = Some(path.clone());
+            }
+        }
+    }
 }
 
 /// Tasks `running` and tasks waiting for the user, with what they wait for.
