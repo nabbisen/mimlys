@@ -9,7 +9,11 @@ use mimlys_core::clock::Clock;
 use mimlys_core::task::Extension;
 
 /// `task show`.
-pub fn show(app: &ReadApp, task: &str, out: &Output) -> Result<(), AppError> {
+///
+/// With `arguments`, the action waiting for approval is followed by every one
+/// of its arguments in full, sanitized (REQ-APR-002); the JSON always carries
+/// them, in `pending_approval.arguments`.
+pub fn show(app: &ReadApp, task: &str, arguments: bool, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     let view = app.reader.get_task(id)?;
     for line in messages::show_lines(&view) {
@@ -18,6 +22,13 @@ pub fn show(app: &ReadApp, task: &str, out: &Output) -> Result<(), AppError> {
     if let Some(approval) = &view.pending_approval {
         out.line("");
         out.line(crate::prompt::approval_text(approval, None).trim_end_matches('\n'));
+        if arguments {
+            out.line("");
+            out.line(crate::prompt::arguments_in_full(approval));
+        }
+    } else if arguments {
+        out.line("");
+        out.line(messages::NO_ARGUMENTS_TO_SHOW);
     }
     if let Some(question) = &view.pending_question {
         out.line("");
