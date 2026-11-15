@@ -158,6 +158,44 @@ fn req_pers_007_recovery_plan_table() {
     );
 }
 
+/// REQ-PERS-007 (external design §16.3): a task found `recovering` is planned like a
+/// running one, for the action still `running` and for the one an earlier pass marked
+/// `unknown`; any other state has no plan.
+#[test]
+fn req_pers_007_a_task_found_recovering_has_the_plan_of_a_running_one() {
+    let running = running_task();
+    let mut recovering = running.clone();
+    recovering.state = TaskState::Recovering;
+    let on = Recovery { auto_resume: true };
+    let snap = SnapshotId::new(&ScriptedIds::starting_at(77));
+    let write = running_action(&running, EffectKind::WorkspaceWrite, true, false);
+    let mut marked = write.clone();
+    marked.status = ActionStatus::Unknown;
+    for action in [None, Some(&write), Some(&marked)] {
+        assert_eq!(
+            plan_recovery(&recovering, action, &on, Some(snap)),
+            plan_recovery(&running, action, &on, Some(snap)),
+            "{action:?}"
+        );
+        assert!(plan_recovery(&recovering, action, &on, Some(snap)).is_some());
+    }
+    let external = running_action(&running, EffectKind::ExternalWrite, false, false);
+    let mut marked = external.clone();
+    marked.status = ActionStatus::Unknown;
+    let plan = plan_recovery(&recovering, Some(&marked), &on, Some(snap)).unwrap();
+    assert_eq!(plan.disposition, RecoveryDisposition::UnknownOutcome);
+    for state in [
+        TaskState::Paused,
+        TaskState::Halted {
+            halt_reason: HaltReason::Recovered,
+        },
+    ] {
+        let mut other = running.clone();
+        other.state = state;
+        assert_eq!(plan_recovery(&other, None, &on, None), None);
+    }
+}
+
 /// REQ-CLI-005, REQ-PERS-007 (handoff 010e-3): the stop signal and recovery agree
 /// on what is done, not only on which actions. For every effect kind and every
 /// flag, `can_be_undone` is true exactly when the plan for a running action of

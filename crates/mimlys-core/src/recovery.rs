@@ -20,7 +20,7 @@ pub struct ActionRecovery {
     pub restore_snapshot: Option<SnapshotId>,
 }
 
-/// The plan for one task found `running` at startup.
+/// The plan for one task found `running` or `recovering` at startup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryPlan {
     /// The in-flight action to mark `unknown`, if any.
@@ -31,7 +31,12 @@ pub struct RecoveryPlan {
     pub outcome: TaskInput,
 }
 
-/// Plans recovery for a task; `None` when the task was not running.
+/// Plans recovery for a task; `None` when the task was neither running nor
+/// recovering. A task found `recovering` (the process ended during recovery,
+/// §16.3) is planned from the start, like a running one: `running_action` is the
+/// action still `running`, or else the one an earlier pass already marked
+/// `unknown`; every step of the plan is repeatable (the restore, the mark, the
+/// record).
 /// Rules (REQ-PERS-007): no action in flight → `recovered`, resumable by
 /// policy; a reversible effect → restore its snapshot, then `recovered`,
 /// resumable by policy only when a snapshot was restored (M3) or nothing
@@ -43,7 +48,7 @@ pub fn plan_recovery(
     recovery: &Recovery,
     snapshot_before: Option<SnapshotId>,
 ) -> Option<RecoveryPlan> {
-    if task.state != TaskState::Running {
+    if !matches!(task.state, TaskState::Running | TaskState::Recovering) {
         return None;
     }
     let Some(action) = running_action else {
@@ -56,7 +61,10 @@ pub fn plan_recovery(
             },
         });
     };
-    debug_assert_eq!(action.status, ActionStatus::Running);
+    debug_assert!(matches!(
+        action.status,
+        ActionStatus::Running | ActionStatus::Unknown
+    ));
     let rule = after_unknown(action.content().effect());
     let (disposition, resume, reason, restore) = match rule {
         AfterUnknown::RedoPermitted => (

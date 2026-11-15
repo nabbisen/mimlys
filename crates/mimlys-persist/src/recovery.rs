@@ -1,12 +1,13 @@
 //! Applying recovery at startup (external design §16.3; REQ-PERS-007):
 //! every task found `running` goes through `recovering`, its in-flight
 //! action becomes `unknown`, and the plan of `mimlys_core::recovery`
-//! decides whether the task halts or, by policy, runs again. Expired
+//! decides whether the task halts or, by policy, runs again. A task found
+//! `recovering` is recovered again, every step repeatable. Expired
 //! approvals and questions halt their tasks.
 
 use crate::snapshots::{JournalReport, SnapshotFiles};
 use crate::sqlite::Store;
-use mimlys_core::action::ActionInput;
+use mimlys_core::action::{ActionInput, ActionStatus};
 use mimlys_core::approval::ApprovalRequest;
 use mimlys_core::clock::Instant;
 use mimlys_core::event::{Actor, ApprovalDecision, Event, EventRecord, RecoveryDisposition};
@@ -66,46 +67,47 @@ fn state_changed(from: &Task, to: &Task) -> Event {
     }
 }
 
-/// Recovers every task found `running`, then processes expired user items.
+/// Recovers every task found `running` or `recovering`, then processes expired user items.
+///
+/// A task found `recovering` is a recovery the process did not finish (a crash, an interrupt,
+/// §16.3): it is recovered again from the start. Each step can be repeated: the restore of the
+/// snapshot, the mark of the action (the action is marked only when it is still `running`), and
+/// `task.recovered`, which is recorded once. The restore comes before the mark, so that an
+/// action found `unknown` in a `recovering` task always had its restore done or tried again.
 pub fn recover_all(
     store: &Store,
     ctx: &RecoveryContext<'_>,
     workspaces: &dyn mimlys_core::spi::WorkspaceProvider,
 ) -> Result<Vec<Recovered>, PersistenceError> {
     let mut out = Vec::new();
-    for task_id in store.tasks_in_state("running")? {
+    let mut found = store.tasks_in_state("recovering")?;
+    found.extend(store.tasks_in_state("running")?);
+    for task_id in found {
         let Some(task) = store.load_task(task_id)? else {
             continue;
         };
-        let running = store.load_running_action(task_id)?;
-        let snapshot_before = running.as_ref().and_then(|a| a.snapshot_before);
-        let Some(mut plan) = plan_recovery(&task, running.as_ref(), &ctx.recovery, snapshot_before)
+        let mut in_flight = store.load_running_action(task_id)?;
+        if in_flight.is_none() && task.state == TaskState::Recovering {
+            in_flight = store.load_marked_by_recovery(task_id)?;
+        }
+        let snapshot_before = in_flight.as_ref().and_then(|a| a.snapshot_before);
+        let Some(mut plan) =
+            plan_recovery(&task, in_flight.as_ref(), &ctx.recovery, snapshot_before)
         else {
             continue;
         };
-        let recovering = task
-            .transition(TaskInput::StartRecovery, ctx.now)
-            .map_err(state_error)?;
-        store.record_task_transition(
-            &recovering,
-            &ctx.event(&recovering, state_changed(&task, &recovering)),
-        )?;
-        if let (Some(action), Some(_)) = (running, &plan.action) {
-            let unknown = action
-                .transition(ActionInput::MarkUnknown, ctx.now)
-                .map_err(|e| PersistenceError::Ordering {
-                    detail: e.to_string(),
-                })?;
-            let mut event = ctx.event(
+        let recovering = if task.state == TaskState::Recovering {
+            task
+        } else {
+            let recovering = task
+                .transition(TaskInput::StartRecovery, ctx.now)
+                .map_err(state_error)?;
+            store.record_task_transition(
                 &recovering,
-                Event::ActionFinished {
-                    status: "unknown".into(),
-                    cause: None,
-                },
-            );
-            event.action_id = Some(unknown.action_id);
-            store.record_action_terminal(&unknown, &event)?;
-        }
+                &ctx.event(&recovering, state_changed(&task, &recovering)),
+            )?;
+            recovering
+        };
         // M3 (REQ-PERS-007): a reversible write found running is restored to its
         // pre-execution snapshot; a restore that fails leaves the outcome unknown.
         if let Some(recovery) = &plan.action
@@ -137,12 +139,33 @@ pub fn recover_all(
                 }
             }
         }
-        store.append_event(&ctx.event(
-            &recovering,
-            Event::TaskRecovered {
-                disposition: plan.disposition,
-            },
-        ))?;
+        // Only an action still `running` is marked: one an earlier pass marked stays as it is.
+        if let (Some(action), Some(_)) = (in_flight, &plan.action)
+            && action.status == ActionStatus::Running
+        {
+            let unknown = action
+                .transition(ActionInput::MarkUnknown, ctx.now)
+                .map_err(|e| PersistenceError::Ordering {
+                    detail: e.to_string(),
+                })?;
+            let mut event = ctx.event(
+                &recovering,
+                Event::ActionFinished {
+                    status: "unknown".into(),
+                    cause: None,
+                },
+            );
+            event.action_id = Some(unknown.action_id);
+            store.record_action_terminal(&unknown, &event)?;
+        }
+        if !store.recovered_recorded(task_id)? {
+            store.append_event(&ctx.event(
+                &recovering,
+                Event::TaskRecovered {
+                    disposition: plan.disposition,
+                },
+            ))?;
+        }
         let after = recovering
             .transition(plan.outcome.clone(), ctx.now)
             .map_err(state_error)?;
@@ -370,5 +393,7 @@ fn state_error(e: mimlys_core::task::StateError) -> PersistenceError {
 /// Exposed for tests: an approval request type path.
 pub type Approval = ApprovalRequest;
 
+#[cfg(test)]
+mod found_recovering_tests;
 #[cfg(test)]
 mod tests;

@@ -12,7 +12,7 @@
 //!   for the lock and never holds it while it reads; a writer that starts at
 //!   that instant retries within LIM-O3 as it does for any other holder;
 //! - whether a store needs recovery: the lock is free and a task is still
-//!   `running` ([`ReadStore::recovery_pending`]), the very condition the
+//!   `running` or `recovering` ([`ReadStore::recovery_pending`]), the very condition the
 //!   writer's recovery acts on;
 //! - the schema: newer than this runtime knows is refused with the reason,
 //!   older is `migration pending`, neither is migrated.
@@ -179,14 +179,16 @@ impl ReadStore {
     }
 
     /// Whether the store needs recovery: nobody holds the lock and a task is
-    /// still `running` or a snapshot journal is pending, which the next
+    /// still `running` or `recovering` or a snapshot journal is pending, which the next
     /// command that writes recovers (external design §16.3; REQ-WS-012).
     /// What is committed is read as it stands; nothing is removed.
     pub fn recovery_pending(&self) -> Result<bool, PersistenceError> {
         if self.lock != LockState::Free {
             return Ok(false);
         }
-        if !self.tasks_in_state("running")?.is_empty() {
+        if !self.tasks_in_state("running")?.is_empty()
+            || !self.tasks_in_state("recovering")?.is_empty()
+        {
             return Ok(true);
         }
         Ok(
