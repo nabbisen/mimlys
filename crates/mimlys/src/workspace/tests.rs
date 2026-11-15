@@ -972,6 +972,67 @@ mod snapshots {
         assert!(!fx.scope.path().join(".git/hooks/file").exists());
     }
 
+    /// A Windows junction at `link` to the directory `target` (no privilege is needed).
+    #[cfg(windows)]
+    fn make_junction(link: &Path, target: &Path) {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// REQ-WS-005, REQ-WS-007 (Windows): a junction in the project, like a link, is never a
+    /// parent of a path the promotion writes: the plan is refused and names it, and nothing is
+    /// written behind it.
+    #[cfg(windows)]
+    #[test]
+    fn req_ws_007_a_path_below_a_junction_in_the_project_is_refused_at_plan_time() {
+        let fx = Fx::new();
+        let hooks = fx.scope.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        make_junction(&fx.scope.path().join("hk"), &hooks);
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "hk/pre-commit", "#!/bin/sh\n");
+        let err = fx.plan(&base.record).unwrap_err();
+        let WorkspaceError::Refused { reason } = &err else {
+            panic!("{err:?}")
+        };
+        assert!(reason.contains("hk"), "{reason}");
+        assert!(!hooks.join("pre-commit").exists());
+    }
+
+    /// REQ-WS-005, REQ-WS-007 (Windows): a parent that became a junction after the plan is not
+    /// written through either: the apply checks each parent as it writes.
+    #[cfg(windows)]
+    #[test]
+    fn req_ws_007_a_parent_that_became_a_junction_is_not_written_through() {
+        let fx = Fx::new();
+        let hooks = fx.scope.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "newdir/file", "content");
+        let plan = fx.plan(&base.record).unwrap();
+        let project = fx.scope.path().to_path_buf();
+        fx.on_apply(move |path| {
+            if path == "newdir/file" {
+                std::fs::remove_dir(project.join("newdir")).unwrap();
+                make_junction(&project.join("newdir"), &project.join(".git/hooks"));
+            }
+            Ok(())
+        });
+        let err = fx.promote(&plan, &base.record).unwrap_err();
+        assert!(matches!(err, WorkspaceError::Refused { .. }), "{err:?}");
+        assert!(!hooks.join("file").exists());
+    }
+
     /// REQ-WS-007: a directory replaced by a file, a file replaced by a directory, and (Unix) a
     /// directory replaced by a link are applied, and reversed.
     #[test]
