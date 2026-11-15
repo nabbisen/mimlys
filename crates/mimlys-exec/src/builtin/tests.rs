@@ -522,11 +522,15 @@ async fn req_tool_003_a_read_is_bounded_by_the_file_size_limit() {
 
 #[cfg(unix)]
 mod special_files {
-    use rustix::fs::{CWD, FileType, Mode, mknodat};
     use std::time::Duration;
 
+    /// A named pipe, made by the system's own command (every Unix has it).
     pub(super) fn make_fifo(path: &std::path::Path) {
-        mknodat(CWD, path, FileType::Fifo, Mode::from_raw_mode(0o600), 0).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .expect("mkfifo runs");
+        assert!(status.success(), "mkfifo");
     }
 
     /// Runs `body` on a thread of its own, with a runtime of its own that is dropped on that
