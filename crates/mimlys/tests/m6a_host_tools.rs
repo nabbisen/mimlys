@@ -374,6 +374,59 @@ fn req_tool_006_a_slow_tree_kill_after_the_deadline_still_records_deadline() {
     );
 }
 
+/// REQ-TOOL-006 (handoff 011n item 10): a worker that is still silent when the
+/// runtime's budget runs out, after the tool's deadline has passed (here the
+/// tree takes 6 s to end, past the 4 s the budget allows after the deadline), is
+/// ended by the runtime and the action is recorded `deadline` with the note in
+/// the log, and not `worker_died`; the next action gets a worker again.
+#[test]
+fn req_tool_006_a_worker_ended_after_the_deadline_is_recorded_deadline() {
+    let test = "req_tool_006_a_worker_ended_after_the_deadline_is_recorded_deadline";
+    let env = Env::new(
+        &[quick(&["setsid-sleep", "7102"]), probe(&["ok"]), complete()],
+        "[logging]\nlevel = \"debug\"\n",
+    )
+    .env("MIMLYS_PROBE_TREE_KILL_DELAY_MS", "6000");
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("tier {tier}"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, stdout, log) = env.run(&[
+        "--json",
+        "run",
+        "worker ended after the deadline",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:quick",
+        "--grant",
+        "host_tool:probe",
+    ]);
+    kill_sleepers("7102");
+    assert_eq!(code, 0, "{stdout}\n{log}");
+    let value: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(
+        obs[0]["payload"]["termination"], "deadline",
+        "recorded as the deadline, not as a lost worker:\n{log}"
+    );
+    assert!(
+        log.contains("the worker did not answer within 14000 ms")
+            && log.contains("recorded as deadline"),
+        "the note is in the log:\n{log}"
+    );
+    assert!(
+        !log.contains("worker_died"),
+        "no lost worker is reported:\n{log}"
+    );
+    // The next action is served by a new worker.
+    assert_eq!(obs.len(), 2, "{}", obs.len());
+    assert_eq!(stdout_of(&obs[1]).trim(), "ok");
+}
+
 /// REQ-CONF-009 / RFC 011 §2 (K): a tool that `setsid`s a child and sleeps
 /// is terminated with its whole tree when the task is cancelled, within LIM-O2.
 /// REQ-CLI-005 (second signal): two stop signals to `mimlys run` cancel the task

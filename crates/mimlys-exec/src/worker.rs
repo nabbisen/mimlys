@@ -970,7 +970,8 @@ fn deadline_fault(started: Instant, note: &str) -> ExecutionOutcome {
     ExecutionOutcome {
         termination: Termination::Deadline,
         failure: FailureCause::from_termination(&Termination::Deadline),
-        payload: serde_json::Value::Null,
+        // The payload a worker's own record of a deadline carries.
+        payload: serde_json::json!({ "termination": "deadline" }),
         stdout: Vec::new(),
         stderr: Vec::new(),
         notices: Vec::new(),
