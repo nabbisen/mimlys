@@ -79,9 +79,9 @@ use windows_sys::Win32::Security::{
     AddAce, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
     GetLengthSid, GetSecurityDescriptorControl, INHERIT_ONLY_ACE, INHERITED_ACE, InitializeAcl,
     NO_INHERITANCE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
-    SECURITY_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TokenOwner, TokenUser,
-    UNPROTECTED_DACL_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERITED,
+    SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TokenOwner,
+    TokenUser, UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
@@ -871,8 +871,12 @@ pub fn check_owner_of(path: &Path) -> Result<(), String> {
 /// Whether the directory's DACL is already the one `protect_to_current_user`
 /// writes: protected, one explicit allow entry, for this SID, inheritable.
 /// Reading is cheap; a write propagates to everything beneath the directory,
-/// so it is not repeated when nothing changed.
-fn is_private_to(dir: &Dir, sid: &[u8]) -> Result<bool, String> {
+/// so it is not repeated when nothing changed. With `auto_inherited` the
+/// descriptor must also be marked auto-inherited, as every write through the
+/// security interface marks it: without the mark the entries a child inherits
+/// do not carry the inherited flag, which the permission code (and `icacls`)
+/// tells inherited entries by.
+fn is_private_to(dir: &Dir, sid: &[u8], auto_inherited: bool) -> Result<bool, String> {
     let dacl = read_dacl(dir)?;
     if dacl.acl.is_null() {
         return Ok(false);
@@ -882,7 +886,10 @@ fn is_private_to(dir: &Dir, sid: &[u8]) -> Result<bool, String> {
     // SAFETY: the descriptor lives in `dacl`; both out pointers are valid.
     let read_control =
         unsafe { GetSecurityDescriptorControl(dacl.descriptor, &mut control, &mut revision) };
-    if read_control == 0 || control & SE_DACL_PROTECTED == 0 {
+    if read_control == 0
+        || control & SE_DACL_PROTECTED == 0
+        || (auto_inherited && control & SE_DACL_AUTO_INHERITED == 0)
+    {
         return Ok(false);
     }
     let mut info = ACL_SIZE_INFORMATION {
@@ -928,7 +935,7 @@ fn is_private_to(dir: &Dir, sid: &[u8]) -> Result<bool, String> {
 /// Whether the directory is the one `create_protected_dir` makes (tests).
 pub fn is_private_to_current_user(path: &Path) -> Result<bool, String> {
     let sid = current_user_sid()?;
-    is_private_to(&Dir::open(path)?, &sid)
+    is_private_to(&Dir::open(path)?, &sid, false)
 }
 
 /// Gives the directory a protected DACL with one entry: the current user,
@@ -952,7 +959,7 @@ pub fn protect_to_current_user(path: &Path) -> Result<(), AclError> {
 
 /// The write of [`protect_to_current_user`], under the directory's lock.
 fn protect_locked(dir: &Dir, sid: &[u8]) -> Result<(), String> {
-    if is_private_to(dir, sid)? {
+    if is_private_to(dir, sid, true)? {
         return Ok(());
     }
     // A specific mask, not GENERIC_ALL: the system turns an inheritable
@@ -989,8 +996,10 @@ fn protect_locked(dir: &Dir, sid: &[u8]) -> Result<(), String> {
 /// it).
 pub fn create_protected_dir(path: &Path) -> Result<(), AclError> {
     let sid = current_user_sid()?;
-    // Protected (`P`), one allow entry for the user, full access (`FA`), for the directory and what is created beneath (`OICI`).
-    let sddl = format!("D:P(A;OICI;FA;;;{})", super::sid_string(&sid));
+    // Protected and auto-inherited (`PAI`: the children's inherited entries carry the
+    // inherited flag, as after a write through the security interface), one allow entry
+    // for the user, full access (`FA`), for the directory and what is created beneath (`OICI`).
+    let sddl = format!("D:PAI(A;OICI;FA;;;{})", super::sid_string(&sid));
     let sddl_w = wide(Path::new(&sddl));
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     // SAFETY: the string is null-terminated UTF-16; the out pointer is valid; `descriptor` receives an allocation freed below.
