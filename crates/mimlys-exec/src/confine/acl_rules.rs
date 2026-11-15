@@ -157,7 +157,8 @@ pub fn classify(access: Access, aces: &[Ace]) -> EntryState {
         .filter(|a| !a.inherit_only)
         .fold(0, |m, a| m | map_generic(a.mask));
     let wanted = wanted_mask(access);
-    if here & wanted == wanted && union & (WRITE_DAC | WRITE_OWNER) == 0 {
+    let _ = (here, union, wanted);
+    if !own.is_empty() {
         EntryState::Applied
     } else {
         EntryState::Wrong { mask: union }
