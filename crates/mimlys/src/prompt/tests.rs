@@ -84,66 +84,6 @@ fn req_cli_002_template_and_options() {
     assert_eq!(t.approve(&req, None), Decision::Leave);
 }
 
-/// The grant syntax of the prompt and the command line.
-#[test]
-fn grant_syntax() {
-    assert_eq!(
-        parse_grant("tool:read_file").unwrap(),
-        GrantKind::Tool {
-            name: "read_file".into()
-        }
-    );
-    assert_eq!(
-        parse_grant("host_tool cargo_test").unwrap(),
-        GrantKind::HostTool {
-            name: "cargo_test".into()
-        }
-    );
-    // Reserved kinds and the gateway by name are refused with the reason (external design §9.1).
-    assert_eq!(
-        parse_grant("host_read /home/u/docs"),
-        Err(crate::config::HOST_PATH_GRANTS_RESERVED)
-    );
-    assert_eq!(
-        parse_grant("tool run_host_tool"),
-        Err(mimlys_core::host_tool::RUN_HOST_TOOL_NOT_A_GRANT)
-    );
-    assert_eq!(
-        parse_grant("network:example.com:8443").unwrap(),
-        GrantKind::Network {
-            domains: vec!["example.com".into()],
-            ports: vec![8443]
-        }
-    );
-    assert_eq!(
-        parse_grant("network example.com").unwrap(),
-        GrantKind::Network {
-            domains: vec!["example.com".into()],
-            ports: vec![]
-        }
-    );
-    assert!(parse_grant("tool").is_err());
-    assert!(parse_grant("magic wand").is_err());
-}
-
-/// REQ-APR-010: a question is quoted, and an empty answer is not accepted.
-#[test]
-fn req_apr_010_question_prompt() {
-    let ids = ScriptedIds::default();
-    let q = Question::ask(
-        mimlys_core::ids::QuestionId::new(&ids),
-        TaskId::new(&ids),
-        mimlys_core::ids::StepId::new(&ids),
-        "Which\nbranch?",
-        Instant::from_unix_millis(0).unwrap(),
-        None,
-    );
-    let text = question_text(&q);
-    assert!(text.contains("\"Which\\nbranch?\""));
-    let mut t = terminal("\nmain\n");
-    assert_eq!(t.answer(&q), Some("main".into()));
-}
-
 /// A prompt over a queue that a stop can be put to, with nothing read.
 fn queued() -> (
     Terminal<Queue, Vec<u8>>,
@@ -239,4 +179,64 @@ fn req_cli_005_a_scripted_channel_has_no_stop_handle() {
         answer: String::new(),
     };
     assert!(scripted.stop_handle().is_none());
+}
+
+/// The grant syntax of the prompt and the command line.
+#[test]
+fn grant_syntax() {
+    assert_eq!(
+        parse_grant("tool:read_file").unwrap(),
+        GrantKind::Tool {
+            name: "read_file".into()
+        }
+    );
+    assert_eq!(
+        parse_grant("host_tool cargo_test").unwrap(),
+        GrantKind::HostTool {
+            name: "cargo_test".into()
+        }
+    );
+    // Reserved kinds and the gateway by name are refused with the reason (external design §9.1).
+    assert_eq!(
+        parse_grant("host_read /home/u/docs"),
+        Err(crate::config::HOST_PATH_GRANTS_RESERVED)
+    );
+    assert_eq!(
+        parse_grant("tool run_host_tool"),
+        Err(mimlys_core::host_tool::RUN_HOST_TOOL_NOT_A_GRANT)
+    );
+    assert_eq!(
+        parse_grant("network:example.com:8443").unwrap(),
+        GrantKind::Network {
+            domains: vec!["example.com".into()],
+            ports: vec![8443]
+        }
+    );
+    assert_eq!(
+        parse_grant("network example.com").unwrap(),
+        GrantKind::Network {
+            domains: vec!["example.com".into()],
+            ports: vec![]
+        }
+    );
+    assert!(parse_grant("tool").is_err());
+    assert!(parse_grant("magic wand").is_err());
+}
+
+/// REQ-APR-010: a question is quoted, and an empty answer is not accepted.
+#[test]
+fn req_apr_010_question_prompt() {
+    let ids = ScriptedIds::default();
+    let q = Question::ask(
+        mimlys_core::ids::QuestionId::new(&ids),
+        TaskId::new(&ids),
+        mimlys_core::ids::StepId::new(&ids),
+        "Which\nbranch?",
+        Instant::from_unix_millis(0).unwrap(),
+        None,
+    );
+    let text = question_text(&q);
+    assert!(text.contains("\"Which\\nbranch?\""));
+    let mut t = terminal("\nmain\n");
+    assert_eq!(t.answer(&q), Some("main".into()));
 }
