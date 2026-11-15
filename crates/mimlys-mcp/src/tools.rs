@@ -19,6 +19,7 @@ use mimlys_core::validate::AuthorizedAction;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// What `status` shows per server (RFC 009 §8).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -254,8 +255,16 @@ impl McpTools {
             .map(|s| (s, tool))
     }
 
-    /// Maps a call outcome to the execution outcome the loop records.
-    fn map_outcome(&self, name: &str, outcome: CallOutcome, wall_ms: i64) -> ExecutionOutcome {
+    /// Maps a call outcome to the execution outcome the loop records. The
+    /// validation of a result runs on a thread of its own, within `remaining`,
+    /// the time the call's deadline has left.
+    async fn map_outcome(
+        &self,
+        name: &str,
+        outcome: CallOutcome,
+        wall_ms: i64,
+        remaining: Duration,
+    ) -> ExecutionOutcome {
         let metrics = ExecutionMetrics {
             wall_ms,
             ..ExecutionMetrics::default()
@@ -271,15 +280,7 @@ impl McpTools {
                 metrics: metrics.clone(),
             };
         match outcome {
-            CallOutcome::Timeout => ExecutionOutcome {
-                termination: Termination::Deadline,
-                failure: Some(FailureCause::Timeout),
-                payload: Value::Null,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-                notices: vec![],
-                metrics,
-            },
+            CallOutcome::Timeout => self.map_outcome_timeout(metrics),
             CallOutcome::Cancelled | CallOutcome::Killed => ExecutionOutcome {
                 termination: Termination::Cancelled,
                 failure: None,
@@ -375,15 +376,38 @@ impl McpTools {
                     };
                     return failed(FailureCause::ToolError { detail }, payload, notices);
                 }
-                if let Some(output) = self.imported.get(name).and_then(|i| i.output.as_ref())
-                    && let Err(v) = output.validate(&payload)
-                {
-                    tracing::warn!(target: "mimlys_mcp", tool = name, "{v}");
-                    return failed(
-                        FailureCause::OutputInvalid,
-                        json!({ "path": v.path, "reason": v.reason }),
-                        notices,
-                    );
+                if let Some(output) = self.imported.get(name).and_then(|i| i.output.clone()) {
+                    if remaining.is_zero() {
+                        // The call's deadline has passed: nothing is checked or passed.
+                        return self.map_outcome_timeout(metrics);
+                    }
+                    // Off the async executor: the walk is bounded by a count of
+                    // visits, but it is CPU work all the same.
+                    let walk = tokio::task::spawn_blocking(move || {
+                        let verdict = output.validate(&payload);
+                        (verdict, payload)
+                    });
+                    match tokio::time::timeout(remaining, walk).await {
+                        Ok(Ok((Ok(()), checked))) => payload = checked,
+                        Ok(Ok((Err(v), _))) => {
+                            tracing::warn!(target: "mimlys_mcp", tool = name, "{v}");
+                            return failed(
+                                FailureCause::OutputInvalid,
+                                json!({ "path": v.path, "reason": v.reason }),
+                                notices,
+                            );
+                        }
+                        // The validation itself failed: the result is not passed.
+                        Ok(Err(_)) => {
+                            return failed(
+                                FailureCause::OutputInvalid,
+                                json!({ "path": "$", "reason": "the result could not be checked" }),
+                                notices,
+                            );
+                        }
+                        // The call's deadline passed while the result was checked.
+                        Err(_) => return self.map_outcome_timeout(metrics),
+                    }
                 }
                 ExecutionOutcome {
                     termination: Termination::Exited { exit_code: 0 },
@@ -395,6 +419,21 @@ impl McpTools {
                     metrics,
                 }
             }
+        }
+    }
+}
+
+impl McpTools {
+    /// What a call that passed its deadline gives.
+    fn map_outcome_timeout(&self, metrics: ExecutionMetrics) -> ExecutionOutcome {
+        ExecutionOutcome {
+            termination: Termination::Deadline,
+            failure: Some(FailureCause::Timeout),
+            payload: Value::Null,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            notices: vec![],
+            metrics,
         }
     }
 }
@@ -554,7 +593,16 @@ impl ToolProvider for McpTools {
                 .await;
             let wall_ms = started.elapsed().as_millis() as i64;
             match outcome {
-                Ok(o) => self.map_outcome(&name, o, wall_ms),
+                Ok(o) => {
+                    let deadline = Duration::from_millis(context.deadline_ms.max(1) as u64);
+                    self.map_outcome(
+                        &name,
+                        o,
+                        wall_ms,
+                        deadline.saturating_sub(started.elapsed()),
+                    )
+                    .await
+                }
                 Err(error) => map_server_error(error, wall_ms),
             }
         })

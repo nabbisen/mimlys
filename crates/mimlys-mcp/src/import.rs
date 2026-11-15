@@ -76,7 +76,7 @@ pub fn import(
         unavailable: None,
     };
     let unavailable = |record: &mut ImportRecord, reason: String| {
-        record.unavailable = Some(reason);
+        record.unavailable = Some(clean_reason(&reason));
     };
     // Description: sanitized, bounded.
     let (clean, _) = sanitize(listed.description.as_deref().unwrap_or(""));
@@ -89,7 +89,8 @@ pub fn import(
             .collect::<String>()
             + "…"
     } else if clean.is_empty() {
-        format!("The external tool {name}.")
+        // The server's name for the tool is cleaned like any text of its own.
+        format!("The external tool {}.", sanitize(&name).0)
     } else {
         clean
     };
@@ -210,9 +211,19 @@ fn convert_input(schema: &Value) -> Result<ParamSchema, String> {
             properties.len()
         ));
     }
+    // Every name is checked before anything is converted, so that no reason
+    // below repeats a name that was not.
+    for (i, name) in properties.keys().enumerate() {
+        if !valid_parameter_name(name) {
+            return Err(format!(
+                "definition_invalid:parameter {} has a name that is not allowed",
+                i + 1
+            ));
+        }
+    }
     let mut params = Vec::new();
-    for (name, prop) in &properties {
-        let ty = convert_param(prop, name, 0)?;
+    for (i, (name, prop)) in properties.iter().enumerate() {
+        let ty = convert_param(prop, name, &format!("parameter {}", i + 1), 0)?;
         let description = prop
             .get("description")
             .and_then(Value::as_str)
@@ -236,7 +247,49 @@ fn convert_input(schema: &Value) -> Result<ParamSchema, String> {
 /// Parameter descriptions are bounded like messages (LIM-I5).
 const LIM_I5_CHARS: usize = mimlys_core::limits::LIM_I5_MESSAGE_CHARS;
 
-fn convert_param(prop: &Value, name: &str, depth: usize) -> Result<ParamType, String> {
+/// The reason a tool is unavailable as it is kept and shown: some of it comes
+/// from the server (a name, a keyword), so it is cleaned like a description and
+/// cut to the same bound as a message (LIM-I5).
+fn clean_reason(reason: &str) -> String {
+    let (clean, _) = sanitize(reason);
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.chars().count() > LIM_I5_CHARS {
+        clean.chars().take(LIM_I5_CHARS - 1).collect::<String>() + "…"
+    } else {
+        clean
+    }
+}
+
+/// The longest a parameter's name may be: as long as a tool's name.
+const PARAMETER_NAME_CHARS: usize = 64;
+
+/// A parameter's name is plain: ASCII letters and digits, `_`, `.` and `-`,
+/// from one to [`PARAMETER_NAME_CHARS`] characters. A name that is anything else
+/// is never shown to the user or the model as it is.
+fn valid_parameter_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= PARAMETER_NAME_CHARS
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// An enumeration value as the model is shown it: cleaned like a description
+/// and cut to the same bound as one (LIM-I5).
+fn clean_enum_value(value: &str) -> String {
+    let (clean, _) = sanitize(value);
+    clean
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(LIM_I5_CHARS)
+        .collect()
+}
+
+/// `at` says where the parameter is for a reason that names no name: its
+/// position in the schema, counted from 1 (`parameter 2`, `parameter 2, field 1`).
+fn convert_param(prop: &Value, name: &str, at: &str, depth: usize) -> Result<ParamType, String> {
     let map = prop
         .as_object()
         .ok_or_else(|| format!("schema_unsupported:{name}:non-object"))?;
@@ -277,12 +330,24 @@ fn convert_param(prop: &Value, name: &str, depth: usize) -> Result<ParamType, St
                     .ok_or_else(|| format!("schema_unsupported:{name}:non-array enum"))?
                     .iter()
                     .map(|v| {
-                        v.as_str().map(str::to_owned).ok_or_else(|| {
+                        v.as_str().map(clean_enum_value).ok_or_else(|| {
                             format!("schema_unsupported:{name}:non-string enum value")
                         })
                     })
                     .collect::<Result<_, _>>()?;
-                ParamType::Enum { values }
+                // Values that cleaning emptied or made equal are one value, or none.
+                let mut kept: Vec<String> = Vec::new();
+                for value in values {
+                    if !value.is_empty() && !kept.contains(&value) {
+                        kept.push(value);
+                    }
+                }
+                if kept.is_empty() {
+                    return Err(format!(
+                        "definition_invalid:{at} has no enumeration value that is allowed"
+                    ));
+                }
+                ParamType::Enum { values: kept }
             } else {
                 ParamType::String {
                     min_chars: uint("minLength").unwrap_or(0),
@@ -335,11 +400,24 @@ fn convert_param(prop: &Value, name: &str, depth: usize) -> Result<ParamType, St
             if properties.len() > LIM_I3_TOOL_PARAMETERS {
                 return Err(format!("too_many_parameters:{name}"));
             }
+            for (i, sub) in properties.keys().enumerate() {
+                if !valid_parameter_name(sub) {
+                    return Err(format!(
+                        "definition_invalid:{at}, field {} has a name that is not allowed",
+                        i + 1
+                    ));
+                }
+            }
             let mut params = Vec::new();
-            for (sub, p) in &properties {
+            for (i, (sub, p)) in properties.iter().enumerate() {
                 params.push(Param {
                     name: sub.clone(),
-                    ty: convert_param(p, &format!("{name}.{sub}"), depth + 1)?,
+                    ty: convert_param(
+                        p,
+                        &format!("{name}.{sub}"),
+                        &format!("{at}, field {}", i + 1),
+                        depth + 1,
+                    )?,
                     optional: !required.contains(sub),
                     description: p
                         .get("description")

@@ -164,3 +164,127 @@ fn rfc_009_unsupported_constructs_are_named() {
             .contains("deeper")
     );
 }
+
+/// A chain of definitions, each with two alternatives that both refer to the
+/// next: no reference is recursive, and the cost doubles at each step.
+fn chain(links: usize) -> Value {
+    let mut defs = serde_json::Map::new();
+    for i in 0..links {
+        defs.insert(
+            format!("d{i}"),
+            json!({"anyOf": [{"$ref": format!("#/$defs/d{}", i + 1)}, {"$ref": format!("#/$defs/d{}", i + 1)}]}),
+        );
+    }
+    defs.insert(format!("d{links}"), json!({"type": "string"}));
+    json!({"type": "object", "properties": {"v": {"$ref": "#/$defs/d0"}}, "$defs": defs})
+}
+
+/// REQ-MCP-006 (handoff 009g, item 3): a schema whose alternatives multiply
+/// through a chain of definitions is refused at parse time, whatever the length
+/// of the chain beyond the point where the cost passes the bound; a short chain,
+/// which costs little, is validated as before.
+#[test]
+fn req_mcp_006_alternatives_that_multiply_are_refused_at_parse() {
+    let refused = OutputSchema::parse(&chain(6)).unwrap_err();
+    assert_eq!(refused.construct, "alternatives too costly to check");
+    assert!(OutputSchema::parse(&chain(2)).is_ok());
+    OutputSchema::parse(&chain(2))
+        .unwrap()
+        .validate(&json!({"v": "text"}))
+        .unwrap();
+    // The same shape written inline, without a reference.
+    let mut inline = json!({"type": "string"});
+    for _ in 0..8 {
+        inline = json!({"oneOf": [inline.clone(), inline]});
+    }
+    assert!(OutputSchema::parse(&inline).is_err());
+    // Alternatives that refer to themselves have no end.
+    let cycle = json!({
+        "type": "object", "properties": {"v": {"$ref": "#/$defs/a"}},
+        "$defs": {"a": {"anyOf": [{"$ref": "#/$defs/a"}, {"type": "string"}]}}
+    });
+    assert_eq!(
+        OutputSchema::parse(&cycle).unwrap_err().construct,
+        "alternatives too costly to check"
+    );
+    // A reference cycle through properties applies to other values and is fine.
+    let tree = json!({
+        "type": "object", "properties": {"v": {"$ref": "#/$defs/node"}},
+        "$defs": {"node": {"type": "object", "properties": {"next": {"anyOf": [{"$ref": "#/$defs/node"}, {"type": "null"}]}}}}
+    });
+    OutputSchema::parse(&tree).unwrap();
+}
+
+/// REQ-MCP-006 (handoff 009g, item 3): a schema larger than the bound on its
+/// nodes, or wider than the bound on the entries of one list, is refused at parse
+/// time; one at the bound is not.
+#[test]
+fn req_mcp_006_a_schema_too_large_or_too_wide_is_refused_at_parse() {
+    let object_of = |count: usize| {
+        let props: serde_json::Map<String, Value> = (0..count)
+            .map(|i| (format!("p{i}"), json!({"type": "string"})))
+            .collect();
+        json!({"type": "object", "properties": props})
+    };
+    OutputSchema::parse(&object_of(MAX_WIDTH)).unwrap();
+    assert_eq!(
+        OutputSchema::parse(&object_of(MAX_WIDTH + 1))
+            .unwrap_err()
+            .construct,
+        "properties wider than the bound"
+    );
+    let enumeration = |count: usize| json!({"enum": (0..count).collect::<Vec<_>>()});
+    OutputSchema::parse(&enumeration(MAX_WIDTH)).unwrap();
+    assert!(OutputSchema::parse(&enumeration(MAX_WIDTH + 1)).is_err());
+    let alternatives = |count: usize| json!({"anyOf": (0..count).map(|_| json!({"type": "string"})).collect::<Vec<_>>()});
+    assert!(OutputSchema::parse(&alternatives(MAX_WIDTH + 1)).is_err());
+    // Within the width, but with more nodes than the bound allows.
+    let big: serde_json::Map<String, Value> = (0..MAX_WIDTH)
+        .map(|i| (format!("o{i}"), object_of(MAX_WIDTH / 8)))
+        .collect();
+    let large = json!({"type": "object", "properties": big});
+    assert_eq!(
+        OutputSchema::parse(&large).unwrap_err().construct,
+        "larger than the bound"
+    );
+}
+
+/// REQ-MCP-006 (handoff 009g, item 3): a validation that would visit more nodes
+/// than the budget ends with the violation that says the schema was too costly,
+/// even when the walk meets the end of the budget inside an alternative, which
+/// would otherwise count as one that did not match; a validation within the
+/// budget gives the verdict it always did.
+#[test]
+fn req_mcp_006_a_validation_has_a_budget_of_visits() {
+    // Eight alternatives, the matching one last: nine visits for each item.
+    let mut alternatives: Vec<Value> = (0..7)
+        .map(|i| json!({"type": "string", "const": format!("other{i}")}))
+        .collect();
+    alternatives.push(json!({"type": "string", "const": "x"}));
+    let schema = OutputSchema::parse(&json!({
+        "type": "array",
+        "items": {"anyOf": alternatives}
+    }))
+    .unwrap();
+    let items = |count: usize| Value::Array(vec![json!("x"); count]);
+    let fits = MAX_VISITS / 9 - 10;
+    schema.validate(&items(fits)).unwrap();
+    let violation = schema.validate(&items(MAX_VISITS)).unwrap_err();
+    assert_eq!(violation.reason, TOO_COSTLY);
+    // The same for a small budget, and for `oneOf` and `allOf`-like walks.
+    let violation = schema.validate_within(&items(100), 50).unwrap_err();
+    assert_eq!(violation.reason, TOO_COSTLY);
+    schema.validate_within(&items(100), 10_000).unwrap();
+    let one_of = OutputSchema::parse(&json!({
+        "type": "array",
+        "items": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+    }))
+    .unwrap();
+    assert_eq!(
+        one_of.validate_within(&items(100), 20).unwrap_err().reason,
+        TOO_COSTLY
+    );
+    // A value that does not conform is still reported as it is within the budget.
+    let wrong = one_of.validate_within(&json!([true]), 20).unwrap_err();
+    assert_ne!(wrong.reason, TOO_COSTLY);
+}
