@@ -96,7 +96,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tools_dir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle"]
 arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
 max_args = 3
 effect = "workspace_write"
@@ -1289,4 +1289,188 @@ fn req_conf_008_first_start_time_is_reported() {
     assert_eq!(code, 0, "{granted}");
     eprintln!("FIRST_START_MS={}", elapsed.as_millis());
     assert!(elapsed < std::time::Duration::from_secs(120), "{elapsed:?}");
+}
+
+// ---------------------------------------------------------------------
+// Handoff 011n (release 0.11, phase 1): the container's rights on the
+// workspaces, the upgrade from the entry of 0.10, the record's refusal.
+// ---------------------------------------------------------------------
+
+/// The container's SID bytes for an installation, from `toolchain list`.
+fn container_sid(env: &Env) -> Vec<u8> {
+    let (_, listed) = env.json(&["toolchain", "list"]);
+    let profile = listed["container"]["profile"].as_str().unwrap().to_owned();
+    mimlys_exec::confine::windows::derive_sid(&profile).expect("the container's SID")
+}
+
+/// REQ-CONF-008, REQ-CONF-006 (A-23, scope of 0.11): a host tool in its task's
+/// workspace creates, writes, appends, renames, replaces, makes read-only and
+/// deletes (read, write, execute and delete are enough for a build), and can
+/// open neither its file, nor its directory, for `WRITE_DAC` or
+/// `WRITE_OWNER`: it cannot change who may reach any task's files. The entry
+/// on the workspaces is the stated mask.
+#[test]
+fn req_conf_008_a_host_tool_cannot_change_the_permissions_of_its_files() {
+    let env = Env::new(
+        &[
+            probe(&["write", "f.txt"]),
+            probe(&["open-rights", "40000", "f.txt"]),
+            probe(&["open-rights", "80000", "f.txt"]),
+            probe(&["open-rights", "1301bf", "f.txt"]),
+            probe(&["open-rights", "40000", "."]),
+            probe(&["open-rights", "80000", "."]),
+            probe(&["fs-cycle", "cycle"]),
+            complete(),
+        ],
+        "",
+    )
+    .ready();
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "try to change the permissions",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 7, "{}", account(&obs));
+    assert_eq!(
+        exit_code_of(&obs[0]),
+        0,
+        "the file is written: {}",
+        account(&obs)
+    );
+    for (index, what) in [
+        (1, "WRITE_DAC on the file"),
+        (2, "WRITE_OWNER on the file"),
+        (4, "WRITE_DAC on the directory"),
+        (5, "WRITE_OWNER on the directory"),
+    ] {
+        assert_eq!(
+            exit_code_of(&obs[index]),
+            3,
+            "{what} is refused: {}",
+            account(&obs)
+        );
+        assert!(
+            stdout_of(&obs[index]).starts_with("refused with"),
+            "{what}: {}",
+            account(&obs)
+        );
+    }
+    assert_eq!(
+        exit_code_of(&obs[3]),
+        0,
+        "the rights it has are open to it: {}",
+        account(&obs)
+    );
+    assert_eq!(stdout_of(&obs[6]).trim(), "cycle ok", "{}", account(&obs));
+    // The entry on the workspaces is the stated one.
+    use mimlys_exec::confine::windows::acl;
+    let sid = container_sid(&env);
+    let workspaces = env.data.path().join("data/workspaces");
+    assert_eq!(
+        acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
+        acl::EntryState::Applied
+    );
+    assert!(acl::has_entry(&workspaces.join("..").join("tmp"), &sid, acl::Access::Write).unwrap());
+}
+
+/// REQ-CONF-008, REQ-CONF-006 (the upgrade): an installation of 0.10 holds the
+/// container's `GENERIC_ALL` entry on the workspaces. The next start does not
+/// count it as applied, replaces it by the stated entry in one write, and says
+/// so in the log; the start after that finds nothing to do and says nothing.
+#[test]
+fn req_conf_008_an_old_wide_entry_is_replaced_at_start() {
+    use mimlys_exec::confine::windows::acl;
+    let env = Env::new(&[], "").ready();
+    let sid = container_sid(&env);
+    let sid_text = {
+        let (_, listed) = env.json(&["toolchain", "list"]);
+        listed["container"]["sid"].as_str().unwrap().to_owned()
+    };
+    let workspaces = env.data.path().join("data/workspaces");
+    let tools = plain(env.tools.path());
+    assert_eq!(
+        acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
+        acl::EntryState::Applied,
+        "the first start wrote the stated entry"
+    );
+    // The entry of 0.10: full control, for the directory and what lies beneath.
+    let planted = Command::new("icacls")
+        .arg(&workspaces)
+        .args(["/grant", &format!("*{sid_text}:(OI)(CI)(F)")])
+        .output()
+        .unwrap();
+    assert!(
+        planted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&planted.stdout)
+    );
+    assert!(
+        matches!(
+            acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
+            acl::EntryState::Wrong { .. }
+        ),
+        "the old entry is not the applied one"
+    );
+    let (code, _, log) = env.run(&["--json", "toolchain", "grant", &tools, "--yes"]);
+    assert_eq!(code, 0, "{log}");
+    assert!(
+        log.contains("replacing the container's permissions on"),
+        "the replacement is in the log:\n{log}"
+    );
+    assert_eq!(
+        acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
+        acl::EntryState::Applied,
+        "replaced by the stated entry"
+    );
+    let (code, _, log) = env.run(&["--json", "toolchain", "grant", &tools, "--yes"]);
+    assert_eq!(code, 0, "{log}");
+    assert!(
+        !log.contains("replacing the container's permissions"),
+        "once, not at every start:\n{log}"
+    );
+}
+
+/// REQ-CONF-008 (A-23): a corrupt permission record stops the start with the
+/// file and the remedy, for a command that writes and for one that reads, and
+/// the file is exactly as it was.
+#[test]
+fn req_conf_008_a_corrupt_record_stops_the_start() {
+    let env = Env::new(&[], "").ready();
+    let record = env.data.path().join("data/toolchain-acls.json");
+    let good = std::fs::read(&record).expect("the first start wrote the record");
+    assert!(!good.is_empty());
+    let corrupt = b"{\"profile\": \"mimlys-x\", \"entries\": [".to_vec();
+    std::fs::write(&record, &corrupt).unwrap();
+    let tools = plain(env.tools.path());
+    for args in [
+        vec!["--json", "toolchain", "grant", tools.as_str(), "--yes"],
+        vec!["--json", "toolchain", "list"],
+        vec!["--json", "status"],
+    ] {
+        let (code, stdout, stderr) = env.run(&args);
+        assert_ne!(code, 0, "{args:?}: {stdout}\n{stderr}");
+        let said = format!("{stdout}\n{stderr}");
+        assert!(said.contains("toolchain-acls.json"), "{args:?}: {said}");
+        assert!(said.contains("Remedy"), "{args:?}: {said}");
+        assert_eq!(
+            std::fs::read(&record).unwrap(),
+            corrupt,
+            "{args:?}: never rewritten"
+        );
+    }
+    // Moved aside, as the message says, the next start goes on.
+    std::fs::rename(&record, record.with_extension("json.bad")).unwrap();
+    let (code, stdout, stderr) = env.run(&["--json", "toolchain", "grant", &tools, "--yes"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        record.is_file(),
+        "the next start records mimlys's own directories again"
+    );
 }

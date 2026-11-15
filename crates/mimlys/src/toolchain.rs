@@ -7,6 +7,9 @@
 //! recorded under the data directory (`toolchain-acls.json`) so that
 //! `revoke` and an uninstall leave the directories as they were. Whether an
 //! entry is in force is read back from the directory, never from the record.
+//! The record is written by a replace (a temporary file, renamed over it),
+//! never in place; a record that is corrupt or cannot be read stops the start
+//! with the file and the remedy named, and is never rewritten.
 //! On Linux and macOS nothing is applied: the kernel takes the paths from
 //! the specification.
 
@@ -86,19 +89,108 @@ const RECORD_FILE: &str = "toolchain-acls.json";
 
 #[cfg_attr(not(windows), allow(dead_code))]
 impl Record {
-    fn load(data_dir: &Path) -> Self {
-        std::fs::read_to_string(data_dir.join(RECORD_FILE))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+    /// The record on disk. A file that does not exist is a new installation
+    /// (an empty record); a file that cannot be read or does not parse is an
+    /// error and is left exactly as it is: it holds what `revoke` needs, and a
+    /// record written over it would forget it (A-23).
+    pub fn load(data_dir: &Path) -> Result<Self, RecordError> {
+        let path = data_dir.join(RECORD_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => {
+                return Err(RecordError::Unreadable {
+                    path,
+                    reason: e.to_string(),
+                });
+            }
+        };
+        serde_json::from_str(&text).map_err(|e| RecordError::Corrupt {
+            path,
+            reason: e.to_string(),
+        })
     }
 
-    fn save(&self, data_dir: &Path) -> Result<(), AppError> {
+    /// Writes the record by a replace: a temporary file beside it, flushed to
+    /// disk, renamed over it, so that a crash leaves the old record or the new
+    /// one, never half of either.
+    pub fn save(&self, data_dir: &Path) -> Result<(), AppError> {
         let text = serde_json::to_string_pretty(self).expect("serializes");
-        std::fs::write(data_dir.join(RECORD_FILE), text).map_err(|e| AppError::Io {
+        write_replacing(&data_dir.join(RECORD_FILE), text.as_bytes()).map_err(|e| AppError::Io {
             detail: format!("cannot write {}: {}", RECORD_FILE, e.kind()),
         })
     }
+}
+
+/// Why the record cannot be used. Both stop the start (external design
+/// §13.5); the text names the file and the remedy.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecordError {
+    /// The file exists and cannot be read.
+    Unreadable {
+        /// The file.
+        path: PathBuf,
+        /// The system's reason.
+        reason: String,
+    },
+    /// The file was read and is not a permission record.
+    Corrupt {
+        /// The file.
+        path: PathBuf,
+        /// What the parser found.
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for RecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecordError::Unreadable { path, reason } => write!(
+                f,
+                "the permission record {} cannot be read ({reason}); mimlys stops here and does not change it. Remedy: make it readable by the current user, or move it aside (rename it to {RECORD_FILE}.bad), then start again",
+                path.display()
+            ),
+            RecordError::Corrupt { path, reason } => write!(
+                f,
+                "the permission record {} is corrupt ({reason}); mimlys stops here and does not change it. Remedy: move it aside (rename it to {RECORD_FILE}.bad) and start again; the permissions already on your directories stay as they are, the next start records mimlys's own directories again, and `mimlys toolchain list` shows which declared paths need `mimlys toolchain grant`",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RecordError {}
+
+/// The record for a start or a read command: the file, or the error that
+/// stops it (nothing is written).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn load_record(data_dir: &Path) -> Result<Record, AppError> {
+    Record::load(data_dir).map_err(|e| AppError::Io {
+        detail: e.to_string(),
+    })
+}
+
+/// Writes `bytes` to `target` by a replace: to a temporary file in the same
+/// directory (named for the process, so two runtimes do not share one), flushed
+/// to disk, then renamed over `target` (an atomic replace on every platform,
+/// `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` on Windows). The temporary
+/// file is removed when any step fails, and `target` is then what it was.
+pub fn write_replacing(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp-{}", std::process::id()));
+    let temp = target.with_file_name(name);
+    let written = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// The installation's container and its record, on Windows; absent elsewhere.
@@ -142,11 +234,12 @@ fn acl_error(e: mimlys_exec::confine::windows::acl::AclError) -> AppError {
 #[cfg(windows)]
 pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Container>, AppError> {
     use mimlys_exec::confine::windows::{acl, ensure_profile, profile_name, sid_string};
+    // First: a record that cannot be used stops the start before anything is changed.
+    let mut record = load_record(data_dir)?;
     let profile = profile_name(data_dir);
     let sid = ensure_profile(&profile).map_err(|e| AppError::Io {
         detail: format!("cannot prepare the AppContainer {profile}: {e}"),
     })?;
-    let mut record = Record::load(data_dir);
     record.profile = profile.clone();
     record.sid = sid_string(&sid);
     let mut wanted: Vec<(PathBuf, Access)> = vec![
@@ -159,14 +252,14 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
         if !path.exists() {
             continue;
         }
-        let applied = acl::has_entry(&path, &sid).map_err(|e| AppError::Io { detail: e })?;
-        if !applied {
-            let mode = match access {
-                Access::Read => acl::Access::Read,
-                Access::Write => acl::Access::Write,
-            };
-            acl::grant(&path, &sid, mode).map_err(acl_error)?;
-        }
+        // The read, the decision and the write are one step under the path's
+        // lock; an entry that is not the wanted one (the `GENERIC_ALL` of 0.10
+        // and earlier on the workspaces) is replaced in the same write.
+        let mode = match access {
+            Access::Read => acl::Access::Read,
+            Access::Write => acl::Access::Write,
+        };
+        acl::ensure_entry(&path, &sid, mode).map_err(acl_error)?;
         let text = normalized(&path);
         if !record.entries.iter().any(|e| same_path(&e.path, &text)) {
             record.entries.push(Entry {
@@ -193,27 +286,30 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
 /// only reads (REQ-PERS-013): the profile's name, its SID derived from the name
 /// (the profile is not created) and the record file as it is. No directory's
 /// permissions are read or changed here; `applied` reads them back one by one.
+/// A record that cannot be used is the error that stops the start, here too.
 /// Returns `None` on other platforms.
 #[cfg(windows)]
-pub fn inspect(data_dir: &Path) -> Option<Container> {
+pub fn inspect(data_dir: &Path) -> Result<Option<Container>, AppError> {
     use mimlys_exec::confine::windows::{derive_sid, profile_name, sid_string};
+    let mut record = load_record(data_dir)?;
     let profile = profile_name(data_dir);
-    let sid = derive_sid(&profile).ok()?;
-    let mut record = Record::load(data_dir);
+    let Ok(sid) = derive_sid(&profile) else {
+        return Ok(None);
+    };
     record.profile = profile.clone();
     record.sid = sid_string(&sid);
-    Some(Container {
+    Ok(Some(Container {
         profile,
         sid_text: record.sid.clone(),
         sid,
         record,
-    })
+    }))
 }
 
 /// Nothing to inspect: Landlock and Seatbelt take the paths from the specification.
 #[cfg(not(windows))]
-pub fn inspect(_data_dir: &Path) -> Option<Container> {
-    None
+pub fn inspect(_data_dir: &Path) -> Result<Option<Container>, AppError> {
+    Ok(None)
 }
 
 /// Nothing to prepare: Landlock and Seatbelt take the paths from the specification.
@@ -222,16 +318,32 @@ pub fn prepare(_data_dir: &Path, _paths: &RuntimePaths<'_>) -> Result<Option<Con
     Ok(None)
 }
 
-/// Whether the directory carries the container's entry now (read back from
-/// the directory). `None` where no entry is needed (not Windows).
+/// Whether the directory carries the container's read entry now (read back
+/// from the directory): an entry of its own with the wanted mask, not one
+/// inherited. `None` where no entry is needed (not Windows).
 #[cfg(windows)]
 pub fn applied(container: &Container, path: &Path) -> Option<bool> {
-    mimlys_exec::confine::windows::acl::has_entry(path, &container.sid).ok()
+    use mimlys_exec::confine::windows::acl;
+    acl::has_entry(path, &container.sid, acl::Access::Read).ok()
 }
 
 /// No entry is needed on this platform.
 #[cfg(not(windows))]
 pub fn applied(_container: &Container, _path: &Path) -> Option<bool> {
+    None
+}
+
+/// Whether the directory carries any entry of its own for the container,
+/// whatever its mask: what `revoke --all` has to find, the old wide entry of
+/// 0.10 and earlier included. `None` where no entry is needed (not Windows).
+#[cfg(windows)]
+pub fn entry_in_force(container: &Container, path: &Path) -> Option<bool> {
+    mimlys_exec::confine::windows::acl::has_any_entry(path, &container.sid).ok()
+}
+
+/// No entry is needed on this platform.
+#[cfg(not(windows))]
+pub fn entry_in_force(_container: &Container, _path: &Path) -> Option<bool> {
     None
 }
 

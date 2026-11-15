@@ -163,3 +163,103 @@ fn req_conf_008_outcome_json_has_the_documented_shape() {
         })
     );
 }
+
+/// REQ-CONF-008 (A-23): a record that is corrupt or cannot be read stops the
+/// start with the file and the remedy named, and the file is left exactly as
+/// it was; no record at all is a new installation; a good one loads.
+#[test]
+fn req_conf_008_a_corrupt_record_stops_the_start_and_is_never_rewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    // Nothing there: a new installation.
+    assert_eq!(Record::load(dir.path()).unwrap(), Record::default());
+    assert!(super::load_record(dir.path()).is_ok());
+    let file = dir.path().join("toolchain-acls.json");
+    // Corrupt: truncated, then not JSON at all, then empty, then JSON of another shape.
+    for bytes in [
+        &b"{\"profile\": \"mimlys-x\", \"entries\": [{\"path\""[..],
+        b"not json",
+        b"",
+        b"{\"profile\": 3}",
+        b"[1, 2]",
+    ] {
+        std::fs::write(&file, bytes).unwrap();
+        let error = Record::load(dir.path()).unwrap_err();
+        assert!(
+            matches!(error, super::RecordError::Corrupt { .. }),
+            "{error:?}"
+        );
+        let app = super::load_record(dir.path()).unwrap_err();
+        let text = app.to_string();
+        assert!(
+            text.contains("toolchain-acls.json"),
+            "names the file: {text}"
+        );
+        assert!(text.contains("Remedy"), "names the remedy: {text}");
+        assert!(text.contains(".bad"), "names the move aside: {text}");
+        assert_eq!(std::fs::read(&file).unwrap(), bytes, "never rewritten");
+    }
+    // Unreadable: a directory where the file should be.
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let error = Record::load(dir.path()).unwrap_err();
+    assert!(
+        matches!(error, super::RecordError::Unreadable { .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("toolchain-acls.json"));
+    assert!(error.to_string().contains("Remedy"));
+    assert!(file.is_dir(), "left as it was");
+    std::fs::remove_dir(&file).unwrap();
+    // A good record round-trips through the atomic save.
+    let good = record(vec![
+        entry("/a", Source::User),
+        entry("/b", Source::Runtime),
+    ]);
+    good.save(dir.path()).unwrap();
+    assert_eq!(Record::load(dir.path()).unwrap(), good);
+}
+
+/// REQ-CONF-008 (A-23): the record is written by a replace. The new content
+/// takes the old one's place whole; no temporary file stays; and when a step
+/// fails the record is what it was (here the temporary file cannot be made).
+#[test]
+fn req_conf_008_the_record_is_saved_by_a_replace() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("toolchain-acls.json");
+    super::write_replacing(&target, b"first").unwrap();
+    super::write_replacing(&target, b"second, longer than the first").unwrap();
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"second, longer than the first"
+    );
+    let names = |d: &std::path::Path| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        names(dir.path()),
+        ["toolchain-acls.json"],
+        "no temporary file stays"
+    );
+    // The temporary file cannot be created: the old record is untouched.
+    let temp = dir
+        .path()
+        .join(format!("toolchain-acls.json.tmp-{}", std::process::id()));
+    std::fs::create_dir(&temp).unwrap();
+    assert!(super::write_replacing(&target, b"third").is_err());
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"second, longer than the first"
+    );
+    std::fs::remove_dir(&temp).unwrap();
+    // The rename fails (the target is a directory): the temporary file is removed.
+    let blocked = dir.path().join("blocked");
+    std::fs::create_dir(&blocked).unwrap();
+    assert!(super::write_replacing(&blocked, b"x").is_err());
+    assert!(blocked.is_dir());
+    assert_eq!(names(dir.path()), ["blocked", "toolchain-acls.json"]);
+}

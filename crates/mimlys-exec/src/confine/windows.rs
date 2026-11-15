@@ -992,15 +992,31 @@ fn own_job_limits() -> Option<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
     (ok != 0).then_some(info)
 }
 
-/// Creates `path` and any missing parent, then gives `path` the protected
-/// DACL of the current user alone (REQ-WS-001; `acl::protect_to_current_user`),
-/// at every call, as Unix brings the mode to 0700.
+/// Creates `path` **with** the protected DACL of the current user alone
+/// (REQ-WS-001; `acl::create_protected_dir`: the descriptor goes to
+/// `CreateDirectoryW`, so the directory is never visible with the permissions
+/// of its parent), after any missing parent; at every call an existing
+/// directory is brought to the same DACL (`acl::protect_to_current_user`), as
+/// Unix brings the mode to 0700. A directory whose owner is not the current
+/// user is refused before anything is written.
 pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(path)?;
     // A refused lock travels as its typed `Refusal` (the commands recognize
     // it by type, `io::Error::get_ref`), any other failure as its text.
-    acl::protect_to_current_user(path).map_err(|e| match e {
+    let to_io = |e: acl::AclError| match e {
         acl::AclError::Refused(refusal) => std::io::Error::other(refusal),
         acl::AclError::Failed(text) => std::io::Error::other(text),
-    })
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    acl::create_protected_dir(path).map_err(to_io)?;
+    if !path.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("{} is not a directory", path.display()),
+        ));
+    }
+    acl::protect_to_current_user(path).map_err(to_io)
 }
