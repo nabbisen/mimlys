@@ -239,6 +239,9 @@ enum TaskCommand {
     Show {
         /// Task id or a unique prefix.
         task: String,
+        /// Also print every argument of the action waiting for approval, in full.
+        #[arg(long)]
+        arguments: bool,
     },
     /// List tasks.
     List,
@@ -416,6 +419,7 @@ enum ReadCommand {
     },
     TaskShow {
         task: String,
+        arguments: bool,
     },
     TaskList,
     ToolchainList,
@@ -440,9 +444,10 @@ impl ReadCommand {
                 since: *since,
             }),
             Command::Metrics { task } => Some(Self::Metrics { task: task.clone() }),
-            Command::Task(TaskCommand::Show { task }) => {
-                Some(Self::TaskShow { task: task.clone() })
-            }
+            Command::Task(TaskCommand::Show { task, arguments }) => Some(Self::TaskShow {
+                task: task.clone(),
+                arguments: *arguments,
+            }),
             Command::Task(TaskCommand::List) => Some(Self::TaskList),
             Command::Toolchain(ToolchainCommand::List) => Some(Self::ToolchainList),
             Command::Promote {
@@ -463,7 +468,9 @@ async fn dispatch_read(app: &ReadApp, command: ReadCommand, out: &Output) -> Res
             since,
         } => commands::events::run(app, task.as_deref(), since, follow, out).await,
         ReadCommand::Metrics { task } => commands::metrics::run(app, task.as_deref(), out),
-        ReadCommand::TaskShow { task } => commands::task::show(app, &task, out),
+        ReadCommand::TaskShow { task, arguments } => {
+            commands::task::show(app, &task, arguments, out)
+        }
         ReadCommand::TaskList => commands::task::list(app, out),
         ReadCommand::ToolchainList => commands::toolchain::list(app, out),
         ReadCommand::PromotePatch { task } => commands::promote::patch(app, &task, out),

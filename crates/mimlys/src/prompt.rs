@@ -5,7 +5,7 @@
 //! without a terminal (the fake approval channel of REQ-TEST-002).
 
 use crate::messages;
-use mimlys_core::approval::ApprovalRequest;
+use mimlys_core::approval::{ApprovalRequest, arguments_text};
 use mimlys_core::grant::GrantKind;
 use mimlys_core::limits::LIM_D2_REASON_CHARS;
 use mimlys_core::question::Question;
@@ -49,6 +49,25 @@ pub fn approval_text(request: &ApprovalRequest, step_index: Option<u32>) -> Stri
     text.push('\n');
     text.push_str(messages::APPROVAL_OPTIONS);
     text.push('\n');
+    text
+}
+
+/// Every argument of the request in full, sanitized, one per line, none cut
+/// (REQ-APR-002): what `[v]iew` and `task show --arguments` print.
+pub fn arguments_in_full(request: &ApprovalRequest) -> String {
+    let mut text = String::from(messages::ARGUMENTS_IN_FULL);
+    match &request.arguments {
+        Some(arguments) => {
+            for line in arguments_text(arguments).lines() {
+                text.push_str("\n  ");
+                text.push_str(line);
+            }
+        }
+        None => {
+            text.push_str("\n  ");
+            text.push_str(messages::ARGUMENTS_NOT_AVAILABLE);
+        }
+    }
     text
 }
 
@@ -155,6 +174,9 @@ impl<R: BufRead, W: Write> Interaction for Terminal<R, W> {
                         continue;
                     }
                     return Decision::Reject { note, halt };
+                }
+                "v" => {
+                    let _ = writeln!(self.output, "{}", arguments_in_full(request));
                 }
                 "g" => {
                     let Some(text) = self.read_line(messages::GRANT_PROMPT) else {

@@ -161,7 +161,15 @@ pub fn approval_header(task_id: &str, step: Option<u32>) -> String {
     }
 }
 /// The approval prompt's options line (REQ-CLI-002).
-pub const APPROVAL_OPTIONS: &str = "[a]pprove   [r]eject   [h]alt (reject and halt)   [g]rant …";
+pub const APPROVAL_OPTIONS: &str =
+    "[a]pprove   [r]eject   [h]alt (reject and halt)   [g]rant …   [v]iew (every argument in full)";
+/// The heading of the arguments in full (`[v]iew`, `task show --arguments`).
+pub const ARGUMENTS_IN_FULL: &str = "Arguments in full (sanitized):";
+/// `task show --arguments` for a task that waits for no approval.
+pub const NO_ARGUMENTS_TO_SHOW: &str =
+    "no action is waiting for your approval, so there are no arguments to show";
+/// The pending request has no arguments recorded and the action could not be read.
+pub const ARGUMENTS_NOT_AVAILABLE: &str = "the arguments of this request are not available";
 /// The prompt character.
 pub const PROMPT: &str = "> ";
 /// Reject: ask for a note.
@@ -187,7 +195,7 @@ pub fn note_too_long() -> String {
     )
 }
 /// The user typed something the prompt does not understand.
-pub const PROMPT_UNKNOWN: &str = "type a, r, h or g";
+pub const PROMPT_UNKNOWN: &str = "type a, r, h, g or v";
 /// A question from the model.
 pub fn question_header(task_id: &str) -> String {
     format!("Question from the model · task {task_id}")

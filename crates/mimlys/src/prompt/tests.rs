@@ -143,3 +143,59 @@ fn req_apr_010_question_prompt() {
     let mut t = terminal("\nmain\n");
     assert_eq!(t.answer(&q), Some("main".into()));
 }
+
+/// A request that holds the arguments `to`, `subject` and a `body` of `body_chars` characters.
+fn request_with_arguments(body_chars: usize) -> ApprovalRequest {
+    use mimlys_core::approval::ArgumentView;
+    let view = |name: &str, value: String| ArgumentView {
+        name: name.into(),
+        value,
+        resolved: None,
+    };
+    request(None).with_arguments(vec![
+        view("to", "\"ada@example.org\"".into()),
+        view("subject", "\"Quarterly numbers\"".into()),
+        view("body", format!("\"{}\"", "b".repeat(body_chars))),
+    ])
+}
+
+/// REQ-APR-002: `v` prints every argument in full and the prompt asks again; the
+/// decision that follows is the user's.
+#[test]
+fn req_apr_002_view_prints_every_argument_in_full_and_asks_again() {
+    let req = request_with_arguments(5_800);
+    let mut t = terminal("v\nv\na\n");
+    assert_eq!(t.approve(&req, None), Decision::Approve);
+    let shown = String::from_utf8(t.output.clone()).unwrap();
+    assert_eq!(
+        shown.matches(messages::ARGUMENTS_IN_FULL).count(),
+        2,
+        "once for each `v`"
+    );
+    assert_eq!(
+        shown.matches(&"b".repeat(5_800)).count(),
+        2,
+        "the whole body each time: {shown}"
+    );
+    assert!(shown.contains("  to = \"ada@example.org\"\n"), "{shown}");
+    assert!(
+        shown.contains("  subject = \"Quarterly numbers\"\n"),
+        "{shown}"
+    );
+    assert_eq!(
+        shown.matches(messages::PROMPT).count(),
+        3,
+        "the prompt is shown again after each view"
+    );
+    assert!(messages::APPROVAL_OPTIONS.contains("[v]iew"));
+}
+
+/// REQ-APR-002: a request with no arguments recorded says so; it never shows
+/// "none" for an action that has some.
+#[test]
+fn req_apr_002_view_without_recorded_arguments_says_they_are_not_available() {
+    let req = request(None);
+    assert!(req.arguments.is_none());
+    let text = arguments_in_full(&req);
+    assert!(text.contains(messages::ARGUMENTS_NOT_AVAILABLE), "{text}");
+}
