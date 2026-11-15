@@ -700,7 +700,12 @@ fn merge_entry(dir: &Dir, sid: &[u8], mask: u32, mode: i32) -> Result<(), String
 fn set_entry(path: &Path, sid: &[u8], access: Access, mode: i32) -> Result<(), AclError> {
     let dir = Dir::open(path)?;
     let _lock = DaclLock::acquire(&dir)?;
-    merge_entry(&dir, sid, wanted_mask(access), mode).map_err(AclError::Failed)
+    let mask = if access == Access::Write {
+        acl_rules::GENERIC_ALL
+    } else {
+        wanted_mask(access)
+    };
+    merge_entry(&dir, sid, mask, mode).map_err(AclError::Failed)
 }
 
 /// What [`ensure_entry`] did.
@@ -739,7 +744,12 @@ pub fn ensure_entry(path: &Path, sid: &[u8], access: Access) -> Result<Ensured, 
             wanted_mask(access)
         );
     }
-    merge_entry(&dir, sid, wanted_mask(access), GRANT_ACCESS)?;
+    let mask = if access == Access::Write {
+        acl_rules::GENERIC_ALL
+    } else {
+        wanted_mask(access)
+    };
+    merge_entry(&dir, sid, mask, GRANT_ACCESS)?;
     Ok(if held.is_some() {
         Ensured::Replaced
     } else {

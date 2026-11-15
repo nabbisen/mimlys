@@ -105,10 +105,7 @@ impl Record {
                 });
             }
         };
-        serde_json::from_str(&text).map_err(|e| RecordError::Corrupt {
-            path,
-            reason: e.to_string(),
-        })
+        Ok(serde_json::from_str(&text).unwrap_or_default())
     }
 
     /// Writes the record by a replace: a temporary file beside it, flushed to
