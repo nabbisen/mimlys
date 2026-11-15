@@ -282,6 +282,7 @@ fn own_clauses(serving: bool) -> BTreeMap<String, ClauseState> {
         "MIMLYS_PROBE_FAIL_SERVING",
         "MIMLYS_PROBE_NO_TREE_KILL",
         "MIMLYS_PROBE_WAIT_ERROR",
+        "MIMLYS_PROBE_TREE_KILL_DELAY_MS",
         "SystemRoot",
         "SYSTEMROOT",
     ];

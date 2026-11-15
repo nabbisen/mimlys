@@ -643,6 +643,95 @@ struct RunResult {
     died: bool,
 }
 
+/// How long the runtime waits for the worker's answer to one execution,
+/// counted from the moment the request leaves (handoff 011n item 10; the CI
+/// flake "no termination recorded"): the execution's deadline, then **two**
+/// LIM-O2. The worker starts a host tool's own clock only after the request
+/// has been decoded, the command resolved and the process spawned, which is
+/// the first LIM-O2; and when that clock runs out the worker ends the tool's
+/// tree, which may take up to LIM-O2 (clause K), the second, before it answers.
+/// With the single LIM-O2 this budget had, a tool whose tree took most of
+/// LIM-O2 to end was answered for after the runtime had killed the worker. The
+/// alternative, a frame from the worker saying that its deadline has been
+/// reached, would still need this bound for a worker that never says so, and
+/// adds a message to the protocol for the same worst case.
+pub(crate) fn answer_budget(deadline_ms: i64) -> Duration {
+    Duration::from_millis(deadline_ms.max(0) as u64 + 2 * LIM_O2_CANCEL_MS)
+}
+
+/// What an execution whose worker did not answer within its budget is
+/// recorded as (handoff 011n item 10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unanswered {
+    /// The worker is lost: it exited before answering, or did not take a
+    /// cancellation, so what became of the execution is not known.
+    WorkerDied,
+    /// The execution's deadline had passed and the worker, alive, did not
+    /// answer in the time left for its tree kill: the execution ran out of
+    /// time, which is what is recorded (`deadline`), with a note; the worker is
+    /// ended all the same.
+    Deadline,
+}
+
+/// The verdict on a worker that has not answered within [`answer_budget`]:
+/// `Deadline` only when the worker is still alive, nobody asked for a
+/// cancellation (a worker that does not take a cancel is lost) and the
+/// execution's own deadline has passed; else `WorkerDied`.
+pub(crate) fn unanswered(
+    worker_exited: bool,
+    cancel_requested: bool,
+    elapsed: Duration,
+    deadline: Duration,
+) -> Unanswered {
+    if !worker_exited && !cancel_requested && elapsed >= deadline {
+        Unanswered::Deadline
+    } else {
+        Unanswered::WorkerDied
+    }
+}
+
+/// Logs, at `debug`, each frame that arrives from the worker while an
+/// execution is waited for, with the time since the request left, so that a
+/// failure like "no termination recorded" has its timing (handoff 011n
+/// item 10). A timeout of the poll is not a frame and logs nothing.
+fn log_frame(
+    received: &Result<Result<Response, FrameError>, RecvTimeoutError>,
+    execution: &Execution,
+    started: Instant,
+) {
+    let after = started.elapsed().as_millis();
+    let waiting = execution.execution_id;
+    match received {
+        Ok(Ok(Response::ExecutionRecord {
+            execution_id,
+            termination,
+            metrics,
+            ..
+        })) => tracing::debug!(
+            target: "mimlys_worker",
+            "frame from the worker after {after} ms: execution_record for {execution_id} (waiting for {waiting}): {termination:?}, the worker measured {} ms",
+            metrics.wall_ms
+        ),
+        Ok(Ok(Response::Error { detail })) => tracing::debug!(
+            target: "mimlys_worker",
+            "frame from the worker after {after} ms: error ({detail}) (waiting for {waiting})"
+        ),
+        Ok(Ok(Response::ProbeResult { .. })) => tracing::debug!(
+            target: "mimlys_worker",
+            "frame from the worker after {after} ms: probe_result (waiting for {waiting})"
+        ),
+        Ok(Err(e)) => tracing::debug!(
+            target: "mimlys_worker",
+            "the worker's output ended or broke after {after} ms: {e} (waiting for {waiting})"
+        ),
+        Err(RecvTimeoutError::Disconnected) => tracing::debug!(
+            target: "mimlys_worker",
+            "the reader of the worker's output is gone after {after} ms (waiting for {waiting})"
+        ),
+        Err(RecvTimeoutError::Timeout) => {}
+    }
+}
+
 fn run_one(
     live: &mut Live,
     execution: &Execution,
@@ -666,7 +755,16 @@ fn run_one(
             died: true,
         };
     }
-    let deadline = Duration::from_millis(execution.deadline_ms.max(0) as u64 + LIM_O2_CANCEL_MS);
+    let deadline = Duration::from_millis(execution.deadline_ms.max(0) as u64);
+    let budget = answer_budget(execution.deadline_ms);
+    tracing::debug!(
+        target: "mimlys_worker",
+        "request sent for execution {} ({}): deadline {} ms, the runtime waits {} ms for the answer",
+        execution.execution_id,
+        execution.tool,
+        deadline.as_millis(),
+        budget.as_millis()
+    );
     let mut cancel_sent_at: Option<Instant> = None;
     loop {
         if cancel.is_cancelled() && cancel_sent_at.is_none() {
@@ -678,28 +776,52 @@ fn run_one(
             );
             cancel_sent_at = Some(Instant::now());
         }
-        let overdue = started.elapsed() > deadline
+        let overdue = started.elapsed() > budget
             || cancel_sent_at
                 .is_some_and(|t| t.elapsed() > Duration::from_millis(LIM_O2_CANCEL_MS));
         if overdue {
             // Exited already (a crash the frame reader has not reported yet)
             // or unresponsive: the log says which, with the status when there is one.
-            let note = match live.child.try_wait() {
+            let exited = live.child.try_wait();
+            let worker_exited = matches!(exited, Ok(Some(_)));
+            let note = match exited {
                 Ok(Some(status)) => format!("the worker exited before answering: {status}"),
                 _ => {
                     if let Some(sample) = stack_sample(live.child.id()) {
                         tracing::warn!(target: "mimlys_worker", "stack sample of the unresponsive worker:\n{sample}");
                     }
-                    "the worker did not answer within LIM-O2".to_owned()
+                    match cancel_sent_at {
+                        Some(_) => {
+                            "the worker did not take the cancellation within LIM-O2".to_owned()
+                        }
+                        None => format!(
+                            "the worker did not answer within {} ms (the deadline of {} ms and two LIM-O2)",
+                            budget.as_millis(),
+                            deadline.as_millis()
+                        ),
+                    }
                 }
             };
             live.child.kill_tree();
+            let verdict = unanswered(
+                worker_exited,
+                cancel_sent_at.is_some(),
+                started.elapsed(),
+                deadline,
+            );
             return RunResult {
-                outcome: fault(HostFaultDetail::WorkerDied, started, Some(&note)),
+                outcome: match verdict {
+                    Unanswered::WorkerDied => {
+                        fault(HostFaultDetail::WorkerDied, started, Some(&note))
+                    }
+                    Unanswered::Deadline => deadline_fault(started, &note),
+                },
                 died: true,
             };
         }
-        match live.frames.recv_timeout(Duration::from_millis(50)) {
+        let received = live.frames.recv_timeout(Duration::from_millis(50));
+        log_frame(&received, execution, started);
+        match received {
             Ok(Ok(Response::ExecutionRecord {
                 execution_id,
                 termination,
@@ -837,6 +959,28 @@ pub fn report_shortfall(
     probe.short_of_mandatory(accepted, exempt)
 }
 
+/// An execution whose worker did not answer after its deadline had passed,
+/// recorded as `deadline` (handoff 011n item 10), the note in the log: nothing
+/// but the time is known of it, no output survived the worker.
+fn deadline_fault(started: Instant, note: &str) -> ExecutionOutcome {
+    tracing::warn!(
+        target: "mimlys_worker",
+        "{note}; the deadline had passed, so the execution is recorded as deadline and the worker is replaced"
+    );
+    ExecutionOutcome {
+        termination: Termination::Deadline,
+        failure: FailureCause::from_termination(&Termination::Deadline),
+        payload: serde_json::Value::Null,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        notices: Vec::new(),
+        metrics: ExecutionMetrics {
+            wall_ms: started.elapsed().as_millis() as i64,
+            ..ExecutionMetrics::default()
+        },
+    }
+}
+
 fn fault(detail: HostFaultDetail, started: Instant, note: Option<&str>) -> ExecutionOutcome {
     if let Some(n) = note {
         tracing::warn!(target: "mimlys_worker", "{n}");
@@ -908,6 +1052,7 @@ fn worker_env() -> Vec<(String, String)> {
             "MIMLYS_PROBE_FAIL_SERVING",
             "MIMLYS_PROBE_NO_TREE_KILL",
             "MIMLYS_PROBE_WAIT_ERROR",
+            "MIMLYS_PROBE_TREE_KILL_DELAY_MS",
         ] {
             if let Ok(v) = std::env::var(name) {
                 env.push((name.to_owned(), v));
@@ -950,3 +1095,6 @@ pub fn worker_side_clauses(
 pub fn log(line: &str) {
     let _ = writeln!(std::io::stderr(), "{line}");
 }
+
+#[cfg(test)]
+mod tests;

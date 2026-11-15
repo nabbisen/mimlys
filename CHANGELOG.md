@@ -9,6 +9,10 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+### Fixed
+
+- `mimlys-exec` (handoff 011n item 10; REQ-TOOL-006, REQ-CONF-009; the CI flake "no termination recorded" of `m6b_deadline_kills_the_whole_tree`): **the runtime's budget for a host tool covers the worker's deadline and its tree kill.** The runtime waited the execution's deadline plus one LIM-O2 for the worker's answer, counted from before the request; the worker starts the tool's own clock after it has resolved the command and spawned the process, and then needs up to LIM-O2 to end the tool's tree, so a slow set-up and a slow kill together could be answered for after the runtime had ended the worker. The budget is now the deadline and **two** LIM-O2 (one for the set-up before the tool's clock, one for the tree kill after it; the alternative, a "deadline reached" frame, would still need that bound for a worker that never sends it). A worker that is still silent after the budget, alive, with no cancellation asked and the execution's deadline passed, is ended and the action is recorded `deadline` with a note in the log instead of `host_fault{worker_died}`; the worker is replaced as before. At `debug` the log shows when the request left, the budget, and the time each frame came back from the worker.
+
 ## [0.10.0] - 2026-11-15
 
 0.10.0 fixes flaws that an independent audit of this code found, and that affect 0.9.0: among them a confined host tool starting a process outside its confinement, and promotion losing project files. **Read the Security section first, and upgrade.** It also carries the first part of RFC 013 (the read-only open of the store, the storage view, `task prune`), a narrower read set for host tools on Linux, a stop signal that interrupts only what can be undone, and the first Verus proof.

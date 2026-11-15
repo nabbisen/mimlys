@@ -87,6 +87,15 @@ process that is still alive after LIM-O2 is logged at `warn` as
 `tree_kill_incomplete` on every platform. Nothing a tool started writes to the
 workspace after its action has been recorded as finished.
 
+**A tool that overruns its deadline is recorded `deadline`.** The runtime
+waits for the worker's answer for the tool's `timeout_ms` and two LIM-O2 (2 s
+each): one for the worker to resolve and start the tool before the tool's own
+clock begins, one for it to end the tool's tree after the deadline. A worker
+that is still silent after that, while the deadline has passed, is ended and
+the action is recorded `deadline` (not `worker_died`), with a note in the log;
+the worker is replaced. At `debug` the log shows the request, the budget and
+the time each frame came back, which is where a slow tool shows its timing.
+
 ## Declare the tool
 
 ```toml

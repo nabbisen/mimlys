@@ -261,6 +261,7 @@ impl ToolProc {
     fn kill_tree(&mut self, tool_cgroup: Option<&Path>) -> Option<std::process::ExitStatus> {
         #[cfg(not(target_os = "linux"))]
         let _ = tool_cgroup;
+        tree_kill_delay();
         #[cfg(any(target_os = "linux", windows))]
         let grace = Duration::from_millis(LIM_O2_CANCEL_MS);
         let (status, incomplete) = match self {
@@ -329,6 +330,20 @@ impl ToolProc {
             crate::trace::warn(&format!("tree_kill_incomplete: {why}"));
         }
         status
+    }
+}
+
+/// Test builds: `MIMLYS_PROBE_TREE_KILL_DELAY_MS` makes the end of a tool's
+/// tree take that long, as a tree that is slow to die does (clause K allows
+/// LIM-O2), so that the runtime's budget for the answer is shown to cover it
+/// (handoff 011n item 10). Read only with `debug_assertions` on.
+fn tree_kill_delay() {
+    if cfg!(debug_assertions)
+        && let Some(ms) = std::env::var("MIMLYS_PROBE_TREE_KILL_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(Duration::from_millis(ms));
     }
 }
 
