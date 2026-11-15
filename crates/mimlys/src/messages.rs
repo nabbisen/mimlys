@@ -218,6 +218,20 @@ pub fn pending_non_interactive(task_id: &str, kind: WaitKind) -> String {
 }
 /// A stop signal arrived once.
 pub const SIGNAL_PAUSING: &str = "stop signal: the task pauses when the step in flight has finished (press Ctrl-C again to cancel it)";
+/// A stop signal arrived while the user was asked to decide or to answer
+/// (REQ-CLI-005). Nothing runs at a prompt and the task holds nothing, so
+/// nothing is paused or cancelled: the task waits as it did, and the line says
+/// how to go on.
+pub fn signal_at_prompt(task_id: &str, kind: WaitKind) -> String {
+    match kind {
+        WaitKind::Approval => format!(
+            "stop signal: {task_id} is still waiting for your approval; decide later with mimlys approve {task_id} or mimlys reject {task_id}"
+        ),
+        WaitKind::Question => format!(
+            "stop signal: {task_id} is still waiting for your answer; answer later with mimlys answer {task_id} <text>"
+        ),
+    }
+}
 /// A stop signal arrived twice and nothing in flight cannot be undone.
 pub const SIGNAL_CANCELLING: &str =
     "stop signal: cancelling the task, and stopping the step in flight";

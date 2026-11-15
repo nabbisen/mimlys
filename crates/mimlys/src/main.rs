@@ -6,7 +6,7 @@ use mimlys::app::{App, AppError, ReadApp};
 use mimlys::commands::run::NewTask;
 use mimlys::config::Config;
 use mimlys::output::Output;
-use mimlys::prompt::Terminal;
+use mimlys::prompt::{StdinLines, Terminal};
 use mimlys::{commands, logging};
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -367,8 +367,9 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     }
     let interactive =
         !cli.json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let stdin = std::io::stdin();
-    let mut terminal = Terminal::new(stdin.lock(), std::io::stdout(), interactive);
+    // Standard input is read on a thread of its own, so that a stop signal at a
+    // prompt ends the wait (REQ-CLI-005).
+    let mut terminal = Terminal::with_lines(StdinLines::new(), std::io::stdout(), interactive);
     let result = dispatch(&app, cli.command, &mut terminal, out).await;
     let closed = app.close();
     result.and(closed)

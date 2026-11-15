@@ -2,7 +2,10 @@
 //! REQ-APR-009). The prompt prints the runtime's rendered request through a
 //! fixed template and nothing else from the task; it reads one of `a`, `r`,
 //! `h`, `g`. The same `Interaction` trait lets the test harness answer
-//! without a terminal (the fake approval channel of REQ-TEST-002).
+//! without a terminal (the fake approval channel of REQ-TEST-002). The wait
+//! for the user can be ended by a stop signal (REQ-CLI-005): standard input
+//! is read on a thread of its own and the prompt waits on a queue that the
+//! stop signal is put to as well.
 
 use crate::messages;
 use mimlys_core::approval::{ApprovalRequest, arguments_text};
@@ -10,6 +13,7 @@ use mimlys_core::grant::GrantKind;
 use mimlys_core::limits::LIM_D2_REASON_CHARS;
 use mimlys_core::question::Question;
 use std::io::{BufRead, Write};
+use std::sync::mpsc::{Receiver, Sender};
 
 /// What the user decided at a prompt.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +37,12 @@ pub enum Decision {
 pub trait Interaction {
     /// Whether prompts can be shown at all.
     fn interactive(&self) -> bool;
+    /// The handle that ends a wait of this channel for the user, when it has one
+    /// that can be ended. A stop signal that arrives while the user is asked
+    /// puts the stop to it (REQ-CLI-005); a channel that answers at once has none.
+    fn stop_handle(&self) -> Option<StopHandle> {
+        None
+    }
     /// Asks for a decision on an approval request.
     fn approve(&mut self, request: &ApprovalRequest, step_index: Option<u32>) -> Decision;
     /// Asks for the answer to a question; `None` leaves the task waiting.
@@ -120,37 +130,214 @@ pub fn parse_grant(text: &str) -> Result<GrantKind, &'static str> {
     })
 }
 
-/// The terminal: prompts on standard output, reads standard input.
-pub struct Terminal<R: BufRead, W: Write> {
-    input: R,
-    output: W,
-    interactive: bool,
+/// What one wait for the user's input ended with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Input {
+    /// A line, without its line ending.
+    Line(String),
+    /// The input ended.
+    End,
+    /// A stop signal arrived while the prompt waited (REQ-CLI-005).
+    Stop,
 }
 
-impl<R: BufRead, W: Write> Terminal<R, W> {
+/// Gives up a wait for input: a stop signal arrived. Cheap to clone and to
+/// send to the task that listens for the signals.
+#[derive(Clone, Debug)]
+pub struct StopHandle {
+    tx: Sender<Input>,
+}
+
+impl StopHandle {
+    /// Ends the wait of the prompt that holds the other end, now or at its
+    /// next wait.
+    pub fn stop(&self) {
+        let _ = self.tx.send(Input::Stop);
+    }
+}
+
+/// Where a prompt gets its lines. The wait for one can be ended by a
+/// [`StopHandle`], so that a stop signal is not held up by a read that never
+/// comes.
+pub trait Lines {
+    /// Waits for the next line, the end of the input, or a stop.
+    fn next(&mut self) -> Input;
+    /// The handle that ends the wait, when this source can be stopped.
+    fn stop_handle(&self) -> Option<StopHandle> {
+        None
+    }
+}
+
+/// Lines read in place from a buffered reader: a wait that nothing stops. For
+/// tests and for a reader that does not block.
+pub struct Buffered<R>(R);
+
+impl<R: BufRead> Lines for Buffered<R> {
+    fn next(&mut self) -> Input {
+        let mut line = String::new();
+        match self.0.read_line(&mut line) {
+            Ok(0) | Err(_) => Input::End,
+            Ok(_) => Input::Line(line.trim_end_matches(['\r', '\n']).to_owned()),
+        }
+    }
+}
+
+/// A queue of inputs that a wait takes from, and that anything holding a
+/// sender can put to: the lines a reader found, and the stop.
+pub struct Queue {
+    tx: Sender<Input>,
+    rx: Receiver<Input>,
+}
+
+impl Queue {
+    /// An empty queue.
+    pub fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self { tx, rx }
+    }
+
+    /// A sender to put inputs to this queue.
+    pub fn sender(&self) -> Sender<Input> {
+        self.tx.clone()
+    }
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Lines for Queue {
+    fn next(&mut self) -> Input {
+        self.rx.recv().unwrap_or(Input::End)
+    }
+
+    fn stop_handle(&self) -> Option<StopHandle> {
+        Some(StopHandle {
+            tx: self.tx.clone(),
+        })
+    }
+}
+
+/// Standard input, read on a thread of its own so that the wait for a line
+/// races the stop signals (REQ-CLI-005).
+///
+/// A read of a terminal blocks until the user types, and nothing can interrupt
+/// it from outside. So the read runs on a detached thread that puts what it
+/// found on a [`Queue`], and the prompt waits on the queue, where a stop is put
+/// too: whichever comes first ends the wait. At most one read is outstanding.
+/// After a stop the thread may still be blocked in its read; it holds nothing
+/// the process needs and it is not joined, so it does not keep the process
+/// alive: the process ends when `main` returns, whatever threads remain.
+pub struct StdinLines {
+    queue: Queue,
+    reading: bool,
+}
+
+impl StdinLines {
+    /// A reader of standard input; no thread is started before the first wait.
+    pub fn new() -> Self {
+        Self {
+            queue: Queue::new(),
+            reading: false,
+        }
+    }
+
+    fn start_read(&mut self) -> bool {
+        let tx = self.queue.sender();
+        let spawned = std::thread::Builder::new()
+            .name("mimlys-stdin".into())
+            .spawn(move || {
+                let mut line = String::new();
+                let input = match std::io::stdin().read_line(&mut line) {
+                    Ok(0) | Err(_) => Input::End,
+                    Ok(_) => Input::Line(line.trim_end_matches(['\r', '\n']).to_owned()),
+                };
+                let _ = tx.send(input);
+            });
+        spawned.is_ok()
+    }
+}
+
+impl Default for StdinLines {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Lines for StdinLines {
+    fn next(&mut self) -> Input {
+        if !self.reading {
+            if !self.start_read() {
+                return Input::End;
+            }
+            self.reading = true;
+        }
+        let input = self.queue.next();
+        if !matches!(input, Input::Stop) {
+            // The outstanding read has answered; after a stop it has not.
+            self.reading = false;
+        }
+        input
+    }
+
+    fn stop_handle(&self) -> Option<StopHandle> {
+        self.queue.stop_handle()
+    }
+}
+
+/// The terminal: prompts on standard output, reads standard input.
+pub struct Terminal<L: Lines, W: Write> {
+    input: L,
+    output: W,
+    interactive: bool,
+    /// A stop ended a wait: nothing is waited for any more.
+    stopped: bool,
+}
+
+impl<R: BufRead, W: Write> Terminal<Buffered<R>, W> {
     /// A prompt over the given streams; `interactive` says whether they are a terminal.
     pub fn new(input: R, output: W, interactive: bool) -> Self {
+        Self::with_lines(Buffered(input), output, interactive)
+    }
+}
+
+impl<L: Lines, W: Write> Terminal<L, W> {
+    /// A prompt that gets its lines from `input`.
+    pub fn with_lines(input: L, output: W, interactive: bool) -> Self {
         Self {
             input,
             output,
             interactive,
+            stopped: false,
         }
     }
 
     fn read_line(&mut self, prompt: &str) -> Option<String> {
+        if self.stopped {
+            return None;
+        }
         let _ = write!(self.output, "{prompt}");
         let _ = self.output.flush();
-        let mut line = String::new();
-        match self.input.read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => Some(line.trim_end_matches(['\r', '\n']).to_owned()),
+        match self.input.next() {
+            Input::Line(line) => Some(line),
+            Input::End => None,
+            Input::Stop => {
+                self.stopped = true;
+                None
+            }
         }
     }
 }
 
-impl<R: BufRead, W: Write> Interaction for Terminal<R, W> {
+impl<L: Lines, W: Write> Interaction for Terminal<L, W> {
     fn interactive(&self) -> bool {
         self.interactive
+    }
+
+    fn stop_handle(&self) -> Option<StopHandle> {
+        self.input.stop_handle()
     }
 
     fn approve(&mut self, request: &ApprovalRequest, step_index: Option<u32>) -> Decision {
@@ -166,6 +353,10 @@ impl<R: BufRead, W: Write> Interaction for Terminal<R, W> {
                     let note = self
                         .read_line(messages::REJECT_NOTE_PROMPT)
                         .filter(|n| !n.trim().is_empty());
+                    if self.stopped {
+                        // The wait for the note ended with a stop: nothing is decided.
+                        return Decision::Leave;
+                    }
                     if note
                         .as_ref()
                         .is_some_and(|n| n.chars().count() > LIM_D2_REASON_CHARS)

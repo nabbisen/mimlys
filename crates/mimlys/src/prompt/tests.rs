@@ -30,7 +30,7 @@ fn request(reason: Option<&str>) -> ApprovalRequest {
     )
 }
 
-fn terminal(input: &str) -> Terminal<std::io::Cursor<Vec<u8>>, Vec<u8>> {
+fn terminal(input: &str) -> Terminal<Buffered<std::io::Cursor<Vec<u8>>>, Vec<u8>> {
     Terminal::new(
         std::io::Cursor::new(input.as_bytes().to_vec()),
         Vec::new(),
@@ -198,4 +198,101 @@ fn req_apr_002_view_without_recorded_arguments_says_they_are_not_available() {
     assert!(req.arguments.is_none());
     let text = arguments_in_full(&req);
     assert!(text.contains(messages::ARGUMENTS_NOT_AVAILABLE), "{text}");
+}
+
+/// A prompt over a queue that a stop can be put to, with nothing read.
+fn queued() -> (
+    Terminal<Queue, Vec<u8>>,
+    StopHandle,
+    std::sync::mpsc::Sender<Input>,
+) {
+    let queue = Queue::new();
+    let stop = queue.stop_handle().expect("a queue can be stopped");
+    let lines = queue.sender();
+    (Terminal::with_lines(queue, Vec::new(), true), stop, lines)
+}
+
+fn question() -> Question {
+    let ids = ScriptedIds::default();
+    Question::ask(
+        mimlys_core::ids::QuestionId::new(&ids),
+        TaskId::new(&ids),
+        mimlys_core::ids::StepId::new(&ids),
+        "Which branch?",
+        Instant::from_unix_millis(0).unwrap(),
+        None,
+    )
+}
+
+/// REQ-CLI-005: a stop ends the wait at an approval prompt and at a question
+/// prompt, with nothing decided and nothing answered.
+#[test]
+fn req_cli_005_a_stop_ends_the_wait_for_a_decision_or_an_answer() {
+    let (mut t, stop, _) = queued();
+    stop.stop();
+    assert_eq!(t.approve(&request(None), None), Decision::Leave);
+    let (mut t, stop, _) = queued();
+    stop.stop();
+    assert_eq!(t.answer(&question()), None);
+}
+
+/// REQ-CLI-005: a stop that comes while the prompt waits for the note of a
+/// rejection, or for a grant, decides nothing: it is not a rejection without a note.
+#[test]
+fn req_cli_005_a_stop_during_a_rejection_or_a_grant_decides_nothing() {
+    for typed in ["r", "h", "g"] {
+        let (mut t, stop, lines) = queued();
+        lines.send(Input::Line(typed.into())).unwrap();
+        stop.stop();
+        assert_eq!(t.approve(&request(None), None), Decision::Leave, "{typed}");
+    }
+}
+
+/// REQ-CLI-005: once stopped, the prompt waits for nothing more; a line that
+/// came before the stop is read.
+#[test]
+fn req_cli_005_a_stopped_prompt_waits_for_nothing_more() {
+    let (mut t, stop, lines) = queued();
+    lines.send(Input::Line("a".into())).unwrap();
+    stop.stop();
+    assert_eq!(t.approve(&request(None), None), Decision::Approve);
+    assert_eq!(t.approve(&request(None), None), Decision::Leave);
+    assert_eq!(
+        t.approve(&request(None), None),
+        Decision::Leave,
+        "and again"
+    );
+    assert_eq!(t.answer(&question()), None);
+}
+
+/// REQ-CLI-005: the wait is ended by a stop that comes from another thread,
+/// whether it comes before the prompt waits or after: the prompt returns, with
+/// no line ever put to it. (The test reads the state, the returned decision,
+/// and waits for it with a bound far above anything the stop needs.)
+#[test]
+fn req_cli_005_a_stop_from_another_thread_ends_a_wait_that_nothing_else_ends() {
+    let (mut t, stop, _lines) = queued();
+    let (done, finished) = std::sync::mpsc::channel();
+    let waiting = std::thread::spawn(move || {
+        let decision = t.approve(&request(None), None);
+        let _ = done.send(decision);
+    });
+    stop.stop();
+    let decision = finished
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the stop ended the wait");
+    assert_eq!(decision, Decision::Leave);
+    waiting.join().unwrap();
+}
+
+/// REQ-CLI-005: a prompt over a source that cannot be stopped has no handle,
+/// so a channel that answers at once is never given one.
+#[test]
+fn req_cli_005_a_scripted_channel_has_no_stop_handle() {
+    assert!(terminal("").stop_handle().is_none());
+    let scripted = Scripted {
+        decision: Decision::Approve,
+        answer: String::new(),
+    };
+    assert!(scripted.stop_handle().is_none());
 }

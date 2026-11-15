@@ -1,20 +1,22 @@
 //! Follow mode (REQ-CLI-003, REQ-CLI-005): drives a task's steps in this
 //! process, prints events as they happen, prompts when the task waits for
 //! the user, and turns stop signals into a pause (first) or a cancellation
-//! (second), leaving within LIM-O1.
+//! (second), leaving within LIM-O1. At a prompt, where nothing runs, a stop
+//! signal ends the wait for the user and the process leaves with the task
+//! still waiting.
 
 use crate::app::{App, AppError};
 use crate::messages;
 use crate::output::Output;
-use crate::prompt::{Decision, Interaction};
+use crate::prompt::{Decision, Interaction, StopHandle};
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::LIM_O1_STOP_MS;
 use mimlys_core::runtime::{Runtime, TaskView};
 use mimlys_core::spi::PositionedEvent;
 use mimlys_core::step::StepOutcome;
 use mimlys_core::task::{TaskState, WaitKind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Nothing requested, a pause requested, a cancellation requested.
 const NONE: u8 = 0;
@@ -113,7 +115,22 @@ pub struct Signals {
     /// then says so, if it ended `cancelled` (never before).
     interrupted: AtomicBool,
     /// The lines said, for the unit tests; each was also written to standard error.
-    said: std::sync::Mutex<Vec<String>>,
+    said: Mutex<Vec<String>>,
+    /// Whether a prompt waits for the user (REQ-CLI-005).
+    prompt: Mutex<Prompt>,
+    /// Ends the wait of the prompt, when the channel to the user has one that can be ended.
+    stop: Option<StopHandle>,
+}
+
+/// Whether a prompt waits for the user, and whether a stop signal came to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Prompt {
+    /// No prompt waits.
+    Idle,
+    /// A prompt waits for the user.
+    Active,
+    /// A stop signal came to the prompt: the process leaves.
+    Stopped,
 }
 
 impl Signals {
@@ -128,8 +145,16 @@ impl Signals {
     /// which ends the process, no longer applies to it), and one that arrives
     /// while the first is being handled is not lost to a listener made after
     /// it.
-    pub fn install(runtime: Arc<Runtime>, task_id: TaskId) -> Arc<Self> {
-        let signals = Arc::new(Self::new());
+    ///
+    /// A signal that comes while a prompt waits for the user (`begin_prompt`)
+    /// ends that wait through `at_prompt` instead: nothing runs at a prompt, so
+    /// there is nothing to pause or to cancel.
+    pub fn install(
+        runtime: Arc<Runtime>,
+        task_id: TaskId,
+        at_prompt: Option<StopHandle>,
+    ) -> Arc<Self> {
+        let signals = Arc::new(Self::with_stop(at_prompt));
         let Ok(mut stop) = StopSignals::new() else {
             return signals;
         };
@@ -143,12 +168,62 @@ impl Signals {
         signals
     }
 
+    #[cfg(test)]
     fn new() -> Self {
+        Self::with_stop(None)
+    }
+
+    fn with_stop(stop: Option<StopHandle>) -> Self {
         Self {
             stage: AtomicU8::new(NONE),
             waiting_said: AtomicBool::new(false),
             interrupted: AtomicBool::new(false),
-            said: std::sync::Mutex::new(Vec::new()),
+            said: Mutex::new(Vec::new()),
+            prompt: Mutex::new(Prompt::Idle),
+            stop,
+        }
+    }
+
+    /// A prompt is about to wait for the user. False when it must not: a stop
+    /// signal has already come (to an earlier prompt, or while the step that
+    /// led here was running), and the process leaves instead of asking.
+    pub fn begin_prompt(&self) -> bool {
+        let mut prompt = self.prompt.lock().expect("prompt lock");
+        if *prompt == Prompt::Stopped || self.stage() != NONE {
+            *prompt = Prompt::Stopped;
+            return false;
+        }
+        *prompt = Prompt::Active;
+        true
+    }
+
+    /// The prompt has returned. True when a stop signal came to it: then
+    /// whatever it returned is dropped, nothing is decided, and the process
+    /// leaves with the task waiting.
+    pub fn end_prompt(&self) -> bool {
+        let mut prompt = self.prompt.lock().expect("prompt lock");
+        if *prompt == Prompt::Stopped {
+            return true;
+        }
+        *prompt = Prompt::Idle;
+        false
+    }
+
+    /// A stop signal came. While a prompt waits it ends the wait and nothing
+    /// else happens; true when it did. After the first one the process is
+    /// leaving, and a further signal is taken the same way.
+    fn stop_prompt(&self) -> bool {
+        let mut prompt = self.prompt.lock().expect("prompt lock");
+        match *prompt {
+            Prompt::Idle => false,
+            Prompt::Active => {
+                *prompt = Prompt::Stopped;
+                if let Some(stop) = &self.stop {
+                    stop.stop();
+                }
+                true
+            }
+            Prompt::Stopped => true,
         }
     }
 
@@ -170,6 +245,9 @@ impl Signals {
     /// ones interrupt at once, an action that cannot be undone included: its
     /// outcome is then unknown.
     fn stopped(self: &Arc<Self>, step: &Arc<dyn Interrupt>, grace: std::time::Duration) {
+        if self.stop_prompt() {
+            return;
+        }
         match self.stage.load(Ordering::SeqCst) {
             NONE => {
                 self.stage.store(PAUSE, Ordering::SeqCst);
@@ -319,7 +397,7 @@ pub async fn drive(
     out: &Output,
 ) -> Result<TaskView, AppError> {
     let runtime = Arc::clone(&app.runtime);
-    let signals = Signals::install(Arc::clone(&runtime), task_id);
+    let signals = Signals::install(Arc::clone(&runtime), task_id, interaction.stop_handle());
     let mut position = last_position(&runtime, task_id)?;
     loop {
         let view = runtime.get_task(task_id)?;
@@ -389,7 +467,14 @@ pub async fn drive(
                                     .find(|s| s.step_id == a.step_id)
                                     .map(|s| s.index)
                             });
-                        match interaction.approve(&approval, step_index) {
+                        if !signals.begin_prompt() {
+                            return Ok(leave_at_prompt(&signals, view));
+                        }
+                        let decision = interaction.approve(&approval, step_index);
+                        if signals.end_prompt() {
+                            return Ok(leave_at_prompt(&signals, view));
+                        }
+                        match decision {
                             Decision::Approve => {
                                 runtime.approve_action(&app.session, task_id)?;
                             }
@@ -411,7 +496,14 @@ pub async fn drive(
                         let Some(question) = view.pending_question.clone() else {
                             return Ok(view);
                         };
-                        match interaction.answer(&question) {
+                        if !signals.begin_prompt() {
+                            return Ok(leave_at_prompt(&signals, view));
+                        }
+                        let answer = interaction.answer(&question);
+                        if signals.end_prompt() {
+                            return Ok(leave_at_prompt(&signals, view));
+                        }
+                        match answer {
                             Some(text) => {
                                 runtime.answer_question(&app.session, task_id, &text)?;
                             }
@@ -424,6 +516,19 @@ pub async fn drive(
             _ => return Ok(view),
         }
     }
+}
+
+/// A stop signal came to a prompt, or before it: the task stays as it is,
+/// waiting, and the one line says so and how to go on (REQ-CLI-005). The
+/// process then leaves with success.
+fn leave_at_prompt(signals: &Signals, view: TaskView) -> TaskView {
+    if let TaskState::WaitingUser { wait_kind } = view.task.state {
+        signals.say(messages::signal_at_prompt(
+            &view.task.task_id.to_string(),
+            wait_kind,
+        ));
+    }
+    view
 }
 
 fn last_position(runtime: &Runtime, task_id: TaskId) -> Result<u64, AppError> {
@@ -902,6 +1007,88 @@ mod tests {
                 !message.to_lowercase().contains("boundary"),
                 "not the user's word: {message}"
             );
+        }
+    }
+
+    /// The signals of a prompt that waits for the user, over a queue that the stop is put to.
+    fn at_a_prompt() -> (Arc<Signals>, crate::prompt::Queue) {
+        use crate::prompt::{Lines, Queue};
+        let queue = Queue::new();
+        let signals = Arc::new(Signals::with_stop(queue.stop_handle()));
+        (signals, queue)
+    }
+
+    /// REQ-CLI-005: a stop signal that comes while a prompt waits for the user
+    /// ends the wait and does nothing else: no pause is asked, nothing is cancelled
+    /// or interrupted, and no line is said (the process says its one line when the
+    /// prompt has returned).
+    #[tokio::test(start_paused = true)]
+    async fn req_cli_005_a_stop_signal_at_a_prompt_ends_the_wait_and_asks_nothing_of_the_step() {
+        use crate::prompt::{Input, Lines};
+        let (signals, mut queue) = at_a_prompt();
+        let (fake, step) = step();
+        assert!(signals.begin_prompt());
+        signals.stopped(&step, grace());
+        assert_eq!(queue.next(), Input::Stop, "the wait was ended");
+        assert!(signals.end_prompt(), "the prompt knows that it was stopped");
+        // A further signal is taken the same way: the process is leaving.
+        signals.stopped(&step, grace());
+        settle().await;
+        tokio::time::advance(grace() * 3).await;
+        settle().await;
+        assert_eq!(fake.asked_no_new_action(), 0);
+        assert_eq!(fake.interrupted(), 0);
+        assert_eq!(fake.interrupted_anyway(), 0);
+        assert!(signals.lines().is_empty(), "{:?}", signals.lines());
+        assert_eq!(signals.stage(), NONE);
+    }
+
+    /// REQ-CLI-005: a prompt that was not stopped leaves the signals as they were:
+    /// a signal after it is the first one of the step that follows.
+    #[tokio::test(start_paused = true)]
+    async fn req_cli_005_a_prompt_that_returned_leaves_the_signals_as_they_were() {
+        let (signals, _queue) = at_a_prompt();
+        let (fake, step) = step();
+        assert!(signals.begin_prompt());
+        assert!(!signals.end_prompt(), "no stop came");
+        signals.stopped(&step, grace());
+        assert_eq!(fake.asked_no_new_action(), 1, "the ordinary first signal");
+        assert_eq!(signals.stage(), PAUSE);
+        assert_eq!(signals.lines(), [messages::SIGNAL_PAUSING.to_owned()]);
+    }
+
+    /// REQ-CLI-005: no prompt is shown once a stop signal has come: one that came
+    /// while the step that led to the prompt was running, or to an earlier prompt.
+    #[tokio::test(start_paused = true)]
+    async fn req_cli_005_no_prompt_is_shown_after_a_stop_signal() {
+        let (signals, _queue) = at_a_prompt();
+        let (_fake, step) = step();
+        signals.stopped(&step, grace());
+        assert!(!signals.begin_prompt(), "the signal came before the prompt");
+        assert!(signals.end_prompt(), "and the prompt stays stopped");
+        let (signals, _queue) = at_a_prompt();
+        assert!(signals.begin_prompt());
+        signals.stopped(&step, grace());
+        assert!(!signals.begin_prompt(), "nor does a second prompt wait");
+    }
+
+    /// REQ-CLI-005: the line said at a prompt is true and in the user's words:
+    /// the task still waits, and it says how to decide or answer, never that the
+    /// task pauses or is cancelled.
+    #[test]
+    fn req_cli_005_the_line_at_a_prompt_says_what_is_true() {
+        use mimlys_core::task::WaitKind;
+        assert_eq!(
+            messages::signal_at_prompt("t1", WaitKind::Approval),
+            "stop signal: t1 is still waiting for your approval; decide later with mimlys approve t1 or mimlys reject t1"
+        );
+        assert_eq!(
+            messages::signal_at_prompt("t1", WaitKind::Question),
+            "stop signal: t1 is still waiting for your answer; answer later with mimlys answer t1 <text>"
+        );
+        for kind in [WaitKind::Approval, WaitKind::Question] {
+            let line = messages::signal_at_prompt("t1", kind).to_lowercase();
+            assert!(!line.contains("paus") && !line.contains("cancel"), "{line}");
         }
     }
 }
