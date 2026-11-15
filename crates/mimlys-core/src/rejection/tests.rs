@@ -140,7 +140,6 @@ fn req_dec_008_every_hint_names_only_keys_the_segment_carries() {
         Denial::grant(DeniedReason::GrantMissing, "host_tool"),
         Denial::grant(DeniedReason::DestinationNotGranted, "network"),
         Denial::new(DeniedReason::SchemeNotHttps),
-        Denial::new(DeniedReason::EffectNotAllowed),
         Denial::new(DeniedReason::PromoteNotAllowed),
         Denial::argument(0, "--all"),
         Denial::too_many(2),
@@ -290,5 +289,36 @@ fn req_dec_008_a_stored_detail_reads_back_bounded() {
         allowed
             .iter()
             .all(|a| a.chars().count() == LIM_I9_DETAIL_CHARS)
+    );
+}
+
+/// REQ-DEC-009: the reasons of a `denied` rejection are the eight of external design §6.4,
+/// in its order, with one hint each; there is no reason for an effect the profile does not
+/// allow (the effect rules are the ceiling and the grants).
+#[test]
+fn req_dec_009_the_denied_reasons_are_the_vocabulary_of_the_design() {
+    let names: Vec<&str> = DeniedReason::ALL.iter().map(|r| r.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "path_outside_workspace",
+            "path_excluded",
+            "grant_missing",
+            "destination_not_granted",
+            "scheme_not_https",
+            "promote_not_allowed",
+            "argument_not_allowed",
+            "arguments_do_not_fit",
+        ]
+    );
+    assert!(!names.iter().any(|n| n.contains("effect")));
+    for reason in DeniedReason::ALL {
+        let json = serde_json::to_value(reason).unwrap();
+        assert_eq!(json, reason.as_str(), "the wire name is the serde name");
+        assert!(!reason.hint().is_empty());
+    }
+    assert!(
+        serde_json::from_value::<DeniedReason>(serde_json::json!("effect_not_allowed")).is_err(),
+        "the name is not a reason any more"
     );
 }

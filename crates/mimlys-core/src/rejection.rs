@@ -137,8 +137,6 @@ pub enum DeniedReason {
     DestinationNotGranted,
     /// A destination argument is an `http` URL; only `https` is admitted (REQ-MCP-005).
     SchemeNotHttps,
-    /// The profile does not allow the effect.
-    EffectNotAllowed,
     /// Promotion is not allowed here.
     PromoteNotAllowed,
     /// A host tool argument is neither an allowed literal nor a pattern match (RFC 011 §6).
@@ -150,13 +148,12 @@ pub enum DeniedReason {
 
 impl DeniedReason {
     /// Every reason, in the order of external design §6.4.
-    pub const ALL: [DeniedReason; 9] = [
+    pub const ALL: [DeniedReason; 8] = [
         DeniedReason::PathOutsideWorkspace,
         DeniedReason::PathExcluded,
         DeniedReason::GrantMissing,
         DeniedReason::DestinationNotGranted,
         DeniedReason::SchemeNotHttps,
-        DeniedReason::EffectNotAllowed,
         DeniedReason::PromoteNotAllowed,
         DeniedReason::ArgumentNotAllowed,
         DeniedReason::ArgumentsDoNotFit,
@@ -179,9 +176,6 @@ impl DeniedReason {
             }
             DeniedReason::SchemeNotHttps => {
                 "Only `https` addresses are admitted; propose the `https` form of this URL (the same host and path), or ask the user."
-            }
-            DeniedReason::EffectNotAllowed => {
-                "The profile does not allow this effect; choose another approach, or ask the user."
             }
             DeniedReason::PromoteNotAllowed => {
                 "Promotion is the user's operation; finish the task and leave the promotion to the user."
@@ -240,7 +234,6 @@ impl DeniedReason {
             DeniedReason::GrantMissing => "grant_missing",
             DeniedReason::DestinationNotGranted => "destination_not_granted",
             DeniedReason::SchemeNotHttps => "scheme_not_https",
-            DeniedReason::EffectNotAllowed => "effect_not_allowed",
             DeniedReason::PromoteNotAllowed => "promote_not_allowed",
             DeniedReason::ArgumentNotAllowed => "argument_not_allowed",
             DeniedReason::ArgumentsDoNotFit => "arguments_do_not_fit",

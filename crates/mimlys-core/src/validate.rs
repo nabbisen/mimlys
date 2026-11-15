@@ -23,7 +23,7 @@ pub struct Derived {
     pub approval_required: bool,
 }
 
-/// Stage 7: grants, exclusions, destinations and the profile's effect rules (handoff 003).
+/// Stage 7: grants, exclusions, destinations and a host tool's declared arguments (handoff 003).
 pub trait GrantCheck {
     /// Allows the action or names the denial.
     fn check(&self, tool: &ToolDefinition, args: &Map<String, Value>) -> Result<(), Denial>;
