@@ -235,6 +235,7 @@ fn req_tool_006_host_tool_deadline_is_the_declared_timeout() {
             env: Default::default(),
             env_allow: vec![],
             network: false,
+            allow_paths: false,
         },
     );
     f.tools.push(ToolDefinition {

@@ -396,6 +396,7 @@ pub fn host_tool_line(
     name: &str,
     command: &str,
     network: bool,
+    allow_paths: bool,
     unavailable: Option<&str>,
 ) -> String {
     let mut line = if network {
@@ -405,6 +406,9 @@ pub fn host_tool_line(
     } else {
         format!("host tool       {name}: {command} (offline)")
     };
+    if allow_paths {
+        line.push_str(&format!(" · {ALLOW_PATHS_WORDS}"));
+    }
     if let Some(reason) = unavailable {
         line.push_str(&format!(
             " · unavailable: {reason}; run `mimlys toolchain grant <path>` and start again"
@@ -586,6 +590,17 @@ pub fn ceiling_external(tool: &str, source: &str) -> String {
 /// `check`: a host tool in the ceiling, with the declaration that admits it (RFC 011 §6).
 pub fn ceiling_host_tool(name: &str) -> String {
     format!("ceiling: host_tool:{name:<22} declared by [host_tools.{name}]")
+}
+/// What `allow_paths = true` means, in `check` and `status` (A-34): the
+/// declaration lifts the rule that a host tool's arguments name no path
+/// outside its workspace.
+pub const ALLOW_PATHS_WORDS: &str =
+    "allow_paths: arguments may name paths outside the workspace (`..`, `/`, `\\`, `~`, a drive)";
+/// `check`: a host tool whose declaration says `allow_paths = true`.
+pub fn host_tool_allow_paths_warning(name: &str) -> String {
+    format!(
+        "warning: host_tools.{name} sets allow_paths = true: the model may pass it arguments that name paths outside the workspace (`..`, `/`, `\\`, `~`, a drive)"
+    )
 }
 /// A command that runs steps was given the fake backend without a script.
 pub const FAKE_BACKEND_NO_SCRIPT: &str = "no backend to decide with: the fake backend needs `backend.script` (a file of decisions), or configure a model with `backend.kind = \"openai_compatible\"`, `url` and `model`";

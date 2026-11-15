@@ -55,6 +55,7 @@ command = {tool:?}
 read_paths = [{tooldir:?}]
 allowed_args = ["ok", "cwd", "read", "list", "write", "chmod", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect", "detach", "stdin-read"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
+allow_paths = true
 max_args = 3
 effect = "workspace_write"
 timeout_ms = 20000
@@ -68,11 +69,29 @@ arg_pattern = "[a-z]+"
 max_args = 3
 effect = "workspace_write"
 timeout_ms = 20000
+[host_tools.plain]
+command = {tool:?}
+read_paths = [{tooldir:?}]
+allowed_args = ["ok", "read"]
+arg_pattern = ".+"
+max_args = 3
+effect = "workspace_write"
+timeout_ms = 20000
+[host_tools.plain_paths]
+command = {tool:?}
+read_paths = [{tooldir:?}]
+allowed_args = ["ok", "read"]
+arg_pattern = ".+"
+allow_paths = true
+max_args = 3
+effect = "workspace_write"
+timeout_ms = 20000
 [host_tools.fetch]
 command = {tool:?}
 read_paths = [{tooldir:?}]
 allowed_args = ["connect", "read"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
+allow_paths = true
 max_args = 2
 effect = "external_read"
 timeout_ms = 20000
@@ -174,6 +193,14 @@ network = true
 
 fn strict(args: &[&str]) -> Value {
     json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "strict", "args": args}})
+}
+
+fn plain(args: &[&str]) -> Value {
+    json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "plain", "args": args}})
+}
+
+fn plain_paths(args: &[&str]) -> Value {
+    json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "plain_paths", "args": args}})
 }
 
 fn probe(args: &[&str]) -> Value {
@@ -1686,6 +1713,75 @@ fn m6a_argument_rules_are_enforced() {
     );
 }
 
+/// REQ-CONF-006, REQ-SEC-005 (A-34, scope of 0.11): whatever its pattern
+/// admits, a host tool's argument that names a path outside the workspace (a
+/// `..` component; a start with `/`, `\\`, `~` or a drive, in a part after `=`
+/// or after a short option's letter too) is `denied` with
+/// `argument_not_allowed`, and the task goes on; a declaration that says
+/// `allow_paths = true` is admitted and runs.
+#[test]
+fn req_conf_006_a_path_argument_is_denied_unless_the_declaration_allows_paths() {
+    let test = "req_conf_006_a_path_argument_is_denied_unless_the_declaration_allows_paths";
+    let env = Env::new(
+        &[
+            // Never more than LIM-T2 rejections in a row: an admitted action between them.
+            plain(&["read", "../x"]),
+            plain(&["read", "/etc/hostname"]),
+            plain(&["ok"]),
+            plain(&["-I/usr/x"]),
+            plain(&["--out=C:\\x"]),
+            plain(&["ok"]),
+            plain(&["--dir=~/x"]),
+            plain_paths(&["read", "/mimlys/does/not/exist"]),
+            complete(),
+        ],
+        "",
+    );
+    let (tier, _) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("tier {tier}"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "paths",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:plain",
+        "--grant",
+        "host_tool:plain_paths",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let rejected: Vec<(String, String)> = env
+        .events(&id)
+        .iter()
+        .filter(|e| e["event"] == "decision.rejected")
+        .map(|e| {
+            (
+                e["code"].as_str().unwrap().to_owned(),
+                e["reason"].as_str().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(rejected.len(), 5, "{rejected:?}");
+    for (code, reason) in &rejected {
+        assert_eq!(code, "denied");
+        assert!(reason.contains("argument_not_allowed"), "{reason}");
+    }
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 3, "the admitted three ran: {}", obs.len());
+    assert_eq!(stdout_of(&obs[0]).trim(), "ok");
+    assert_eq!(stdout_of(&obs[1]).trim(), "ok");
+    assert!(
+        stdout_of(&obs[2]).contains("read failed"),
+        "allow_paths admitted the path; the tool ran and the confinement refused: {}",
+        stdout_of(&obs[2])
+    );
+}
+
 /// REQ-CONF-007 / RFC 011 §8: the dependency step runs in a worker without
 /// clause N, is `external_read` (approval where a profile says so), and reaches the network;
 /// the offline tool in the same task cannot.
@@ -2192,7 +2288,7 @@ fn req_conf_011_credentials_beside_toolchain_are_unreadable() {
     let beside = toolchain.path().join("credentials.toml");
     let inside = toolchain.path().join("bin/marker");
     let extra = format!(
-        "[host_tools.beside]\ncommand = {tool:?}\nallowed_args = [\"read\"]\narg_pattern = \"[A-Za-z0-9_./:=-]+\"\nmax_args = 2\neffect = \"workspace_write\"\ntimeout_ms = 20000\nread_paths = [{bin:?}, {tooldir:?}]\n",
+        "[host_tools.beside]\ncommand = {tool:?}\nallowed_args = [\"read\"]\narg_pattern = \"[A-Za-z0-9_./:=-]+\"\nallow_paths = true\nmax_args = 2\neffect = \"workspace_write\"\ntimeout_ms = 20000\nread_paths = [{bin:?}, {tooldir:?}]\n",
         tool = probe_tool().to_string_lossy(),
         tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         bin = toolchain.path().join("bin").to_string_lossy(),
@@ -2432,6 +2528,7 @@ fn req_conf_011_the_read_set_holds_no_etc_and_no_opt() {
         env: Default::default(),
         env_allow: vec![],
         network: false,
+        allow_paths: false,
     };
     let declared =
         mimlys::app::confinement_spec(data.path(), &[], std::slice::from_ref(&declaration), true)

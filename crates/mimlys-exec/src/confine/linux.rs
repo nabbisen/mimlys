@@ -256,6 +256,47 @@ pub fn attach_child_to_cgroup(cmd: &mut std::process::Command, procs: std::fs::F
     }
 }
 
+/// Bounds the address space of a host tool's process to `bytes` (LIM-H2; clause
+/// M on the `rlimit_as` rung), in the child, between fork and exec. The worker
+/// is multi-threaded: lowering its own `RLIMIT_AS` around the spawn, as it did,
+/// let another thread's allocation fail while the limit was down. The current
+/// hard limit is read here, in the parent, which changes nothing; the child makes
+/// one raw `prlimit64` call on values it already holds, lowering the soft limit
+/// to `bytes` (never above the hard limit) and keeping the hard one, so that the
+/// limit is the tool's alone. A limit that cannot be set ends the spawn with the
+/// error: the tool does not start unbounded.
+pub fn limit_child_address_space(cmd: &mut std::process::Command, bytes: u64) {
+    use std::os::unix::process::CommandExt;
+    let hard = rustix::process::getrlimit(rustix::process::Resource::As)
+        .maximum
+        .unwrap_or(libc::RLIM_INFINITY);
+    let wanted = libc::rlimit64 {
+        rlim_cur: bytes.min(hard),
+        rlim_max: hard,
+    };
+    // The closure runs in the forked child before `exec`: one raw system call
+    // on a value captured by copy, no allocation, no lock, nothing that is not
+    // async-signal-safe; a failure is an `io::Error` built from `errno` alone
+    // (REQ-CONF-010).
+    // SAFETY: `prlimit64` is a plain system call, async-signal-safe, and touches only this process.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::syscall(
+                libc::SYS_prlimit64,
+                0 as libc::c_long,
+                libc::RLIMIT_AS as libc::c_long,
+                &wanted as *const libc::rlimit64,
+                std::ptr::null_mut::<libc::rlimit64>(),
+            ) == 0
+            {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
 /// Removes a worker's cgroup directories once they are empty (a cgroup with
 /// processes cannot be removed; the error is then the caller's signal to
 /// kill first).
@@ -622,27 +663,42 @@ pub struct TaskPaths<'a> {
     pub tmp: &'a Path,
 }
 
-/// The specification of one task's tools: the worker's, with the write set's
-/// entries inside the data directory (every task's workspace and the runtime's
-/// temporary directory) replaced by the two of this task. The paths are
-/// checked to be what they claim: the tree of one task directly under
-/// `<data>/workspaces`, and the temporary directory inside that task's
-/// directory. Anything else is refused, never widened.
-fn tool_spec(base: &ConfinementSpec, task: TaskPaths<'_>) -> Result<ConfinementSpec, String> {
-    super::task_spec(base, task.tree, task.tmp)
-}
-
 /// The host tools' ruleset for one task. It holds no right on the worker's
 /// own cgroup directory, which only the worker's layer carries
 /// (REQ-CONF-010): a tool's process joins the `tool` sub-cgroup through a
 /// descriptor the worker opened.
+///
+/// The worker's specification with the write set's entries inside the data
+/// directory (every task's workspace and the runtime's temporary directory)
+/// taken out, and in their place the two directories of this task as the
+/// **descriptors they were opened by** (handoff 011n item 9,
+/// `task_paths::open_task`): the tree of one task directly under
+/// `<data>/workspaces`, and the temporary directory inside that task's
+/// directory, each level opened without following a link, so the rule is on
+/// the directory that was checked and not on whatever a path names by the time
+/// Landlock looks it up. Anything else is refused, never widened.
 fn tool_ruleset(
     base: &ConfinementSpec,
     abi: ABI,
     task: TaskPaths<'_>,
 ) -> Result<landlock::RulesetCreated, String> {
-    let spec = tool_spec(base, task)?;
-    landlock_ruleset(&spec, None, abi, &[], false).map(|(ruleset, _)| ruleset)
+    if base.data_dir.as_os_str().is_empty() {
+        return Err("no data directory in the specification".to_owned());
+    }
+    let opened = super::task_paths::open_task(&base.data_dir, task.tree, task.tmp)?;
+    let spec = super::without_data_dir_writes(base);
+    let (ruleset, _) = landlock_ruleset(&spec, None, abi, &[], false)?;
+    ruleset
+        .add_rule(landlock::PathBeneath::new(
+            &opened.tree.fd,
+            AccessFs::from_all(abi),
+        ))
+        .map_err(|e| format!("landlock_tree_rule:{e}"))?
+        .add_rule(landlock::PathBeneath::new(
+            &opened.tmp.fd,
+            AccessFs::from_all(abi),
+        ))
+        .map_err(|e| format!("landlock_tmp_rule:{e}"))
 }
 
 /// Landlock for the worker (REQ-CONF-011, REQ-CONF-012): the worker

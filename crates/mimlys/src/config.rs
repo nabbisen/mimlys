@@ -230,6 +230,12 @@ pub struct HostToolSection {
     /// be declared `external_read` (REQ-CONF-007, REQ-CONF-006).
     #[serde(default)]
     pub network: bool,
+    /// `true` admits arguments that name a path outside the workspace (a `..`
+    /// component, or a start with `/`, `\\`, `~` or a drive), which no argument
+    /// may otherwise, whatever `arg_pattern` admits (A-34; external design
+    /// §13.3). `check` and `status` show it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_paths: bool,
 }
 
 /// The effect a host tool may declare. Host tools write only inside the
@@ -301,6 +307,7 @@ impl Config {
                     env,
                     env_allow: s.env_allow.clone(),
                     network: s.network,
+                    allow_paths: s.allow_paths,
                 }
             })
             .collect()

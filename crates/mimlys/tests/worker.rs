@@ -301,6 +301,7 @@ fn req_sec_003_a_worker_with_a_short_report_refuses_run_host_tool() {
         env: Default::default(),
         env_allow: vec![],
         network: false,
+        allow_paths: false,
     };
     let worker = Worker::new(WorkerConfig {
         program: worker_bin(),

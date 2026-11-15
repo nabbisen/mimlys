@@ -51,6 +51,12 @@ pub struct HostToolDeclaration {
     /// then be declared `external_read` (REQ-CONF-007, REQ-CONF-006).
     #[serde(default)]
     pub network: bool,
+    /// `true` admits arguments that name a path outside the workspace: a `..`
+    /// component, or a start with `/`, `\`, `~`, a drive or `\\`. Without it
+    /// no argument may, whatever `arg_pattern` admits (A-34; external design
+    /// §13.3). `check` and `status` show it.
+    #[serde(default)]
+    pub allow_paths: bool,
 }
 
 fn default_timeout() -> i64 {
@@ -101,8 +107,9 @@ impl HostToolDeclaration {
     }
 
     /// Checks the model's arguments: each a literal of `allowed_args` or a
-    /// match of `arg_pattern`, never `..` or an absolute path unless the
-    /// pattern allows it, at most `max_args`.
+    /// match of `arg_pattern`, at most `max_args`; and, unless the declaration
+    /// says `allow_paths = true`, none of them names a path outside the
+    /// workspace (see [`argument_names_a_path`]), whatever the pattern admits.
     pub fn validate_args(&self, args: &[String]) -> Result<Vec<String>, ArgViolation> {
         if args.len() > self.max_args {
             return Err(ArgViolation::TooMany { max: self.max_args });
@@ -114,8 +121,7 @@ impl HostToolDeclaration {
         for (index, a) in args.iter().enumerate() {
             let literal = self.allowed_args.iter().any(|l| l == a);
             let matched = pattern.as_ref().is_some_and(|p| p.is_match(a));
-            let suspicious = a.contains("..") || a.starts_with('/') || a.starts_with('\\');
-            if !(literal || (matched && (!suspicious || pattern_allows_paths(&self.arg_pattern)))) {
+            if !(literal || matched) || (!self.allow_paths && argument_names_a_path(a)) {
                 return Err(ArgViolation::NotAllowed {
                     index,
                     argument: a.chars().take(80).collect(),
@@ -135,11 +141,59 @@ impl HostToolDeclaration {
     }
 }
 
-/// A pattern that names `/` or `.` explicitly is taken to allow paths.
-fn pattern_allows_paths(pattern: &Option<String>) -> bool {
-    pattern
-        .as_deref()
-        .is_some_and(|p| p.contains('/') || p.contains("\\."))
+/// Whether a model's argument names a path outside the workspace (A-34;
+/// external design §13.3): the argument, each part of it between `=` signs,
+/// and what follows a short option's letter (`-I` in `-I../x`) is taken apart,
+/// and a part that holds a `..` component (between `/` or `\`), or begins with
+/// `/`, `\` (so `\\` too), `~` or a drive (`X:`, a letter and a colon, not the
+/// `::` of a Rust path), is a path. The same on every platform: a declaration
+/// is not valid on one machine and refused on another. The command's fixed
+/// `args` are the administrator's and are not looked at.
+pub fn argument_names_a_path(argument: &str) -> bool {
+    let mut parts = vec![argument];
+    for piece in argument.split('=') {
+        parts.push(piece);
+        if let Some(value) = short_option_value(piece) {
+            parts.push(value);
+        }
+    }
+    parts.into_iter().any(part_names_a_path)
+}
+
+/// The text after a short option's letter: `../x` in `-I../x`. `None` for a
+/// long option (`--x`), for no option, and when nothing follows the letter.
+fn short_option_value(piece: &str) -> Option<&str> {
+    let rest = piece.strip_prefix('-')?;
+    if rest.starts_with('-') {
+        return None;
+    }
+    let mut chars = rest.chars();
+    chars.next()?;
+    let value = chars.as_str();
+    (!value.is_empty()).then_some(value)
+}
+
+/// One part of an argument: a `..` component, or a start that names a root.
+fn part_names_a_path(part: &str) -> bool {
+    part.split(['/', '\\']).any(|component| component == "..")
+        || part.starts_with(['/', '\\', '~'])
+        || starts_with_drive(part)
+}
+
+/// `X:` at the start: a letter and a colon that is not the first of `::`.
+fn starts_with_drive(part: &str) -> bool {
+    let mut chars = part.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(':'), after) if letter.is_ascii_alphabetic() && after != Some(':')
+    )
+}
+
+/// Whether an `arg_pattern` is one that, until 0.10, took paths as allowed: it
+/// names `/` or `\.` (an escaped dot). Such a declaration relied on the
+/// override that 0.11 removed, and `check` says so.
+pub fn pattern_relied_on_the_path_override(pattern: &str) -> bool {
+    pattern.contains('/') || pattern.contains("\\.")
 }
 
 /// The effect as the configuration spells it (snake_case, CLR-6).
@@ -235,6 +289,31 @@ impl HostToolDeclaration {
                 "max_args",
                 "must be above 0 when arguments are allowed".into(),
             ));
+        }
+        // A-34 (scope of 0.11): a declaration that relied on a pattern naming
+        // `/` or `\.` to admit paths fails here, with the reason and the
+        // remedy, instead of failing at run time with a bare refusal.
+        if !self.allow_paths {
+            if let Some(p) = &self.arg_pattern
+                && pattern_relied_on_the_path_override(p)
+            {
+                return Err(err(
+                    "arg_pattern",
+                    format!(
+                        "the pattern {p:?} names `/` or `\\.`, which until 0.10 admitted arguments that name paths; a host tool's argument now names no path outside its workspace (a `..` component, or a start with `/`, `\\`, `~` or a drive), whatever the pattern admits. If the tool needs such arguments, add allow_paths = true to [host_tools.{}]; otherwise write a pattern without `/` and `\\.`",
+                        self.name
+                    ),
+                ));
+            }
+            if let Some(literal) = self.allowed_args.iter().find(|a| argument_names_a_path(a)) {
+                return Err(err(
+                    "allowed_args",
+                    format!(
+                        "{literal:?} names a path outside the workspace (a `..` component, or a start with `/`, `\\`, `~` or a drive), which a host tool's argument may not unless the declaration says so. Add allow_paths = true to [host_tools.{}], or remove the argument",
+                        self.name
+                    ),
+                ));
+            }
         }
         Ok(())
     }

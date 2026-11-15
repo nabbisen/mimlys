@@ -76,6 +76,7 @@ fn side(name: &'static str, network: bool) -> Side {
         env: Default::default(),
         env_allow: vec![],
         network,
+        allow_paths: false,
     };
     let spec =
         mimlys::app::confinement_spec(&data_dir, &[], std::slice::from_ref(&declaration), !network);
