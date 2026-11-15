@@ -39,8 +39,11 @@ fn link(target: &Path, link: &Path) {
             .unwrap();
         assert!(
             made.status.success(),
-            "mklink: {}",
-            String::from_utf8_lossy(&made.stdout)
+            "mklink {} {}: {}{}",
+            link.display(),
+            target.display(),
+            String::from_utf8_lossy(&made.stdout),
+            String::from_utf8_lossy(&made.stderr)
         );
     }
 }
@@ -156,12 +159,12 @@ fn req_conf_006_task_spec_opens_the_paths_and_refuses_links() {
     assert!(e.contains("link"), "a linked task directory: {e}");
     // A linked tree, in a task of its own.
     std::fs::create_dir_all(ws.join("c/tmp")).unwrap();
-    link(&elsewhere.join("tree"), &ws.join("c/tree"));
+    link(&elsewhere.join("tree"), &ws.join("c").join("tree"));
     let e = task_spec(&base, &ws.join("c/tree"), &ws.join("c/tmp")).unwrap_err();
     assert!(e.contains("link"), "a linked tree: {e}");
     // A linked temporary directory.
     std::fs::create_dir_all(ws.join("d/tree")).unwrap();
-    link(&elsewhere.join("tmp"), &ws.join("d/tmp"));
+    link(&elsewhere.join("tmp"), &ws.join("d").join("tmp"));
     let e = task_spec(&base, &ws.join("d/tree"), &ws.join("d/tmp")).unwrap_err();
     assert!(e.contains("link"), "a linked tmp: {e}");
     // The workspaces directory itself replaced by a link.
