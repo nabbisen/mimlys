@@ -63,5 +63,10 @@ fn req_tool_006_the_late_workers_record_is_a_deadline() {
     let outcome = deadline_fault(Instant::now(), "the worker did not answer");
     assert_eq!(outcome.termination, Termination::Deadline);
     assert_eq!(outcome.failure, Some(FailureCause::Timeout));
+    assert_eq!(
+        outcome.payload,
+        serde_json::json!({ "termination": "deadline" }),
+        "as the worker's own record of a deadline"
+    );
     assert!(outcome.stdout.is_empty() && outcome.stderr.is_empty());
 }
