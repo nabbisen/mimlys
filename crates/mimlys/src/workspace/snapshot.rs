@@ -1266,7 +1266,6 @@ fn depth(path: &str) -> usize {
 fn project_kind(project: &Dir, rel: &str) -> Result<Option<Kind>, WorkspaceError> {
     match project.symlink_metadata(rel) {
         Ok(m) if m.is_symlink() => Ok(Some(Kind::Symlink)),
-        Ok(m) if m.is_dir() && is_junction(project, rel) => Ok(Some(Kind::Symlink)),
         Ok(m) if m.is_dir() => Ok(Some(Kind::Dir)),
         Ok(_) => Ok(Some(Kind::File)),
         // Nothing lies below a file.
@@ -1282,21 +1281,9 @@ fn project_kind(project: &Dir, rel: &str) -> Result<Option<Kind>, WorkspaceError
     }
 }
 
-/// Whether the directory at `rel` is a Windows junction (a reparse point that redirects the path,
-/// as a link does), which the directory metadata may report as a plain directory. A junction can
-/// be read as a link; a directory cannot. Nothing is a junction elsewhere.
-#[cfg(windows)]
-fn is_junction(project: &Dir, rel: &str) -> bool {
-    project.read_link(rel).is_ok()
-}
-
-#[cfg(not(windows))]
-fn is_junction(_project: &Dir, _rel: &str) -> bool {
-    false
-}
-
 /// The first parent of `rel` in the project that is a link, found one parent at a time without
-/// following links.
+/// following links. On Windows a junction is a link here: cap-std reports a reparse point that
+/// redirects the path as a link (`is_symlink`).
 fn link_parent(project: &Dir, rel: &str) -> Result<Option<String>, WorkspaceError> {
     let parts: Vec<&str> = rel.split('/').collect();
     let mut prefix = String::new();
