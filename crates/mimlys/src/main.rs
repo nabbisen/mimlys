@@ -294,6 +294,19 @@ enum TaskCommand {
     },
 }
 
+/// The stack of the thread that runs the command, in bytes.
+///
+/// The commands' futures are large and the runtime polls them on the calling
+/// thread (`block_on`), and the parse of the command line is large too in a
+/// debug build, so the stack the operating system gives the main thread (1 MiB
+/// on Windows, usually 8 MiB on Linux and macOS) is not a bound the code should
+/// rest on. Measured on Linux in a debug build, the heaviest path of the tests
+/// (`m5_mcp`, the restarts of an MCP server) needs about 985 KiB: it fails at
+/// 980 KiB and passes at 990. 8 MiB is more than eight times that. A stack is
+/// address space reserved up front and committed page by page as it is used, so
+/// the size costs nothing until it is touched.
+const RUNTIME_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 fn main() -> ExitCode {
     // REQ-CONF-012: first thing, before any thread exists (the async runtime
     // below starts them). Fail closed: the guarantee is stated in the book.
@@ -304,6 +317,35 @@ fn main() -> ExitCode {
     // REQ-SEC-011: replaces the default hook, whose message goes to standard
     // error unredacted. The secrets are added once the configuration loaded.
     mimlys_exec::panic_hook::install("mimlys");
+    // Everything else runs on a thread with the stack stated above, and `main`
+    // returns its exit code. The thread is named `main`: it is the program's
+    // main flow, and the panic hook's line names the thread that panicked.
+    let spawned = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(RUNTIME_STACK_BYTES)
+        .spawn(run_process);
+    match spawned {
+        // The thread owns the runtime and everything the command opened: they
+        // are dropped on it, before `join` returns, as they were in `main`.
+        Ok(thread) => match thread.join() {
+            Ok(code) => code,
+            // A panic ended the thread; the hook has written its line. The
+            // code is the one Rust gives a panic on the main thread.
+            Err(_) => ExitCode::from(101),
+        },
+        Err(e) => {
+            Output::new(false).error(&AppError::Io {
+                detail: format!("cannot start the main thread: {e}"),
+            });
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Parses the command line and runs the command on a new runtime, which this
+/// thread drives. Returns the exit code.
+fn run_process() -> ExitCode {
+    // A usage error or `--help` ends the process here, as before.
     let cli = Cli::parse();
     let out = Output::new(cli.json);
     let runtime = match tokio::runtime::Builder::new_multi_thread()

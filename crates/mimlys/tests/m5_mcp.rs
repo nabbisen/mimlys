@@ -26,6 +26,10 @@ struct Env {
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
+    /// Unix: the limit of the main thread's stack, in KiB, that the process
+    /// is started under (`ulimit -s`).
+    #[cfg(unix)]
+    main_stack_kb: Option<u32>,
 }
 
 impl Env {
@@ -102,6 +106,8 @@ idempotent = true
             data,
             config,
             extra_env: vec![],
+            #[cfg(unix)]
+            main_stack_kb: None,
         }
     }
 
@@ -110,8 +116,28 @@ idempotent = true
         self
     }
 
+    /// Starts the process under a limit of `kb` KiB for the main thread's stack.
+    #[cfg(unix)]
+    fn main_stack_kb(mut self, kb: u32) -> Self {
+        self.main_stack_kb = Some(kb);
+        self
+    }
+
+    fn command(&self) -> Command {
+        #[cfg(unix)]
+        if let Some(kb) = self.main_stack_kb {
+            // The shell sets the limit and becomes `mimlys` (`$0`, then its arguments).
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg(format!("ulimit -s {kb} && exec \"$0\" \"$@\""))
+                .arg(env!("CARGO_BIN_EXE_mimlys"));
+            return cmd;
+        }
+        Command::new(env!("CARGO_BIN_EXE_mimlys"))
+    }
+
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = self.command();
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -927,12 +953,35 @@ fn die_calls(log: &std::path::Path) -> usize {
 /// `tool_unavailable` (REQ-TOOL-009). Read from the store and the server's log.
 #[test]
 fn req_tool_009_restarts_made_by_the_pin_check_count_and_past_the_limit_the_call_is_not_made() {
+    restarts_past_the_limit(false);
+}
+
+/// REQ-CLI-001: the runtime runs on a thread with a stack of its own, not on
+/// the main thread. The same run as above, started under a limit of 256 KiB
+/// for the main thread's stack (`ulimit -s`): that path needs about 985 KiB in
+/// a debug build, so it only completes when the runtime is not on the main
+/// thread (a process that ran it there ends with a stack overflow).
+#[cfg(unix)]
+#[test]
+fn req_cli_001_the_runtime_does_not_use_the_main_threads_stack() {
+    restarts_past_the_limit(true);
+}
+
+fn restarts_past_the_limit(limited_main_stack: bool) {
     let limit = mimlys_core::limits::LIM_X3_RESTARTS as usize;
     // More steps proposed than the allowance serves. An idempotent read whose
     // worker was lost is tried again once (attempt 2), so the first process and
     // the LIM-X3 restarts serve 1 + LIM-X3 executions in all; the one after them
     // is the attempt that must be refused.
     let (env, log) = dying_env("external_read", limit + 1);
+    #[cfg(unix)]
+    let env = if limited_main_stack {
+        env.main_stack_kb(256)
+    } else {
+        env
+    };
+    #[cfg(not(unix))]
+    let _ = limited_main_stack;
     let scope = env.scope();
     let (code, value) = env.json(&["run", "die", "--scope", scope.to_str().unwrap()]);
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
