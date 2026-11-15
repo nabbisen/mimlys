@@ -5,6 +5,7 @@
 
 mod delete_path;
 mod list_dir;
+mod open;
 mod read_file;
 mod replace_in_file;
 mod search_files;
