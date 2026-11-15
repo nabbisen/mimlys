@@ -19,6 +19,9 @@
 
 pub mod acl;
 
+#[cfg(test)]
+mod tests;
+
 use super::ConfinementSpec;
 use mimlys_core::confine::ClauseState;
 use std::collections::BTreeMap;
@@ -29,7 +32,7 @@ use std::path::Path;
 use std::process::ExitStatus;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, FILETIME, HANDLE, HANDLE_FLAG_INHERIT, LocalFree,
-    STILL_ACTIVE, SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0,
+    SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
@@ -209,9 +212,10 @@ impl RawChild {
         if unsafe { GetExitCodeProcess(handle, &mut code) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
-        if code == STILL_ACTIVE as u32 {
-            return Ok(None);
-        }
+        // The process handle is signalled, so the process has ended and the
+        // code is final, whatever it is: a tool may exit with 259, the value
+        // `STILL_ACTIVE` stands for while it runs, and reading that as "still
+        // running" after the wait made the worker wait for ever (handoff 011n).
         Ok(Some(ExitStatus::from_raw(code)))
     }
 
@@ -278,6 +282,18 @@ pub struct SpawnOptions<'a> {
     pub job: Option<&'a Job>,
     /// Try a restricted, low-integrity primary token first (clause P).
     pub restricted_token: bool,
+    /// What the process's standard input is.
+    pub stdin: Stdin,
+}
+
+/// The process's standard input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stdin {
+    /// A pipe the parent writes (the worker's frames).
+    Piped,
+    /// A pipe whose parent end is closed before the process exists: a read
+    /// finds the end of the input at once (a host tool).
+    Closed,
 }
 
 fn wide(s: &OsStr) -> Vec<u16> {
@@ -334,13 +350,18 @@ fn environment_block(env: &[(String, String)]) -> Vec<u16> {
     block
 }
 
+/// The two ends of an anonymous pipe, each owned from the moment the system
+/// returned it: an error on any path closes whatever exists (handoff 011n).
 struct Pipe {
-    read: HANDLE,
-    write: HANDLE,
+    read: OwnedHandle,
+    write: OwnedHandle,
 }
 
 /// An inheritable anonymous pipe; the parent's end stops being inheritable.
-fn pipe(parent_reads: bool) -> Result<Pipe, String> {
+/// `step` names the pipe for the fault injection of the tests.
+fn pipe(parent_reads: bool, step: &'static str) -> Result<Pipe, String> {
+    use std::os::windows::io::AsRawHandle;
+    inject(step)?;
     let attrs = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: std::ptr::null_mut(),
@@ -356,18 +377,92 @@ fn pipe(parent_reads: bool) -> Result<Pipe, String> {
             std::io::Error::last_os_error()
         ));
     }
-    let parent_end = if parent_reads { read } else { write };
+    // SAFETY: CreatePipe returned both handles for the caller to own; each is owned exactly once from here.
+    let (read, write) = unsafe {
+        (
+            OwnedHandle::from_raw_handle(read as _),
+            OwnedHandle::from_raw_handle(write as _),
+        )
+    };
+    inject("handle_flag")?;
+    let parent_end = if parent_reads { &read } else { &write };
     // SAFETY: the handle was just returned by CreatePipe and is valid.
-    if unsafe { SetHandleInformation(parent_end, HANDLE_FLAG_INHERIT, 0) } == 0 {
-        let err = std::io::Error::last_os_error();
-        // SAFETY: both handles are valid and closed exactly once on this error path.
-        unsafe {
-            CloseHandle(read);
-            CloseHandle(write);
-        }
-        return Err(format!("SetHandleInformation failed: {err}"));
+    if unsafe { SetHandleInformation(parent_end.as_raw_handle() as HANDLE, HANDLE_FLAG_INHERIT, 0) }
+        == 0
+    {
+        return Err(format!(
+            "SetHandleInformation failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(Pipe { read, write })
+}
+
+/// Fault injection of the tests (handoff 011n item 6): the step named in
+/// `FAIL_AT` fails with an error, so that every error path of `spawn` is run.
+/// Nothing in a build that is not a unit test.
+#[cfg(test)]
+pub(crate) static FAIL_AT: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// See the test build's `inject`.
+#[cfg(not(test))]
+fn inject(_step: &'static str) -> Result<(), String> {
+    Ok(())
+}
+
+/// Fails with an error when `step` is the one the test asked to fail.
+#[cfg(test)]
+fn inject(step: &'static str) -> Result<(), String> {
+    match *FAIL_AT.lock().unwrap() {
+        Some(wanted) if wanted == step => Err(format!("injected failure at {step}")),
+        _ => Ok(()),
+    }
+}
+
+/// A process attribute list in memory aligned for it (a `u64` buffer: a list
+/// holds pointers, and a byte buffer promises no alignment), deleted when it
+/// goes out of scope, on every path.
+struct AttributeList {
+    buffer: Vec<u64>,
+}
+
+impl AttributeList {
+    fn new(attribute_count: u32) -> Result<Self, String> {
+        inject("attribute_list")?;
+        let mut size: usize = 0;
+        // SAFETY: a null list with a size out pointer asks for the size, which is the documented first call.
+        unsafe {
+            InitializeProcThreadAttributeList(std::ptr::null_mut(), attribute_count, 0, &mut size)
+        };
+        let mut buffer = vec![0u64; size.div_ceil(8).max(1)];
+        // SAFETY: the buffer has the size the system asked for, and the alignment of a `u64`.
+        if unsafe {
+            InitializeProcThreadAttributeList(
+                buffer.as_mut_ptr().cast(),
+                attribute_count,
+                0,
+                &mut size,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "InitializeProcThreadAttributeList failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Self { buffer })
+    }
+
+    fn as_ptr(&mut self) -> *mut std::ffi::c_void {
+        self.buffer.as_mut_ptr().cast()
+    }
+}
+
+impl Drop for AttributeList {
+    fn drop(&mut self) {
+        // SAFETY: the list was initialised in `new` and is deleted exactly once.
+        unsafe { DeleteProcThreadAttributeList(self.as_ptr()) };
+    }
 }
 
 /// A primary token restricted to no privileges at low integrity, from this
@@ -612,30 +707,45 @@ pub fn sid_string(sid: &[u8]) -> String {
 /// Starts a process suspended, puts it into the job, and only then lets it
 /// run, so that nothing escapes the job in the first instructions; the
 /// container and the token are process-creation attributes (RFC 011 §3).
+/// Every pipe end and handle is owned from the call that made it, so that an
+/// error at any step closes what exists (handoff 011n item 6).
 pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
-    let stdin = pipe(false)?;
-    let stdout = pipe(true)?;
-    let stderr = pipe(true)?;
-    let child_handles: [HANDLE; 3] = [stdin.read, stdout.write, stderr.write];
-
-    let mut size: usize = 0;
-    let attribute_count = if opts.container.is_some() { 2 } else { 1 };
-    // SAFETY: a null list with a size out pointer asks for the size, which is the documented first call.
-    unsafe {
-        InitializeProcThreadAttributeList(std::ptr::null_mut(), attribute_count, 0, &mut size)
+    use std::os::windows::io::AsRawHandle;
+    let stdin = pipe(false, "stdin_pipe")?;
+    let stdout = pipe(true, "stdout_pipe")?;
+    let stderr = pipe(true, "stderr_pipe")?;
+    let Pipe {
+        read: stdin_read,
+        write: stdin_write,
+    } = stdin;
+    let Pipe {
+        read: stdout_read,
+        write: stdout_write,
+    } = stdout;
+    let Pipe {
+        read: stderr_read,
+        write: stderr_write,
+    } = stderr;
+    // A tool's standard input is closed at the spawn: the parent's end goes
+    // before the child exists, so a read finds the end of the input at once,
+    // as `Stdio::null()` gives on Unix (a container cannot open `NUL`).
+    let stdin_write = match opts.stdin {
+        Stdin::Piped => Some(stdin_write),
+        Stdin::Closed => {
+            drop(stdin_write);
+            None
+        }
     };
-    let mut list = vec![0u8; size.max(1)];
-    // SAFETY: the buffer has the size the system asked for.
-    if unsafe {
-        InitializeProcThreadAttributeList(list.as_mut_ptr().cast(), attribute_count, 0, &mut size)
-    } == 0
-    {
-        return Err(format!(
-            "InitializeProcThreadAttributeList failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let list_ptr = list.as_mut_ptr().cast();
+    let child_handles: [HANDLE; 3] = [
+        stdin_read.as_raw_handle() as HANDLE,
+        stdout_write.as_raw_handle() as HANDLE,
+        stderr_write.as_raw_handle() as HANDLE,
+    ];
+
+    let attribute_count = if opts.container.is_some() { 2 } else { 1 };
+    let mut list = AttributeList::new(attribute_count)?;
+    let list_ptr = list.as_ptr();
+    inject("attribute_handles")?;
     // SAFETY: the list is initialised; the handle array outlives the CreateProcess call below.
     if unsafe {
         UpdateProcThreadAttribute(
@@ -667,6 +777,7 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
             caps.Capabilities = &mut capability;
             caps.CapabilityCount = 1;
         }
+        inject("attribute_capabilities")?;
         // SAFETY: `caps` and the SIDs it points at outlive the CreateProcess call below.
         if unsafe {
             UpdateProcThreadAttribute(
@@ -690,9 +801,9 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
     let mut si = STARTUPINFOEXW::default();
     si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    si.StartupInfo.hStdInput = stdin.read;
-    si.StartupInfo.hStdOutput = stdout.write;
-    si.StartupInfo.hStdError = stderr.write;
+    si.StartupInfo.hStdInput = child_handles[0];
+    si.StartupInfo.hStdOutput = child_handles[1];
+    si.StartupInfo.hStdError = child_handles[2];
     si.lpAttributeList = list_ptr;
     let program_w = wide(opts.program.as_os_str());
     let mut line = command_line(opts.program, opts.args);
@@ -711,61 +822,56 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
     };
     let mut created = false;
     let mut as_user_error: Option<std::io::Error> = None;
-    if let Some(token) = &token {
-        use std::os::windows::io::AsRawHandle;
-        // SAFETY: every pointer refers to a buffer that lives until the call returns; `pi` is a valid out pointer.
-        created = unsafe {
-            CreateProcessAsUserW(
-                token.as_raw_handle() as HANDLE,
-                program_w.as_ptr(),
-                line.as_mut_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-                flags,
-                env_block.as_ptr().cast(),
-                cwd_w.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
-                &si.StartupInfo,
-                &mut pi,
-            )
-        } != 0;
+    let mut spawn_error = inject("create_process").err().map(std::io::Error::other);
+    if spawn_error.is_none() {
+        if let Some(token) = &token {
+            // SAFETY: every pointer refers to a buffer that lives until the call returns; `pi` is a valid out pointer.
+            created = unsafe {
+                CreateProcessAsUserW(
+                    token.as_raw_handle() as HANDLE,
+                    program_w.as_ptr(),
+                    line.as_mut_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    1,
+                    flags,
+                    env_block.as_ptr().cast(),
+                    cwd_w.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                    &si.StartupInfo,
+                    &mut pi,
+                )
+            } != 0;
+            if !created {
+                as_user_error = Some(std::io::Error::last_os_error());
+            }
+        }
         if !created {
-            as_user_error = Some(std::io::Error::last_os_error());
+            // SAFETY: as above; the caller's own token applies.
+            created = unsafe {
+                CreateProcessW(
+                    program_w.as_ptr(),
+                    line.as_mut_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    1,
+                    flags,
+                    env_block.as_ptr().cast(),
+                    cwd_w.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                    &si.StartupInfo,
+                    &mut pi,
+                )
+            } != 0;
+        }
+        if !created {
+            spawn_error = Some(std::io::Error::last_os_error());
         }
     }
-    if !created {
-        // SAFETY: as above; the caller's own token applies.
-        created = unsafe {
-            CreateProcessW(
-                program_w.as_ptr(),
-                line.as_mut_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-                flags,
-                env_block.as_ptr().cast(),
-                cwd_w.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
-                &si.StartupInfo,
-                &mut pi,
-            )
-        } != 0;
-    }
-    let spawn_error = (!created).then(std::io::Error::last_os_error);
-    // SAFETY: the list was initialised above and is deleted exactly once.
-    unsafe { DeleteProcThreadAttributeList(list_ptr) };
-    // SAFETY: the child's pipe ends are valid handles the parent no longer needs.
-    unsafe {
-        CloseHandle(stdin.read);
-        CloseHandle(stdout.write);
-        CloseHandle(stderr.write);
-    }
+    // The child's pipe ends are the parent's no longer, whether or not the process exists.
+    drop(stdin_read);
+    drop(stdout_write);
+    drop(stderr_write);
     if let Some(err) = spawn_error {
-        // SAFETY: the parent's pipe ends are valid and closed exactly once on this error path.
-        unsafe {
-            CloseHandle(stdin.write);
-            CloseHandle(stdout.read);
-            CloseHandle(stderr.read);
-        }
+        // The parent's pipe ends and the attribute list go with the scope.
         return Err(match as_user_error {
             Some(e) => format!(
                 "CreateProcessW failed: {err} (CreateProcessAsUserW with the restricted token: {e})"
@@ -775,39 +881,37 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
     }
     // SAFETY: CreateProcess returned these handles for the caller to own.
     let process = unsafe { OwnedHandle::from_raw_handle(pi.hProcess as _) };
+    // SAFETY: as above.
     let thread = unsafe { OwnedHandle::from_raw_handle(pi.hThread as _) };
     if let Some(job) = opts.job
-        && let Err(e) = job.assign_handle(pi.hProcess)
+        && let Err(e) = inject("job_assign").and_then(|()| job.assign_handle(pi.hProcess))
     {
         // SAFETY: the process is suspended and owned; it is ended before it ever ran.
         unsafe { TerminateProcess(pi.hProcess, 1) };
         return Err(e);
     }
-    {
-        use std::os::windows::io::AsRawHandle;
+    let resumed = inject("resume_thread").and_then(|()| {
         // SAFETY: the thread handle is valid; the process starts running here, already in the job.
         if unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) } == u32::MAX {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: the process is suspended and owned; it is ended before it ever ran.
-            unsafe { TerminateProcess(pi.hProcess, 1) };
-            return Err(format!("ResumeThread failed: {err}"));
+            return Err(format!(
+                "ResumeThread failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
+        Ok(())
+    });
+    if let Err(e) = resumed {
+        // SAFETY: the process is suspended and owned; it is ended before it ever ran.
+        unsafe { TerminateProcess(pi.hProcess, 1) };
+        return Err(e);
     }
     drop(thread);
-    // SAFETY: the parent's pipe ends are valid handles owned from here on by the files.
-    let (stdin, stdout, stderr) = unsafe {
-        (
-            PipeEnd::from(OwnedHandle::from_raw_handle(stdin.write as _)),
-            PipeEnd::from(OwnedHandle::from_raw_handle(stdout.read as _)),
-            PipeEnd::from(OwnedHandle::from_raw_handle(stderr.read as _)),
-        )
-    };
     Ok(RawChild {
         process,
         pid: pi.dwProcessId,
-        stdin: Some(stdin),
-        stdout: Some(stdout),
-        stderr: Some(stderr),
+        stdin: stdin_write.map(PipeEnd::from),
+        stdout: Some(PipeEnd::from(stdout_read)),
+        stderr: Some(PipeEnd::from(stderr_read)),
     })
 }
 

@@ -96,7 +96,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tools_dir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle", "exit", "stdin-read"]
 arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
 max_args = 3
 effect = "workspace_write"
@@ -1473,4 +1473,64 @@ fn req_conf_008_a_corrupt_record_stops_the_start() {
         record.is_file(),
         "the next start records mimlys's own directories again"
     );
+}
+
+// ---------------------------------------------------------------------
+// Handoff 011n (release 0.11, phase 1): the exit code 259, a closed standard
+// input.
+// ---------------------------------------------------------------------
+
+/// REQ-CONF-006, REQ-TOOL-006 (handoff 011n items 4 and 5): a host tool that
+/// exits with 259 (`STILL_ACTIVE`, the value a running process answers) ends
+/// its action `exited` with that code at once, instead of being read as still
+/// running until its deadline; and a host tool that reads its standard input
+/// finds the end of it at once, not at its deadline. The deadline of the
+/// probe tool is 10 s: the whole run is far inside it.
+#[test]
+fn req_conf_006_a_tool_exiting_259_and_a_closed_stdin() {
+    let env = Env::new(
+        &[
+            probe(&["exit", "259"]),
+            probe(&["stdin-read"]),
+            probe(&["ok"]),
+            complete(),
+        ],
+        "",
+    )
+    .ready();
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "exit 259 and read stdin",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 3, "{}", account(&obs));
+    assert_eq!(
+        obs[0]["payload"]["termination"],
+        "exited",
+        "{}",
+        account(&obs)
+    );
+    assert_eq!(exit_code_of(&obs[0]), 259, "{}", account(&obs));
+    assert_eq!(
+        obs[1]["payload"]["termination"],
+        "exited",
+        "{}",
+        account(&obs)
+    );
+    assert_eq!(exit_code_of(&obs[1]), 0, "{}", account(&obs));
+    assert_eq!(
+        stdout_of(&obs[1]).trim(),
+        "stdin ended after 0 bytes",
+        "{}",
+        account(&obs)
+    );
+    assert_eq!(stdout_of(&obs[2]).trim(), "ok", "{}", account(&obs));
 }

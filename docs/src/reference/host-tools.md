@@ -503,6 +503,14 @@ the worker runs under the container's own lowbox token, which has no
 privilege and cannot elevate, and `status` says `enforced (appcontainer)`
 for clause P.
 
+**A host tool's standard input is closed**, on every platform: a tool that
+reads it finds the end of the input at once. On Unix it is the null device; on
+Windows it is a pipe whose writing end is closed before the tool starts (a
+container cannot open `NUL`). A tool that waits for input from the model
+cannot be a host tool, and it no longer waits for its deadline to find out. A
+tool's exit code is whatever it returns: 259, the value Windows answers for a
+process that is still running, included.
+
 **`cargo` on current Windows.** A process inside an AppContainer cannot open
 the `NUL` device (`Access is denied`), and `cargo` opens it for the standard
 input of every `rustc` it starts; so `cargo test` declared as a host tool
