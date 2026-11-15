@@ -109,9 +109,17 @@ mimlys task delete <task>
   promotion you can still reverse, listing it as `kept: promotion reversible`:
   deleting that task would delete the backup `rollback --promotion` needs.
   Reverse the promotion, or delete the task yourself with `task delete`, to
-  let it go.
+  let it go. A task whose promotion failed and could not restore the project
+  from its backup is kept the same way: its backup is the only way back.
 - It keeps the audit (the tasks' events) unless you add `--audit`.
 - If one deletion fails, prune stops there, says which task failed and why, and
   names the tasks it did not touch.
+- A deletion lists its files in a journal before the rows go and then tries
+  every removal (a read-only directory, such as a Go module cache, is made
+  writable first). A file that cannot be removed is named by its path, and the
+  message says that the task is deleted all the same: `task <id> is deleted; N
+  path(s) could not be removed and are left to the next start: …`. The exit
+  code is 1, because files remain, and the next command that writes finishes
+  the removal. `task prune` stops at such a task and counts it as failed.
 - `mimlys task delete <task>` removes one finished task, after showing what
   will go and asking.

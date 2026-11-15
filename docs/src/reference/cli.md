@@ -24,13 +24,13 @@ or configuration error, 2 usage error.
 |---|---|
 | `run <goal> [--scope DIR] [--profile P] [--grant KIND:SCOPE]… [--steps N] [--deadline D] [--completion-check JSON]` | Create and start a task, print events, prompt when it waits |
 | `task new <goal> [--hold] …` | Create (and start unless `--hold`) |
-| `task show <task>` | The task, its plan, grants and pending item |
+| `task show <task> [--arguments]` | The task, its plan, grants and pending item; `--arguments` also prints every argument of the pending approval in full (sanitized), which the card may have cut |
 | `task list` | Every task |
 | `task resume <task> [--extend-steps N] [--extend-deadline D]` | Continue a created, paused or halted task |
 | `task pause <task>` | Pause when the step in flight has finished |
 | `task cancel <task>` | Cancel |
 | `task prune [--state STATES] [--older-than D] [--audit] [--yes]` | List the finished tasks that match (`--state` takes `completed`, `failed`, `cancelled`; `--older-than` counts from the task's last change) with what each frees and the total, ask once, then delete each as `task delete` does; never a task that has not finished; a task whose promotion can still be reversed is listed as `kept: promotion reversible` and skipped; the audit stays unless `--audit`; on a failure it stops, names the failed task and the tasks it did not touch (exit 1). Without a terminal and without `--yes` it deletes nothing |
-| `task delete <task> [--audit] [--yes]` | Remove a terminal task's workspace, snapshots and outputs after showing what goes; the audit stays unless `--audit` |
+| `task delete <task> [--audit] [--yes]` | Remove a terminal task's workspace, snapshots and outputs after showing what goes; the audit stays unless `--audit`. The files are listed in a journal before the rows go and every removal is attempted; one that fails is named by its path, the exit code is 1 and the message says that the task is deleted: `task <id> is deleted; N path(s) could not be removed and are left to the next start: …`; the next command that writes finishes what is left |
 | `task new <goal> --from-task T [--from-snapshot S]` | Fork: a new task from another task's snapshot, with its grants and history |
 | `approve <task>` | Approve the pending action; it runs at once |
 | `reject <task> [--note TEXT] [--halt]` | Reject the pending action; the task continues or halts |
@@ -48,7 +48,7 @@ or configuration error, 2 usage error.
 | `interpreters list` | The configured interpreters and whether they are installed |
 | `interpreters install <language> [--from FILE]` | Verify by hash and install an interpreter build (download of the shipped build without `--from`, within two minutes and retried three times on a transient failure; if it still fails, the error is `unavailable`, component `download`, and `--from FILE` is the remedy) |
 | `rollback <task> [--snapshot S]` | Restore the workspace to a snapshot (the latest by default) |
-| `rollback <task> --promotion P` | Reverse a promotion from its backup |
+| `rollback <task> --promotion P [--yes] [--overwrite-edited]` | Reverse a promotion from its backup: it lists the paths it will restore and asks; **without a terminal it needs `--yes`** (a script must pass it), otherwise it changes nothing and says so. A path edited since the promotion refuses the reversal unless `--overwrite-edited`. It takes an `applied` promotion, and a `failed` one whose own restore from the backup failed (the message of that failure names this command); once, never twice |
 | `promote <task> [--yes] [--summary] [--patch]` | Diff against the base, refuse conflicts, back up, ask, write; `--patch` prints a patch and writes nothing |
 
 A `<task>` is an id or a unique prefix of at least four characters.
@@ -67,6 +67,16 @@ marked untrusted.
 - `g` issues a grant. The pending request is withdrawn and shown again under
   the new grant set, because an approval binds to one action and one grant
   set.
+- `v` prints every argument in full, sanitized, and asks again;
+  `mimlys task show <task> --arguments` prints the same from another terminal.
+
+The card names every argument, the declared destinations and the paths first,
+then the others, the shortest value first. Each value has its own share of the
+card after the fixed lines and the model's reason, and a value that is cut says
+how many characters are missing: `… (120 more characters)`. An argument name
+that is not a plain identifier is shown quoted and sanitized. An action whose
+argument names cannot all be named within the card's bound is refused before it
+is recorded (`denied`, reason `arguments_do_not_fit`).
 
 An approval of a host tool carries one more line, `Tier`, with the tier
 in force and any best-effort clause the administrator accepted, so the
@@ -77,6 +87,18 @@ item and exits 0; `approve`, `reject` and `answer` continue the task from
 another invocation.
 
 ## Signals
+
+At an approval or question prompt, a stop signal ends the wait: `mimlys run`
+exits 0 within LIM-O1, the task stays `waiting_user`, and one line on standard
+error says what to do next:
+
+```text
+stop signal: <task> is still waiting for your approval; decide later with mimlys approve <task> or mimlys reject <task>
+```
+
+(For a question it names `mimlys answer`.) A decision typed at the moment of the
+signal is not applied. The usual state line of the command is printed on
+standard output.
 
 Ctrl-C (and SIGTERM on Unix) once asks for a pause. Three things follow at once:
 
@@ -167,11 +189,11 @@ contract (REQ-CLI-004):
 | `status` | `{store: {state: free \| in_use \| recovery_pending \| absent \| lock_untested, holder?: {pid, since}}, version, backend: {kind, model?, locality, reachable, model_listed?, decision_transport (tool_calls \| envelope; null while unresolved), transport_reason?, parallel_tool_calls?, structured_output? (envelope transport only), fell_back, detail?, context_tokens (the engine's context length; null when it reports none), context_engine? (`llama_cpp` or `ollama`, the engine whose answer it was; present for an Ollama with an unknown context), context_slots? (llama.cpp: the slots its `-c` is shared among; `context_tokens` is per request), context_needed_tokens (null for the fake backend)}, tier, clauses, unavailable_clauses, running, pending, data_dir, data_dir_in_temporary_directory, config, engine_version, interpreters, servers: [{name, state: running | unavailable | not_started, detail?, revision?, server_name?, server_version?, instructions?, tools, unavailable: [[tool, reason]], undeclared, declared? (only when `not_started`), list_changed}], host_tools: [{name, command, network, unavailable?}], read_set, dependency_step_read_set_extra, recovered (always empty: `status` recovers nothing)}`; under the `tool_calls` transport an MCP tool the model cannot see for its function name (invalid, or equal to another tool's) is listed in its server's `unavailable` with the reason `function_name_invalid` / `function_name_collision`, not in `tools`; `clauses` values carry `primitive` when enforced or best effort; `clauses` maps `filesystem`, `network`, `environment`, `termination`, `privilege`, `memory`, `count` to `{state: enforced \| best_effort \| unavailable, reason?}` |
 | `interpreters list` | `[{language, sha256, module, installed, build}]` |
 | `interpreters install` | `{language, module, sha256}` |
-| `task show` (and `run`, `task new`, …) also carry | `snapshots: [{snapshot_id, reason, manifest_hash, bytes, files, created_at, action_id?, project_root?}]`, `promotions: [{promotion_id, backup_snapshot, project_root, files, applied_at, reversed_at?}]`, `footprint: {workspace_bytes, snapshots, object_bytes_exclusive, object_bytes_shared, blob_bytes, promotions}` |
+| `task show` (and `run`, `task new`, …) also carry | `snapshots: [{snapshot_id, reason, manifest_hash, bytes, files, created_at, action_id?, project_root?}]`, `promotions: [{promotion_id, backup_snapshot, project_root, files, applied_at, reversed_at?, state (applying, applied or failed), after?, reason?, restored? (written only when false)}]`, and, while an approval waits, `pending_approval.arguments: [{name, value, resolved?}]` (every argument as the card shows it but in full; `resolved` for a path parameter), `footprint: {workspace_bytes, snapshots, object_bytes_exclusive, object_bytes_shared, blob_bytes, promotions}` |
 | `task list` | `[{task_id, goal, state, created_at, updated_at, footprint}]` |
 | `status --storage` | `{path, filesystem: {name?, reflink: yes \| no \| unknown}, bytes: {working_trees, snapshot_objects_exclusive, snapshot_objects_shared, blobs, interpreters, database, temporary, total}, tasks: [{task_id, state, goal, created_at, updated_at, age_seconds, working_tree, snapshot_objects_exclusive, blobs, total}], unreadable_manifests}`; `tasks` is every task, the one that frees most first; `age_seconds` counts from `updated_at` |
 | `task prune` | `{tasks: [{task_id, state, age_seconds, footprint, kept?}], total_bytes, confirmed, audit, deleted: [{task_id, footprint}], freed_bytes, failed?: {task_id, error}, untouched}`; `kept` is `promotion reversible`; when it did not finish the same object is printed and the exit code is 1 |
-| `rollback` | the snapshot record, or the promotion record when reversing |
+| `rollback` | the snapshot record, or the promotion record when reversing; `restored` is `false` on a failed promotion whose restore from the backup failed, until `rollback --promotion` restores the project |
 | `promote` | `{plan: {task_id, base_snapshot, current_hash, changes: [{path, kind, bytes}], excluded, text_diffs}, applied, promotion?}`; a conflict is the error `conflict` with `detail.paths` |
 | `task delete` | `{footprint, deleted, audit?}` |
 | `toolchain revoke --all` | `{removed: [{path, source: runtime \| user, found_by: record \| scan}], failed: [{path, reason}], profile_deleted, record_deleted}`; on a partial failure the same object is printed and the exit code is 1 |

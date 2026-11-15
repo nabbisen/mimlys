@@ -1,6 +1,6 @@
 # Getting started
 
-mimlys 0.9.0 (milestones M1 to M6c, with decisions as native tool calls) is the deterministic core with the sandbox,
+mimlys 0.10.0 (milestones M1 to M7a, with decisions as native tool calls, the read-only open and the storage view, and the fixes of an independent audit) is the deterministic core with the sandbox,
 the transactional workspace, a local model, external tools and confined host
 tools (on Linux with `cargo test` as the demonstration; on macOS a Seatbelt
 profile with every mandatory clause enforced and no clause to accept, and
@@ -97,12 +97,18 @@ Approval required · task 01a1… · step 2
 Tool         write_file
 Effect       workspace_write · reversible: yes · idempotent: yes
 Will         create or overwrite the file "src/lib.rs" in the workspace
-Arguments    content = "fn a() -> i32 { 1 }\n" · path = "src/lib.rs" (resolved: "…/workspaces/01a1…/tree/src/lib.rs")
+Arguments    path = "src/lib.rs" (resolved: "…/workspaces/01a1…/tree/src/lib.rs") · content = "fn a() -> i32 { 1 }\n"
 Grants used  tool:write_file
 Expires      never
 Model's stated reason (untrusted): "apply the fix"
-[a]pprove   [r]eject   [h]alt (reject and halt)   [g]rant …
+[a]pprove   [r]eject   [h]alt (reject and halt)   [g]rant …   [v]iew (every argument in full)
 ```
+
+The card names every argument, the paths first, and gives each value its own
+share of the card, so that a long value cannot push another one out of sight; a
+value that is cut says how many characters are missing (`… (120 more
+characters)`). Press `v` (or run `mimlys task show <task> --arguments`) to see
+every argument in full before you decide.
 
 Press `a`. The action runs, the task completes, and your project is
 untouched: the change is in the workspace under the data directory.
@@ -116,9 +122,20 @@ mimlys promote <task>
 shows the diff between what the task started from and what it left (a
 unified diff per text file), refuses when you changed one of the target
 files in the meantime (it lists them), and otherwise asks before writing.
-The targets are backed up first, so `mimlys rollback <task> --promotion <id>`
-puts them back. `mimlys promote <task> --patch` prints a patch and writes
-nothing. Nothing but `promote` ever writes to your project.
+The targets are backed up first, and the backup is stored before the first
+file of your project is written, so `mimlys rollback <task> --promotion <id>`
+puts them back. It lists the paths it will restore and asks; without a
+terminal it needs `--yes`. `mimlys promote <task> --patch` prints a patch and
+writes nothing. Nothing but `promote` ever writes to your project.
+
+A promotion removes only the paths its diff lists. A directory the task
+deleted is removed only when it is empty, after the entries the diff lists in
+it; if your project holds other files there (a `.env`, keys, a nested `.git/`, files you added
+since), `promote` refuses and names them. If a promotion fails part-way, or
+the process stops while it writes, mimlys restores what it had written from the
+backup and records the promotion `failed`, saying so. If even that restore
+fails, the backup is kept, and the message names the command that restores the
+project from it: `mimlys rollback <task> --promotion <id>`.
 
 `mimlys rollback <task>` restores the workspace to its latest snapshot, or
 to any snapshot `task show` lists. `mimlys task new "goal" --from-task <id>`
@@ -136,7 +153,10 @@ mimlys task delete <task>
 ```
 
 shows what will go (and that any promotion of that task can no longer be
-reversed), asks, and removes it. The task's events stay as audit unless you
+reversed), asks, and removes it. If a file cannot be removed it says so, with
+its path, and that the task is deleted anyway: `task <id> is deleted; N
+path(s) could not be removed and are left to the next start: …` (the exit code
+is 1, so that a script does not read it as a clean removal). The task's events stay as audit unless you
 add `--audit`. Copying the data directory while mimlys is not running is a
 complete backup. To see what is stored and to remove finished tasks in bulk,
 see [Storage](./reference/storage.md): `mimlys status --storage` and

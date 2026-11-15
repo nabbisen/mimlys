@@ -28,7 +28,7 @@ Model Context Protocol.
 
 ## Quick start
 
-mimlys is pre-release. Release 0.9.0 (milestones M1 to M6c, with decisions as native tool calls) is the deterministic core, the sandbox, the transactional workspace, a local model behind any
+mimlys is pre-release. Release 0.10.0 (milestones M1 to M7a, with decisions as native tool calls, the read-only open and the storage view of RFC 013 part one, and the fixes of an independent audit; upgrade from 0.9.0) is the deterministic core, the sandbox, the transactional workspace, a local model behind any
 OpenAI-compatible server (llama-server, Ollama), external tools over the
 Model Context Protocol with [rypsok](https://github.com/nabbisen/rypsok) as
 the first server, and declared host tools under the platform's confinement:
@@ -36,6 +36,8 @@ on Linux Landlock, seccomp and tree termination, with `cargo test` as the
 demonstration; on Windows an AppContainer and a Job Object, verified by the
 clause suite, where `cargo` itself cannot run yet (current Windows refuses
 an AppContainer the `NUL` device cargo's child processes open); on macOS a Seatbelt profile the worker applies to itself, with every mandatory clause enforced and no clause to accept, and `cargo test` as the demonstration.
+
+**Upgrading from 0.9.0.** 0.10.0 fixes flaws found by an independent audit that affect 0.9.0, among them a confined host tool starting a process outside its confinement and promotion losing project files; see the Security section of the [CHANGELOG](./CHANGELOG.md). Until you upgrade, do not grant host tools or MCP tools to tasks running untrusted code. A store that 0.10.0 has opened is refused by 0.9.0 (schema version 4), and `mimlys rollback <task> --promotion` now asks (a script passes `--yes`).
 
 **The model, plainly.** 0.9 asks the model for its decision through the engine's native function calling. With it, one model on one task was measured to work: Qwen2.5-7B-Instruct (Q4_K_M) repaired the M4 task (a failing test in a small JavaScript project, checked by the completion check) in 9 of 10 runs, 4 of 5 on llama.cpp and 5 of 5 on Ollama; the one run that did not finish ended by asking the user a question. A model that does not return structured calls does not act (the Qwen2.5-Coder models in the same measurements returned none), and under 0.8's decision format, still available as `decision_transport = "envelope"`, no measured model acted ([M4 report](docs/src/maintainers/m4-report.md), §6). That is one model, one task and ten runs on one machine: a result to repeat on your own model, not a promise. The scripted fake backend, described in the book's Getting started, runs a task end to end without any model.
 
@@ -59,7 +61,7 @@ asks before a write when the profile says so:
 Approval required · task 01a1… · step 2
 Tool         write_file
 Will         create or overwrite the file "src/lib.rs" in the workspace
-[a]pprove   [r]eject   [h]alt (reject and halt)   [g]rant …
+[a]pprove   [r]eject   [h]alt (reject and halt)   [g]rant …   [v]iew (every argument in full)
 ```
 
 Every write is a transaction over the private copy (snapshot before, snapshot

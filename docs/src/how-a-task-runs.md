@@ -152,7 +152,7 @@ The sentence is the rejection's own, and for `denied` it follows the reason:
 | `schema` | `path`, `expected`, and `allowed` for an enumeration | fix the field at `path` so that it matches `expected` |
 | `unknown_tool` | `tool`, `visible_tools` | use one of the tools in `visible_tools`, the tools it was given (in `tool_calls`: call one of the provided functions) |
 | `invalid_argument` | `path`, and the bounds `min`, `max` or `allowed` that apply | change the argument at `path` to a value within the bounds |
-| `denied` | `reason`, and `grant_kind` when a grant of that kind would allow it | by reason: use a relative path (`path_outside_workspace`); work with other files (`path_excluded`); ask you for the grant (`grant_missing`, `destination_not_granted`); propose the `https` form of the address (`scheme_not_https`); choose another approach (`effect_not_allowed`); leave promotion to you (`promote_not_allowed`); pass only the declared arguments (`argument_not_allowed`) |
+| `denied` | `reason`, and `grant_kind` when a grant of that kind would allow it | by reason: use a relative path (`path_outside_workspace`); work with other files (`path_excluded`); ask you for the grant (`grant_missing`, `destination_not_granted`); propose the `https` form of the address (`scheme_not_https`); leave promotion to you (`promote_not_allowed`); pass only the declared arguments (`argument_not_allowed`); use another tool or ask you (`arguments_do_not_fit`: the tool's argument names are too long to put to you for approval) |
 | `state` | `reason` | wait for the pending item |
 | `budget` | `budget`: `deadline` or `workspace` | finish with `complete` or `give_up` |
 | `approval_rejected` | nothing: your note comes separately | choose another approach or ask you |
@@ -210,11 +210,20 @@ under `approval_tools`, or when its effect changes something outside this
 machine, which mimlys cannot undo; otherwise it does not ask. The task then
 waits (`waiting for your approval`; the request does not expire). The prompt
 is written by mimlys from the action it will run, never by the model; the
-model's own stated reason is shown separately and marked untrusted. An
-approval is for that one action under the grants in force when you gave it: if
+model's own stated reason is shown separately and marked untrusted. The
+card names every argument of the action, the paths and destinations first, and
+gives each value its own share of the card, so that a long value cannot push
+another out of sight; a value that is cut says how many characters are missing.
+Before you decide you can see every argument in full: `[v]iew` at the prompt, or
+`mimlys task show <task> --arguments`. An action whose argument names are too
+long to name on the card is refused before it is recorded (`arguments_do_not_fit`).
+An approval is for that one action under the grants in force when you gave it: if
 the grants changed before it ran, the approval is void and the action does not
 run. Rejecting continues the task, or halts it with `--halt` (or with
-`on_reject = "halt"` in the profile).
+`on_reject = "halt"` in the profile). If you press Ctrl-C or the process gets
+SIGTERM while the prompt waits, the process ends with exit code 0 within LIM-O1,
+the task stays `waiting_user`, and one line says how to decide later; a decision
+typed as the signal arrives is not applied.
 
 **Confinement.** The built-in file tools work through one handle rooted at the
 task's private copy of your project; a symbolic link that leaves it does not
@@ -270,7 +279,10 @@ transition ([Storage](./reference/storage.md) says where and how much). A
 task that waits, pauses or halts keeps its state across a restart, and so do
 its counters and its deadline. If a process ends in the middle of a task, the
 next command that writes restores the workspace to the snapshot before an
-interrupted write and the task halts with `recovered`. The same step takes a
+interrupted write and the task halts with `recovered`. If the process ends again
+during that restore, the task is found `recovering` and the next command that
+writes starts the recovery over, from the start; every step of it can be
+repeated. The same step takes a
 snapshot that was being written when the process ended: if its record was
 stored the snapshot is kept, otherwise its files are removed (only those no
 stored snapshot uses), so an interrupted snapshot leaves nothing behind. It
@@ -325,6 +337,30 @@ the meantime, backs up what it will overwrite, asks, and writes.
 ```sh
 mimlys promote <task> --patch
 ```
+
+In order, a promotion:
+
+1. compares the project with the task's base and refuses, naming them, a
+   changed target, a directory it would remove that holds files the diff does not
+   list (a `.env`, keys, a nested `.git/`, files you added since), a link as a
+   parent of a path to write (even when the same promotion replaces that link),
+   and a link in the workspace whose target is outside the project;
+2. stores the backup of the targets, commits and seals it, and records the
+   promotion `applying`, before the first file of the project is written;
+3. writes entry by entry, comparing the project with the base again at each
+   one (an edit you make while it runs stops it and is named), never through a
+   link, and removing only the paths the diff lists, deepest first, a directory
+   only when it is empty;
+4. records the promotion `applied`.
+
+If step 3 fails, or the process ends in it, mimlys restores what it had written
+from the backup and records the promotion `failed` with the reason, and the next
+start does the same for a promotion it finds `applying`. A path you edited
+since is left as you have it and listed. If the restore itself fails, the
+promotion stays reversible: the backup is kept, `task show` lists the promotion
+`failed`, and the message names `mimlys rollback <task> --promotion <id>`, which
+restores the project from it. One reversal is allowed for an `applied` promotion
+and for a `failed` one whose own restore failed, never twice.
 
 Where this is written: [Getting started](./getting-started.md#bringing-the-result-into-your-project),
 [Storage](./reference/storage.md), [Command line](./reference/cli.md),

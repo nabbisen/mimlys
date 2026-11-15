@@ -46,6 +46,10 @@ Inside a declared host tool (the probe tool, `tests/m6a_host_tools.rs`):
 | allocate 3 000 MiB | the tool ends non-zero (`RLIMIT_AS` or the cgroup) |
 | `MIMLYS_PROBE_FAIL=F` | tier `core`, F `unavailable: injected failure`, `run_host_tool` not listed, a proposal rejected `unknown_tool` |
 | `MIMLYS_PROBE_BEST_EFFORT=K` | tier `core`; with `accept_best_effort = ["K"]`: `full (K best-effort, accepted by policy.accept_best_effort)` in `status` and on the `Tier` line of the host tool's approval; `["M"]` refused by `check`; an unavailable clause never accepted |
+| `MIMLYS_PROBE_MAX_LANDLOCK_ABI=<n>` (debug builds, 0.10) | caps the Landlock ABI the worker asks for, so that the rung below ABI 9 (seccomp refuses `socket(AF_UNIX)`) runs on a kernel that has ABI 9; F then reads `landlock+seccomp_no_unix_socket` |
+| `MIMLYS_PROBE_FAIL_SERVING=F` or `F@network` (debug builds, 0.10) | the serving worker, not the probe, reports clause F unavailable (`F@network`: the dependency step's worker alone), so that the runtime's check of each worker's own report is exercised |
+| `MIMLYS_PROBE_NO_TREE_KILL` and `MIMLYS_PROBE_WAIT_ERROR` (debug builds, 0.10) | the first leaves a tool's descendants alone at the tool's end, to test the warning `tree_kill_incomplete`; the second makes the wait on the tool return an error, to test that the tree is ended all the same |
+| `MIMLYS_PROBE_WORKER_PER_TASK` (debug builds, 0.10) | a worker serves one task and is replaced when another task's execution comes, as on macOS, on any platform |
 | `--all`, `../x`, four arguments, an undeclared name | each `denied` at stage 7 with the argument's position and value, or the bound, and the hint for `argument_not_allowed`; the task going on between them |
 | a `network = true` tool | reaches the listener from its own worker; the offline tool in the same task cannot |
 | a leftover tree recorded in `worker.json` | killed at the next start, `runtime.orphans_killed` recorded |
@@ -80,8 +84,8 @@ Landlock ABI 4 or later, a session that delegates a cgroup but not the `memory` 
 
 | Clause | State | Primitive | What changed |
 |---|---|---|---|
-| F | enforced | `landlock` | the read set no longer holds `/proc` for a host tool; the worker keeps it for its own walk and a host tool restricts itself to the same sets without it (a second Landlock layer) |
-| N | enforced | `seccomp+landlock_net` | `io_uring_*` and `process_vm_*` denied always; TCP `bind` and `connect` handled with no rule from ABI 4 (Linux 6.7), otherwise `seccomp` alone, still complete |
+| F | enforced | `landlock` (since 0.10 `landlock_resolve_unix`, or `landlock+seccomp_no_unix_socket` below Landlock ABI 9) | the read set no longer holds `/proc` for a host tool; the worker keeps it for its own walk and a host tool restricts itself to the same sets without it (a second Landlock layer) |
+| N | enforced | `seccomp+landlock_net` (since 0.10 ends with the primitive that keeps Unix sockets inside the write set: `landlock_resolve_unix` or `seccomp_no_unix_socket`) | `io_uring_*` and `process_vm_*` denied always; TCP `bind` and `connect` handled with no rule from ABI 4 (Linux 6.7), otherwise `seccomp` alone, still complete |
 | E, K, P, M, C | unchanged | | |
 
 The new clause tests (REQ-TEST-013) each have a control, the same command

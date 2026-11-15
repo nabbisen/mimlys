@@ -96,7 +96,7 @@ command = "rypsok"
 args = ["serve", "--config", "/home/you/.config/mimlys/rypsok.toml"]   # a file you own; see External tools
 env_allow = ["PATH"]            # copied from mimlys's environment; nothing else is inherited
 env_secrets = { BRAVE_API_KEY = "env:BRAVE_API_KEY" }   # by reference, at least 8 characters, redacted everywhere
-startup_ms = 15000              # LIM-O6, 1000–120000
+startup_ms = 15000              # LIM-O6, 1000–120000: the server's start and, since 0.10, a whole listing of its tools
 shutdown_ms = 5000              # LIM-O16, 500–30000: the time to end by itself after its input closes, before it is killed with its group; `check` warns below 1000
 # max_call_ms = 11000           # the server's declared maximum call time; no tool deadline falls below it
 [servers.rypsok.tools.web_search]   # a declaration admits the tool to the ceiling

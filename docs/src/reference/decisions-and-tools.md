@@ -37,8 +37,12 @@ the model may change:
 
 A `denied` rejection names its reason (`path_outside_workspace`,
 `path_excluded`, `grant_missing`, `destination_not_granted`,
-`scheme_not_https` (only `https` addresses are admitted), `effect_not_allowed`, `promote_not_allowed`, `argument_not_allowed`) and
-its hint follows the reason. Authorization comes before any filesystem
+`scheme_not_https` (only `https` addresses are admitted), `promote_not_allowed`, `argument_not_allowed`,
+`arguments_do_not_fit`) and
+its hint follows the reason. `arguments_do_not_fit` means that the names of a
+tool's arguments are too long to put to you for approval, so the action is
+refused before it is recorded; the hint tells the model to use another tool or
+ask you. Authorization comes before any filesystem
 access: a path outside the workspace is `denied` with the same bytes
 whether it exists or not.
 
@@ -54,7 +58,8 @@ decision is not repeated, and the detail holds nothing from the file system
 or the policy. The budgets of a `budget` rejection are the deadline and the
 workspace's size limit; the step budget halts at the step boundary and the
 retries of one action are bounded by `executions_per_action`. The detail is
-stored with the step (schema version 3 of the store), so the same decision
+stored with the step (since version 3 of the store's schema, which is at 4 in
+0.10), so the same decision
 gets the same segment after a restart; a step stored by an older release has
 the code and its hint only. `mimlys events` shows the `reason` (and
 `grant_kind` of a `denied`) in `decision.rejected`, and `mimlys metrics`
@@ -76,6 +81,15 @@ All paths are relative to the workspace root.
 | `run_wasm` | `module`, `args?`, `stdin?`, `mode?` | `termination`, `exit_code?`, stdout and stderr excerpts | by `mode` |
 | `run_host_tool` | `tool` (a declared host tool the task was granted), `args?` | `termination`, `exit_code?`, stdout and stderr excerpts | as declared (`workspace_write`; `external_read` for the dependency step) |
 | `<server>.<tool>` | as imported from the MCP server | as the server's output schema says | as the administrator declared |
+
+The built-in file tools look at a path before they use it, open it without
+blocking and look at what they opened, so a named pipe, a socket or a device
+never holds a tool, or the process, for good. Anything that is not a regular
+file is refused with `not_a_file` (and a hint); a directory given to
+`read_file`, `write_file` or `replace_in_file` is `is_directory`; `read_file`
+reads at most 8 MiB (LIM-W3) and refuses a larger file with `too_large`, since it
+does not truncate before it checks. `search_files` skips an entry that is not a
+regular file and counts it with the entries it could not read.
 
 A tool is visible to the model only under a grant: a `tool` grant for a
 built-in or external tool, a `host_tool` grant for a declared host tool
@@ -160,7 +174,22 @@ pre-execution snapshot before the model sees the observation, which carries
 `rolled_back: true` and the notice `rolled_back`; when it is cancelled, the
 same happens unless the profile sets `on_cancel = "keep"`. A write found
 running after a crash is restored at the next start and the task halts
-`recovered`.
+`recovered`. A task found `recovering` (the process ended during a long
+restore) is recovered again from the start, and every step of the recovery can
+be repeated. If the restore after a cancelled write fails, the failure is
+logged and the task halts `unknown_outcome`, not silently paused on a
+half-restored tree.
+
+If a part of the task's workspace cannot be read (an action made a directory
+unreadable, or the tree could not be walked), the task halts
+`workspace_unreadable`: the halt names the path and says to restore its
+permissions, then resume (`task show`, `resume`, `run`). A rollback of such a
+tree names the path and changes nothing. When the cause is not a refused
+permission (an entry that vanished during the walk, a failing device), the error
+names the path and the kind of the failure, `part of the workspace could not be
+read: <path> (<kind>)`, and the task halts the same way; the two lines of the
+halt itself still advise restoring permissions then, which will not always be
+the remedy.
 
 A snapshot is a manifest (every file hashed, every time) plus the files'
 contents stored once by hash under the data directory. Two consecutive

@@ -149,3 +149,45 @@ each definition on the task (`tool.pinned`). The server's annotations
 a tool is what you declared. If the server changes a definition while a
 task runs, the tool is unpinned once (`tool.unpinned`), hidden from the
 model, and named to it as unavailable; nothing changes meaning silently.
+
+## What mimlys bounds in a server's answers
+
+A server is not trusted to be small, quick or well behaved. These bounds are
+fixed (limits LIM-I10 to LIM-I16 and LIM-O6), and a tool that exceeds one is
+unavailable, with the reason in `status`, rather than half imported.
+
+- **Every request has a deadline and ends at the stop signal.** The listing of
+  a server's tools, each page of it, and the start of the server are bounded
+  by the server's `startup_ms` (LIM-O6, 15 000 ms unless you set it); a stop
+  signal ends them sooner. Nothing waits behind a listing: a call, another
+  task's pin check and the shutdown never queue behind one. A listing stops at
+  16 pages (LIM-I11) and 256 tools (LIM-I12). When a server cannot be reached
+  at a step boundary its tools **stay pinned**, and a call to one is
+  `tool_unavailable` with the reason (`list:timeout`, `list:cancelled`,
+  `list:too_many_pages`, `list:too_many_tools`), where an older release told the
+  model that the definition had changed.
+- **A destination is a string.** A parameter you declare in
+  `destination_arguments` must be a string in the tool's schema; otherwise the
+  tool is unavailable (`destination_not_string:<parameter>`). A call that gives
+  an array or an object for a destination is `denied` with
+  `destination_not_granted`, so a destination is always checked against the
+  `network` grants.
+- **Names and values are cleaned and bounded.** A parameter's name (and a
+  nested key) is ASCII letters, digits, `_`, `.` or `-`, at most 64 characters
+  (LIM-I10); a tool with another name is unavailable (`definition_invalid`,
+  naming the parameter by its position), so **a parameter name longer than 64
+  characters makes its tool unavailable**. An enumeration's values are cleaned
+  and cut like a description, and so are a server's name, version, revision, a
+  tool's name and the reason of an unavailable tool before `status` or an
+  event shows them.
+- **An output schema is checked for cost.** A schema over 1 024 nodes
+  (LIM-I13), a list of more than 128 entries (LIM-I14), or alternatives that
+  cost more than 64 visits per value (LIM-I15) make the tool unavailable. A
+  validation of a result has a budget of 100 000 visits (LIM-I16); a result
+  that would cost more is `output_invalid` ("the schema was too costly to
+  check"), and the validation runs off the executor within the call's deadline.
+- **Redaction comes before any cut.** A secret (the value of `env_secrets`) is
+  removed from a tool's failure detail, from the keys of an object and from a
+  tool's output streams before a long text is cut, so that a secret that
+  straddles the cut leaves nothing of itself in the excerpt. A secret's case
+  and percent-encoded variants are not covered.

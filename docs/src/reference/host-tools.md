@@ -13,8 +13,8 @@ mimlys status
 
 ```text
 tier            full
-clause F filesystem   enforced (landlock)
-clause N network      enforced (seccomp+landlock_net)
+clause F filesystem   enforced (landlock_resolve_unix)
+clause N network      enforced (seccomp+landlock_net+landlock_resolve_unix)
 clause E environment  enforced (explicit_environment)
 clause K termination  enforced (cgroup_kill)
 clause P privilege    enforced (no_new_privs+seccomp)
@@ -30,13 +30,62 @@ create its own cgroup, so every process a host tool starts is in it and
 dies with one `cgroup.kill`, while the session refuses the memory and
 process-count controllers, so those two are best effort (M and C may be;
 F, N, E, K and P may not). Where the kernel offers less the primitives
-change (`subreaper` for K) and the line still says so. N names both of its
+change (`subreaper` for K) and the line still says so. N names each of its
 layers when the kernel has them: the seccomp filter (no socket outside
 `AF_UNIX`, and no `io_uring`, which would create sockets the filter never
-sees) and, from Landlock ABI 4 (Linux 6.7), a rule set that denies TCP
-`bind` and `connect`; on an older kernel it reads `enforced (seccomp)` and
-is complete all the same. The probe is a real worker's report of its own
-confinement, not a guess.
+sees), from Landlock ABI 4 (Linux 6.7) a rule set that denies TCP `bind` and
+`connect`, and last the primitive that keeps Unix sockets inside the tool's
+write set (see "Unix sockets, the workspace and the end of a tool" below); on
+an older kernel without the Landlock rule set the TCP layer is the filter's
+alone, and complete all the same. The probe is a real worker's report of its
+own confinement, not a guess.
+
+## Unix sockets, the workspace and the end of a tool
+
+Three rules hold for a host tool, with one exception on Windows (the second
+rule). On Linux the tier line says which primitive carries the first.
+
+**A host tool reaches no Unix socket outside its write set.** A pathname Unix
+socket is a way to ask another program of yours, a service of your session for
+one, to do what the tool itself may not, so the confinement closes it.
+
+- Where the kernel's Landlock is ABI 9 or later (Linux 7.1), Landlock refuses
+  the connection to any socket outside the tool's write set, and the tier line
+  reads `landlock_resolve_unix` for F, and the same word at the end of N.
+- Where the kernel's Landlock is older than ABI 9 (`mimlys status` shows the
+  rung), a seccomp rule refuses `socket(AF_UNIX, …)` altogether, so **a host
+  tool cannot create a Unix socket at all, not even in its own workspace**
+  (`socketpair` stays allowed). F reads `landlock+seccomp_no_unix_socket`, and
+  N ends with `seccomp_no_unix_socket`. `cargo test --offline` and the
+  dependency step need no Unix socket (measured); a tool that does need one
+  has to wait for a kernel with ABI 9. Most kernels in use today are on this
+  rung.
+- If neither holds (no Landlock ABI 9 and no seccomp), F and N read
+  `unavailable: no_unix_socket_guard` and host tools are not offered. This hole
+  can never be accepted with `accept_best_effort`.
+- On macOS the profile allows Unix sockets only under the write set; a tool's
+  own socket path must stay within the system's 104-byte limit for a socket
+  path, which a long path in the task's workspace can exceed (bind a relative
+  name).
+
+**A host tool writes only its own task's workspace.** Of the data directory a
+tool can write its task's tree and its execution's own temporary directory
+(which is also its `HOME` and `TMPDIR`: made for the execution and removed
+after it), and nothing of any other task. `<data>/tmp` is readable, not
+writable, by a tool. On Linux each tool gets a layer of its own; on macOS a
+sandboxed process cannot apply a second profile, so mimlys starts a worker for
+one task, and the first execution of another task replaces it (a restart of the
+worker on a task switch is the price). **On Windows every task's workspace is
+still in the container's write set**, so a host tool of one task can read and
+change another task's tree: this is recorded in the threat register and
+scheduled for 0.11. Do not run host tools of tasks that you do not trust on
+Windows beside tasks you do.
+
+**A host tool's processes end with it.** When the tool exits by itself, mimlys
+ends the rest of its process tree, as it does on a cancel or a deadline; a
+process that is still alive after LIM-O2 is logged at `warn` as
+`tree_kill_incomplete` on every platform. Nothing a tool started writes to the
+workspace after its action has been recorded as finished.
 
 ## Declare the tool
 
@@ -64,7 +113,8 @@ else: no shell, no other flag, no path. The tool runs in the task's private
 workspace with only `read_paths` and the system directories visible, with
 no network, with the environment you declared and nothing inherited. It
 writes `target/` inside the workspace, which snapshots and promotion skip;
-a host tool never writes anywhere else in this release.
+a host tool never writes anywhere else in this release (of the data directory,
+only its own task's workspace: see above).
 
 The declaration admits the name; one grant makes it usable. A task with
 `--grant host_tool:cargo_test` sees `run_host_tool` for that tool and
@@ -136,7 +186,9 @@ clause C count        best effort (process_count_watchdog)
 ```
 
 mimlys confines the worker with one Seatbelt profile, and every host tool
-inherits it (a sandboxed process cannot apply a second one). K is enforced
+inherits it (a sandboxed process cannot apply a second one). That is why the
+worker is made for one task: its profile holds only that task's workspace, and
+the first execution of another task replaces the worker. K is enforced
 because the sandbox itself tells the worker which processes are its own: after
 a cancel, a deadline or the end of a tool, the worker ends every one of them,
 a process that detached itself and was adopted by `launchd` included. M and C
