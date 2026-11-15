@@ -2376,6 +2376,47 @@ fn req_ctx_007_secrets_redacted_before_persistence() {
     assert!(request.contains("[redacted:backend.api_key]"));
 }
 
+/// REQ-CTX-007 (handoff 009g, item 5): the detail a tool gives of its failure is
+/// text of the tool's, and a configured secret in it never reaches the stored
+/// action, the stored observation or the next request: they hold the name marker.
+#[test]
+fn req_ctx_007_the_cause_of_a_failed_action_is_redacted() {
+    let secret = "sk-live-9f8e7d6c".to_owned();
+    let h = Harness::with_context(
+        context_scenario(2),
+        Policy::shipped(),
+        vec![("backend.api_key".into(), secret.clone())],
+        crate::limits::LIM_C1_CONTEXT_CHARS,
+    );
+    let mut failed = ExecutionOutcome::succeeded(json!({}), 1);
+    failed.termination = crate::action::Termination::Exited { exit_code: 1 };
+    failed.failure = Some(crate::action::FailureCause::ToolError {
+        detail: format!("denied: key {secret} is not accepted"),
+    });
+    h.tools.script("read_file", failed);
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create_with(|r| r.profile = Some("read_only".into()));
+    h.step(id);
+    h.step(id);
+    let marker = "denied: key [redacted:backend.api_key] is not accepted";
+    let observations = h.persistence.load_observations(id).unwrap();
+    assert_eq!(
+        observations[0].cause,
+        Some(crate::action::FailureCause::ToolError {
+            detail: marker.into()
+        })
+    );
+    let actions = serde_json::to_string(&h.persistence.load_actions(id).unwrap()).unwrap();
+    assert!(!actions.contains(&secret), "the stored action: {actions}");
+    assert!(actions.contains(marker), "{actions}");
+    let stored = serde_json::to_string(&observations).unwrap();
+    assert!(!stored.contains(&secret), "{stored}");
+    let request = serde_json::to_string(&h.backend.requests()[1].messages).unwrap();
+    assert!(!request.contains(&secret), "the prompt");
+    assert!(request.contains(marker), "{request}");
+}
+
 /// REQ-CTX-009: a tool's structured result is kept as JSON and shown to the model as
 /// JSON, never flattened to prose. The result has an object, an array, a number, a
 /// boolean and a null; the stored observation holds the same value, and the segment the

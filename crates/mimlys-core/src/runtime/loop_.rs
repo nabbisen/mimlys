@@ -1278,6 +1278,7 @@ impl Runtime {
                             // An action that cannot be undone is interrupted
                             // only by the second request (REQ-CLI-005).
                             cancel: self.execution_interruption(task.task_id, authorized.effect()),
+                            redactor: self.redactor.clone(),
                         },
                     )
                 },
@@ -1297,7 +1298,13 @@ impl Runtime {
             let ended = self.deps.clock.now();
             step.phase = StepPhase::Observe;
             let (status, cause) = match (&outcome.failure, &outcome.termination) {
-                (Some(cause), _) => (ObservationStatus::Failed, Some(cause.clone())),
+                (Some(cause), _) => {
+                    // What the tool said of its failure is text of the tool's:
+                    // the action keeps it, and the model reads it, redacted.
+                    let mut cause = cause.clone();
+                    self.redactor.redact_cause(&mut cause);
+                    (ObservationStatus::Failed, Some(cause))
+                }
                 (None, Termination::Cancelled) => (ObservationStatus::Cancelled, None),
                 (None, termination) => match FailureCause::from_termination(termination) {
                     Some(cause) => (ObservationStatus::Failed, Some(cause)),
@@ -1380,6 +1387,7 @@ impl Runtime {
                     rolled_back,
                 },
                 ended,
+                &self.redactor,
             );
             observation.redact(&self.redactor);
             step.observation_id = Some(observation.observation_id);

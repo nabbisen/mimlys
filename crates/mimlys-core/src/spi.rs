@@ -254,6 +254,10 @@ pub struct ExecutionContext {
     pub deadline_ms: i64,
     /// Cancellation flag (REQ-TOOL-007).
     pub cancel: Cancellation,
+    /// The runtime's redactor (REQ-CTX-007). A provider that cuts text redacts
+    /// the whole text first, so that no part of a secret is left across the cut;
+    /// the runtime redacts what the provider returns all the same.
+    pub redactor: crate::context::Redactor,
 }
 
 /// What a tool provider returns (external design §7.4, §8).

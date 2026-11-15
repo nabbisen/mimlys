@@ -106,3 +106,41 @@ fn req_ctx_010_common_prefix() {
     assert_eq!(content_chars(&a), 8);
     assert_eq!(common_prefix_chars(&[], &a), 0);
 }
+
+/// REQ-CTX-007 (handoff 009g, item 5): the keys of an object are text too. A key
+/// that holds a secret is redacted and keeps its value; two keys that come to
+/// the same text keep both values; the failure cause of a tool is redacted.
+#[test]
+fn req_ctx_007_redacts_keys_and_the_cause() {
+    let r = Redactor::new(&[("servers.x.env.TOKEN".into(), "tok-9f8e7d6c5b4a".into())]);
+    let mut value = json!({
+        "tok-9f8e7d6c5b4a": 1,
+        "[redacted:servers.x.env.TOKEN]": 2,
+        "plain": {"tok-9f8e7d6c5b4a-inner": "tok-9f8e7d6c5b4a"},
+    });
+    let found = r.redact_value(&mut value);
+    assert_eq!(found, ["servers.x.env.TOKEN"]);
+    let text = value.to_string();
+    assert!(!text.contains("tok-9f8e7d6c5b4a"), "{text}");
+    let object = value.as_object().unwrap();
+    assert_eq!(object.len(), 3, "{text}");
+    let mut numbers: Vec<i64> = object.values().filter_map(Value::as_i64).collect();
+    numbers.sort();
+    assert_eq!(numbers, [1, 2], "both values are kept");
+    assert_eq!(
+        value["plain"]["[redacted:servers.x.env.TOKEN]-inner"],
+        "[redacted:servers.x.env.TOKEN]"
+    );
+    let mut cause = crate::action::FailureCause::ToolError {
+        detail: "denied: token tok-9f8e7d6c5b4a is not accepted".into(),
+    };
+    assert_eq!(r.redact_cause(&mut cause), ["servers.x.env.TOKEN"]);
+    assert_eq!(
+        cause,
+        crate::action::FailureCause::ToolError {
+            detail: "denied: token [redacted:servers.x.env.TOKEN] is not accepted".into()
+        }
+    );
+    let mut timeout = crate::action::FailureCause::Timeout;
+    assert!(r.redact_cause(&mut timeout).is_empty());
+}

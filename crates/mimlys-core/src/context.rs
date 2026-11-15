@@ -302,11 +302,45 @@ impl Redactor {
                 }
             }
             Value::Object(map) => {
+                // The keys are text too: one that holds a secret is replaced,
+                // keeping its value (under another key if the marker is taken).
+                let keys: Vec<String> = map.keys().cloned().collect();
+                for key in keys {
+                    let (clean, found) = self.redact(&key);
+                    if found.is_empty() {
+                        continue;
+                    }
+                    names.extend(found);
+                    if let Some(item) = map.remove(&key) {
+                        let mut renamed = clean.clone();
+                        let mut n = 1;
+                        while map.contains_key(&renamed) {
+                            n += 1;
+                            renamed = format!("{clean}#{n}");
+                        }
+                        map.insert(renamed, item);
+                    }
+                }
                 for item in map.values_mut() {
                     self.walk(item, names);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Redacts the text of a failure cause (the detail a tool gave), in place;
+    /// returns the names found.
+    pub fn redact_cause(&self, cause: &mut crate::action::FailureCause) -> Vec<String> {
+        match cause {
+            crate::action::FailureCause::ToolError { detail } => {
+                let (clean, found) = self.redact(detail);
+                if !found.is_empty() {
+                    *detail = clean;
+                }
+                found
+            }
+            _ => Vec::new(),
         }
     }
 }

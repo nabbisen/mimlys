@@ -23,11 +23,21 @@ fn failed(reason: &str) -> ExecutionOutcome {
 
 /// `map_outcome` with a minute left of the call's deadline.
 fn maps(provider: &McpTools, name: &str, outcome: CallOutcome) -> ExecutionOutcome {
+    maps_with(provider, name, outcome, &Redactor::default())
+}
+
+/// As [`maps`], with the runtime's redactor.
+fn maps_with(
+    provider: &McpTools,
+    name: &str,
+    outcome: CallOutcome,
+    redactor: &Redactor,
+) -> ExecutionOutcome {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    rt.block_on(provider.map_outcome(name, outcome, 7, Duration::from_secs(60)))
+    rt.block_on(provider.map_outcome(name, outcome, 7, Duration::from_secs(60), redactor))
 }
 
 fn external_write() -> EffectView {
@@ -228,8 +238,127 @@ fn req_mcp_007_a_result_that_arrives_with_no_time_left_is_a_timeout() {
         .enable_all()
         .build()
         .unwrap();
-    let outcome =
-        rt.block_on(provider.map_outcome("s.t", result_of(json!({"a": 1})), 7, Duration::ZERO));
+    let outcome = rt.block_on(provider.map_outcome(
+        "s.t",
+        result_of(json!({"a": 1})),
+        7,
+        Duration::ZERO,
+        &Redactor::default(),
+    ));
     assert_eq!(outcome.failure, Some(FailureCause::Timeout));
     assert_eq!(outcome.termination, Termination::Deadline);
+}
+
+const SECRET: &str = "tok-9f8e7d6c5b4a";
+
+fn redactor() -> Redactor {
+    Redactor::new(&[("servers.t.env.TOKEN".into(), SECRET.into())])
+}
+
+/// REQ-CTX-007 (handoff 009g, item 5): the whole text is redacted before it is
+/// cut to the ceiling, so that no part of a secret that lies across the cut
+/// survives, at the end of the head or at the start of the tail; the notices say
+/// which secret was found, and that the text was cut.
+#[test]
+fn req_ctx_007_a_secret_across_the_cut_of_a_string_leaves_no_part_of_itself() {
+    let ceiling = mimlys_core::limits::LIM_C2_EXCERPT_CEILING_CHARS;
+    let head = ceiling * 3 / 4;
+    let tail = ceiling / 4;
+    let filler = |n: usize| "a".repeat(n);
+    let across_head = format!("{}{SECRET}{}", filler(head - 4), filler(ceiling));
+    let across_tail = format!("{}{SECRET}{}", filler(ceiling), filler(tail - 4));
+    for text in [across_head, across_tail] {
+        let outcome = maps_with(
+            &provider(),
+            "t.x",
+            result_of(json!({"text": text})),
+            &redactor(),
+        );
+        let payload = outcome.payload.to_string();
+        assert!(payload.contains("characters omitted"), "it was cut");
+        for part in [&SECRET[..4], &SECRET[SECRET.len() - 4..]] {
+            assert!(!payload.contains(part), "{part} is in the payload");
+        }
+        assert!(outcome.notices.contains(&Notice::SecretRedacted {
+            name: "servers.t.env.TOKEN".into()
+        }));
+        assert!(
+            outcome
+                .notices
+                .iter()
+                .any(|n| matches!(n, Notice::ContentTruncated { .. }))
+        );
+    }
+}
+
+/// REQ-CTX-007 (handoff 009g, item 5): a server's error that echoes a secret is
+/// redacted in the message that becomes the cause's detail and in the payload; a
+/// key of an object that is the secret is redacted too.
+#[test]
+fn req_ctx_007_an_error_that_echoes_a_secret_and_a_key_that_is_one() {
+    let outcome = maps_with(
+        &provider(),
+        "t.x",
+        CallOutcome::Result {
+            content: vec![],
+            structured: Some(json!({
+                "error": {"kind": "denied", "message": format!("token {SECRET} is not accepted")},
+                SECRET: 1,
+            })),
+            is_error: true,
+        },
+        &redactor(),
+    );
+    let Some(FailureCause::ToolError { detail }) = &outcome.failure else {
+        panic!("not a tool error: {:?}", outcome.failure);
+    };
+    assert_eq!(
+        detail,
+        "denied: token [redacted:servers.t.env.TOKEN] is not accepted"
+    );
+    assert!(!outcome.payload.to_string().contains(SECRET));
+    assert!(
+        outcome
+            .payload
+            .to_string()
+            .contains("\"[redacted:servers.t.env.TOKEN]\":1")
+    );
+}
+
+/// REQ-CTX-008, REQ-CTX-007 (handoff 009g, item 5): the keys of an object in a
+/// result are sanitized and bounded like its strings: invisible and bidirectional
+/// characters out, a key past LIM-I5 cut, two keys that clean to one text keep
+/// both values.
+#[test]
+fn req_ctx_008_the_keys_of_a_result_are_sanitized_and_bounded() {
+    let long = "k".repeat(500);
+    let outcome = maps(
+        &provider(),
+        "t.x",
+        result_of(json!({
+            "a\u{202E}b": 1,
+            "ab": 2,
+            "tag\u{E0041}": 3,
+            long.clone(): 4,
+            "nested": {"x\u{200B}y": 5},
+        })),
+    );
+    let object = outcome.payload.as_object().unwrap();
+    assert_eq!(object.len(), 5, "{object:?}");
+    assert!(object.contains_key("ab") && object.contains_key("ab#2"));
+    assert!(object.contains_key("tag"));
+    assert!(object.contains_key(&"k".repeat(mimlys_core::limits::LIM_I5_MESSAGE_CHARS)));
+    assert_eq!(outcome.payload["nested"]["xy"], 5);
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| matches!(n, Notice::CharactersRemoved { .. }))
+    );
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| matches!(n, Notice::ContentTruncated { total_chars: 500 }))
+    );
 }

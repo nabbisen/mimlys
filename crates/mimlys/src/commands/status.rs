@@ -355,4 +355,28 @@ mod tests {
         assert_eq!(fine[0].tools, ["a.b", "a.c"]);
         assert_eq!(fine[0].unavailable.len(), 1);
     }
+
+    /// REQ-CTX-008 (handoff 009g, item 6): the lines `status` writes for a server
+    /// show what the server said cleaned, whatever the status holds: the name,
+    /// the version, the revision, a tool, a parameter named in a reason.
+    #[test]
+    fn req_ctx_008_the_lines_of_a_server_show_its_text_cleaned() {
+        let dirty = "x\u{1b}[2J\u{1b}]0;title\u{7}y\u{202e}\nz";
+        let mut status = server("a", &["a.fine"]);
+        status.detail = Some(dirty.into());
+        status.server_name = Some(dirty.into());
+        status.server_version = Some(dirty.into());
+        status.revision = Some(dirty.into());
+        status.tools = vec![dirty.into()];
+        status.unavailable = vec![(dirty.into(), dirty.into())];
+        let lines = [
+            messages::server_line(&status),
+            messages::server_unavailable(&status.unavailable[0].0, &status.unavailable[0].1),
+        ];
+        for line in lines {
+            assert!(!line.chars().any(char::is_control), "{line:?}");
+            assert!(!line.contains('\u{202e}'), "{line:?}");
+            assert!(line.contains("x[2J]0;titley z"), "{line:?}");
+        }
+    }
 }
