@@ -57,8 +57,8 @@ fn req_conf_006_exit_code_259_is_a_final_exit_code() {
 
 /// REQ-CONF-006 (handoff 011n item 5): a host tool's standard input is closed
 /// at the spawn, so a program that reads it finds the end of the input at
-/// once and ends; the worker's own pipe (`Stdin::Piped`) stays open for its
-/// frames, and a program that reads it is still waiting.
+/// once and ends (the parent holds no end of it); the worker's own pipe
+/// (`Stdin::Piped`) stays open for its frames.
 #[test]
 fn req_conf_006_a_closed_stdin_reads_the_end_of_input_at_once() {
     // `findstr` reads its standard input to the end, then ends (exit code 1: no match).
@@ -67,15 +67,11 @@ fn req_conf_006_a_closed_stdin_reads_the_end_of_input_at_once() {
     let status = ended_within(&mut closed, Duration::from_secs(60))
         .expect("a program reading a closed standard input ends");
     assert_eq!(status.code(), Some(1));
-    // Contrast: with the pipe open the same program is still waiting for input.
-    let mut open = run("findstr x", Stdin::Piped, None).expect("spawns");
+    // Contrast: the worker's pipe is open and the parent holds its writing end
+    // (that a program reading it waits is shown on the host-tool path, by the
+    // probe tool, in `m6b_host_tools`).
+    let mut open = run("exit 0", Stdin::Piped, None).expect("spawns");
     assert!(open.stdin.is_some());
-    assert!(
-        ended_within(&mut open, Duration::from_secs(2)).is_none(),
-        "a program reading an open standard input waits"
-    );
-    open.kill().expect("kill");
-    drop(open.stdin.take());
     assert!(ended_within(&mut open, Duration::from_secs(60)).is_some());
 }
 
