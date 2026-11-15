@@ -196,7 +196,7 @@ async fn req_tool_003_read_file() {
     );
     assert_eq!(
         detail(&f.call("read_file", json!({"path": "src"})).await),
-        "read_failed"
+        "is_directory"
     );
 }
 
@@ -453,4 +453,198 @@ fn req_tool_003_golden_definition_hashes_of_0_9_0() {
         let actual = mimlys_core::hash::hash_canonical(&serde_json::to_value(definition).unwrap());
         assert_eq!(actual.as_str(), hash, "{name}");
     }
+}
+
+/// REQ-TOOL-003: a tool refuses a directory with `is_directory` and its hint, whatever it
+/// was going to do with it.
+#[tokio::test]
+async fn req_tool_003_a_directory_is_refused_by_the_tools_that_open_files() {
+    let f = Fixture::new();
+    for (tool, args) in [
+        ("read_file", json!({"path": "src"})),
+        ("write_file", json!({"path": "src", "content": "x"})),
+        (
+            "replace_in_file",
+            json!({"path": "src", "find": "a", "replace": "b"}),
+        ),
+    ] {
+        let o = f.call(tool, args).await;
+        assert_eq!(detail(&o), "is_directory", "{tool}");
+        assert!(
+            o.payload["hint"]
+                .as_str()
+                .is_some_and(|h| h.contains("list_dir"))
+        );
+    }
+    assert!(f.root.path().join("src").is_dir(), "nothing was changed");
+}
+
+/// REQ-TOOL-003: `read_file` stops at LIM-W3 (the size of a file a tool writes): a file of
+/// that size is read, one byte more is refused as `too_large`, and so is its replacement
+/// and its search (skipped and counted).
+#[tokio::test]
+async fn req_tool_003_a_read_is_bounded_by_the_file_size_limit() {
+    let f = Fixture::new();
+    let limit = mimlys_core::limits::LIM_W3_FILE_BYTES;
+    let at = f.root.path().join("at_limit.txt");
+    let over = f.root.path().join("over_limit.txt");
+    fs::write(&at, vec![b'a'; limit]).unwrap();
+    fs::write(&over, vec![b'a'; limit + 1]).unwrap();
+
+    let o = f.call("read_file", json!({"path": "at_limit.txt"})).await;
+    assert_eq!(o.termination, Termination::Exited { exit_code: 0 });
+    assert_eq!(o.payload["total_chars"], limit);
+    let o = f.call("read_file", json!({"path": "over_limit.txt"})).await;
+    assert_eq!(detail(&o), "too_large");
+    assert_eq!(o.payload["max_bytes"], limit);
+    let o = f
+        .call(
+            "replace_in_file",
+            json!({"path": "over_limit.txt", "find": "a", "replace": "b", "occurrences": 0}),
+        )
+        .await;
+    assert_eq!(detail(&o), "too_large");
+    assert_eq!(fs::metadata(&over).unwrap().len(), limit as u64 + 1);
+    let o = f
+        .call(
+            "search_files",
+            json!({"pattern": "zzz", "glob": "over_limit.txt"}),
+        )
+        .await;
+    assert!(o.notices.iter().any(|n| matches!(
+        n,
+        Notice::EntriesSkipped {
+            reason: mimlys_core::observation::SkipReason::TooLarge,
+            count: 1
+        }
+    )));
+}
+
+#[cfg(unix)]
+mod special_files {
+    use rustix::fs::{CWD, FileType, Mode, mknodat};
+    use std::time::Duration;
+
+    pub(super) fn make_fifo(path: &std::path::Path) {
+        mknodat(CWD, path, FileType::Fifo, Mode::from_raw_mode(0o600), 0).unwrap();
+    }
+
+    /// Runs `body` on a thread of its own, with a runtime of its own that is dropped on that
+    /// thread (a runtime waits for its blocking threads when it is dropped), and fails when
+    /// it has not finished within LIM-O1: a test that must fail does so, it does not hang.
+    pub(super) fn finishes_within_the_stop_limit<T: Send + 'static>(
+        body: impl FnOnce(&tokio::runtime::Runtime) -> T + Send + 'static,
+    ) -> T {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let result = body(&runtime);
+            drop(runtime);
+            let _ = sender.send(result);
+        });
+        receiver
+            .recv_timeout(Duration::from_millis(
+                mimlys_core::limits::LIM_O1_STOP_MS as u64,
+            ))
+            .expect("the tools did not finish, and the runtime did not exit, within LIM-O1")
+    }
+}
+
+/// REQ-TOOL-003, REQ-TOOL-006, REQ-CLI-005: a tool given a named pipe or a socket refuses it
+/// at once with `not_a_file` and its hint, and the runtime that ran it exits within LIM-O1.
+/// The file is left as it was. A search skips both and counts them as unreadable.
+#[cfg(unix)]
+#[test]
+fn req_tool_003_a_named_pipe_or_a_socket_is_refused_and_the_runtime_exits_within_lim_o1() {
+    use special_files::*;
+    let seen = finishes_within_the_stop_limit(|runtime| {
+        let f = Fixture::new();
+        make_fifo(&f.root.path().join("pipe"));
+        let listener = std::os::unix::net::UnixListener::bind(f.root.path().join("sock")).unwrap();
+        let mut seen = Vec::new();
+        for (path, kind) in [("pipe", "fifo"), ("sock", "socket")] {
+            for (tool, args) in [
+                ("read_file", json!({"path": path})),
+                ("write_file", json!({"path": path, "content": "x"})),
+                (
+                    "replace_in_file",
+                    json!({"path": path, "find": "a", "replace": "b"}),
+                ),
+            ] {
+                let o = runtime.block_on(f.call(tool, args));
+                seen.push((tool, kind, detail(&o).to_owned(), o.payload.clone()));
+            }
+        }
+        // The walk of a search skips both and counts them; a listing shows them; a deletion
+        // removes them: none of these opens the file.
+        let o = runtime.block_on(f.call("search_files", json!({"pattern": "needle"})));
+        assert!(
+            o.notices.iter().any(|n| matches!(
+                n,
+                Notice::EntriesSkipped {
+                    reason: mimlys_core::observation::SkipReason::Unreadable,
+                    count: 2
+                }
+            )),
+            "{:?}",
+            o.notices
+        );
+        assert_eq!(o.payload["matches"].as_array().unwrap().len(), 2);
+        let o = runtime.block_on(f.call("list_dir", json!({"path": "."})));
+        assert!(paths(&o).contains(&"pipe".to_owned()));
+        for path in ["pipe", "sock"] {
+            assert!(
+                fs::symlink_metadata(f.root.path().join(path)).is_ok(),
+                "{path} is as it was"
+            );
+        }
+        for path in ["pipe", "sock"] {
+            let o = runtime.block_on(f.call("delete_path", json!({"path": path})));
+            assert_eq!(o.payload["deleted"], 1);
+        }
+        drop(listener);
+        seen
+    });
+    assert_eq!(seen.len(), 6);
+    for (tool, kind, detail, payload) in seen {
+        assert_eq!(detail, "not_a_file", "{tool} on a {kind}");
+        assert_eq!(payload["type"], kind, "{tool}");
+        assert!(
+            payload["hint"].as_str().is_some_and(|h| !h.is_empty()),
+            "{tool}"
+        );
+    }
+}
+
+/// REQ-TOOL-006: the open itself does not wait. A named pipe opened for reading with no
+/// writer, and for writing with no reader, returns at once: the handle for reading (which
+/// the path look-up before it would not let through), and the operating system's refusal for
+/// writing. This is what stands behind the look-up when the file changes in between.
+#[cfg(unix)]
+#[test]
+fn req_tool_006_the_open_of_a_named_pipe_does_not_wait() {
+    use super::open::{Access, open_handle};
+    use special_files::*;
+    let (read, write) = finishes_within_the_stop_limit(|_runtime| {
+        let root = tempfile::tempdir().unwrap();
+        make_fifo(&root.path().join("pipe"));
+        let dir = Dir::open_ambient_dir(root.path(), cap_std::ambient_authority()).unwrap();
+        let read = open_handle(&dir, "pipe", Access::Read)
+            .map(|file| cap_std::fs::FileTypeExt::is_fifo(&file.metadata().unwrap().file_type()));
+        let write = open_handle(&dir, "pipe", Access::Write).map(|_| ());
+        (
+            read.map_err(|e| e.kind()),
+            write.map_err(|e| e.raw_os_error()),
+        )
+    });
+    assert_eq!(read, Ok(true), "opened for reading, and it is a named pipe");
+    assert_eq!(
+        write,
+        Err(Some(rustix::io::Errno::NXIO.raw_os_error())),
+        "no reader: refused at once"
+    );
 }

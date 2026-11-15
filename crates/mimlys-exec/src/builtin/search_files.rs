@@ -1,3 +1,4 @@
+use super::open::{Access, ReadError, open_regular, read_bounded};
 use super::{Body, ToolError, ToolResult, check_cancel, int_arg, make_definition, str_arg};
 use cap_std::fs::Dir;
 use mimlys_core::action::EffectKind;
@@ -142,14 +143,31 @@ impl Search<'_> {
             if self.glob.as_ref().is_some_and(|g| !g.is_match(&child)) {
                 continue;
             }
+            // Only a regular file is opened (a named pipe, a socket or a device is skipped
+            // and counted as unreadable), without blocking, and what is read is bounded.
+            if !file_type.is_file() {
+                *self.skipped.entry(SkipReason::Unreadable).or_default() += 1;
+                continue;
+            }
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
             if size as usize > LIM_W3_FILE_BYTES {
                 *self.skipped.entry(SkipReason::TooLarge).or_default() += 1;
                 continue;
             }
-            let Ok(bytes) = dir.read(&child) else {
+            let Ok(file) = open_regular(dir, &child, Access::Read) else {
                 *self.skipped.entry(SkipReason::Unreadable).or_default() += 1;
                 continue;
+            };
+            let bytes = match read_bounded(file, LIM_W3_FILE_BYTES) {
+                Ok(bytes) => bytes,
+                Err(ReadError::TooLarge) => {
+                    *self.skipped.entry(SkipReason::TooLarge).or_default() += 1;
+                    continue;
+                }
+                Err(ReadError::Io(_)) => {
+                    *self.skipped.entry(SkipReason::Unreadable).or_default() += 1;
+                    continue;
+                }
             };
             let text = String::from_utf8_lossy(&bytes);
             for (i, line) in text.lines().enumerate() {

@@ -1,8 +1,10 @@
+use super::open::{Access, open_regular};
 use super::{Body, ToolError, ToolResult, make_definition, path_param, str_arg, workspace_path};
 use mimlys_core::action::EffectKind;
 use mimlys_core::limits::LIM_W3_FILE_BYTES;
 use mimlys_core::tool::{Param, ParamType, ToolDefinition};
 use serde_json::json;
+use std::io::Write;
 
 pub(super) fn definition() -> ToolDefinition {
     make_definition(
@@ -54,12 +56,15 @@ pub(super) fn run(body: Body) -> ToolResult {
             .map_err(|e| ToolError::io("create_parent_failed", &e))?;
     }
     let created = !body.dir.exists(path.as_str());
-    body.dir
-        .write(path.as_str(), content.as_bytes())
-        .map_err(|e| match e.kind() {
+    let mut file = open_regular(&body.dir, path.as_str(), Access::Write).map_err(|e| {
+        e.into_tool(|e| match e.kind() {
             std::io::ErrorKind::NotFound => ToolError::new("no_parent"),
-            _ => ToolError::io("write_failed", &e),
-        })?;
+            _ => ToolError::io("write_failed", e),
+        })
+    })?;
+    file.set_len(0)
+        .and_then(|()| file.write_all(content.as_bytes()))
+        .map_err(|e| ToolError::io("write_failed", &e))?;
     Ok((
         json!({
             "path": path.as_str(),

@@ -1,7 +1,9 @@
+use super::open::{Access, ReadError, open_regular, read_bounded};
 use super::{Body, ToolError, ToolResult, int_arg, make_definition, path_param, workspace_path};
 use mimlys_core::action::EffectKind;
 use mimlys_core::limits::{
     LIM_C2_EXCERPT_CEILING_CHARS, LIM_C2_EXCERPT_HEAD_CHARS, LIM_C2_EXCERPT_TAIL_CHARS,
+    LIM_W3_FILE_BYTES,
 };
 use mimlys_core::observation::{Notice, decode_lossy};
 use mimlys_core::tool::{Param, ParamType, ToolDefinition};
@@ -48,9 +50,21 @@ pub(super) fn run(body: Body) -> ToolResult {
         (LIM_C2_EXCERPT_HEAD_CHARS + LIM_C2_EXCERPT_TAIL_CHARS) as i64,
     )
     .max(1) as usize;
-    let bytes = body.dir.read(path.as_str()).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => ToolError::new("not_found"),
-        _ => ToolError::io("read_failed", &e),
+    // The file is opened without blocking and is a regular file; what is read is bounded
+    // by LIM-W3, the size of a file a tool writes: `total_chars` and `total_lines` are of
+    // the whole file, so the read goes to its end, and a larger file is refused.
+    let file = open_regular(&body.dir, path.as_str(), Access::Read).map_err(|e| {
+        e.into_tool(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => ToolError::new("not_found"),
+            _ => ToolError::io("read_failed", e),
+        })
+    })?;
+    let bytes = read_bounded(file, LIM_W3_FILE_BYTES).map_err(|e| match e {
+        ReadError::TooLarge => ToolError {
+            detail: "too_large",
+            payload: json!({ "max_bytes": LIM_W3_FILE_BYTES }),
+        },
+        ReadError::Io(e) => ToolError::io("read_failed", &e),
     })?;
     let (text, replaced) = decode_lossy(&bytes);
     let mut notices = Vec::new();
