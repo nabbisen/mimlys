@@ -107,8 +107,17 @@ pub fn import(
         }
     };
     for arg in &declaration.destination_arguments {
-        if !input.params.iter().any(|p| &p.name == arg) {
-            unavailable(&mut record, format!("destination_unknown:{arg}"));
+        // A destination is a string (REQ-MCP-005): the parameter must exist, and
+        // its schema type must be `string` (an enumeration of strings is one).
+        let reason = match input.params.iter().find(|p| &p.name == arg) {
+            None => Some(format!("destination_unknown:{arg}")),
+            Some(p) if !matches!(p.ty, ParamType::String { .. } | ParamType::Enum { .. }) => {
+                Some(format!("destination_not_string:{arg}"))
+            }
+            Some(_) => None,
+        };
+        if let Some(reason) = reason {
+            unavailable(&mut record, reason);
             return Imported {
                 name,
                 definition: None,

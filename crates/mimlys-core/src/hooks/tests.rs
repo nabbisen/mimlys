@@ -9,6 +9,7 @@ use crate::policy::Policy;
 use crate::rejection::{Detail, Rejection, RejectionCode};
 use crate::tool::{Param, ParamSchema, Provider, ResourceProfile};
 use crate::validate::{Outcome, ValidationContext, validate};
+use serde_json::json;
 
 fn tools() -> Vec<ToolDefinition> {
     let read = EffectView {
@@ -374,6 +375,60 @@ fn req_mcp_005_an_http_destination_is_scheme_not_https_at_stage_7() {
             .hint()
             .contains("granted domain")
     );
+}
+
+/// REQ-MCP-005 (stage 7; handoff 009g, item 2): a destination argument that is
+/// present and is not a string is `destination_not_granted`, whatever it holds:
+/// an array of URLs the grant would cover, an object, a number, a boolean, null.
+/// The hook is asked directly, as the stage asks it after the schema stage: it does
+/// not rely on that stage to have refused the value. A string is judged as before,
+/// and an absent argument is not a destination.
+#[test]
+fn req_mcp_005_a_destination_that_is_not_a_string_is_not_granted_at_stage_7() {
+    let net = Fixture::new(true);
+    let hooks = PolicyHooks {
+        grants: &net.grants,
+        profile: net.policy.profile("workspace").unwrap(),
+        exclusions: &net.exclusions,
+        case: CaseMode::Sensitive,
+        task: TaskView {
+            now: net.clock.now(),
+            remaining_ms: 1000,
+            workspace_remaining_bytes: None,
+        },
+        host_tools: &net.policy.host_tools,
+    };
+    let fetch = net
+        .tools
+        .iter()
+        .find(|t| t.name == "rypsok.web_fetch")
+        .unwrap();
+    assert_eq!(fetch.destination_arguments, ["url"]);
+    let check = |url: Value| {
+        let mut args = Map::new();
+        args.insert("url".into(), url);
+        hooks.check(fetch, &args)
+    };
+    for forged in [
+        json!(["https://example.org/x"]),
+        json!({"url": "https://example.org/x"}),
+        json!(443),
+        json!(true),
+        Value::Null,
+    ] {
+        let denial = check(forged.clone()).unwrap_err();
+        assert_eq!(
+            denial.reason,
+            DeniedReason::DestinationNotGranted,
+            "{forged}"
+        );
+    }
+    assert!(check(json!("https://example.org/x")).is_ok());
+    assert_eq!(
+        check(json!("https://other.org/x")).unwrap_err().reason,
+        DeniedReason::DestinationNotGranted
+    );
+    assert!(hooks.check(fetch, &Map::new()).is_ok());
 }
 
 /// REQ-APR-001 (stage 9) and REQ-TOOL-006 / REQ-WS-008 (stage 10): approval from the profile, deadline and quota.

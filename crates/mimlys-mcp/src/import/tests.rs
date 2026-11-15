@@ -219,6 +219,64 @@ fn req_mcp_003_unavailable_reasons() {
     ));
 }
 
+/// REQ-MCP-005 (handoff 009g, item 2): a destination parameter whose schema type
+/// is not `string` makes the tool unavailable at import, with the reason, whatever
+/// the type is: an array of strings, an integer, a boolean, an object. A string,
+/// a string that may be null, and an enumeration of strings are destinations.
+#[test]
+fn req_mcp_005_a_destination_parameter_must_be_a_string() {
+    let tool = |param: Value| {
+        listed(
+            "fetch_all",
+            "d",
+            json!({"type": "object", "properties": {"target": param}}),
+            None,
+        )
+    };
+    let mut decl = declared();
+    decl.destination_arguments = vec!["target".into()];
+    for (ty, param) in [
+        (
+            "array",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        ("integer", json!({"type": "integer"})),
+        ("boolean", json!({"type": "boolean"})),
+        (
+            "object",
+            json!({"type": "object", "properties": {"u": {"type": "string"}}}),
+        ),
+    ] {
+        let imported = import("s", &tool(param), Some(&decl), None);
+        assert_eq!(
+            imported.record.unavailable.as_deref(),
+            Some("destination_not_string:target"),
+            "{ty}"
+        );
+        assert!(imported.definition.is_none(), "{ty}");
+    }
+    for param in [
+        json!({"type": "string"}),
+        json!({"type": ["string", "null"]}),
+        json!({"type": "string", "enum": ["https://example.org/a", "https://example.org/b"]}),
+    ] {
+        let imported = import("s", &tool(param.clone()), Some(&decl), None);
+        assert_eq!(imported.record.unavailable, None, "{param}");
+        assert_eq!(
+            imported.definition.unwrap().destination_arguments,
+            ["target"]
+        );
+    }
+    // The same parameter that is not a destination imports as it did.
+    let imported = import(
+        "s",
+        &tool(json!({"type": "array", "items": {"type": "string"}})),
+        Some(&declared()),
+        None,
+    );
+    assert_eq!(imported.record.unavailable, None);
+}
+
 /// REQ-MCP-008 (external design §11): the deadline of an imported tool, declared
 /// or not, is never below the server's `max_call_ms`; without one the
 /// declaration's value, or LIM-O5 for an undeclared tool, stands.
