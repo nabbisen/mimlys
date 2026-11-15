@@ -12,13 +12,22 @@ fn provider() -> McpTools {
 }
 
 fn failed(reason: &str) -> ExecutionOutcome {
-    provider().map_outcome(
+    maps(
+        &provider(),
         "t.x",
         CallOutcome::Failed {
             reason: reason.into(),
         },
-        7,
     )
+}
+
+/// `map_outcome` with a minute left of the call's deadline.
+fn maps(provider: &McpTools, name: &str, outcome: CallOutcome) -> ExecutionOutcome {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(provider.map_outcome(name, outcome, 7, Duration::from_secs(60)))
 }
 
 fn external_write() -> EffectView {
@@ -151,4 +160,76 @@ fn req_tool_009_a_server_past_its_restart_limit_is_unavailable_and_not_unknown()
     assert_eq!(unreachable.termination, died.termination);
     assert_eq!(unreachable.failure, died.failure);
     assert_eq!(unreachable.payload, json!({"reason": "startup_timeout"}));
+}
+
+/// A provider whose tool `s.t` has the output schema `schema`.
+fn provider_with_output(schema: Value) -> McpTools {
+    use crate::server::Listed;
+    let mut provider = provider();
+    let listed = Listed {
+        name: "t".into(),
+        description: Some("d".into()),
+        input_schema: json!({"type": "object"}),
+        output_schema: Some(schema),
+        annotations: None,
+    };
+    let imported = crate::import::import("s", &listed, None, None);
+    assert_eq!(imported.record.unavailable, None);
+    provider.imported.insert(imported.name.clone(), imported);
+    provider
+}
+
+fn result_of(value: Value) -> CallOutcome {
+    CallOutcome::Result {
+        content: vec![],
+        structured: Some(value),
+        is_error: false,
+    }
+}
+
+/// REQ-MCP-006, REQ-TOOL-005 (handoff 009g, item 3): a schema that is within the
+/// bounds at import but costs more than the budget on one result ends that
+/// call `output_invalid`, with the reason that says the schema was too costly,
+/// and the same schema passes a result of the size it was written for.
+#[test]
+fn req_mcp_006_a_result_too_costly_for_its_schema_is_output_invalid() {
+    let mut alternatives: Vec<Value> = (0..7)
+        .map(|i| json!({"type": "string", "const": format!("other{i}")}))
+        .collect();
+    alternatives.push(json!({"type": "string", "const": "x"}));
+    let schema = json!({
+        "type": "object", "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"anyOf": alternatives}}}
+    });
+    let provider = provider_with_output(schema);
+    let small = maps(&provider, "s.t", result_of(json!({"items": ["x", "x"]})));
+    assert_eq!(small.failure, None, "{:?}", small.payload);
+    let big = maps(
+        &provider,
+        "s.t",
+        result_of(json!({"items": vec!["x"; mimlys_core::schema::MAX_VISITS]})),
+    );
+    assert_eq!(big.failure, Some(FailureCause::OutputInvalid));
+    assert_eq!(
+        big.payload["reason"],
+        mimlys_core::schema::TOO_COSTLY,
+        "{:?}",
+        big.payload
+    );
+}
+
+/// REQ-MCP-007, REQ-MCP-006 (handoff 009g, item 3): the validation is part of the
+/// call, so a call whose deadline has passed when its result arrives is a call
+/// that timed out, and its result is not passed.
+#[test]
+fn req_mcp_007_a_result_that_arrives_with_no_time_left_is_a_timeout() {
+    let provider = provider_with_output(json!({"type": "object"}));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let outcome =
+        rt.block_on(provider.map_outcome("s.t", result_of(json!({"a": 1})), 7, Duration::ZERO));
+    assert_eq!(outcome.failure, Some(FailureCause::Timeout));
+    assert_eq!(outcome.termination, Termination::Deadline);
 }

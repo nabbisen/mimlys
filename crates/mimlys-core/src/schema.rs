@@ -7,6 +7,13 @@
 //! tool whose results the runtime cannot validate is unavailable rather
 //! than trusted (fail closed). `format`, `description`, `title`,
 //! `default`, `examples` and `$schema` are documentation and ignored.
+//!
+//! Validation is bounded. A schema is refused at parse time when it is too
+//! large ([`MAX_NODES`]), too wide ([`MAX_WIDTH`]) or when the alternatives
+//! that apply to one value, followed through references, can cost more than
+//! [`MAX_ALTERNATIVE_COST`] visits. A validation counts the nodes it visits
+//! and, past [`MAX_VISITS`], ends with a violation that says the schema was too
+//! costly to check; it never runs without end on a value.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,6 +21,27 @@ use std::collections::BTreeMap;
 
 /// The deepest nesting a schema may have.
 pub const MAX_DEPTH: usize = 12;
+
+/// The most nodes a schema may have, `$defs` included. Proposed: rypsok's three
+/// response schemas have under a hundred between them; the bound awaits
+/// registration as a limit.
+pub const MAX_NODES: usize = 1024;
+
+/// The most entries any one list in a schema may have (`properties`,
+/// `required`, `enum`, `anyOf`, `oneOf`). Proposed, as above.
+pub const MAX_WIDTH: usize = 128;
+
+/// The most visits the alternatives that apply to one value may cost, a
+/// reference counted with its target (see [`MAX_VISITS`]). Proposed, as above.
+pub const MAX_ALTERNATIVE_COST: usize = 64;
+
+/// The most nodes one validation may visit. Proposed, as above: it is linear in
+/// the size of the value once [`MAX_ALTERNATIVE_COST`] holds, and large enough
+/// for the largest response a tool is expected to give.
+pub const MAX_VISITS: usize = 100_000;
+
+/// What a validation that ran out of visits says.
+pub const TOO_COSTLY: &str = "the schema was too costly to check";
 
 /// Keywords that carry no validation meaning and are ignored.
 const IGNORED: [&str; 10] = [
@@ -97,22 +125,95 @@ impl OutputSchema {
     /// Parses a schema; an unknown construct is refused with its path.
     pub fn parse(schema: &Value) -> Result<Self, Unsupported> {
         let mut defs = BTreeMap::new();
+        let mut nodes = 0usize;
         if let Some(raw) = schema.get("$defs").or_else(|| schema.get("definitions")) {
             let map = raw.as_object().ok_or_else(|| Unsupported {
                 path: "$defs".into(),
                 construct: "non-object $defs".into(),
             })?;
+            if map.len() > MAX_WIDTH {
+                return Err(too_wide("$defs"));
+            }
             for (name, def) in map {
-                defs.insert(name.clone(), parse_node(def, &format!("$defs/{name}"), 1)?);
+                defs.insert(
+                    name.clone(),
+                    parse_node(def, &format!("$defs/{name}"), 1, &mut nodes)?,
+                );
             }
         }
-        let root = parse_node(schema, "", 0)?;
+        let root = parse_node(schema, "", 0, &mut nodes)?;
         let parsed = Self { root, defs };
         parsed.check_refs(&parsed.root, "")?;
         for (name, node) in &parsed.defs {
             parsed.check_refs(node, &format!("$defs/{name}"))?;
         }
+        parsed.check_cost()?;
         Ok(parsed)
+    }
+
+    /// Refuses a schema whose alternatives can cost more than
+    /// [`MAX_ALTERNATIVE_COST`] visits on one value. A reference is followed to
+    /// its target, so a chain of definitions costs what its alternatives multiply
+    /// to, which is what a validation would pay; a reference cycle among
+    /// alternatives has no end and is refused.
+    fn check_cost(&self) -> Result<(), Unsupported> {
+        let mut memo: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut open: Vec<&str> = Vec::new();
+        let too_costly = |path: &str| Unsupported {
+            path: path.to_owned(),
+            construct: "alternatives too costly to check".into(),
+        };
+        let root = self
+            .cost(&self.root, &mut memo, &mut open)
+            .ok_or_else(|| too_costly(""))?;
+        if root > MAX_ALTERNATIVE_COST {
+            return Err(too_costly(""));
+        }
+        for (name, node) in &self.defs {
+            let cost = self
+                .cost(node, &mut memo, &mut open)
+                .ok_or_else(|| too_costly(&format!("$defs/{name}")))?;
+            if cost > MAX_ALTERNATIVE_COST {
+                return Err(too_costly(&format!("$defs/{name}")));
+            }
+        }
+        Ok(())
+    }
+
+    /// The visits `node` costs on one value, before its properties and items,
+    /// which apply to other values; `None` when it is past the bound or has no end.
+    fn cost<'a>(
+        &'a self,
+        node: &'a Node,
+        memo: &mut BTreeMap<&'a str, usize>,
+        open: &mut Vec<&'a str>,
+    ) -> Option<usize> {
+        match node {
+            Node::Any | Node::Typed(_) => Some(1),
+            Node::Ref(name) => {
+                if let Some(cost) = memo.get(name.as_str()) {
+                    return Some(*cost);
+                }
+                if open.contains(&name.as_str()) {
+                    return None;
+                }
+                open.push(name);
+                let cost = self.cost(self.defs.get(name)?, memo, open);
+                open.pop();
+                let cost = cost?.checked_add(1)?.min(MAX_ALTERNATIVE_COST + 1);
+                memo.insert(name, cost);
+                Some(cost)
+            }
+            Node::AnyOf(items) | Node::OneOf(items) | Node::All(items) => {
+                let mut total = 1usize;
+                for item in items {
+                    total = total
+                        .saturating_add(self.cost(item, memo, open)?)
+                        .min(MAX_ALTERNATIVE_COST + 1);
+                }
+                Some(total)
+            }
+        }
     }
 
     fn check_refs(&self, node: &Node, path: &str) -> Result<(), Unsupported> {
@@ -143,12 +244,47 @@ impl OutputSchema {
         }
     }
 
-    /// Validates a value; the first violation is returned with its path.
+    /// Validates a value; the first violation is returned with its path. A
+    /// validation visits at most [`MAX_VISITS`] nodes; past that the violation
+    /// is [`TOO_COSTLY`].
     pub fn validate(&self, value: &Value) -> Result<(), Violation> {
-        self.check(&self.root, value, "$", 0)
+        self.validate_within(value, MAX_VISITS)
     }
 
-    fn check(&self, node: &Node, value: &Value, path: &str, depth: usize) -> Result<(), Violation> {
+    /// As [`OutputSchema::validate`], with `visits` as the bound.
+    pub fn validate_within(&self, value: &Value, visits: usize) -> Result<(), Violation> {
+        let mut budget = Budget {
+            left: visits,
+            spent: false,
+        };
+        let result = self.check(&self.root, value, "$", 0, &mut budget);
+        if budget.spent {
+            // Whatever the walk made of the nodes it was refused, the verdict is
+            // that it could not finish.
+            return Err(Violation {
+                path: "$".into(),
+                reason: TOO_COSTLY.into(),
+            });
+        }
+        result
+    }
+
+    fn check(
+        &self,
+        node: &Node,
+        value: &Value,
+        path: &str,
+        depth: usize,
+        budget: &mut Budget,
+    ) -> Result<(), Violation> {
+        if budget.left == 0 {
+            budget.spent = true;
+            return Err(Violation {
+                path: path.to_owned(),
+                reason: TOO_COSTLY.into(),
+            });
+        }
+        budget.left -= 1;
         if depth > MAX_DEPTH * 2 {
             return Err(Violation {
                 path: path.to_owned(),
@@ -159,12 +295,12 @@ impl OutputSchema {
             Node::Any => Ok(()),
             Node::Ref(name) => {
                 let target = self.defs.get(name).expect("checked at parse");
-                self.check(target, value, path, depth + 1)
+                self.check(target, value, path, depth + 1, budget)
             }
             Node::AnyOf(items) => {
                 if items
                     .iter()
-                    .any(|n| self.check(n, value, path, depth + 1).is_ok())
+                    .any(|n| self.check(n, value, path, depth + 1, budget).is_ok())
                 {
                     Ok(())
                 } else {
@@ -176,14 +312,14 @@ impl OutputSchema {
             }
             Node::All(items) => {
                 for n in items {
-                    self.check(n, value, path, depth + 1)?;
+                    self.check(n, value, path, depth + 1, budget)?;
                 }
                 Ok(())
             }
             Node::OneOf(items) => {
                 let matches = items
                     .iter()
-                    .filter(|n| self.check(n, value, path, depth + 1).is_ok())
+                    .filter(|n| self.check(n, value, path, depth + 1, budget).is_ok())
                     .count();
                 if matches == 1 {
                     Ok(())
@@ -194,7 +330,7 @@ impl OutputSchema {
                     })
                 }
             }
-            Node::Typed(t) => self.check_typed(t, value, path, depth),
+            Node::Typed(t) => self.check_typed(t, value, path, depth, budget),
         }
     }
 
@@ -204,6 +340,7 @@ impl OutputSchema {
         value: &Value,
         path: &str,
         depth: usize,
+        budget: &mut Budget,
     ) -> Result<(), Violation> {
         let violation = |reason: String| Violation {
             path: path.to_owned(),
@@ -264,7 +401,7 @@ impl OutputSchema {
             }
             if let Some(schema) = &t.items {
                 for (i, item) in items.iter().enumerate() {
-                    self.check(schema, item, &format!("{path}[{i}]"), depth + 1)?;
+                    self.check(schema, item, &format!("{path}[{i}]"), depth + 1, budget)?;
                 }
             }
         }
@@ -277,7 +414,7 @@ impl OutputSchema {
             for (k, v) in map {
                 let child = format!("{path}.{k}");
                 match t.properties.get(k) {
-                    Some(schema) => self.check(schema, v, &child, depth + 1)?,
+                    Some(schema) => self.check(schema, v, &child, depth + 1, budget)?,
                     None if t.no_additional => {
                         return Err(Violation {
                             path: child,
@@ -286,13 +423,27 @@ impl OutputSchema {
                     }
                     None => {
                         if let Some(schema) = &t.additional {
-                            self.check(schema, v, &child, depth + 1)?;
+                            self.check(schema, v, &child, depth + 1, budget)?;
                         }
                     }
                 }
             }
         }
         Ok(())
+    }
+}
+
+/// The visits a validation may still make.
+struct Budget {
+    left: usize,
+    /// Set when a node was refused for want of a visit.
+    spent: bool,
+}
+
+fn too_wide(path: &str) -> Unsupported {
+    Unsupported {
+        path: path.to_owned(),
+        construct: "wider than the bound".into(),
     }
 }
 
@@ -322,13 +473,22 @@ fn type_name(value: &Value) -> &'static str {
     }
 }
 
-fn parse_node(schema: &Value, path: &str, depth: usize) -> Result<Node, Unsupported> {
+fn parse_node(
+    schema: &Value,
+    path: &str,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<Node, Unsupported> {
     let unsupported = |construct: String| Unsupported {
         path: path.to_owned(),
         construct,
     };
     if depth > MAX_DEPTH {
         return Err(unsupported("nesting deeper than the bound".into()));
+    }
+    *nodes += 1;
+    if *nodes > MAX_NODES {
+        return Err(unsupported("larger than the bound".into()));
     }
     match schema {
         Value::Bool(true) => return Ok(Node::Any),
@@ -355,13 +515,16 @@ fn parse_node(schema: &Value, path: &str, depth: usize) -> Result<Node, Unsuppor
         }
         return Ok(Node::Ref(name.to_owned()));
     }
-    let alternatives = |key: &str| -> Result<Option<Vec<Node>>, Unsupported> {
+    let alternatives = |key: &str, nodes: &mut usize| -> Result<Option<Vec<Node>>, Unsupported> {
         match map.get(key) {
             None => Ok(None),
+            Some(Value::Array(items)) if items.len() > MAX_WIDTH => {
+                Err(unsupported(format!("{key} wider than the bound")))
+            }
             Some(Value::Array(items)) => items
                 .iter()
                 .enumerate()
-                .map(|(i, item)| parse_node(item, &format!("{path}/{key}/{i}"), depth + 1))
+                .map(|(i, item)| parse_node(item, &format!("{path}/{key}/{i}"), depth + 1, nodes))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Some),
             Some(_) => Err(unsupported(format!("non-array {key}"))),
@@ -417,17 +580,24 @@ fn parse_node(schema: &Value, path: &str, depth: usize) -> Result<Node, Unsuppor
                 let props = value
                     .as_object()
                     .ok_or_else(|| unsupported("non-object properties".into()))?;
+                if props.len() > MAX_WIDTH {
+                    return Err(unsupported("properties wider than the bound".into()));
+                }
                 for (name, sub) in props {
                     typed.properties.insert(
                         name.clone(),
-                        parse_node(sub, &format!("{path}/properties/{name}"), depth + 1)?,
+                        parse_node(sub, &format!("{path}/properties/{name}"), depth + 1, nodes)?,
                     );
                 }
             }
             "required" => {
-                typed.required = value
+                let names = value
                     .as_array()
-                    .ok_or_else(|| unsupported("non-array required".into()))?
+                    .ok_or_else(|| unsupported("non-array required".into()))?;
+                if names.len() > MAX_WIDTH {
+                    return Err(unsupported("required wider than the bound".into()));
+                }
+                typed.required = names
                     .iter()
                     .map(|v| {
                         v.as_str()
@@ -444,19 +614,26 @@ fn parse_node(schema: &Value, path: &str, depth: usize) -> Result<Node, Unsuppor
                         other,
                         &format!("{path}/additionalProperties"),
                         depth + 1,
+                        nodes,
                     )?)
                 }
             },
             "items" => {
-                typed.items = Some(parse_node(value, &format!("{path}/items"), depth + 1)?);
+                typed.items = Some(parse_node(
+                    value,
+                    &format!("{path}/items"),
+                    depth + 1,
+                    nodes,
+                )?);
             }
             "enum" => {
-                typed.enum_values = Some(
-                    value
-                        .as_array()
-                        .ok_or_else(|| unsupported("non-array enum".into()))?
-                        .clone(),
-                );
+                let values = value
+                    .as_array()
+                    .ok_or_else(|| unsupported("non-array enum".into()))?;
+                if values.len() > MAX_WIDTH {
+                    return Err(unsupported("enum wider than the bound".into()));
+                }
+                typed.enum_values = Some(values.clone());
             }
             "const" => typed.const_value = Some(value.clone()),
             "minimum" => typed.minimum = Some(number(value, key, path)?),
@@ -465,8 +642,8 @@ fn parse_node(schema: &Value, path: &str, depth: usize) -> Result<Node, Unsuppor
             "maxLength" => typed.max_length = Some(number(value, key, path)? as usize),
             "minItems" => typed.min_items = Some(number(value, key, path)? as usize),
             "maxItems" => typed.max_items = Some(number(value, key, path)? as usize),
-            "anyOf" => any_of = alternatives("anyOf")?,
-            "oneOf" => one_of = alternatives("oneOf")?,
+            "anyOf" => any_of = alternatives("anyOf", nodes)?,
+            "oneOf" => one_of = alternatives("oneOf", nodes)?,
             other => return Err(unsupported(format!("keyword {other}"))),
         }
     }
