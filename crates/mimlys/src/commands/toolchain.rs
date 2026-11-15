@@ -27,6 +27,7 @@ pub fn list(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             &d.name,
             &d.command,
             d.network,
+            d.allow_paths,
             unavailable,
         ));
         for p in &d.read_paths {

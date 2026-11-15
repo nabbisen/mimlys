@@ -45,6 +45,9 @@ struct HostToolView {
     name: String,
     command: String,
     network: bool,
+    /// The declaration says `allow_paths = true` (A-34): shown only then.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    allow_paths: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     unavailable: Option<String>,
 }
@@ -157,6 +160,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             &d.name,
             &d.command,
             d.network,
+            d.allow_paths,
             app.host_tools_unavailable.get(&d.name).map(String::as_str),
         ));
     }
@@ -233,6 +237,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
                 name: d.name.clone(),
                 command: d.command.clone(),
                 network: d.network,
+                allow_paths: d.allow_paths,
                 unavailable: app.host_tools_unavailable.get(&d.name).cloned(),
             })
             .collect(),

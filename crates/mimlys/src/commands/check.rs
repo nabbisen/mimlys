@@ -46,8 +46,11 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
     for (server, ms) in loaded.config.short_shutdown_servers() {
         out.line(messages::server_shutdown_short_warning(&server, ms));
     }
-    for name in loaded.config.host_tools.keys() {
+    for (name, section) in &loaded.config.host_tools {
         out.line(messages::ceiling_host_tool(name));
+        if section.allow_paths {
+            out.line(messages::host_tool_allow_paths_warning(name));
+        }
     }
     out.line("");
     out.line(loaded.config.to_toml().trim_end());
@@ -61,6 +64,7 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         "undeclared_external_tools": loaded.config.undeclared_external_tools(),
         "short_shutdown_servers": loaded.config.short_shutdown_servers().into_iter().map(|(s, ms)| serde_json::json!({"server": s, "shutdown_ms": ms})).collect::<Vec<_>>(),
         "host_tools": loaded.config.host_tools.keys().collect::<Vec<_>>(),
+        "host_tools_allow_paths": loaded.config.host_tools.iter().filter(|(_, s)| s.allow_paths).map(|(name, _)| name).collect::<Vec<_>>(),
     });
     if let Some(file) = xcrun_missing {
         value["xcrun_cache_missing"] = serde_json::Value::String(file);

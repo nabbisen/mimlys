@@ -94,6 +94,7 @@ tools = [{builtin}]
 command = {tool:?}
 allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "sandbox-nested", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
+allow_paths = true
 max_args = 3
 effect = "workspace_write"
 timeout_ms = 20000
@@ -127,6 +128,7 @@ read_paths = [{tooldir:?}]
 command = {tool:?}
 allowed_args = ["connect", "connect-name", "getaddrinfo", "read"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
+allow_paths = true
 max_args = 2
 effect = "external_read"
 timeout_ms = 30000

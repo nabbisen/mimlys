@@ -439,6 +439,64 @@ fn req_conf_010_the_tool_layer_holds_no_right_on_the_workers_cgroup() {
     assert_eq!(worker, Ok(()), "the worker's layer has it");
 }
 
+/// REQ-CONF-006, REQ-WS-005 (handoff 011n item 9): the layer is made from the
+/// task's directories opened without following a link, and given Landlock as
+/// the descriptors they were opened by. A `..` component, a task directory that
+/// is a link and a tree that is a link are refused: no layer is made, so no
+/// tool starts. A plain task still gets its layer.
+#[test]
+fn req_conf_006_a_tool_layer_is_not_made_through_a_dotdot_or_a_link() {
+    let Some(abi) = detect_abi_capped(None) else {
+        crate::test_skip::skip(
+            "req_conf_006_a_tool_layer_is_not_made_through_a_dotdot_or_a_link",
+            "no Landlock on this kernel",
+        );
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let workspaces = data.join("workspaces");
+    for task in ["a", "b"] {
+        std::fs::create_dir_all(workspaces.join(task).join("tree")).unwrap();
+        std::fs::create_dir_all(workspaces.join(task).join("tmp").join("e")).unwrap();
+    }
+    // `<data>/tree`, reached by `<data>/workspaces/../tree`, and a place a link can lead to.
+    std::fs::create_dir_all(data.join("tree")).unwrap();
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join("tree")).unwrap();
+    std::fs::create_dir_all(elsewhere.join("tmp").join("e")).unwrap();
+    let mut spec = spec_denying_network(&data);
+    spec.write_paths = vec![workspaces.clone(), data.join("tmp")];
+    let a = workspaces.join("a");
+    let layer = |tree: &Path, tmp: &Path| tool_ruleset(&spec, abi, TaskPaths { tree, tmp });
+    assert!(layer(&a.join("tree"), &a.join("tmp").join("e")).is_ok());
+    let by_dotdot = layer(
+        &workspaces.join("..").join("tree"),
+        &a.join("tmp").join("e"),
+    )
+    .map(|_| ());
+    assert!(by_dotdot.is_err(), "a .. component: {by_dotdot:?}");
+    // A linked task directory.
+    std::os::unix::fs::symlink(&elsewhere, workspaces.join("c")).unwrap();
+    let linked_task = layer(
+        &workspaces.join("c/tree"),
+        &workspaces.join("c/tmp").join("e"),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(linked_task.contains("link"), "{linked_task}");
+    // A linked tree.
+    std::fs::create_dir_all(workspaces.join("d/tmp/e")).unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("tree"), workspaces.join("d/tree")).unwrap();
+    let linked_tree = layer(
+        &workspaces.join("d/tree"),
+        &workspaces.join("d/tmp").join("e"),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(linked_tree.contains("link"), "{linked_tree}");
+}
+
 /// REQ-CONF-006: a host tool's layer holds, of the data directory, its own
 /// task's workspace tree and the execution's temporary directory, and
 /// nothing else: it can neither list, read nor write another task's tree,
@@ -564,7 +622,7 @@ fn req_conf_006_a_tool_layer_is_refused_for_paths_that_are_not_one_task() {
     let mut spec = spec_denying_network(&data);
     spec.write_paths = vec![workspaces.clone(), data.join("tmp")];
     let (a_tree, a_tmp) = (workspaces.join("a/tree"), workspaces.join("a/tmp"));
-    let ok = |tree: &Path, tmp: &Path| tool_spec(&spec, TaskPaths { tree, tmp });
+    let ok = |tree: &Path, tmp: &Path| crate::confine::task_spec(&spec, tree, tmp);
     let granted = ok(&a_tree, &a_tmp).expect("one task");
     assert!(granted.write_paths.contains(&a_tree) && granted.write_paths.contains(&a_tmp));
     assert!(
@@ -584,14 +642,5 @@ fn req_conf_006_a_tool_layer_is_refused_for_paths_that_are_not_one_task() {
     assert!(ok(&a_tree, &workspaces.join("a/tmp/missing")).is_err());
     let mut no_data_dir = spec.clone();
     no_data_dir.data_dir = PathBuf::new();
-    assert!(
-        tool_spec(
-            &no_data_dir,
-            TaskPaths {
-                tree: &a_tree,
-                tmp: &a_tmp
-            }
-        )
-        .is_err()
-    );
+    assert!(crate::confine::task_spec(&no_data_dir, &a_tree, &a_tmp).is_err());
 }

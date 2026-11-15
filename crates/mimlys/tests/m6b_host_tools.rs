@@ -98,6 +98,7 @@ command = {tool:?}
 read_paths = [{tools_dir:?}]
 allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc"]
 arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
+allow_paths = true
 max_args = 3
 effect = "workspace_write"
 timeout_ms = 10000
@@ -107,6 +108,23 @@ command = {tool:?}
 read_paths = [{tools_dir:?}]
 allowed_args = ["ok"]
 arg_pattern = "[a-z]+"
+max_args = 3
+effect = "workspace_write"
+timeout_ms = 20000
+[host_tools.plain]
+command = {tool:?}
+read_paths = [{tools_dir:?}]
+allowed_args = ["ok", "read"]
+arg_pattern = ".+"
+max_args = 3
+effect = "workspace_write"
+timeout_ms = 20000
+[host_tools.plain_paths]
+command = {tool:?}
+read_paths = [{tools_dir:?}]
+allowed_args = ["ok", "read"]
+arg_pattern = ".+"
+allow_paths = true
 max_args = 3
 effect = "workspace_write"
 timeout_ms = 20000
@@ -227,6 +245,14 @@ network = true
 
 fn strict(args: &[&str]) -> Value {
     json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "strict", "args": args}})
+}
+
+fn plain_tool(args: &[&str]) -> Value {
+    json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "plain", "args": args}})
+}
+
+fn plain_paths_tool(args: &[&str]) -> Value {
+    json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "plain_paths", "args": args}})
 }
 
 fn probe(args: &[&str]) -> Value {
@@ -1289,4 +1315,60 @@ fn req_conf_008_first_start_time_is_reported() {
     assert_eq!(code, 0, "{granted}");
     eprintln!("FIRST_START_MS={}", elapsed.as_millis());
     assert!(elapsed < std::time::Duration::from_secs(120), "{elapsed:?}");
+}
+
+/// REQ-CONF-006, REQ-SEC-005 (A-34, scope of 0.11), on the Windows job: whatever
+/// its pattern admits, a host tool's argument that names a path outside the
+/// workspace (a `..` component; a start with `/`, `\\`, `~` or a drive, in a part
+/// after `=` or after a short option's letter too) is `denied` with
+/// `argument_not_allowed`; a declaration with `allow_paths = true` is admitted
+/// and runs.
+#[test]
+fn req_conf_006_a_path_argument_is_denied_unless_the_declaration_allows_paths() {
+    let env = Env::new(
+        &[
+            // Never more than LIM-T2 rejections in a row: an admitted action between them.
+            plain_tool(&["read", "..\\x"]),
+            plain_tool(&["read", "C:\\Windows\\win.ini"]),
+            plain_tool(&["ok"]),
+            plain_tool(&["-I\\\\server\\share"]),
+            plain_tool(&["--out=/x"]),
+            plain_tool(&["ok"]),
+            plain_tool(&["--dir=~/x"]),
+            plain_paths_tool(&["read", "C:\\mimlys\\does\\not\\exist"]),
+            complete(),
+        ],
+        "",
+    )
+    .ready();
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "paths",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:plain",
+        "--grant",
+        "host_tool:plain_paths",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let rejections = env.rejections(&id);
+    assert_eq!(rejections.len(), 5, "{rejections:?}");
+    for r in &rejections {
+        assert!(
+            r.contains("denied") && r.contains("argument_not_allowed"),
+            "{r}"
+        );
+    }
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 3, "{}", account(&obs));
+    assert_eq!(stdout_of(&obs[0]).trim(), "ok");
+    assert_eq!(stdout_of(&obs[1]).trim(), "ok");
+    assert!(
+        stdout_of(&obs[2]).contains("read failed"),
+        "allow_paths admitted the path; the tool ran: {}",
+        account(&obs)
+    );
 }

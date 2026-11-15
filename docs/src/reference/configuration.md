@@ -89,6 +89,7 @@ timeout_ms = 600000             # LIM-H1, 10000–3600000
 read_paths = ["~/.cargo/bin", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read; a directory holding credentials (`~/.cargo` holds `credentials.toml`) is refused
 env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 # env_allow = ["RUSTFLAGS"]     copied from mimlys's environment
+# allow_paths = true            admit arguments that name paths outside the workspace (a `..` component, or a start with `/`, `\`, `~` or a drive such as `C:`); no argument may otherwise, whatever arg_pattern admits; `check` and `status` show it
 # network = true                the dependency step: the effect must then be `external_read` (and only then); approval where the profile asks; destinations unbounded
 
 [servers.rypsok]                # an MCP server as a child process; see External tools

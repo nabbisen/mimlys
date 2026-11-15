@@ -22,6 +22,7 @@ fn declaration(command: &str, read_paths: &[&Path]) -> HostToolDeclaration {
         env: BTreeMap::new(),
         env_allow: vec![],
         network: false,
+        allow_paths: false,
     }
 }
 
@@ -98,6 +99,102 @@ fn req_conf_006_path_is_built_from_declared_bin_paths() {
         resolve_command(&missing)
             .unwrap_err()
             .contains("no declared bin directory")
+    );
+}
+
+/// A shell that prints its own address-space limit in KiB, as a host tool.
+#[cfg(target_os = "linux")]
+fn limit_reporter() -> HostToolDeclaration {
+    let mut d = declaration("/bin/sh", &[]);
+    d.args = vec!["-c".into(), "ulimit -v".into()];
+    d
+}
+
+/// REQ-CONF-005, REQ-SEC-011 (handoff 011n item 7), Linux: clause M on the
+/// `rlimit_as` rung is set in the child, between fork and exec, and never in
+/// the worker. Under many spawns, with the limit far below this process's own
+/// address space, (a) another thread's allocations never fail, (b) this
+/// process's limit is what it was after each spawn, and (c) the tool does
+/// have the limit (the shell reports it): the limit still applies to the tool.
+#[cfg(target_os = "linux")]
+#[test]
+fn req_conf_005_the_address_space_limit_is_the_childs_not_the_workers() {
+    use rustix::process::{Resource, getrlimit};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    // Run in a process of its own (this binary again, with this one test): the
+    // forks of forty spawns must not meet the other tests of the binary, which
+    // write and execute files of their own (a fork holding a file open that
+    // another thread then executes fails with "text file busy").
+    const CHILD: &str = "MIMLYS_RLIMIT_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .env(CHILD, "1")
+            .args([
+                "--exact",
+                "host_tool::tests::req_conf_005_the_address_space_limit_is_the_childs_not_the_workers",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "the test, run alone, failed");
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let sandbox = crate::sandbox::Sandbox::new().unwrap();
+    let d = limit_reporter();
+    let before = getrlimit(Resource::As);
+    // 64 MiB: below the address space of this process, so that a limit lowered
+    // here would make a thread's next large allocation fail.
+    let limit: u64 = 64 << 20;
+    let stop = AtomicBool::new(false);
+    let failures = AtomicU64::new(0);
+    let attempts = AtomicU64::new(0);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stop.load(Ordering::Relaxed) {
+                let mut v: Vec<u8> = Vec::new();
+                attempts.fetch_add(1, Ordering::Relaxed);
+                if v.try_reserve_exact(8 << 20).is_err() {
+                    failures.fetch_add(1, Ordering::Relaxed);
+                }
+                std::thread::yield_now();
+            }
+        });
+        for round in 0..40 {
+            let interrupt = sandbox.interrupt(10_000);
+            let outcome = run(HostRun {
+                declaration: &d,
+                extra_args: vec![],
+                workspace: root.path(),
+                tmp: root.path(),
+                deadline_ms: 10_000,
+                interrupt: &interrupt,
+                rlimit_memory: Some(limit),
+                tool_cgroup: None,
+                tree_limits: TreeLimits::default(),
+            });
+            let said = String::from_utf8_lossy(&outcome.stdout).trim().to_owned();
+            assert_eq!(
+                said,
+                (limit / 1024).to_string(),
+                "round {round}: the tool's limit ({:?})",
+                outcome.termination
+            );
+            assert_eq!(
+                getrlimit(Resource::As),
+                before,
+                "round {round}: this process's limit is untouched"
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+    });
+    assert!(attempts.load(Ordering::Relaxed) > 0, "the allocator ran");
+    assert_eq!(
+        failures.load(Ordering::Relaxed),
+        0,
+        "another thread's allocation failed during a spawn ({} attempts)",
+        attempts.load(Ordering::Relaxed)
     );
 }
 

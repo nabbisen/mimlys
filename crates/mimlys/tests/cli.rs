@@ -391,6 +391,76 @@ fn req_conf_006_check_refuses_a_batch_script_command() {
     assert_eq!(code, 0, "the program the script runs loads: {value}");
 }
 
+/// REQ-CONF-006, REQ-SEC-005 (A-34, scope of 0.11), on every platform: a
+/// declaration that relied on the override of 0.10 and earlier (an
+/// `arg_pattern` that names `/`) fails `check` and every command that loads
+/// the configuration, with the key, the reason and the remedy
+/// (`allow_paths = true`), not at run time; with `allow_paths = true` it loads,
+/// and `check` and `status` show it, in text and in JSON; a declaration
+/// without it shows nothing.
+#[test]
+fn req_conf_006_check_and_status_show_allow_paths_and_refuse_an_old_declaration() {
+    let tool = |tail: &str| {
+        format!(
+            "[host_tools.build]\ncommand = \"x.exe\"\neffect = \"workspace_write\"\nmax_args = 2\n{tail}"
+        )
+    };
+    let old = Env::new(&tool("arg_pattern = \"[a-z/]+\"\n"));
+    for args in [&["check"][..], &["status"][..]] {
+        let (code, value) = old.json(args);
+        assert_eq!(code, 1, "{args:?}: {value}");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("host_tools.build.arg_pattern")
+                && message.contains("until 0.10")
+                && message.contains("allow_paths = true"),
+            "{args:?}: {message}"
+        );
+    }
+    let env = Env::new(&tool("arg_pattern = \"[a-z/]+\"\nallow_paths = true\n"));
+    let (code, stdout, stderr) = env.run(&["check"], "");
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("warning: host_tools.build sets allow_paths = true"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("allow_paths = true"),
+        "the resolved configuration says it: {stdout}"
+    );
+    let (code, value) = env.json(&["check"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        value["host_tools_allow_paths"],
+        serde_json::json!(["build"])
+    );
+    assert_eq!(value["config"]["host_tools"]["build"]["allow_paths"], true);
+    let (code, stdout, stderr) = env.run(&["status"], "");
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("host tool       build:")
+            && stdout.contains("allow_paths: arguments may name paths"),
+        "{stdout}"
+    );
+    let (code, value) = env.json(&["status"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["host_tools"][0]["allow_paths"], true, "{value}");
+    // Without it, nothing is shown.
+    let plain = Env::new(&tool("arg_pattern = \"[a-z]+\"\n"));
+    let (code, value) = plain.json(&["check"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["host_tools_allow_paths"], serde_json::json!([]));
+    let (code, stdout, _) = plain.run(&["check"], "");
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("allow_paths"), "{stdout}");
+    let (code, value) = plain.json(&["status"]);
+    assert_eq!(code, 0, "{value}");
+    assert!(
+        value["host_tools"][0].get("allow_paths").is_none(),
+        "{value}"
+    );
+}
+
 /// REQ-CONF-008: `toolchain revoke --all` takes no path (a usage error, exit
 /// 2), and one of the two is required.
 #[test]

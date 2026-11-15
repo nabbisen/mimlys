@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub mod dacl_wait;
 #[cfg(target_os = "linux")]
 pub mod linux;
+pub mod task_paths;
 
 /// The sweeper (REQ-CONF-009): a process that outlives the worker and cleans
 /// up after it; the macOS backend uses it, and its pipe behaviour is tested
@@ -52,10 +53,13 @@ pub struct ConfinementSpec {
 /// entries inside the data directory (every task's workspace and the
 /// runtime's temporary directory) are replaced by the task's tree and a
 /// temporary directory of the task. The paths are checked to be what they
-/// claim: the tree of one task directly under `<data>/workspaces`, named
-/// `tree`, and the temporary directory inside that task's directory; both
-/// exist. Anything else is refused, never widened. A specification without a
-/// data directory is refused.
+/// claim and **opened, not compared** (handoff 011n item 9,
+/// [`task_paths`]): the tree of one task directly under `<data>/workspaces`,
+/// named `tree`, and the temporary directory inside that task's directory;
+/// every component below the data directory a plain name (a `..` is refused,
+/// not resolved), each level opened without following a link (a linked task
+/// directory is refused), both existing. Anything else is refused, never
+/// widened. A specification without a data directory is refused.
 pub fn task_spec(
     base: &ConfinementSpec,
     tree: &Path,
@@ -64,27 +68,22 @@ pub fn task_spec(
     if base.data_dir.as_os_str().is_empty() {
         return Err("no data directory in the specification".to_owned());
     }
-    let task_dir = tree
-        .parent()
-        .filter(|dir| dir.parent() == Some(base.data_dir.join("workspaces").as_path()))
-        .ok_or_else(|| format!("{} is not the tree of a task", tree.display()))?;
-    if tree.file_name().is_none_or(|name| name != "tree") || !tmp.starts_with(task_dir) {
-        return Err(format!(
-            "{} and {} do not belong to one task",
-            tree.display(),
-            tmp.display()
-        ));
-    }
-    for dir in [tree, tmp] {
-        if !dir.is_dir() {
-            return Err(format!("{} is not a directory", dir.display()));
-        }
-    }
-    let mut spec = base.clone();
-    spec.write_paths.retain(|p| !p.starts_with(&base.data_dir));
+    // The opened directories are dropped here: the profile (macOS) takes the
+    // paths, which have just been shown to hold no link. On Linux the layer of
+    // a host tool keeps the descriptors (`linux::restrict_child`).
+    task_paths::open_task(&base.data_dir, tree, tmp)?;
+    let mut spec = without_data_dir_writes(base);
     spec.write_paths.push(tree.to_path_buf());
     spec.write_paths.push(tmp.to_path_buf());
     Ok(spec)
+}
+
+/// The specification with the write set's entries inside the data directory
+/// taken out: what is the same for every task in a task's specification.
+fn without_data_dir_writes(base: &ConfinementSpec) -> ConfinementSpec {
+    let mut spec = base.clone();
+    spec.write_paths.retain(|p| !p.starts_with(&base.data_dir));
+    spec
 }
 
 /// What a backend reports per clause after applying itself.

@@ -15,6 +15,7 @@ fn cargo_test() -> HostToolDeclaration {
         env: BTreeMap::new(),
         env_allow: vec![],
         network: false,
+        allow_paths: false,
     }
 }
 
@@ -56,14 +57,157 @@ fn req_conf_006_argument_validation() {
     none.max_args = 0;
     assert!(none.validate_args(&[]).is_ok());
     assert!(none.validate_args(&["--lib".into()]).is_err());
-    // A pattern that names `/` allows relative paths but still not `..`.
-    let mut paths = cargo_test();
-    paths.arg_pattern = Some("[A-Za-z0-9_./-]+".into());
-    assert!(paths.validate_args(&["src/lib.rs".into()]).is_ok());
-    assert!(
-        paths.validate_args(&["../x".into()]).is_ok(),
-        "the pattern allows dots; the workspace boundary is the worker's"
-    );
+}
+
+/// A declaration whose pattern admits anything: the rule on paths is the
+/// declaration's `allow_paths`, never what the pattern admits.
+fn permissive(allow_paths: bool) -> HostToolDeclaration {
+    let mut d = cargo_test();
+    d.allowed_args.clear();
+    d.arg_pattern = Some(".+".into());
+    d.max_args = 1;
+    d.allow_paths = allow_paths;
+    d
+}
+
+/// REQ-CONF-006, REQ-SEC-005 (A-34, scope of 0.11): a host tool's argument
+/// names no path outside its workspace, on every platform and whatever the
+/// pattern admits. The argument, each part between `=` signs and what follows
+/// a short option's letter is refused when it holds a `..` component or
+/// begins with `/`, `\`, `~`, a drive or `\\`.
+#[test]
+fn req_conf_006_a_host_tool_argument_names_no_path_outside_the_workspace() {
+    let d = permissive(false);
+    for refused in [
+        "..",
+        "../x",
+        "a/../b",
+        "a\\..\\b",
+        "x/..",
+        "/etc/passwd",
+        "/",
+        "\\x",
+        "\\\\server\\share\\f",
+        "~",
+        "~/x",
+        "~root/x",
+        "C:\\x",
+        "c:/x",
+        "C:",
+        "d:foo",
+        // A part after `=`.
+        "--manifest-path=../Cargo.toml",
+        "--target-dir=/tmp/out",
+        "--dir=~/x",
+        "--out=C:\\x",
+        "--a=b=/etc",
+        "--x=--y=../z",
+        "-I=/usr/include",
+        // After a short option's letter.
+        "-I/usr/include",
+        "-I../x",
+        "-o~/x",
+        "-L\\\\srv\\x",
+        "-Ic:\\x",
+        "-o..",
+    ] {
+        let e = d.validate_args(&[refused.to_owned()]).unwrap_err();
+        assert!(
+            matches!(e, ArgViolation::NotAllowed { index: 0, .. }),
+            "{refused:?}: {e}"
+        );
+    }
+    for admitted in [
+        "src/lib.rs",
+        "a/b/c",
+        "foo..bar",
+        "1..5",
+        "..a",
+        "a..",
+        "...",
+        "my_test",
+        "x::y",
+        "a::b",
+        "--lib",
+        "--release",
+        "-v",
+        "-j4",
+        "-Dwarnings",
+        "-Itarget/include",
+        "--target-dir=target",
+        "--features=a,b",
+        "--cfg=feature",
+        "a~b",
+        "--name=~",
+    ] {
+        // `--name=~` is a part that begins with `~`: refused; the rest pass.
+        let expected_ok = admitted != "--name=~";
+        assert_eq!(
+            d.validate_args(&[admitted.to_owned()]).is_ok(),
+            expected_ok,
+            "{admitted:?}"
+        );
+    }
+    // The fixed arguments are the administrator's: not looked at.
+    let mut fixed = permissive(false);
+    fixed.args = vec!["--manifest-path=/srv/project/Cargo.toml".into()];
+    assert!(fixed.validate_args(&["x".into()]).is_ok());
+    assert!(fixed.check().is_ok());
+}
+
+/// REQ-CONF-006, REQ-SEC-005 (A-34): `allow_paths = true` in the declaration
+/// admits every refused form, and only what the pattern admits: a path the
+/// pattern does not admit is still refused.
+#[test]
+fn req_conf_006_allow_paths_admits_what_the_pattern_admits() {
+    let d = permissive(true);
+    for path in [
+        "../x",
+        "/etc/passwd",
+        "~/x",
+        "C:\\x",
+        "--manifest-path=../Cargo.toml",
+        "-I/usr/include",
+    ] {
+        assert!(d.validate_args(&[path.to_owned()]).is_ok(), "{path}");
+    }
+    let mut narrow = cargo_test();
+    narrow.allow_paths = true;
+    assert!(narrow.validate_args(&["../x".into()]).is_err());
+    assert!(narrow.validate_args(&["my_test".into()]).is_ok());
+}
+
+/// REQ-CONF-006 (A-34, the upgrade): a declaration that relied on the override
+/// of 0.10 and earlier (an `arg_pattern` that names `/` or `\.`) fails `check`
+/// with the key, the reason and the remedy, and passes with
+/// `allow_paths = true`; a literal of `allowed_args` that names a path fails
+/// the same way; a pattern that never named a path passes unchanged.
+#[test]
+fn req_conf_006_a_declaration_that_relied_on_the_override_fails_check() {
+    for pattern in ["[A-Za-z0-9_./-]+", "src/.*", "[a-z]+\\.rs", "[^ ]*/[^ ]*"] {
+        let mut d = cargo_test();
+        d.arg_pattern = Some(pattern.into());
+        let e = d.check().unwrap_err();
+        assert_eq!(e.key, "host_tools.cargo_test.arg_pattern", "{pattern}");
+        assert!(e.reason.contains("allow_paths = true"), "{}", e.reason);
+        assert!(e.reason.contains("until 0.10"), "{}", e.reason);
+        assert!(e.reason.contains(&format!("{pattern:?}")), "{}", e.reason);
+        d.allow_paths = true;
+        assert!(d.check().is_ok(), "{pattern} with allow_paths");
+    }
+    let mut literal = cargo_test();
+    literal.allowed_args = vec!["--lib".into(), "--manifest-path=../Cargo.toml".into()];
+    let e = literal.check().unwrap_err();
+    assert_eq!(e.key, "host_tools.cargo_test.allowed_args");
+    assert!(e.reason.contains("allow_paths = true"), "{}", e.reason);
+    assert!(e.reason.contains("--manifest-path=../Cargo.toml"));
+    literal.allow_paths = true;
+    assert!(literal.check().is_ok());
+    // Patterns that never named a path pass, as does the default declaration.
+    assert!(cargo_test().check().is_ok());
+    let mut dots = cargo_test();
+    dots.arg_pattern = Some("[A-Za-z0-9_.-]+".into());
+    assert!(dots.check().is_ok());
 }
 
 /// RFC 011 §6, §8: the effect is the declaration's; `workspace_write` is

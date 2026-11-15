@@ -116,6 +116,43 @@ writes `target/` inside the workspace, which snapshots and promotion skip;
 a host tool never writes anywhere else in this release (of the data directory,
 only its own task's workspace: see above).
 
+**No argument names a path outside the workspace.** The rule holds on every
+platform, whatever `arg_pattern` admits. Each argument the model adds is taken
+apart: the whole argument, each part between `=` signs (`--manifest-path=../x`
+has the part `../x`), and what follows a short option's letter (`-I../x` has
+`../x`). A part that holds a `..` component (between `/` or `\`), or begins
+with `/`, `\` (so `\\server\share` too), `~` or a drive (`C:`), is refused as
+`argument_not_allowed`, and the task goes on. `foo..bar`, `1..5` and the `::`
+of a Rust path are not paths. The command's fixed `args` are yours and are not
+looked at.
+
+A tool that needs such arguments says so, and `check` and `status` show that it
+does:
+
+```toml
+[host_tools.build]
+command = "/usr/local/bin/build"
+arg_pattern = "[A-Za-z0-9_./-]+"
+allow_paths = true              # the model may pass paths, `..` included
+max_args = 2
+effect = "workspace_write"
+```
+
+`allow_paths = true` lifts the rule for that tool only; the pattern still has
+to admit the argument, and the confinement still decides what the tool can
+reach (a path outside the workspace and the read set is refused by the
+operating system, not by mimlys). **Upgrading from 0.10 or earlier:** until
+0.10 an `arg_pattern` that named `/` or `\.` admitted paths without saying so.
+Such a declaration, and an `allowed_args` literal that names a path, now fails
+`mimlys check` and every command that loads the configuration, with the key,
+the reason and the remedy:
+
+```text
+host_tools.build.arg_pattern: the pattern "[A-Za-z0-9_./-]+" names `/` or `\.`, which until 0.10 admitted arguments that name paths; … add allow_paths = true to [host_tools.build]; otherwise write a pattern without `/` and `\.`
+```
+
+It does not fail later, at run time, with a bare refusal.
+
 The declaration admits the name; one grant makes it usable. A task with
 `--grant host_tool:cargo_test` sees `run_host_tool` for that tool and
 nothing more, and `approval_tools = ["run_host_tool"]` in the profile asks

@@ -3,7 +3,7 @@
 //! and validated arguments, in the task's workspace, with an explicit
 //! environment, both streams captured to LIM-H4, the deadline and the
 //! interrupt honoured by terminating the whole tree, and, where no cgroup
-//! bounds memory, `RLIMIT_AS` set for the child around the spawn. On
+//! bounds memory, `RLIMIT_AS` set in the child between fork and exec. On
 //! Windows the tool starts suspended inside a job of its own, nested in the
 //! worker's, so that its tree is killed as one (clause K). On macOS the tree
 //! is the sandbox's members: killed by the membership loop after a cancel, a
@@ -395,11 +395,14 @@ fn spawn_tool(program: &Path, r: &HostRun<'_>) -> Result<ToolProc, String> {
         },
     )
     .map_err(|e| format!("tool layer: {e}"))?;
-    let previous = r.rlimit_memory.and_then(set_address_space_limit);
-    let spawned = cmd.spawn();
-    if let Some(prev) = previous {
-        restore_address_space_limit(prev);
+    // Clause M on the `rlimit_as` rung: the limit is set in the child, between
+    // fork and exec, and never in this multi-threaded process, where another
+    // thread's allocation could fail while it was lowered.
+    #[cfg(target_os = "linux")]
+    if let Some(bytes) = r.rlimit_memory {
+        crate::confine::linux::limit_child_address_space(&mut cmd, bytes);
     }
+    let spawned = cmd.spawn();
     #[cfg(target_os = "linux")]
     drop(layer);
     spawned.map(ToolProc::Std).map_err(|e| e.to_string())
@@ -620,30 +623,6 @@ impl Capture {
         (bytes, notice)
     }
 }
-
-#[cfg(target_os = "linux")]
-fn set_address_space_limit(bytes: u64) -> Option<rustix::process::Rlimit> {
-    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
-    let previous = getrlimit(Resource::As);
-    let wanted = Rlimit {
-        current: Some(bytes.min(previous.maximum.unwrap_or(u64::MAX))),
-        maximum: previous.maximum,
-    };
-    setrlimit(Resource::As, wanted).ok().map(|()| previous)
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn set_address_space_limit(_bytes: u64) -> Option<()> {
-    None
-}
-
-#[cfg(target_os = "linux")]
-fn restore_address_space_limit(previous: rustix::process::Rlimit) {
-    let _ = rustix::process::setrlimit(rustix::process::Resource::As, previous);
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn restore_address_space_limit(_previous: ()) {}
 
 #[cfg(test)]
 mod tests;
