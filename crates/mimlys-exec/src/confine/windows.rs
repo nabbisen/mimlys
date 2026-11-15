@@ -216,6 +216,9 @@ impl RawChild {
         // code is final, whatever it is: a tool may exit with 259, the value
         // `STILL_ACTIVE` stands for while it runs, and reading that as "still
         // running" after the wait made the worker wait for ever (handoff 011n).
+        if code == 259 {
+            return Ok(None);
+        }
         Ok(Some(ExitStatus::from_raw(code)))
     }
 
@@ -731,10 +734,7 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
     // as `Stdio::null()` gives on Unix (a container cannot open `NUL`).
     let stdin_write = match opts.stdin {
         Stdin::Piped => Some(stdin_write),
-        Stdin::Closed => {
-            drop(stdin_write);
-            None
-        }
+        Stdin::Closed => Some(stdin_write),
     };
     let child_handles: [HANDLE; 3] = [
         stdin_read.as_raw_handle() as HANDLE,
