@@ -580,3 +580,116 @@ fn req_pers_008_an_external_write_whose_connection_is_lost_after_the_call_is_unk
     assert_eq!(listed[0]["tool"], "rypsok.die", "{task}");
     assert_eq!(env.halts(&id, "unknown_outcome"), 1);
 }
+
+impl Env {
+    /// The test server as `rypsok` with `change_definition` and `web_search`
+    /// declared `external_read` and idempotent: the model proposes the change,
+    /// then a search, then completes. The server answers its first listing and
+    /// never another (`MIMLYS_TESTSERVER_HANG_LIST_AFTER`), and its listing
+    /// deadline is the longest LIM-O6 allows, 120 s, so that nothing but the
+    /// stop signal can end the wait. The server's log of listing requests is
+    /// `lists.log` in the data directory.
+    fn listing_never_answered() -> Self {
+        let data = tempfile::tempdir().unwrap();
+        let config = data.path().join("config.toml");
+        let script = [
+            json!({"decision": "act", "tool": "rypsok.change_definition", "arguments": {}}),
+            json!({"decision": "act", "tool": "rypsok.web_search", "arguments": {"query": "x"}}),
+            json!({"decision": "complete", "summary": "done"}),
+        ];
+        let script_path = data.path().join("script.json");
+        std::fs::write(&script_path, serde_json::to_string(&script).unwrap()).unwrap();
+        let text = format!(
+            r#"config_version = 1
+[runtime]
+data_dir = {data:?}
+[backend]
+kind = "fake"
+script = {script:?}
+[policy.profiles.workspace]
+tools = [{builtin}, "rypsok.change_definition", "rypsok.web_search"]
+[servers.rypsok]
+command = {server:?}
+env_allow = ["PATH", "MIMLYS_TESTSERVER_HANG_LIST_AFTER", "MIMLYS_TESTSERVER_LIST_LOG"]
+startup_ms = 120000
+[servers.rypsok.tools.change_definition]
+effect = "external_read"
+idempotent = true
+[servers.rypsok.tools.web_search]
+effect = "external_read"
+idempotent = true
+"#,
+            data = data.path().join("data").to_string_lossy(),
+            script = script_path.to_string_lossy(),
+            builtin = BUILTIN,
+            server = testserver().to_string_lossy(),
+        );
+        std::fs::write(&config, text).unwrap();
+        Self { data, config }
+    }
+
+    /// The listing requests the test server has read, from its log.
+    fn listing_requests(&self) -> usize {
+        std::fs::read_to_string(self.data.path().join("lists.log")).map_or(0, |t| t.lines().count())
+    }
+}
+
+/// REQ-MCP-007, REQ-CLI-005, LIM-O1 (handoff 009g, item 1): the server announces
+/// a changed list and then never answers the listing, whose deadline is 120 s.
+/// The process is waiting for it at the step boundary (the server has read the
+/// request). One stop signal: the process exits within LIM-O1, the task is
+/// `paused`, no tool is unpinned and the search was not called. Judged by state;
+/// the one timed assertion is the requirement's own bound, and the wait it
+/// bounds would take 120 s.
+#[test]
+fn req_mcp_007_a_stop_signal_ends_the_wait_for_a_listing_within_lim_o1() {
+    let env = Env::listing_never_answered();
+    let scope = env.scope();
+    let mut command = env.command(&[
+        "--json",
+        "run",
+        "look it up",
+        "--scope",
+        scope.to_str().unwrap(),
+    ]);
+    let out_path = env.data.path().join("hung.stdout");
+    let err_path = env.data.path().join("hung.stderr");
+    command
+        .env("MIMLYS_TESTSERVER_HANG_LIST_AFTER", "1")
+        .env(
+            "MIMLYS_TESTSERVER_LIST_LOG",
+            env.data.path().join("lists.log"),
+        )
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(std::fs::File::create(&err_path).unwrap());
+    let mut run = Followed {
+        run: command.spawn().unwrap(),
+        out_path,
+        err_path,
+    };
+    run.await_state(&env, "the listing never reached the server", || {
+        env.listing_requests() >= 2
+    });
+    let signalled = std::time::Instant::now();
+    run.interrupt();
+    let status = run.exit(&env);
+    let took = signalled.elapsed();
+    assert!(
+        took < Duration::from_millis(mimlys_core::limits::LIM_O1_STOP_MS as u64),
+        "the process took {took:?} to exit after the signal: {status:?} {}",
+        run.stderr()
+    );
+    let id = run.stdout()["task"]["task_id"].as_str().unwrap().to_owned();
+    assert_eq!(env.task(&id)["task"]["state"], "paused", "{}", run.stderr());
+    assert!(
+        !env.events(&id)
+            .iter()
+            .any(|e| e["event"] == "tool.unpinned"),
+        "nothing was unpinned"
+    );
+    assert_eq!(
+        env.listing_requests(),
+        2,
+        "the search was not called: its pin check would have listed again"
+    );
+}

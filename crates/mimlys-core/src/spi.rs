@@ -374,11 +374,14 @@ pub trait ToolProvider: Send + Sync {
     /// Checks the pins at a step boundary (RFC 009 §7): refreshes a dirty
     /// server list and returns the tools whose definition no longer
     /// matches `pinned`, which the provider then omits from `definitions`.
+    /// The refresh observes `interruption` and returns without a verdict
+    /// for a server it could not reach: its tools stay pinned.
     fn refresh_pins(
         &self,
         pinned: &std::collections::BTreeMap<String, crate::tool::ImportRecord>,
+        interruption: &Cancellation,
     ) -> Vec<String> {
-        let _ = pinned;
+        let _ = (pinned, interruption);
         Vec::new()
     }
 
@@ -906,6 +909,7 @@ pub mod fake {
         fn refresh_pins(
             &self,
             _pinned: &std::collections::BTreeMap<String, crate::tool::ImportRecord>,
+            _interruption: &Cancellation,
         ) -> Vec<String> {
             panic_if_set(&self.panicking_methods, "refresh_pins");
             Vec::new()

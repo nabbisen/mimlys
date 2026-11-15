@@ -292,6 +292,13 @@ impl Runtime {
         self.interruption(task_id).no_new_action.is_cancelled()
     }
 
+    /// The token a wait at a step boundary observes (a listing of a server's
+    /// tools): the request to start no new action, which the two stronger
+    /// requests imply.
+    pub(crate) fn boundary_interruption(&self, task_id: TaskId) -> Cancellation {
+        self.interruption(task_id).no_new_action
+    }
+
     /// The token an action's execution observes: an action that cannot be
     /// undone is not interrupted by [`Runtime::interrupt_step`], only by
     /// [`Runtime::interrupt_step_anyway`] (REQ-CLI-005). The one rule is

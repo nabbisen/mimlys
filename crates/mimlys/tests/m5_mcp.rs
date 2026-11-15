@@ -676,6 +676,8 @@ fn m5_cancellation_deadline_death_and_restarts() {
         config.env_allow = vec!["PATH".into()];
         config.env_secrets = vec![("MIMLYS_TESTSERVER_IGNORE_CANCEL".into(), "1".into())];
         let server = Server::new(config);
+        // Running before the request to stop comes (a start observes it too).
+        server.list().await.unwrap();
         let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
         let cancel = Cancellation::new();
         cancel.cancel();
@@ -851,18 +853,27 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
         for i in 0..limit {
             kill_server(&server).await;
             deaths += 1;
-            let current = server.current_hash(task, "web_search").await;
+            let current = server
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await;
             assert!(matches!(current, Ok(Some(_))), "{i}: {current:?}");
         }
         assert_eq!(deaths, limit);
         // Another task has its own allowance.
         kill_server(&server).await;
-        assert!(server.current_hash(other, "web_search").await.is_ok());
+        assert!(
+            server
+                .current_hash(other, "web_search", &Cancellation::new())
+                .await
+                .is_ok()
+        );
         // The same task again, at once: it is the same count, the allowance is
         // used, and the refusal is not once but every time.
         kill_server(&server).await;
         for _ in 0..3 {
-            let refused = server.current_hash(task, "web_search").await;
+            let refused = server
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await;
             assert!(
                 matches!(
                     refused,
@@ -923,7 +934,7 @@ fn req_tool_009_the_relisting_at_a_step_boundary_counts_for_its_task() {
         for i in 0..limit {
             kill_server(&server).await;
             server.force_relist();
-            let changed = provider.refresh_pins(&pinned);
+            let changed = provider.refresh_pins(&pinned, &Cancellation::new());
             assert!(changed.is_empty(), "{i}: {changed:?}");
             assert!(server.is_running().await, "{i}: restarted for the task");
         }
@@ -931,11 +942,13 @@ fn req_tool_009_the_relisting_at_a_step_boundary_counts_for_its_task() {
         // and the tools stay pinned.
         kill_server(&server).await;
         server.force_relist();
-        let changed = provider.refresh_pins(&pinned);
+        let changed = provider.refresh_pins(&pinned, &Cancellation::new());
         assert!(changed.is_empty(), "{changed:?}");
         assert!(!server.is_running().await, "not restarted past the limit");
         assert!(matches!(
-            server.current_hash(task, "web_search").await,
+            server
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await,
             Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
         ));
         assert!(
@@ -1159,6 +1172,9 @@ fn req_mcp_007_a_killed_server_is_gone() {
             ),
         ];
         let server = Server::new(config);
+        // Running before the request to stop comes: a start observes the request
+        // too (REQ-MCP-007, handoff 009g), so a stop requested first starts nothing.
+        server.list().await.unwrap();
         let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
         let cancel = Cancellation::new();
         cancel.cancel();
@@ -1604,7 +1620,9 @@ fn req_mcp_002_a_failed_listing_is_unavailable_and_never_the_sdks_cached_list() 
         // pin check gives the call `tool_unavailable`, not `definition_changed`.
         let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
         assert!(matches!(
-            server.current_hash(task, "web_fetch").await,
+            server
+                .current_hash(task, "web_fetch", &Cancellation::new())
+                .await,
             Err(mimlys_mcp::server::ServerError::Unavailable { .. })
         ));
         server.shutdown().await;
@@ -1778,4 +1796,383 @@ fn req_mcp_002_a_listing_cached_before_a_restart_is_not_served_after_it() {
         std::fs::remove_file(&failing).unwrap();
         server.shutdown().await;
     });
+}
+
+// Handoff 009g: every request to a server is bounded and interruptible. The
+// stand-in answers the first listing and reads, but never answers, any later one
+// (`MIMLYS_TESTSERVER_HANG_LIST_AFTER`); its calls and pings are served.
+
+/// A server on the stand-in with its knobs, the listing deadline (LIM-O6, the
+/// server's `startup_ms`) being `startup_ms`.
+fn knob_server(startup_ms: i64, knobs: &[(&str, String)]) -> Server {
+    let mut config = ServerConfig::new("t", testserver(), vec![]);
+    config.env_allow = vec!["PATH".into()];
+    config.env_secrets = knobs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+        .collect();
+    config.startup_ms = startup_ms;
+    Server::new(config)
+}
+
+/// The stand-in's log of listing requests as a knob.
+fn list_log_knob(log: &std::path::Path) -> (&'static str, String) {
+    (
+        "MIMLYS_TESTSERVER_LIST_LOG",
+        log.to_string_lossy().into_owned(),
+    )
+}
+
+/// Waits until the stand-in's log holds `n` listing requests (up to 60 s).
+async fn await_list_requests(log: &std::path::Path, n: usize) {
+    for _ in 0..2400 {
+        if list_requests_seen(log) >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the listing request never reached the server");
+}
+
+fn multi_thread_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// REQ-MCP-007, REQ-MCP-002 (handoff 009g, item 1): a server that listed once,
+/// announced a changed list and then never answers the listing: the relisting
+/// ends at the server's deadline, unavailable with its reason, and the list stays
+/// marked stale. What mimlys last saw is untouched and is not offered as a fresh
+/// listing, and the pin check gives the call `tool_unavailable`, not a changed
+/// definition. The test would not return if the listing had no deadline.
+#[test]
+fn req_mcp_007_a_listing_never_answered_ends_unavailable_at_its_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("lists.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = knob_server(
+            1000,
+            &[
+                ("MIMLYS_TESTSERVER_HANG_LIST_AFTER", "1".into()),
+                list_log_knob(&log),
+            ],
+        );
+        let (_, _, first_hashes) = server.list().await.unwrap();
+        change_and_wait(&server).await;
+        let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let ends = std::time::Duration::from_secs(60);
+        for attempt in 1..=2 {
+            let err = tokio::time::timeout(ends, server.list_for(task, &Cancellation::new()))
+                .await
+                .expect("the listing ends")
+                .unwrap_err();
+            let mimlys_mcp::server::ServerError::Unavailable { reason, .. } = &err else {
+                panic!("not unavailable: {err:?}");
+            };
+            assert_eq!(reason, "list:timeout", "attempt {attempt}");
+            assert_eq!(
+                list_requests_seen(&log),
+                1 + attempt,
+                "attempt {attempt}: the server was asked"
+            );
+            assert!(server.is_dirty(), "the list stays stale");
+        }
+        assert_eq!(server.last_list().unwrap().2, first_hashes);
+        let pin_check = tokio::time::timeout(
+            ends,
+            server.current_hash(task, "web_fetch", &Cancellation::new()),
+        )
+        .await
+        .expect("the pin check ends");
+        assert!(matches!(
+            pin_check,
+            Err(mimlys_mcp::server::ServerError::Unavailable { .. })
+        ));
+        server.shutdown().await;
+    });
+}
+
+/// REQ-MCP-007, REQ-CLI-005 (handoff 009g, item 1): the stop request ends a
+/// listing the server does not answer. The server's deadline is 120 s and the
+/// test waits for 60 at most: only the request can end it. A request made
+/// before a listing begins sends nothing.
+#[test]
+fn req_mcp_007_a_stop_request_ends_a_listing_never_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("lists.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = knob_server(
+            120_000,
+            &[
+                ("MIMLYS_TESTSERVER_HANG_LIST_AFTER", "1".into()),
+                list_log_knob(&log),
+            ],
+        );
+        server.list().await.unwrap();
+        change_and_wait(&server).await;
+        let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let cancel = Cancellation::new();
+        let stop = async {
+            await_list_requests(&log, 2).await;
+            cancel.cancel();
+        };
+        let (listing, ()) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(server.list_for(task, &cancel), stop)
+        })
+        .await
+        .expect("the stop request ends the listing");
+        let mimlys_mcp::server::ServerError::Unavailable { reason, .. } = listing.unwrap_err()
+        else {
+            panic!("not unavailable");
+        };
+        assert_eq!(reason, "list:cancelled");
+        assert!(server.is_dirty(), "the list stays stale");
+        let before = list_requests_seen(&log);
+        let refused = server.current_hash(task, "web_fetch", &cancel).await;
+        assert!(refused.is_err());
+        assert_eq!(list_requests_seen(&log), before, "nothing was sent");
+        server.shutdown().await;
+    });
+}
+
+/// REQ-MCP-007 (handoff 009g, item 1): while a listing waits for a server that
+/// does not answer it, a call on the same server is served and the server's
+/// shutdown does not wait for the listing: the listing ends with the process.
+/// The listing's deadline is 120 s and the test waits 20 s for each.
+#[test]
+fn req_mcp_007_a_call_and_the_shutdown_never_queue_behind_a_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("lists.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = std::sync::Arc::new(knob_server(
+            120_000,
+            &[
+                ("MIMLYS_TESTSERVER_HANG_LIST_AFTER", "1".into()),
+                list_log_knob(&log),
+            ],
+        ));
+        server.list().await.unwrap();
+        change_and_wait(&server).await;
+        let task = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let listing = tokio::spawn({
+            let server = std::sync::Arc::clone(&server);
+            async move { server.list_for(task, &Cancellation::new()).await }
+        });
+        await_list_requests(&log, 2).await;
+        let ends = std::time::Duration::from_secs(20);
+        let call = tokio::time::timeout(
+            ends,
+            server.call(
+                task,
+                "engine_status",
+                Default::default(),
+                30_000,
+                &Cancellation::new(),
+            ),
+        )
+        .await
+        .expect("the call is not queued behind the listing")
+        .unwrap();
+        assert!(matches!(call, CallOutcome::Result { .. }), "{call:?}");
+        tokio::time::timeout(ends, server.shutdown())
+            .await
+            .expect("the shutdown is not queued behind the listing");
+        assert!(!server.is_running().await);
+        let listing = tokio::time::timeout(ends, listing)
+            .await
+            .expect("the listing ended with the process")
+            .unwrap();
+        assert!(listing.is_err());
+    });
+}
+
+/// REQ-MCP-007 (handoff 009g, item 1): a server that sends pages without end is
+/// read up to the bound on pages and no further; one that lists more tools than
+/// the bound in one page is refused at the bound, and one at the bound is read.
+/// The reason names which.
+#[test]
+fn req_mcp_007_a_listing_stops_at_the_bounds_on_pages_and_on_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let log = dir.path().join("endless.log");
+        let endless = knob_server(
+            30_000,
+            &[
+                ("MIMLYS_TESTSERVER_ENDLESS_PAGES", "1".into()),
+                list_log_knob(&log),
+            ],
+        );
+        let err = endless.list().await.unwrap_err();
+        let mimlys_mcp::server::ServerError::Unavailable { reason, .. } = err else {
+            panic!("not unavailable");
+        };
+        assert_eq!(reason, "list:too_many_pages");
+        assert_eq!(
+            list_requests_seen(&log),
+            mimlys_mcp::client::LIST_MAX_PAGES,
+            "no page past the bound was asked for"
+        );
+        let own = {
+            let plain = knob_server(30_000, &[]);
+            let n = plain.list().await.unwrap().1.len();
+            plain.shutdown().await;
+            n
+        };
+        let wide = knob_server(
+            30_000,
+            &[(
+                "MIMLYS_TESTSERVER_EXTRA_TOOLS",
+                (mimlys_mcp::client::LIST_MAX_TOOLS + 1 - own).to_string(),
+            )],
+        );
+        let err = wide.list().await.unwrap_err();
+        let mimlys_mcp::server::ServerError::Unavailable { reason, .. } = err else {
+            panic!("not unavailable");
+        };
+        assert_eq!(reason, "list:too_many_tools");
+        let at_bound = knob_server(
+            30_000,
+            &[(
+                "MIMLYS_TESTSERVER_EXTRA_TOOLS",
+                (mimlys_mcp::client::LIST_MAX_TOOLS - own).to_string(),
+            )],
+        );
+        assert_eq!(
+            at_bound.list().await.unwrap().1.len(),
+            mimlys_mcp::client::LIST_MAX_TOOLS
+        );
+        at_bound.shutdown().await;
+    });
+}
+
+/// REQ-MCP-007, REQ-MCP-002 (handoff 009g, item 7): the relisting at a step
+/// boundary that the server does not answer neither unpins a tool nor drops the
+/// stale mark: the tools stay pinned and the next boundary asks again.
+#[test]
+fn req_mcp_007_a_server_that_does_not_answer_the_relisting_keeps_its_tools_pinned() {
+    use mimlys_core::ids::TaskId;
+    use mimlys_core::spi::ToolProvider;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("lists.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let mut config = ServerConfig::new("t", testserver(), vec![]);
+        config.env_allow = vec!["PATH".into()];
+        config.startup_ms = 1000;
+        config.env_secrets = vec![
+            ("MIMLYS_TESTSERVER_HANG_LIST_AFTER".into(), "1".into()),
+            (
+                "MIMLYS_TESTSERVER_LIST_LOG".into(),
+                log.to_string_lossy().into_owned(),
+            ),
+        ];
+        let servers =
+            std::sync::Arc::new(mimlys_mcp::tools::Servers::new(vec![Server::new(config)]));
+        let server = std::sync::Arc::clone(&servers.all()[0]);
+        let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let provider =
+            mimlys_mcp::tools::McpTools::open(task, std::sync::Arc::clone(&servers)).await;
+        let pinned = provider.imports();
+        assert!(!pinned.is_empty());
+        change_and_wait(&server).await;
+        let provider = std::sync::Arc::new(provider);
+        for boundary in 1..=2 {
+            let changed = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                tokio::task::spawn_blocking({
+                    let provider = std::sync::Arc::clone(&provider);
+                    let pinned = pinned.clone();
+                    move || provider.refresh_pins(&pinned, &Cancellation::new())
+                }),
+            )
+            .await
+            .expect("the relisting ends at its deadline")
+            .unwrap();
+            assert!(changed.is_empty(), "boundary {boundary}: {changed:?}");
+            assert!(server.is_dirty(), "boundary {boundary}: still stale");
+            assert_eq!(
+                list_requests_seen(&log),
+                1 + boundary,
+                "boundary {boundary}: asked again"
+            );
+        }
+        assert_eq!(
+            provider.definitions().len(),
+            pinned.len(),
+            "every tool is still offered"
+        );
+        server.shutdown().await;
+    });
+}
+
+/// Lets the child server see `name` (the config's `env_allow`), so that a test
+/// can hand it a knob of the stand-in through the process's environment.
+fn allow_in_server_environment(env: &Env, name: &str) {
+    let text = std::fs::read_to_string(&env.config).unwrap();
+    let text = text.replace(
+        "env_allow = [\"PATH\",",
+        &format!("env_allow = [\"PATH\", {name:?},"),
+    );
+    std::fs::write(&env.config, text).unwrap();
+}
+
+/// REQ-MCP-007, REQ-MCP-002 (handoff 009g, items 1 and 7), end to end: the
+/// server announces a changed list and then never answers the listing. At the
+/// next step boundary, and again at the call's pin check, the listing ends at the
+/// server's deadline (`startup_ms`, LIM-O6): no tool is unpinned, and the call is
+/// `tool_unavailable` with the reason of the listing, never `definition_changed`
+/// and never a call to the server. The run completes.
+#[test]
+fn req_mcp_007_an_unanswered_listing_leaves_the_tool_pinned_and_the_call_unavailable() {
+    let env = Env::new(
+        &[
+            act("rypsok.change_definition", json!({})),
+            act("rypsok.web_search", json!({"query": "after the change"})),
+            complete(),
+        ],
+        "startup_ms = 1000",
+        &[],
+    );
+    allow_in_server_environment(&env, "MIMLYS_TESTSERVER_HANG_LIST_AFTER");
+    let env = env.env("MIMLYS_TESTSERVER_HANG_LIST_AFTER", "1");
+    let scope = env.scope();
+    let (code, value) = env.json(&["run", "pin", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let events = env.events(&id);
+    let n = names(&events);
+    assert!(
+        !n.contains(&"tool.unpinned".to_owned()),
+        "a server that cannot be reached unpins nothing: {n:?}"
+    );
+    assert!(
+        !events.iter().any(|e| e["event"] == "decision.rejected"),
+        "the tool was still offered: {n:?}"
+    );
+    let db = env.data.path().join("data/mimlys.db");
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare("select o.record from observations o join actions a on a.action_id = o.action_id where a.task_id = ?1 order by o.rowid")
+        .unwrap();
+    let observations: Vec<Value> = stmt
+        .query_map([&id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+        .collect();
+    assert_eq!(observations[0]["status"], "succeeded");
+    // An idempotent read that never left is tried again (LIM-T3): every attempt
+    // ends the same way.
+    assert!(observations.len() >= 2, "{observations:?}");
+    for search in &observations[1..] {
+        assert_eq!(search["tool"], "rypsok.web_search", "{search}");
+        assert_eq!(search["status"], "failed", "{search}");
+        assert_eq!(search["cause"]["cause"], "tool_unavailable", "{search}");
+        assert_eq!(search["payload"]["reason"], "list:timeout", "{search}");
+    }
 }

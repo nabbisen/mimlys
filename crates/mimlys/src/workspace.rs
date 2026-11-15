@@ -66,8 +66,9 @@ impl ToolProvider for ComposedTools {
     fn refresh_pins(
         &self,
         pinned: &std::collections::BTreeMap<String, mimlys_core::tool::ImportRecord>,
+        interruption: &mimlys_core::spi::Cancellation,
     ) -> Vec<String> {
-        self.external.refresh_pins(pinned)
+        self.external.refresh_pins(pinned, interruption)
     }
 
     fn drain_events(&self) -> Vec<mimlys_core::event::Event> {

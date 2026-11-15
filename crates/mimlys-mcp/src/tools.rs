@@ -13,7 +13,7 @@ use mimlys_core::event::Event;
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::{LIM_C2_EXCERPT_CEILING_CHARS, LIM_I5_MESSAGE_CHARS};
 use mimlys_core::observation::{Notice, excerpt, sanitize};
-use mimlys_core::spi::{BoxFuture, ExecutionContext, ExecutionOutcome, ToolProvider};
+use mimlys_core::spi::{BoxFuture, Cancellation, ExecutionContext, ExecutionOutcome, ToolProvider};
 use mimlys_core::tool::{ImportRecord, ToolDefinition};
 use mimlys_core::validate::AuthorizedAction;
 use serde_json::{Value, json};
@@ -455,7 +455,11 @@ impl ToolProvider for McpTools {
             .collect()
     }
 
-    fn refresh_pins(&self, pinned: &BTreeMap<String, ImportRecord>) -> Vec<String> {
+    fn refresh_pins(
+        &self,
+        pinned: &BTreeMap<String, ImportRecord>,
+        interruption: &Cancellation,
+    ) -> Vec<String> {
         let mut changed = Vec::new();
         for server in self.servers.all() {
             if !server.is_dirty() {
@@ -465,24 +469,24 @@ impl ToolProvider for McpTools {
             // On this task's behalf: a restart the relisting makes counts
             // against the task (LIM-X3).
             let current = match tokio::task::block_in_place(|| {
-                handle.block_on(server.list_for(self.task_id))
+                handle.block_on(server.list_for(self.task_id, interruption))
             }) {
-                Ok((_, _, h)) => Some(h),
-                // The restart limit is reached: the definitions did not change,
-                // and the call will be refused as `tool_unavailable`.
-                Err(ServerError::RestartLimitReached { .. }) => continue,
-                Err(_) => None,
+                Ok((_, _, h)) => h,
+                // The server cannot serve now (the restart limit is reached,
+                // it could not be started, or it did not answer the listing in
+                // time): its definitions did not change as far as is known. The
+                // tools stay pinned, the list stays marked stale, and the call
+                // will be refused as `tool_unavailable`.
+                Err(ServerError::RestartLimitReached { .. } | ServerError::Unavailable { .. }) => {
+                    continue;
+                }
             };
             for (name, record) in pinned {
                 if record.server != server.name() || record.unavailable.is_some() {
                     continue;
                 }
                 let tool = name.split_once('.').map(|(_, t)| t).unwrap_or(name);
-                let still_same = current
-                    .as_ref()
-                    .and_then(|h| h.get(tool))
-                    .is_some_and(|h| *h == record.hash);
-                if !still_same {
+                if current.get(tool) != Some(&record.hash) {
                     changed.push(name.clone());
                 }
             }
@@ -515,7 +519,10 @@ impl ToolProvider for McpTools {
             // The listing is made for this task: a restart it makes counts
             // against the task (LIM-X3).
             if let Some(record) = self.imported.get(&name).map(|i| &i.record) {
-                let current = match server.current_hash(self.task_id, tool).await {
+                let current = match server
+                    .current_hash(self.task_id, tool, &context.cancel)
+                    .await
+                {
                     Ok(current) => current,
                     // The server cannot serve (it could not start, or its restart
                     // limit is reached for this task): the call is not made, and
