@@ -96,7 +96,7 @@ Return: `.git-exclude/review-requests/006b-promotion-audit/README.md`.
 
 ## After review (2026-11-15): 006b-5
 
-006b-1 to 006b-4 are landed. Three changes follow. The first keeps this handoff's title true. The specification is in the patch (external design §14.5, "There is always a way back"; §17.1, your two events).
+006b-1 to 006b-4 are landed. Three changes follow. The first keeps this handoff's title true. The specification states them (external design §14.5, "There is always a way back"; §17.1, your two events).
 
 1. **A promotion whose own restore failed stays reversible.** Today a failed apply whose restore also fails is recorded `failed`, and `rollback --promotion` refuses every `failed` promotion. `rollback --snapshot` restores the workspace, not the project. So the user is left with a half-applied project and no command to undo it. The same holds at start (`recover_promotions`).
    - Record whether the restore succeeded: `restored: bool` in the record, defaulting to `true` for older records.

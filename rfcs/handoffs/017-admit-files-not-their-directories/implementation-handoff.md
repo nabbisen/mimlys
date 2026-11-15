@@ -1,6 +1,6 @@
 # Handoff 017 — The worker and the interpreter modules admitted by their files (release 0.10)
 
-**RFC.** [RFC 017](../../accepted/017-admit-files-not-their-directories.md) (accepted 2026-11-12) · **Specification.** REQ-CONF-011 and REQ-CONF-008 (amended 2026-11-12); external design §13.3, §13.5; THR-36 · **From.** Handoff 011f §3 (an entry on `mimlys-worker.exe` alone sufficed on `windows-latest`).
+**RFC.** [RFC 017](../../done/017-admit-files-not-their-directories.md) (accepted 2026-11-12) · **Specification.** REQ-CONF-011 and REQ-CONF-008 (amended 2026-11-12); external design §13.3, §13.5; THR-36 · **From.** Handoff 011f §3 (an entry on `mimlys-worker.exe` alone sufficed on `windows-latest`).
 
 ## 1. Behaviour (binding)
 

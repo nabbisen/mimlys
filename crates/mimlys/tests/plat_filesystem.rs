@@ -1,4 +1,4 @@
-//! The filesystem clauses of the platform requirement PLAT-004 (handoff 002d
+//! The filesystem clauses of the platform requirement REQ-PLAT-004 (handoff 002d
 //! item 9), on the real filesystem of each platform the CI runs: the
 //! workspace's symbolic links (recreated only when their target stays inside
 //! the scope; on Windows the privilege to create a link is the runner's, and
@@ -72,7 +72,7 @@ fn absolute_target() -> PathBuf {
     }
 }
 
-/// PLAT-004, symbolic-link privileges (external design §14.1, REQ-WS-002): a
+/// REQ-PLAT-004, symbolic-link privileges (external design §14.1, REQ-WS-002): a
 /// link to a file and a link to a directory that stay inside the scope are
 /// recreated in the workspace as links, with the target they had, and
 /// resolve there; a link whose target leaves the scope (relative, or
@@ -148,7 +148,7 @@ fn plat_004_workspace_symbolic_links_follow_the_rule_on_this_platform() {
     assert_eq!(info.files, 2, "links are not counted as files");
 }
 
-/// PLAT-004, case-insensitive filesystems (REQ-WS-011): the case mode the
+/// REQ-PLAT-004, case-insensitive filesystems (REQ-WS-011): the case mode the
 /// workspace records is that of the filesystem it sits on (a probe of this
 /// test's own, with two spellings of one name), and the exclusion patterns
 /// follow it: in a case-insensitive workspace `.ENV`, `SERVER.PEM`,

@@ -61,11 +61,11 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 8 | [009c rypsok 0.9.0, compatibility measured](./009c-rypsok-0.9.0/implementation-handoff.md) | RFC 009 | — |
 | 9 | [009d What rypsok's reply changes in mimlys](./009d-rypsok-letter-changes/implementation-handoff.md) | RFC 009 | — |
 | 10 | [011k Spike S3: one Verus proof of the permission-lock decision](./011k-verus-spike/implementation-handoff.md) | RFC 011 | — |
-| 11 | [016 The first Verus proof lands](./016-formal-proofs-with-verus/implementation-handoff.md) | [RFC 016](../accepted/016-formal-proofs-with-verus.md) | 011k |
+| 11 | [016 The first Verus proof lands](./016-formal-proofs-with-verus/implementation-handoff.md) | [RFC 016](../done/016-formal-proofs-with-verus.md) | 011k |
 | 12 | [011l Linux read set, follow-up](./011l-linux-read-set-follow-up/implementation-handoff.md) | RFC 011 | 011j |
 | 13 | [009e rypsok 0.10.0, compatibility measured](./009e-rypsok-0.10.0/implementation-handoff.md) | RFC 009 | 009c, 009d |
 | 14 | [009f Can a stale tool list reach mimlys?](./009f-rmcp-tool-list-cache/implementation-handoff.md) | RFC 009 | 009e |
-| 15 | [017 The worker and the interpreter modules admitted by their files](./017-admit-files-not-their-directories/implementation-handoff.md) | [RFC 017](../accepted/017-admit-files-not-their-directories.md) | — |
+| 15 | [017 The worker and the interpreter modules admitted by their files](./017-admit-files-not-their-directories/implementation-handoff.md) | [RFC 017](../done/017-admit-files-not-their-directories.md) | — |
 | 16 | [002c A rejection reaches the model with its reason and detail](./002c-rejections-reach-the-model/implementation-handoff.md) | RFC 002, RFC 007 | 002b, 010b |
 | 17 | [004c The next start finishes or undoes a pending snapshot journal](./004c-snapshot-journals-at-start/implementation-handoff.md) | RFC 004, RFC 006 | — |
 | 18 | [010c The log carries the step's ids; `debug_prompts` does what it says](./010c-logs/implementation-handoff.md) | RFC 010 | — |
@@ -77,6 +77,7 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 24 | [003b The approval card hides no argument; a stop signal at a prompt ends the process](./003b-approval-card-and-prompts/implementation-handoff.md) | RFC 003, RFC 010 | — |
 | 25 | [009g Every MCP request is bounded; a destination is a string; what a server sends is cleaned](./009g-mcp-requests-bounded/implementation-handoff.md) | RFC 009 | — |
 | 26 | [002e A failed restore is never silent; recovery survives a crash; a built-in never blocks](./002e-loop-and-built-ins-audit/implementation-handoff.md) | RFC 002, RFC 004 | — |
+| 27 | [013b Release candidate 0.10.0](./013b-release-0.10.0/implementation-handoff.md) | RFC 013 (part one complete with 0.10.0) | every 0.10 handoff |
 
 ## Milestone M5
 

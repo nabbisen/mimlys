@@ -9,8 +9,8 @@
 
 **The defects, verified in the code at `f5a94fa`:**
 - **A-01 and X-02, critical.** `confine/linux.rs:376-395` (`detect_abi`) stops at ABI V7, so the Landlock ruleset (`:430-475`) never handles `ResolveUnix`, even on a kernel with ABI 9 or later. The seccomp filter (`:336-371`) checks only `socket`'s address family, and `connect` is never filtered.
-  - A confined tool connects to any pathname Unix socket: the user's D-Bus session bus, tmux, ssh-agent, gpg-agent, `docker.sock`.
-  - Through the session bus, `systemd-run --user` starts a process outside every clause (F, N, P and K). Re-scrubbing the environment does not help, because the tool can set the variables again and the bus's path is fixed.
+  - A confined tool connects to any pathname Unix socket outside its sets, services of the user's session among them.
+  - Through such a service, a program could be started outside every clause (F, N, P and K). Scrubbing the environment does not help, because the tool controls its own environment.
   - Meanwhile F and N report `enforced`.
 - **X-01, high.** `host_tool.rs:390-398`: a tool that exits by itself has its tree left alive. Only an interrupt, a deadline or a macOS watchdog verdict calls `kill_tree`. A `setsid` descendant then writes the workspaces after the action's "after" snapshot, outside the action model.
 - **A-37.** The results of `kill_cgroup` and `kill_descendants` are dropped (`:242`, `:249-252`). An `Err` from `try_wait` (`:400-404`) returns without killing the tree.
@@ -50,7 +50,7 @@
 
 ## Tests (by state, §3c; each names its requirement)
 
-- **1:** a test socket server listening outside the sets. Do not use the real session bus, and never run `systemd-run` in a test.
+- **1:** a test socket server listening outside the sets. Never use a real service of the session in a test.
   - A confined tool's connect to it is refused, on both rungs.
   - A socket inside the tool's own workspace connects on ABI 9 or later, and is refused on the seccomp rung (stated).
   - The abstract socket stays refused.
