@@ -18,13 +18,12 @@ use std::time::Duration;
 /// How often cancellation is polled while a request is in flight.
 const CANCEL_POLL: Duration = Duration::from_millis(100);
 
-/// The most pages one listing may take. Proposed: rypsok lists three tools
-/// in one page; the bound awaits registration as a limit.
+/// The most pages one listing may take (LIM-I11). rypsok lists three tools
+/// in one page.
 pub const LIST_MAX_PAGES: usize = 16;
 
-/// The most tools one listing may hold. Proposed: rypsok lists three; a
-/// model is shown a few dozen at most (LIM-I1); the bound awaits registration
-/// as a limit.
+/// The most tools one listing may hold (LIM-I12). rypsok lists three; a
+/// model is shown a few dozen at most (LIM-I1).
 pub const LIST_MAX_TOOLS: usize = 256;
 
 /// Why a bounded wait ended before its future did.

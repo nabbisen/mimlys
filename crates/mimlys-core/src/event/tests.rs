@@ -115,7 +115,9 @@ fn every_event() -> Vec<Event> {
     ]
 }
 
-/// REQ-OBS-001 / external design §17.1: the thirty-three event names in dotted form, round-tripping through serde.
+/// REQ-OBS-001 / external design §17.1: the event names, exactly as the list below gives them
+/// and in its order, in dotted form, each event round-tripping through serde. (The list is the
+/// count: no number is stated here to drift from it.)
 #[test]
 fn req_obs_001_event_vocabulary_matches_ed_17_1() {
     let events = every_event();

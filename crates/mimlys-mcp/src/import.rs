@@ -260,7 +260,7 @@ fn clean_reason(reason: &str) -> String {
     }
 }
 
-/// The longest a parameter's name may be: as long as a tool's name.
+/// The longest a parameter's name may be (LIM-I10): as long as a tool's name.
 const PARAMETER_NAME_CHARS: usize = 64;
 
 /// A parameter's name is plain: ASCII letters and digits, `_`, `.` and `-`,

@@ -22,22 +22,21 @@ use std::collections::BTreeMap;
 /// The deepest nesting a schema may have.
 pub const MAX_DEPTH: usize = 12;
 
-/// The most nodes a schema may have, `$defs` included. Proposed: rypsok's three
-/// response schemas have under a hundred between them; the bound awaits
-/// registration as a limit.
+/// The most nodes a schema may have, `$defs` included (LIM-I13). rypsok's three
+/// response schemas have under a hundred between them.
 pub const MAX_NODES: usize = 1024;
 
 /// The most entries any one list in a schema may have (`properties`,
-/// `required`, `enum`, `anyOf`, `oneOf`). Proposed, as above.
+/// `required`, `enum`, `anyOf`, `oneOf`, `$defs`) (LIM-I14).
 pub const MAX_WIDTH: usize = 128;
 
 /// The most visits the alternatives that apply to one value may cost, a
-/// reference counted with its target (see [`MAX_VISITS`]). Proposed, as above.
+/// reference counted with its target (LIM-I15; see [`MAX_VISITS`]).
 pub const MAX_ALTERNATIVE_COST: usize = 64;
 
-/// The most nodes one validation may visit. Proposed, as above: it is linear in
-/// the size of the value once [`MAX_ALTERNATIVE_COST`] holds, and large enough
-/// for the largest response a tool is expected to give.
+/// The most nodes one validation may visit (LIM-I16). It is linear in the size
+/// of the value once [`MAX_ALTERNATIVE_COST`] holds, and large enough for the
+/// largest response a tool is expected to give.
 pub const MAX_VISITS: usize = 100_000;
 
 /// What a validation that ran out of visits says.
