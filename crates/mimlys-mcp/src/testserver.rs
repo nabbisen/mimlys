@@ -39,14 +39,6 @@
 //! (`change_definition` creates the file; a test may create it to stand for an
 //! upgrade or another configuration); `MIMLYS_TESTSERVER_FAIL_LIST_FILE=<path>`
 //! answers every `tools/list` with an error while that file exists;
-//! `MIMLYS_TESTSERVER_CONTROL_TEXT=1` gives the server a name and a version, and
-//! lists a tool whose name, with a parameter whose name, carry control sequences
-//! (a clear-screen and a window-title sequence);
-//! `MIMLYS_TESTSERVER_LEAK=<variable>` lists two tools that put the value of that
-//! environment variable in what they answer: `leak` fails with a message that
-//! holds the value and an object whose key is the value; `leak_long` answers with
-//! a text longer than any answer is kept in, with the value across the point
-//! where it is cut;
 //! `MIMLYS_TESTSERVER_DIE_LOG=<path>` appends a line to the file for every
 //! `die` call that reaches the server (to count the executions that did, across
 //! the processes the tool ends);
@@ -54,6 +46,16 @@
 //! and `echo_env` write `<text>` as a line on standard error, then wait 5000 ms
 //! before it answers (so that the client's reader has read the line while the
 //! call is still in flight).
+//!
+//! `MIMLYS_TESTSERVER_CONTROL_TEXT=1` gives the server a name and a version, and
+//! lists a tool whose name, with a parameter whose name, carry control sequences
+//! (a clear-screen and a window-title sequence).
+//!
+//! `MIMLYS_TESTSERVER_LEAK=<variable>` lists two tools that put the value of that
+//! environment variable in what they answer: `leak` fails with a message that
+//! holds the value and an object whose key is the value; `leak_long` answers with
+//! a text longer than any answer is kept in, with the value across the point
+//! where it is cut.
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -234,17 +236,6 @@ fn tool_list(changed: bool) -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {"x": {"anyOf": [{"type": "string"}, {"type": "integer"}]}}},
         }));
     }
-    if env_flag("MIMLYS_TESTSERVER_WIDE") {
-        let mut props = Map::new();
-        for i in 0..9 {
-            props.insert(format!("p{i}"), json!({"type": "string"}));
-        }
-        tools.push(json!({
-            "name": "wide",
-            "description": "Nine parameters.",
-            "inputSchema": {"type": "object", "properties": props},
-        }));
-    }
     if env_flag("MIMLYS_TESTSERVER_CONTROL_TEXT") {
         tools.push(json!({
             "name": "odd\u{1b}[2J\u{1b}]0;title\u{7}tool",
@@ -266,6 +257,17 @@ fn tool_list(changed: bool) -> Vec<Value> {
                 "inputSchema": {"type": "object", "additionalProperties": false},
             }));
         }
+    }
+    if env_flag("MIMLYS_TESTSERVER_WIDE") {
+        let mut props = Map::new();
+        for i in 0..9 {
+            props.insert(format!("p{i}"), json!({"type": "string"}));
+        }
+        tools.push(json!({
+            "name": "wide",
+            "description": "Nine parameters.",
+            "inputSchema": {"type": "object", "properties": props},
+        }));
     }
     tools
 }

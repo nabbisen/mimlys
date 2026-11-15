@@ -13,7 +13,7 @@ use mimlys_core::context::Redactor;
 use mimlys_core::event::Event;
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::{LIM_C2_EXCERPT_CEILING_CHARS, LIM_I5_MESSAGE_CHARS};
-use mimlys_core::observation::{Notice, add_secret_notices, excerpt, sanitize};
+use mimlys_core::observation::{Notice, excerpt, sanitize};
 use mimlys_core::spi::{BoxFuture, ExecutionContext, ExecutionOutcome, ToolProvider};
 use mimlys_core::tool::{ImportRecord, ToolDefinition};
 use mimlys_core::validate::AuthorizedAction;
@@ -366,7 +366,7 @@ impl McpTools {
                 let mut notices = Vec::new();
                 let mut found = Vec::new();
                 bound_strings(&mut payload, &mut notices, redactor, &mut found);
-                add_secret_notices(&mut notices, found);
+                mimlys_core::observation::add_secret_notices(&mut notices, found);
                 if is_error {
                     let kind: String = payload
                         .pointer("/error/kind")
