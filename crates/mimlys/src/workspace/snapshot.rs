@@ -1306,7 +1306,7 @@ fn link_parent(project: &Dir, rel: &str) -> Result<Option<String>, WorkspaceErro
         }
         prefix.push_str(part);
         match project_kind(project, &prefix)? {
-            Some(Kind::Symlink) => return Ok(Some(prefix)),
+            Some(Kind::Symlink) => {}
             Some(Kind::Dir) => {}
             // Nothing lies below a file or an absent parent.
             Some(Kind::File) | None => return Ok(None),
