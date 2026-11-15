@@ -164,7 +164,7 @@ pub fn revoke_all(
         }
     }
     let plan = crate::toolchain::plan_revoke_all(&container.record, &candidates, |p| {
-        crate::toolchain::applied(container, Path::new(p)) == Some(true)
+        crate::toolchain::entry_in_force(container, Path::new(p)) == Some(true)
     });
     let rows: Vec<(String, &str, &str)> = plan
         .iter()

@@ -5,7 +5,10 @@
 //! `read <path>`, `list <dir>`, `write <path>`, `write-env <VAR> <name>`, `connect <addr>`, `env <name>`,
 //! `sleep <secs>`, `setsid-sleep <secs>`, `detach <secs>` (Unix but macOS: a sleeper in a session of its own, then the tool ends), `fork <n> [hold_ms]`, `alloc <mib>`,
 //! `alloc-touch <mib>` (resident memory: every page written), `connect-name
-//! <host:port>` (resolve and connect), `cwd`, `ok`.
+//! <host:port>` (resolve and connect), `cwd`, `ok`, `fs-cycle <dir>` (create,
+//! rename, replace, delete: what a build does to its files) and, on Windows,
+//! `open-rights <hex mask> <path>` (open a path asking for exactly those access
+//! rights: `40000` is `WRITE_DAC`).
 //!
 //! Linux only (REQ-CONF-012, REQ-CONF-011; the syscalls are in
 //! `mimlys_exec::confine::linux::probe`, the one place the tests may reach
@@ -90,6 +93,47 @@ fn pid_from_env(args: &[String]) -> Result<i32, i32> {
             Err(2)
         }
     }
+}
+
+/// `fs-cycle <dir>`: the file operations a build performs, in `dir`. The
+/// error names the step that failed. (`set_readonly(false)` clears the
+/// read-only attribute on Windows, where this runs; the lint is about Unix modes.)
+#[allow(clippy::permissions_set_readonly_false)]
+fn fs_cycle(dir: &std::path::Path) -> Result<(), String> {
+    let step = |name: &str, r: std::io::Result<()>| r.map_err(|e| format!("{name} ({})", e.kind()));
+    step("create the directory", std::fs::create_dir_all(dir))?;
+    let (a, b, c) = (dir.join("a.txt"), dir.join("b.txt"), dir.join("c.txt"));
+    step("create a file", std::fs::write(&a, b"one"))?;
+    step("append", {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&a)
+            .and_then(|mut f| f.write_all(b"two"))
+    })?;
+    step("rename", std::fs::rename(&a, &b))?;
+    step("create the file to replace", std::fs::write(&c, b"old"))?;
+    step("replace by rename", std::fs::rename(&b, &c))?;
+    let mut permissions = std::fs::metadata(&c)
+        .map_err(|e| format!("stat ({})", e.kind()))?
+        .permissions();
+    permissions.set_readonly(true);
+    step(
+        "make read-only",
+        std::fs::set_permissions(&c, permissions.clone()),
+    )?;
+    permissions.set_readonly(false);
+    step("make writable", std::fs::set_permissions(&c, permissions))?;
+    step("read", std::fs::read(&c).map(|_| ()))?;
+    step("delete", std::fs::remove_file(&c))?;
+    let sub = dir.join("sub");
+    step("create a subdirectory", std::fs::create_dir(&sub))?;
+    step(
+        "create a file in it",
+        std::fs::write(sub.join("d.txt"), b"x"),
+    )?;
+    step("remove the directory", std::fs::remove_dir_all(&sub))?;
+    Ok(())
 }
 
 /// Runs a program and prints its first line of output, or what refused it.
@@ -187,6 +231,56 @@ fn main() {
                 Err(_) => {
                     println!("chmod: not a mode");
                     2
+                }
+            }
+        }
+        // `open-rights <hex mask> <path>` (Windows): opens the path asking for
+        // exactly these access rights (`40000` is `WRITE_DAC`, `80000`
+        // `WRITE_OWNER`), and says whether the system let it. A tool that can
+        // open a file for `WRITE_DAC` can change who may reach it.
+        #[cfg(windows)]
+        Some("open-rights") => {
+            use std::os::windows::fs::OpenOptionsExt;
+            let mask = args
+                .get(1)
+                .and_then(|m| u32::from_str_radix(m.trim_start_matches("0x"), 16).ok());
+            let path = args.get(2).map(String::as_str).unwrap_or("");
+            match mask {
+                None => {
+                    println!("open-rights: not a mask");
+                    2
+                }
+                // FILE_FLAG_BACKUP_SEMANTICS (0x0200_0000) so that a directory opens too.
+                Some(mask) => match std::fs::OpenOptions::new()
+                    .access_mode(mask)
+                    .custom_flags(0x0200_0000)
+                    .open(path)
+                {
+                    Ok(_) => {
+                        println!("opened with {mask:x}");
+                        0
+                    }
+                    Err(e) => {
+                        println!("refused with {mask:x}: {}", e.kind());
+                        3
+                    }
+                },
+            }
+        }
+        // `fs-cycle <dir>`: what a build does to its files, in a directory of
+        // the tool's own workspace: create, write, rename, replace, make
+        // read-only and writable again, delete, make and remove a directory.
+        Some("fs-cycle") => {
+            match fs_cycle(std::path::Path::new(
+                args.get(1).map(String::as_str).unwrap_or(""),
+            )) {
+                Ok(()) => {
+                    println!("cycle ok");
+                    0
+                }
+                Err(step) => {
+                    println!("cycle failed at {step}");
+                    3
                 }
             }
         }

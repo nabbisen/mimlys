@@ -77,9 +77,10 @@ sandboxed process cannot apply a second profile, so mimlys starts a worker for
 one task, and the first execution of another task replaces it (a restart of the
 worker on a task switch is the price). **On Windows every task's workspace is
 still in the container's write set**, so a host tool of one task can read and
-change another task's tree: this is recorded in the threat register and
-scheduled for 0.11. Do not run host tools of tasks that you do not trust on
-Windows beside tasks you do.
+change the files of another task's tree (not their permissions: a tool holds
+no right to change who may reach a file, see [Windows](#windows)): this is
+recorded in the threat register and scheduled for 0.11. Do not run host tools
+of tasks that you do not trust on Windows beside tasks you do.
 
 **A host tool's processes end with it.** When the tool exits by itself, mimlys
 ends the rest of its process tree, as it does on a cancel or a deadline; a
@@ -413,7 +414,43 @@ revoke <path>` removes exactly that entry. Until a declared path carries its
 entry the tool is unavailable: `status` and `toolchain list` say
 `acl_not_applied: <path>` with the command to run, and a `host_tool` grant
 for it is refused with the same reason, so nothing is granted that changes
-nothing.
+nothing. Only an entry of the directory's own, with the wanted rights, counts:
+a directory that merely inherits the container's permission from a parent you
+granted reads `acl_not_applied` too, and `mimlys toolchain grant <path>` adds
+the entry it lacks.
+
+**What a tool may do in the workspaces.** The container holds, on the
+workspaces and on `<data>/tmp`, read, write, execute and delete, and nothing
+more: `FILE_GENERIC_READ`, `FILE_GENERIC_WRITE`, `FILE_GENERIC_EXECUTE` and
+`DELETE` (the shell's "Modify"). Each is there for something a build does:
+reading sources and listing directories; creating files and directories,
+writing, appending and clearing a read-only attribute before replacing a file;
+running the programs a build produces and entering directories; and removing,
+renaming and replacing files (a rename needs `DELETE` on its source). It does
+**not** hold the right to change a file's permissions (`WRITE_DAC`) or its
+owner (`WRITE_OWNER`), so a tool cannot, for example, open the files of a task
+to another local account; nor `GENERIC_ALL`, which holds both. If you upgraded
+from 0.10 or earlier, the first start replaces the old, wider entry on those
+two directories, once, and says so in the log (`replacing the container's
+permissions on …`); the write reaches every file below them, so that start can
+take several seconds on a large workspace.
+
+**A permission record that cannot be used.** The record of what `grant`
+added, `<data>/toolchain-acls.json`, is what lets `revoke` leave a directory
+as it was. If the file is corrupt or cannot be read, mimlys stops at the
+start (and for `status` and `toolchain list`) and says which file and what to
+do, instead of reading it as empty and writing over it:
+
+```text
+the permission record <data>/toolchain-acls.json is corrupt (<reason>); mimlys stops here and does not change it. Remedy: move it aside (rename it to toolchain-acls.json.bad) and start again; …
+```
+
+Move the file aside, as the message says, and start again. The permissions
+already on your directories stay as they are and are read from the
+directories; the next start records mimlys's own directories again, and
+`mimlys toolchain list` shows which declared paths need `mimlys toolchain
+grant` again. The record is written by a replace (a temporary file, renamed
+over it), so a crash leaves the old record or the new one.
 
 Two more reasons carry the same name. They appear when mimlys cannot take
 the lock that orders the writers of one directory's permissions (two

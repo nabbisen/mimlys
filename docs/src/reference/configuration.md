@@ -17,8 +17,10 @@ Rules (REQ-CFG-001 … 005):
 - Changes apply at the next start. `mimlys check` validates the file and
   prints it resolved.
 - The data directory is created owner-only (mode 0700 on Unix; on Windows a
-  DACL that grants the current user full control and nobody else), and
-  brought back to that at every start. A `runtime.data_dir` inside the
+  DACL that grants the current user full control and nobody else, set in the
+  call that creates the directory), and brought back to that at every start.
+  On Windows a data directory owned by another account is refused, naming the
+  owner: its owner can always change who may reach it. A `runtime.data_dir` inside the
   temporary directory is allowed, but `check` and `status` print a warning
   line for it: a cleaner of temporary files can delete tasks.
 

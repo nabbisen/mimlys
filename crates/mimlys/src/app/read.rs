@@ -61,7 +61,7 @@ impl ReadApp {
         let reader = Reader::new(persistence, workspaces, Arc::new(SystemClock));
         let interpreters = config.interpreters(&data_dir)?;
         let host_tools = config.host_tools();
-        let container = crate::toolchain::inspect(&data_dir);
+        let container = crate::toolchain::inspect(&data_dir)?;
         let host_tools_unavailable = host_tools
             .iter()
             .filter_map(|d| {
