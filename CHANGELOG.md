@@ -9,6 +9,12 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+### Fixed
+
+- `mimlys-exec` (Windows; handoff 011n item 4; REQ-CONF-006, REQ-TOOL-006): **a host tool that exits with code 259 hung the worker.** 259 is `STILL_ACTIVE`, the value a running process answers, and the runtime read it as "still running" even after the process had ended, so the action ran on to its deadline, and the wait that reaps the process never returned: the worker was lost (`worker_died`, a restart spent). After the process handle is signalled the exit code is final, whatever it is: the action ends `exited` with 259.
+- `mimlys-exec` (Windows; handoff 011n item 5; REQ-CONF-006): **a host tool's standard input is closed.** It was a live pipe the runtime never wrote to, so a tool that read its input waited for its deadline. The pipe's writing end is closed before the tool starts, as Unix gives `Stdio::null()`: the read finds the end of the input at once.
+- `mimlys-exec` (Windows; handoff 011n item 6; REQ-CONF-006): **no handle leaks on an error path of the process creation, and the attribute list is aligned.** Every pipe end and handle is owned from the call that made it, so a failure at any step (a pipe, the attribute list, the creation, the job, the resume) closes what exists; the process attribute list is allocated aligned for the pointers it holds and deleted on every path; and the entries `has_entry` read are freed whenever the system returned a pointer, whatever their count.
+
 ## [0.10.0] - 2026-11-15
 
 0.10.0 fixes flaws that an independent audit of this code found, and that affect 0.9.0: among them a confined host tool starting a process outside its confinement, and promotion losing project files. **Read the Security section first, and upgrade.** It also carries the first part of RFC 013 (the read-only open of the store, the storage view, `task prune`), a narrower read set for host tools on Linux, a stop signal that interrupts only what can be undone, and the first Verus proof.

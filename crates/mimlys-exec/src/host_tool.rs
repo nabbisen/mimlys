@@ -422,6 +422,8 @@ fn spawn_tool(program: &Path, r: &HostRun<'_>) -> Result<ToolProc, String> {
         container: None,
         job: Some(&job),
         restricted_token: false,
+        // Unix gives `Stdio::null()`: a tool that reads its input finds the end at once.
+        stdin: crate::confine::windows::Stdin::Closed,
     })?;
     Ok(ToolProc::Win(child, job))
 }

@@ -448,6 +448,7 @@ impl Confinement for Platform {
                 .map(|sid| (sid, spec.is_some_and(|s| !s.deny_network))),
             job: Some(&job),
             restricted_token: spec.is_some(),
+            stdin: windows::Stdin::Piped,
         })
         .map_err(|e| ConfineError::Spawn(std::io::Error::other(e)))?;
         Ok(ConfinedChild {

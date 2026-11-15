@@ -5,7 +5,8 @@
 //! `read <path>`, `list <dir>`, `write <path>`, `write-env <VAR> <name>`, `connect <addr>`, `env <name>`,
 //! `sleep <secs>`, `setsid-sleep <secs>`, `detach <secs>` (Unix but macOS: a sleeper in a session of its own, then the tool ends), `fork <n> [hold_ms]`, `alloc <mib>`,
 //! `alloc-touch <mib>` (resident memory: every page written), `connect-name
-//! <host:port>` (resolve and connect), `cwd`, `ok`.
+//! <host:port>` (resolve and connect), `cwd`, `ok`, `exit <code>`, `stdin-read`
+//! (read the standard input to its end).
 //!
 //! Linux only (REQ-CONF-012, REQ-CONF-011; the syscalls are in
 //! `mimlys_exec::confine::linux::probe`, the one place the tests may reach
@@ -111,6 +112,28 @@ fn run_and_print(name: &str, program: &str, args: &[&str]) -> i32 {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
+        // `exit <code>`: ends with this exit code (259 is `STILL_ACTIVE` on Windows).
+        Some("exit") => {
+            let code = args.get(1).and_then(|c| c.parse::<i32>().ok());
+            println!("exiting with {code:?}");
+            code.unwrap_or(2)
+        }
+        // `stdin-read`: reads the standard input to its end and says how much
+        // there was. A host tool's standard input is closed: the end is at once.
+        Some("stdin-read") => {
+            use std::io::Read;
+            let mut input = Vec::new();
+            match std::io::stdin().read_to_end(&mut input) {
+                Ok(n) => {
+                    println!("stdin ended after {n} bytes");
+                    0
+                }
+                Err(e) => {
+                    println!("stdin failed: {}", e.kind());
+                    3
+                }
+            }
+        }
         Some("ok") => {
             println!("ok");
             0

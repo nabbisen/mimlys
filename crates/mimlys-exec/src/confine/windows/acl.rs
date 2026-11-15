@@ -445,7 +445,12 @@ pub fn has_entry(path: &Path, sid: &[u8]) -> Result<bool, String> {
         ));
     }
     if count == 0 || entries.is_null() {
-        // No explicit entry at all (a fresh directory inherits everything): nothing to free.
+        // No explicit entry at all (a fresh directory inherits everything). A non-null
+        // pointer is an allocation to free whatever the count says.
+        if !entries.is_null() {
+            // SAFETY: the allocation came from GetExplicitEntriesFromAclW for the caller to free once.
+            unsafe { LocalFree(entries.cast()) };
+        }
         return Ok(false);
     }
     // SAFETY: `count` is non-zero and `entries` non-null and readable for `count` entries; a SID trustee's name is a SID pointer.

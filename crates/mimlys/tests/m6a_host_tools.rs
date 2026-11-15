@@ -53,7 +53,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tooldir:?}]
-allowed_args = ["ok", "cwd", "read", "list", "write", "chmod", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect", "detach"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "chmod", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect", "detach", "stdin-read"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 max_args = 3
 effect = "workspace_write"
@@ -309,6 +309,39 @@ fn m6a_clauses_hold_inside_a_host_tool() {
         .map(|e| e["status"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(finished.len(), 10);
+}
+
+/// REQ-CONF-006 (handoff 011n item 5): a host tool's standard input is closed
+/// (`Stdio::null()` here, a pipe closed at the spawn on Windows): a tool that
+/// reads it finds the end of the input at once. The same tool runs on the
+/// Windows job in `m6b_host_tools.rs`.
+#[test]
+fn req_conf_006_a_host_tools_stdin_is_closed() {
+    let env = Env::new(&[probe(&["stdin-read"]), complete()], "");
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(
+            "req_conf_006_a_host_tools_stdin_is_closed",
+            &format!("this machine is tier {tier} ({table:?})"),
+        );
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "read stdin",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 1);
+    assert_eq!(obs[0]["payload"]["termination"], "exited");
+    assert_eq!(exit_code_of(&obs[0]), 0);
+    assert_eq!(stdout_of(&obs[0]).trim(), "stdin ended after 0 bytes");
 }
 
 /// REQ-CONF-009 / RFC 011 §2 (K): a tool that `setsid`s a child and sleeps
