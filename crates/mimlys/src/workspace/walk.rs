@@ -467,3 +467,51 @@ pub(super) fn remove_below(root: &Dir, stayed: &mut Vec<String>) {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use cap_std::ambient_authority;
+
+    /// REQ-WS-012: the way up of the removal is checked: `..` of the directory the removal is in
+    /// leads to the directory it came from, and when something moved it (so that `..` is another
+    /// directory) the way is found from the root by the names instead, so that the removal never
+    /// goes on in a directory it did not come from.
+    #[test]
+    fn req_ws_012_the_way_up_is_the_directory_that_was_left() {
+        let data = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(data.path().join("a/b")).unwrap();
+        std::fs::create_dir_all(data.path().join("c")).unwrap();
+        let root = Dir::open_ambient_dir(data.path(), ambient_authority()).unwrap();
+        let a = root.open_dir("a").unwrap();
+        let cur = a.open_dir("b").unwrap();
+        let levels = [
+            Level {
+                name: OsString::new(),
+                id: identity(&root),
+                subdirs: vec![],
+                left: false,
+            },
+            Level {
+                name: "a".into(),
+                id: identity(&a),
+                subdirs: vec![],
+                left: false,
+            },
+        ];
+        // As it was: `..` is `a`.
+        let above = climb(&root, &cur, &levels).unwrap();
+        assert_eq!(identity(&above), identity(&a));
+        // Moved into `c` meanwhile: `..` of the directory we hold is `c`, which is not `a`; the
+        // names from the root lead to `a`.
+        std::fs::rename(data.path().join("a/b"), data.path().join("c/b")).unwrap();
+        let above = climb(&root, &cur, &levels).unwrap();
+        assert_eq!(
+            identity(&above),
+            identity(&a),
+            "the directory that was left, not the one `..` leads to"
+        );
+        let c = root.open_dir("c").unwrap();
+        assert_ne!(identity(&above), identity(&c));
+    }
+}
