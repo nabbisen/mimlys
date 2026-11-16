@@ -417,7 +417,7 @@ A snapshot (content-addressed manifest and objects, LIM-U6) shall be taken at ma
 Snapshot and restore shall never follow symbolic links; links are stored as entries; restore shall refuse any target that is absolute or escapes the root. (R-09, THR-27)
 
 ### REQ-WS-006 Rollback — M3 · T
-`rollback_workspace{snapshot}` shall be valid when the task is not `running` or `recovering`. Restoration shall delete files absent from the manifest and verify every object by hash. Automatic rollback follows REQ-TOOL-010 and REQ-PERS-007.
+`rollback_workspace{snapshot}` shall be valid when the task is not `running` or `recovering`. Restoration shall delete files absent from the manifest and verify every object by hash, before anything is removed (amended 2026-11-16: audit A-14). Automatic rollback follows REQ-TOOL-010 and REQ-PERS-007.
 
 ### REQ-WS-007 Promote — M3 · T
 `promote_workspace` shall compute the difference between the base snapshot and the current workspace, refuse when a target file differs from the base (listing the conflicts), refuse when a directory it would delete holds entries the plan does not list, back up the target files into a snapshot (making the operation reversible), show the diff, require the user's confirmation, commit the backup and record the promotion before the first write to the project, apply without removing anything unlisted, and record the file list in the audit; a failure while applying restores what was applied (amended 2026-11-14: audit A-03, A-04). Promotion shall be valid when the task is not `running` or `recovering`. The model cannot propose it in v1. (D-09, R-10, THR-28)
