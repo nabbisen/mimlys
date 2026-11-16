@@ -573,8 +573,10 @@ impl LocalWorkspaces {
             if dir.symlink_metadata(path).is_ok() {
                 dir.remove_file(path).map_err(storage("remove_file"))?;
             }
-            let to_dir =
-                cfg!(windows) && super::points_at_directory(dir, path, target, Some(&wanted));
+            let to_dir = {
+                let _ = (&wanted, target);
+                false
+            };
             super::recreate_symlink_in(dir, path, Path::new(target), to_dir)?;
             report.written += 1;
         }
