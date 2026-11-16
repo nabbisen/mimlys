@@ -42,6 +42,7 @@ fn manifest_of(content: &[u8]) -> Manifest {
     Manifest::new(vec![Entry::File {
         path: "f".into(),
         executable: false,
+        mode: None,
         size: content.len() as u64,
         hash: hash_bytes(content),
     }])

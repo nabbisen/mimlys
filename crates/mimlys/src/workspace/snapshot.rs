@@ -17,7 +17,7 @@ use mimlys_core::path::CaseMode;
 use mimlys_core::policy::ExclusionMatcher;
 use mimlys_core::snapshot::{
     Change, ChangeKind, Entry, Manifest, Promotion, PromotionPlan, PromotionState, RestoreReport,
-    RevertAction, RevertEntry, RevertPlan, SnapshotReason, SnapshotRecord, diff,
+    RevertAction, RevertEntry, RevertPlan, SnapshotReason, SnapshotRecord, diff, modes_agree,
     target_inside_root,
 };
 use mimlys_core::spi::{
@@ -138,6 +138,18 @@ fn hash_file(dir: &Dir, rel: &str) -> Result<(Hash, u64), WorkspaceError> {
     Ok((Hash::from_hex(&hex).expect("hex"), size))
 }
 
+/// The permission bits of a file, masked to 0o777 (Unix); `None` where the system has none.
+#[cfg(unix)]
+pub(super) fn file_mode(meta: &cap_std::fs::Metadata) -> Option<u32> {
+    use cap_std::fs::PermissionsExt;
+    Some(meta.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+pub(super) fn file_mode(_meta: &cap_std::fs::Metadata) -> Option<u32> {
+    None
+}
+
 #[cfg(unix)]
 pub(super) fn is_executable(meta: &cap_std::fs::Metadata) -> bool {
     use cap_std::fs::PermissionsExt;
@@ -176,11 +188,14 @@ pub(super) fn walk_state(
     walk(dir, "", matcher, |found| {
         let Found { path, node } = found;
         match node {
-            Node::File { executable, .. } => {
+            Node::File {
+                executable, mode, ..
+            } => {
                 let (hash, size) = hash_file(dir, &path)?;
                 entries.push(Entry::File {
                     path,
                     executable,
+                    mode,
                     size,
                     hash,
                 });
@@ -245,9 +260,9 @@ impl<'a> TempFile<'a> {
         Err(storage("create")(std::io::ErrorKind::AlreadyExists.into()))
     }
 
-    /// Sets the mode: executable or not (Unix).
-    fn set_mode(&self, executable: bool) {
-        set_file_mode(self.dir, &self.path, executable);
+    /// Sets the mode (Unix).
+    fn set_mode(&self, executable: bool, mode: Option<u32>) -> Result<(), WorkspaceError> {
+        set_file_mode(self.dir, &self.path, executable, mode)
     }
 
     /// Renames the file onto `rel` in the same directory.
@@ -260,20 +275,29 @@ impl<'a> TempFile<'a> {
     }
 }
 
-/// Sets the mode of the file at `path`: executable or not (Unix).
-fn set_file_mode(dir: &Dir, path: &str, executable: bool) {
+/// Sets the mode of the file at `path` (Unix): the recorded `mode`, or, for an entry made before
+/// 0.11, which has none, 0o755 when it is executable and 0o644 when it is not. A mode that cannot
+/// be set is an error, never a file left with another mode than the one wanted.
+pub(super) fn set_file_mode(
+    dir: &Dir,
+    path: &str,
+    executable: bool,
+    mode: Option<u32>,
+) -> Result<(), WorkspaceError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = if executable { 0o755 } else { 0o644 };
-        let _ = dir.set_permissions(
+        let mode = mode.unwrap_or(if executable { 0o755 } else { 0o644 }) & 0o777;
+        dir.set_permissions(
             path,
             cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(mode)),
-        );
+        )
+        .map_err(storage("set_permissions"))
     }
     #[cfg(not(unix))]
     {
-        let _ = (dir, path, executable);
+        let _ = (dir, path, executable, mode);
+        Ok(())
     }
 }
 
@@ -437,6 +461,7 @@ impl LocalWorkspaces {
         stage: &mut Stage<'_>,
         hash: &Hash,
         executable: bool,
+        mode: Option<u32>,
     ) -> Result<String, WorkspaceError> {
         let mut source = self.files.open_object(hash).map_err(persist)?;
         let (path, mut out) = stage.next()?;
@@ -447,7 +472,7 @@ impl LocalWorkspaces {
             });
         }
         drop(out);
-        set_file_mode(stage.dir, &path, executable);
+        set_file_mode(stage.dir, &path, executable, mode)?;
         Ok(path)
     }
 
@@ -458,6 +483,7 @@ impl LocalWorkspaces {
         rel: &str,
         hash: &Hash,
         executable: bool,
+        mode: Option<u32>,
     ) -> Result<(), WorkspaceError> {
         let mut source = open_file(src, rel)?;
         let (tmp, mut out) = TempFile::create(dst, rel)?;
@@ -468,7 +494,7 @@ impl LocalWorkspaces {
             });
         }
         drop(out);
-        tmp.set_mode(executable);
+        tmp.set_mode(executable, mode)?;
         tmp.place(rel)
     }
 
@@ -497,12 +523,17 @@ impl LocalWorkspaces {
                 path,
                 hash,
                 executable,
+                mode,
                 ..
             } = entry
             {
-                let same = matches!(have.get(path.as_str()), Some(Entry::File { hash: h, executable: x, .. }) if h == hash && x == executable);
+                // A mode the manifest does not record (made before 0.11) is not a difference.
+                let same = matches!(have.get(path.as_str()), Some(Entry::File { hash: h, executable: x, mode: m, .. }) if h == hash && x == executable && modes_agree(*m, *mode));
                 if !same {
-                    staged.insert(path, self.stage_object(&mut stage, hash, *executable)?);
+                    staged.insert(
+                        path,
+                        self.stage_object(&mut stage, hash, *executable, *mode)?,
+                    );
                 }
             }
         }
@@ -744,16 +775,21 @@ impl LocalWorkspaces {
         }
         // Conflicts: the project's target must equal the base entry (REQ-WS-007).
         let mut conflicts = Vec::new();
+        let mut in_project: std::collections::BTreeMap<&str, Entry> =
+            std::collections::BTreeMap::new();
         for c in &changes {
-            let in_project = project_entry(&project, &c.path)?;
+            let found = project_entry(&project, &c.path)?;
             let in_base = base_by_path.get(c.path.as_str());
-            let same = match (in_project, in_base) {
+            let same = match (&found, in_base) {
                 (None, None) => true,
-                (Some(p), Some(b)) => entry_equal(&p, b),
+                (Some(p), Some(b)) => entry_equal(p, b),
                 _ => false,
             };
             if !same {
                 conflicts.push(c.path.clone());
+            }
+            if let Some(entry) = found {
+                in_project.insert(c.path.as_str(), entry);
             }
         }
         if !conflicts.is_empty() {
@@ -782,14 +818,47 @@ impl LocalWorkspaces {
                 (_, Some(t)) => Some(t),
                 _ => None,
             };
-            if let Some(after) = after
-                && (c.kind != ChangeKind::Deleted || !before.is_empty())
-            {
-                let text = similar::TextDiff::from_lines(&before, &after)
-                    .unified_diff()
-                    .header(&format!("a/{}", c.path), &format!("b/{}", c.path))
-                    .to_string();
-                text_diffs.push((c.path.clone(), text));
+            // A change of mode is shown as git shows it, with or without a change of content:
+            // the project file's mode as it is, and the one the promotion gives it.
+            let mode_lines = match (
+                current_by_path.get(c.path.as_str()),
+                in_project.get(c.path.as_str()),
+            ) {
+                (
+                    Some(workspace @ Entry::File { .. }),
+                    Some(Entry::File {
+                        mode: Some(old), ..
+                    }),
+                ) => {
+                    match promoted_mode(
+                        workspace,
+                        base_by_path.get(c.path.as_str()).copied(),
+                        in_project.get(c.path.as_str()),
+                    ) {
+                        Some(new) if new != *old => format!(
+                            "diff --git a/{p} b/{p}\nold mode 100{old:03o}\nnew mode 100{new:03o}\n",
+                            p = c.path
+                        ),
+                        _ => String::new(),
+                    }
+                }
+                _ => String::new(),
+            };
+            let content = match after {
+                Some(after) if c.kind != ChangeKind::Deleted || !before.is_empty() => {
+                    let text = similar::TextDiff::from_lines(&before, &after)
+                        .unified_diff()
+                        .header(&format!("a/{}", c.path), &format!("b/{}", c.path))
+                        .to_string();
+                    Some(text)
+                }
+                _ => None,
+            };
+            if content.is_some() || !mode_lines.is_empty() {
+                text_diffs.push((
+                    c.path.clone(),
+                    format!("{mode_lines}{}", content.unwrap_or_default()),
+                ));
             }
         }
         Ok(PromotionPlan {
@@ -860,11 +929,32 @@ impl LocalWorkspaces {
             &backup_manifest,
         )?;
         let current_by_path = current.by_path();
+        // The entries the promotion writes, with the mode each file is given (the project's own,
+        // or the workspace's without the group's and others' write bits): recorded here so that
+        // the apply writes it and the reversal can tell it from an edit made since.
+        let in_project = backup_manifest.by_path();
         let after: Vec<Entry> = plan
             .changes
             .iter()
             .filter(|c| c.kind != ChangeKind::Deleted)
-            .filter_map(|c| current_by_path.get(c.path.as_str()).map(|e| (*e).clone()))
+            .filter_map(|c| {
+                let mut entry = (*current_by_path.get(c.path.as_str())?).clone();
+                let decided = promoted_mode(
+                    &entry,
+                    base_by_path.get(c.path.as_str()).copied(),
+                    in_project.get(c.path.as_str()).copied(),
+                );
+                if let Entry::File {
+                    mode, executable, ..
+                } = &mut entry
+                {
+                    *mode = decided;
+                    if let Some(m) = decided {
+                        *executable = m & 0o111 != 0;
+                    }
+                }
+                Some(entry)
+            })
             .collect();
         let promotion = Promotion {
             promotion_id,
@@ -1051,10 +1141,16 @@ impl LocalWorkspaces {
             let mut made = Stage::create(project)?;
             for w in wants {
                 if let Some(Entry::File {
-                    hash, executable, ..
+                    hash,
+                    executable,
+                    mode,
+                    ..
                 }) = w.entry
                 {
-                    staged.insert(w.path, self.stage_object(&mut made, hash, *executable)?);
+                    staged.insert(
+                        w.path,
+                        self.stage_object(&mut made, hash, *executable, *mode)?,
+                    );
                 }
             }
             stage = Some(made);
@@ -1136,11 +1232,14 @@ impl LocalWorkspaces {
                     }
                 }
                 Entry::File {
-                    hash, executable, ..
+                    hash,
+                    executable,
+                    mode,
+                    ..
                 } => {
                     match &source {
                         Source::Tree(tree) => {
-                            Self::copy_verified(tree, project, path, hash, *executable)?
+                            Self::copy_verified(tree, project, path, hash, *executable, *mode)?
                         }
                         Source::Objects => {
                             let from = staged.get(path).ok_or_else(|| WorkspaceError::Storage {
@@ -1364,6 +1463,7 @@ fn probe(project: &Dir, rel: &str) -> Result<Probed, WorkspaceError> {
     Ok(Probed::Entry(Entry::File {
         path: rel.to_owned(),
         executable: is_executable(&meta),
+        mode: file_mode(&meta),
         size,
         hash,
     }))
@@ -1377,6 +1477,58 @@ fn project_entry(project: &Dir, rel: &str) -> Result<Option<Entry>, WorkspaceErr
         Probed::Absent => Ok(None),
         Probed::Entry(entry) => Ok(Some(entry)),
         Probed::Special(what) => Err(not_regular(rel, what)),
+    }
+}
+
+/// The mode a promoted file is given (external design §14.5). Where the project already has the
+/// file, its own is kept, so that a file written back by a tool that recreates it (with the
+/// default mode) does not loosen a file the project keeps private; the one change that is carried
+/// over is the executable bit, when the task changed it (the workspace's `executable` differs
+/// from the base's): it is set or cleared where the project's own mode allows reading, as
+/// `chmod +x` does. Where the project does not have the file (a new file, or one that replaces
+/// a directory or a link), the workspace's mode is given, without the group's and others' write
+/// bits, so that a task cannot make a file of the project writable by others. Where the system
+/// has no mode, none.
+pub(super) fn promoted_mode(
+    workspace: &Entry,
+    base: Option<&Entry>,
+    project: Option<&Entry>,
+) -> Option<u32> {
+    let Entry::File {
+        mode, executable, ..
+    } = workspace
+    else {
+        return None;
+    };
+    match project {
+        Some(Entry::File { mode: own, .. }) => {
+            let toggled = matches!(base, Some(Entry::File { executable: before, .. }) if before != executable);
+            match (*own, toggled) {
+                (Some(own), true) if *executable => Some(own | ((own & 0o444) >> 2)),
+                (Some(own), true) => Some(own & !0o111),
+                (own, _) => own,
+            }
+        }
+        _ => mode.map(|m| m & !0o022),
+    }
+}
+
+/// As `entry_equal`, and a file's mode too when both entries record one: what a reversal compares
+/// (a mode put back is part of putting the entry back).
+fn entry_same(a: &Entry, b: &Entry) -> bool {
+    entry_equal(a, b)
+        && match (a, b) {
+            (Entry::File { mode: x, .. }, Entry::File { mode: y, .. }) => modes_agree(*x, *y),
+            _ => true,
+        }
+}
+
+/// As `matches_base`, with `entry_same`.
+fn matches_exactly(project: Option<&Entry>, wanted: Option<&Entry>) -> bool {
+    match (project, wanted) {
+        (None, None) => true,
+        (Some(p), Some(w)) => entry_same(p, w),
+        _ => false,
     }
 }
 
@@ -1462,11 +1614,11 @@ fn revert_decisions<'a>(
                     }
                 }
             };
-            if matches_base(current.as_ref(), backup_entry) {
+            if matches_exactly(current.as_ref(), backup_entry) {
                 continue;
             }
             let wrote = after.get(path).copied();
-            if current.is_some() && !matches_base(current.as_ref(), wrote) {
+            if current.is_some() && !matches_exactly(current.as_ref(), wrote) {
                 edited.push(path.to_owned());
                 continue;
             }

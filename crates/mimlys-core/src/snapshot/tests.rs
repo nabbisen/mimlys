@@ -4,6 +4,7 @@ fn file(path: &str, content: &[u8]) -> Entry {
     Entry::File {
         path: path.into(),
         executable: false,
+        mode: None,
         size: content.len() as u64,
         hash: hash_bytes(content),
     }
@@ -137,4 +138,84 @@ fn req_ws_007_the_restored_flag_defaults_to_true_and_marks_the_way_back() {
     promotion.reversed_at = None;
     promotion.state = PromotionState::Applying;
     assert!(!promotion.can_be_reversed());
+}
+
+/// REQ-WS-004 / LIM-U6, REQ-WS-006: a file entry may record its mode (0o777 mask), absent in a
+/// manifest made before 0.11: such a manifest reads, serializes and hashes exactly as before (the
+/// hash below was computed by 0.10), and writes no `mode` key; one that records modes hashes
+/// otherwise. A mode that is not recorded is not a difference; one that is, is.
+#[test]
+fn req_ws_004_an_old_manifest_keeps_its_hash_and_a_mode_is_part_of_the_content() {
+    let old = r#"{"entries":[{"type":"dir","path":"src"},{"type":"file","path":"src/lib.rs","executable":false,"size":10,"hash":"f3ea8f2a2e6215bd4b5c03ca09e9cfc6e81652ecc7349fb5e82165edd04b989b"},{"type":"file","path":"run.sh","executable":true,"size":3,"hash":"9dc177c2fde29dea8e7c29f7ddf147b7c449c99d049c62f3aac0a5933ecf76a3"},{"type":"symlink","path":"src/l","target":"lib.rs"}]}"#;
+    let manifest: Manifest = serde_json::from_str(old).unwrap();
+    assert_eq!(
+        manifest.hash().as_str(),
+        "5a43ee8a7a09bfd91a9b91c221a861a2c1a3394dbeb3d29f6eeefca8aeda8816"
+    );
+    assert!(
+        manifest
+            .entries
+            .iter()
+            .all(|e| !matches!(e, Entry::File { mode: Some(_), .. }))
+    );
+    assert!(
+        !String::from_utf8(manifest.canonical_bytes())
+            .unwrap()
+            .contains("mode")
+    );
+    // The same manifest with the modes recorded is another manifest.
+    let with_modes = Manifest::new(
+        manifest
+            .entries
+            .iter()
+            .cloned()
+            .map(|e| match e {
+                Entry::File {
+                    path,
+                    executable,
+                    size,
+                    hash,
+                    ..
+                } => Entry::File {
+                    path,
+                    executable,
+                    mode: Some(if executable { 0o755 } else { 0o644 }),
+                    size,
+                    hash,
+                },
+                other => other,
+            })
+            .collect(),
+    );
+    assert_ne!(with_modes.hash(), manifest.hash());
+    let json = serde_json::to_string(&with_modes).unwrap();
+    assert!(
+        json.contains("\"mode\":420") && json.contains("\"mode\":493"),
+        "{json}"
+    );
+    assert_eq!(serde_json::from_str::<Manifest>(&json).unwrap(), with_modes);
+    // `diff`: a mode alone is a change, an unrecorded mode is not.
+    let with_mode = |mode: Option<u32>| {
+        Manifest::new(vec![Entry::File {
+            path: "f".into(),
+            executable: false,
+            mode,
+            size: 1,
+            hash: hash_bytes(b"x"),
+        }])
+    };
+    let changes = |a: Option<u32>, b: Option<u32>| diff(&with_mode(a), &with_mode(b)).changes;
+    assert_eq!(
+        changes(Some(0o644), Some(0o600))
+            .iter()
+            .map(|c| (c.path.as_str(), c.kind))
+            .collect::<Vec<_>>(),
+        [("f", ChangeKind::Modified)]
+    );
+    assert!(changes(Some(0o644), Some(0o644)).is_empty());
+    assert!(
+        changes(None, Some(0o600)).is_empty(),
+        "an old base records no mode"
+    );
+    assert!(changes(Some(0o600), None).is_empty());
 }

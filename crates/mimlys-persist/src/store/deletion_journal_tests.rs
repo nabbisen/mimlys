@@ -29,6 +29,7 @@ fn task_with_a_snapshot(
     let manifest = Manifest::new(vec![Entry::File {
         path: "f".into(),
         executable: false,
+        mode: None,
         size: content.len() as u64,
         hash: hash.clone(),
     }]);
