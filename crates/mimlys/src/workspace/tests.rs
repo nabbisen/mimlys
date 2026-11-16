@@ -2275,6 +2275,11 @@ mod snapshots {
                 std::os::windows::fs::symlink_file("a_file.txt", fx.tree().join("file_link"))
             });
         if let Err(e) = made {
+            // The CI job runs with the right to make links: a refusal there is a failure.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "the system refuses to make links: {e}"
+            );
             eprintln!("skipped: the system refuses to make links here: {e}");
             return;
         }
