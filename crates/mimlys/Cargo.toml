@@ -38,6 +38,10 @@ tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 wat = "1"
 
+[target.'cfg(unix)'.dependencies]
+# `O_NONBLOCK` for the open of a project file (a named pipe never blocks it).
+rustix = { version = "1", features = ["fs"] }
+
 [target.'cfg(unix)'.dev-dependencies]
 # A pseudo-terminal and a signal for the tests of the prompts (REQ-CLI-005),
 # in safe code. The crate is already built for mimlys-exec; the `pty` feature

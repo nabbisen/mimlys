@@ -47,7 +47,7 @@ or configuration error, 2 usage error.
 | `check` | Validate the configuration and print it |
 | `interpreters list` | The configured interpreters and whether they are installed |
 | `interpreters install <language> [--from FILE]` | Verify by hash and install an interpreter build (download of the shipped build without `--from`, within two minutes and retried three times on a transient failure; if it still fails, the error is `unavailable`, component `download`, and `--from FILE` is the remedy) |
-| `rollback <task> [--snapshot S]` | Restore the workspace to a snapshot (the latest by default) |
+| `rollback <task> [--snapshot S]` | Restore the workspace to a snapshot (the latest by default). A promotion's backup is not a target: it holds only the project's changed paths, so `--snapshot` of one is refused (`invalid_request`) and names `rollback --promotion` |
 | `rollback <task> --promotion P [--yes] [--overwrite-edited]` | Reverse a promotion from its backup: it lists the paths it will restore and asks; **without a terminal it needs `--yes`** (a script must pass it), otherwise it changes nothing and says so. A path edited since the promotion refuses the reversal unless `--overwrite-edited`. It takes an `applied` promotion, and a `failed` one whose own restore from the backup failed (the message of that failure names this command); once, never twice |
 | `promote <task> [--yes] [--summary] [--patch]` | Diff against the base, refuse conflicts, back up, ask, write; `--patch` prints a patch and writes nothing |
 

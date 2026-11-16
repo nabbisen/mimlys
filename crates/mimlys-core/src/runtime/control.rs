@@ -427,6 +427,30 @@ impl Runtime {
         .ok_or(RuntimeError::NotFound {
             what: "snapshot".into(),
         })?;
+        // A promotion's backup holds only the project's changed paths: restoring the working
+        // tree to it would delete the rest (REQ-WS-006). The promotion's reversal is the way.
+        if record.reason == crate::snapshot::SnapshotReason::Backup {
+            let promotion = self
+                .deps
+                .persistence
+                .load_promotions(task_id)?
+                .into_iter()
+                .find(|p| p.backup_snapshot == record.snapshot_id);
+            let advice = match promotion {
+                Some(p) => format!(
+                    "reverse the promotion with `mimlys rollback {task_id} --promotion {}`",
+                    p.promotion_id
+                ),
+                None => "reverse the promotion with `mimlys rollback <task> --promotion <id>`"
+                    .to_owned(),
+            };
+            return Err(RuntimeError::InvalidRequest {
+                detail: format!(
+                    "snapshot {} is the backup of a promotion: it holds only the project's changed paths and is not a target of `rollback --snapshot`; {advice}",
+                    record.snapshot_id
+                ),
+            });
+        }
         self.deps.workspaces.restore(task_id, &record)?;
         self.deps.persistence.append_event(&self.event(
             session.actor(),

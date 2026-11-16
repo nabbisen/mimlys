@@ -141,7 +141,8 @@ fn m3_failed_write_is_rolled_back() {
 
 /// External design §23, M3: promotion refuses a conflicting file and
 /// otherwise shows the diff, needs confirmation, backs up and applies; a
-/// patch writes nothing; the promotion is reversed from its backup.
+/// patch writes nothing; the promotion is reversed from its backup, which is not a target of
+/// `rollback --snapshot` (REQ-WS-006).
 #[test]
 fn m3_promotion() {
     let env = Env::new("edit.json");
@@ -198,6 +199,34 @@ fn m3_promotion() {
     let (_, view) = env.json(&["task", "show", &id]);
     assert_eq!(view["promotions"].as_array().unwrap().len(), 1);
     assert_eq!(view["footprint"]["promotions"], 1);
+    // The backup is not a target of `rollback --snapshot` (REQ-WS-006): the request is refused and
+    // names the promotion's reversal; the task's tree and the project are as they were.
+    let backup = view["promotions"][0]["backup_snapshot"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let tree_before = std::fs::read_to_string(env.tree(&id).join("src/lib.rs")).unwrap();
+    let (code, refused) = env.json(&["rollback", &id, "--snapshot", &backup]);
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["error"]["kind"], "invalid_request", "{refused}");
+    let text = refused["error"]["message"].to_string();
+    assert!(
+        text.contains(&format!("rollback {id} --promotion {promotion_id}")),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.tree(&id).join("src/lib.rs")).unwrap(),
+        tree_before
+    );
+    assert_eq!(
+        std::fs::read_to_string(scope.path().join("src/lib.rs")).unwrap(),
+        "fn a() -> i32 { 1 }\n"
+    );
+    let (_, shown, _) = env.run(&["task", "show", &id]);
+    assert!(
+        shown.contains("backup") && shown.contains("not a rollback target"),
+        "{shown}"
+    );
     // Reverse.
     let (code, value) = env.json(&["rollback", &id, "--promotion", &promotion_id, "--yes"]);
     assert_eq!(code, 0, "{value}");

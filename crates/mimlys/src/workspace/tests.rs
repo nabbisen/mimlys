@@ -212,7 +212,7 @@ mod snapshots {
         p: LocalWorkspaces,
         task: TaskId,
         ids: ScriptedIds,
-        n: std::cell::Cell<u32>,
+        n: std::sync::atomic::AtomicU32,
     }
 
     impl Fx {
@@ -236,13 +236,13 @@ mod snapshots {
                 p,
                 task,
                 ids,
-                n: std::cell::Cell::new(0),
+                n: std::sync::atomic::AtomicU32::new(0),
             }
         }
 
         fn now(&self) -> Instant {
-            self.n.set(self.n.get() + 1);
-            Instant::from_unix_millis(1_700_000_000_000 + i64::from(self.n.get())).unwrap()
+            let n = self.n.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            Instant::from_unix_millis(1_700_000_000_000 + i64::from(n)).unwrap()
         }
 
         fn snap(
@@ -953,6 +953,150 @@ mod snapshots {
         }
     }
 
+    /// Runs `work` on a thread of its own and returns its result. A named pipe with no other end
+    /// holds a blocking open for ever, so a regression ends the test binary here, saying what
+    /// blocked, instead of hanging the run; what the test decides is the state it finds.
+    #[cfg(unix)]
+    fn without_blocking<T: Send>(what: &str, work: impl FnOnce() -> T + Send) -> T {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _ = done.send(work());
+            });
+            match result.recv_timeout(std::time::Duration::from_secs(120)) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("blocked: {what}");
+                    std::process::exit(1)
+                }
+            }
+        })
+    }
+
+    #[cfg(unix)]
+    fn mkfifo(path: &Path) {
+        let status = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .expect("mkfifo runs");
+        assert!(status.success(), "mkfifo");
+    }
+
+    #[cfg(unix)]
+    fn is_special(path: &Path) -> bool {
+        use std::os::unix::fs::FileTypeExt;
+        let t = std::fs::symlink_metadata(path).unwrap().file_type();
+        t.is_fifo() || t.is_socket()
+    }
+
+    /// REQ-WS-007: a path of the plan that is a named pipe or a socket in the project is refused
+    /// in the plan, naming it and what it is, and nothing blocks (the open of a named pipe
+    /// waits for its other end). The path may be one the workspace changed and the base had, or
+    /// one the workspace added. The project is as it was.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_named_pipe_or_socket_at_a_path_of_the_plan_refuses_the_plan() {
+        for (name, kind, make) in [
+            ("src/lib.rs", "named pipe", true),
+            ("src/new.rs", "named pipe", true),
+            ("src/lib.rs", "socket", false),
+            ("src/new.rs", "socket", false),
+        ] {
+            let fx = Fx::new();
+            let base = fx.snap(SnapshotReason::Base, None);
+            put(&fx.tree(), "src/lib.rs", "changed in the workspace");
+            put(&fx.tree(), "src/new.rs", "new");
+            let target = fx.scope.path().join(name);
+            let _ = std::fs::remove_file(&target);
+            let _listener;
+            if make {
+                mkfifo(&target);
+            } else {
+                _listener = std::os::unix::net::UnixListener::bind(&target).unwrap();
+            }
+            let (p, task, root) = (&fx.p, fx.task, fx.root());
+            let err = without_blocking("the plan", || p.promotion_plan(task, &base.record, &root))
+                .unwrap_err();
+            let WorkspaceError::Refused { reason } = &err else {
+                panic!("{name} ({kind}): {err:?}");
+            };
+            assert!(
+                reason.contains(name) && reason.contains(kind),
+                "{name} ({kind}): {reason}"
+            );
+            assert!(is_special(&target), "{name} ({kind}) is untouched");
+        }
+    }
+
+    /// REQ-WS-007: a named pipe that appears at a path of the plan after the plan was made is
+    /// refused by the backup and by the apply, as the plan refuses it; nothing blocks, and what
+    /// the apply had written is restored by the runtime as for any error.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_named_pipe_that_appears_after_the_plan_is_refused_without_blocking() {
+        // Before the backup: the stale plan is refused, naming the path.
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/new.rs", "new");
+        let plan = fx.plan(&base.record).unwrap();
+        let target = fx.scope.path().join("src/new.rs");
+        mkfifo(&target);
+        let err = without_blocking("the backup", || fx.promote_backup(&plan, &base.record))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(&err, WorkspaceError::Refused { reason } if reason.contains("src/new.rs") && reason.contains("named pipe")),
+            "{err:?}"
+        );
+        assert!(is_special(&target));
+        // During the apply: the path becomes a named pipe just before it is written.
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/new.rs", "new");
+        let plan = fx.plan(&base.record).unwrap();
+        let target = fx.scope.path().join("src/new.rs");
+        let hook_target = target.clone();
+        fx.on_apply(move |path| {
+            if path == "src/new.rs" {
+                mkfifo(&hook_target);
+            }
+            Ok(())
+        });
+        let err = without_blocking("the apply", || fx.promote(&plan, &base.record))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(&err, WorkspaceError::Refused { reason } if reason.contains("src/new.rs") && reason.contains("named pipe")),
+            "{err:?}"
+        );
+        assert!(is_special(&target), "the pipe is not written over");
+    }
+
+    /// REQ-WS-007: the open of a project file does not wait for a named pipe (`O_NONBLOCK`) and
+    /// looks at what it got through the handle: a named pipe is refused by name, a directory too.
+    /// Here the path was not looked at first, which is the race the look cannot cover.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_the_open_of_a_project_file_never_waits_for_a_named_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        mkfifo(&dir.path().join("pipe"));
+        std::fs::create_dir(dir.path().join("directory")).unwrap();
+        std::fs::write(dir.path().join("file"), "x").unwrap();
+        let handle =
+            cap_std::fs::Dir::open_ambient_dir(dir.path(), cap_std::ambient_authority()).unwrap();
+        for (name, what) in [("pipe", "named pipe"), ("directory", "directory")] {
+            let error = without_blocking(name, || {
+                super::super::snapshot::open_file(&handle, name).map(|_| ())
+            })
+            .unwrap_err();
+            assert!(
+                matches!(&error, WorkspaceError::Refused { reason } if reason.contains(name) && reason.contains(what)),
+                "{name}: {error:?}"
+            );
+        }
+        assert!(super::super::snapshot::open_file(&handle, "file").is_ok());
+    }
+
     /// REQ-WS-007: a directory the promotion would remove, or replace by a file, holds entries the
     /// plan does not list (a file of the project that was never materialized, a file added since):
     /// the plan is refused, names them, and the project is unchanged. Once they are dealt with,
@@ -1584,6 +1728,44 @@ mod snapshots {
         let report =
             fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Overwrite)
                 .unwrap();
+        assert!(report.left.is_empty());
+        assert_eq!(read(fx.scope.path(), "src/lib.rs"), "fn a() {}\n");
+    }
+
+    /// REQ-WS-007: a path of a promotion that holds a named pipe when the promotion is reversed is
+    /// an edit made since: listed as such, kept, never opened, and the rest is restored; confirmed,
+    /// it is replaced by the backup's entry.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_named_pipe_in_the_place_of_a_promoted_file_is_an_edit_since() {
+        use mimlys_core::spi::EditedPaths;
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        put(&fx.tree(), "src/added.rs", "added");
+        let plan = fx.plan(&base.record).unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        let pipe = fx.scope.path().join("src/lib.rs");
+        std::fs::remove_file(&pipe).unwrap();
+        mkfifo(&pipe);
+        let (p, promotion_ref, backup_ref) = (&fx.p, &promotion, &backup.record);
+        let revert = without_blocking("the plan of the reversal", || {
+            p.promotion_revert_plan(promotion_ref, backup_ref)
+        })
+        .unwrap();
+        assert_eq!(revert.conflicts, ["src/lib.rs"]);
+        let report = without_blocking("the reversal", || {
+            p.revert_promotion(promotion_ref, backup_ref, EditedPaths::Keep)
+        })
+        .unwrap();
+        assert_eq!(report.left, ["src/lib.rs"]);
+        assert!(is_special(&pipe), "the pipe is kept");
+        assert!(!fx.scope.path().join("src/added.rs").exists());
+        let report = without_blocking("the confirmed reversal", || {
+            p.revert_promotion(promotion_ref, backup_ref, EditedPaths::Overwrite)
+        })
+        .unwrap();
         assert!(report.left.is_empty());
         assert_eq!(read(fx.scope.path(), "src/lib.rs"), "fn a() {}\n");
     }

@@ -284,8 +284,7 @@ impl LocalWorkspaces {
                     .map_err(Self::storage("create_dir"))?;
                 self.copy_tree(src, dst, &child, matcher, omitted)?;
             } else if ty.is_file() {
-                src.copy(&child, dst, &child)
-                    .map_err(Self::storage("copy"))?;
+                copy_file(src, dst, &child)?;
             }
         }
         Ok(())
@@ -316,6 +315,25 @@ impl LocalWorkspaces {
         }
         Ok(total)
     }
+}
+
+/// Copies a regular file of the scope into the tree: the source is opened without blocking and
+/// looked at through the handle, so that a named pipe put at the path since the walk is refused
+/// by name instead of waited for. The content is copied by the operating system where it can
+/// (a reflink on a filesystem that has them); the permissions follow the file.
+fn copy_file(src: &Dir, dst: &Dir, rel: &str) -> Result<(), WorkspaceError> {
+    let mut from = snapshot::open_file(src, rel)?.into_std();
+    let permissions = from
+        .metadata()
+        .map_err(LocalWorkspaces::storage("copy"))?
+        .permissions();
+    let mut to = dst
+        .create(rel)
+        .map_err(LocalWorkspaces::storage("copy"))?
+        .into_std();
+    std::io::copy(&mut from, &mut to).map_err(LocalWorkspaces::storage("copy"))?;
+    to.set_permissions(permissions)
+        .map_err(LocalWorkspaces::storage("copy"))
 }
 
 fn join(rel: &str, name: &str) -> String {
