@@ -130,7 +130,9 @@ idempotent = true
             let mut cmd = Command::new("sh");
             cmd.arg("-c")
                 .arg(format!("ulimit -s {kb} && exec \"$0\" \"$@\""))
-                .arg(env!("CARGO_BIN_EXE_mimlys"));
+                .arg(env!("CARGO_BIN_EXE_mimlys"))
+                // As the harness sets it for `mimlys` itself (`common::run_bounded`).
+                .env("MIMLYS_DEBUG_STACK_DIVISOR", "4");
             return cmd;
         }
         Command::new(env!("CARGO_BIN_EXE_mimlys"))
@@ -965,6 +967,53 @@ fn req_tool_009_restarts_made_by_the_pin_check_count_and_past_the_limit_the_call
 #[test]
 fn req_cli_001_the_runtime_does_not_use_the_main_threads_stack() {
     restarts_past_the_limit(true);
+}
+
+/// REQ-CLI-001 (handoff 009h, item 8): the stack-margin guard. The command
+/// thread's stack is `RUNTIME_STACK_BYTES` divided by `MIMLYS_DEBUG_STACK_DIVISOR`
+/// in a debug build, and the harness runs every process at a quarter
+/// (`common::run_bounded`), so the restarts test above, the heaviest path, fails
+/// when it needs more than a quarter of the stack. This test shows that the
+/// variable is honoured: a quarter and the whole stack run a command; a stack of
+/// 128 KiB does not (the process ends with a stack overflow); a value that is
+/// not a whole number from 1 to 1024 is ignored. A release build ignores the
+/// variable altogether (the other test).
+#[cfg(debug_assertions)]
+#[test]
+fn req_cli_001_the_debug_stack_knob_is_honoured() {
+    let dir = tempfile::tempdir().unwrap();
+    let ran = |divisor: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        cmd.arg("--version")
+            .env("MIMLYS_DEBUG_STACK_DIVISOR", divisor);
+        let out = run_bounded(&mut cmd, dir.path());
+        (out.status.success(), out.stdout, out.stderr)
+    };
+    for divisor in ["1", "4", " 4 "] {
+        let (ok, stdout, stderr) = ran(divisor);
+        assert!(ok, "{divisor:?}: {stdout}{stderr}");
+    }
+    let (ok, stdout, _) = ran("64");
+    assert!(!ok, "a stack of 128 KiB cannot parse a command line");
+    assert!(stdout.is_empty(), "nothing was printed: {stdout}");
+    // Outside the range, or not a number: the whole stack.
+    for divisor in ["0", "1025", "-4", "four", ""] {
+        let (ok, stdout, stderr) = ran(divisor);
+        assert!(ok, "{divisor:?} is ignored: {stdout}{stderr}");
+    }
+}
+
+/// REQ-CLI-001 (handoff 009h, item 8): a release build ignores
+/// `MIMLYS_DEBUG_STACK_DIVISOR`, whatever its value.
+#[cfg(not(debug_assertions))]
+#[test]
+fn req_cli_001_a_release_build_ignores_the_debug_stack_knob() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    cmd.arg("--version")
+        .env("MIMLYS_DEBUG_STACK_DIVISOR", "1024");
+    let out = run_bounded(&mut cmd, dir.path());
+    assert!(out.status.success(), "{}{}", out.stdout, out.stderr);
 }
 
 fn restarts_past_the_limit(limited_main_stack: bool) {

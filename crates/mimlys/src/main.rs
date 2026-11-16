@@ -304,8 +304,31 @@ enum TaskCommand {
 /// (`m5_mcp`, the restarts of an MCP server) needs about 985 KiB: it fails at
 /// 980 KiB and passes at 990. 8 MiB is more than eight times that. A stack is
 /// address space reserved up front and committed page by page as it is used, so
-/// the size costs nothing until it is touched.
+/// the size costs nothing until it is touched. A debug build can run the
+/// thread on less (`command_stack_bytes`), which the tests use to keep that
+/// margin: they run at a quarter, 2 MiB.
 const RUNTIME_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+/// The stack of the command thread as this process uses it.
+///
+/// A debug build reads `MIMLYS_DEBUG_STACK_DIVISOR` (a whole number from 1 to
+/// 1024) and gives the thread `RUNTIME_STACK_BYTES` divided by it. The test
+/// harness sets 4, so that a growth of the heaviest path past a quarter of the
+/// stack fails in CI before it can fail anywhere else, and the stack itself
+/// keeps a margin of four over what the tests accept. A release build does not
+/// read the variable (the code is not compiled), and a value outside the range
+/// is ignored: the full stack.
+fn command_stack_bytes() -> usize {
+    #[cfg(debug_assertions)]
+    if let Some(divisor) = std::env::var("MIMLYS_DEBUG_STACK_DIVISOR")
+        .ok()
+        .and_then(|text| text.trim().parse::<usize>().ok())
+        .filter(|n| (1..=1024).contains(n))
+    {
+        return RUNTIME_STACK_BYTES / divisor;
+    }
+    RUNTIME_STACK_BYTES
+}
 
 fn main() -> ExitCode {
     // REQ-CONF-012: first thing, before any thread exists (the async runtime
@@ -322,7 +345,7 @@ fn main() -> ExitCode {
     // main flow, and the panic hook's line names the thread that panicked.
     let spawned = std::thread::Builder::new()
         .name("main".into())
-        .stack_size(RUNTIME_STACK_BYTES)
+        .stack_size(command_stack_bytes())
         .spawn(run_process);
     match spawned {
         // The thread owns the runtime and everything the command opened: they
