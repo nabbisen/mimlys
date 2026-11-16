@@ -21,7 +21,7 @@ of its own confinement:
 | E | enforced | `explicit_environment` | nothing inherited by the worker or its tools |
 | K | enforced | `cgroup_kill` | every process a host tool starts joins the worker's `tool` sub-cgroup before it runs and dies with one `cgroup.kill`; the worker is also the subreaper, and the walk runs after the kill |
 | P | enforced | `no_new_privs+seccomp` | `ptrace`, `mount`, `keyctl`, `bpf`, `unshare`, `setns`, module and kexec loads denied |
-| M | best effort | `rlimit_as` | `memory.max` refused (`permission denied`: the controller is not enabled for the scope's children); `RLIMIT_AS` of LIM-H2 set per host tool |
+| M | best effort | `rlimit_as` | `memory.max` refused (`permission denied`: the controller is not enabled for the scope's children); `RLIMIT_AS` of LIM-H2 set per host tool (since 0.11 in the tool's process between fork and exec, handoff 011n) |
 | C | best effort | `wall_clock` | `pids.max` refused likewise; the runtime's timer holds |
 
 Tier: **full**. The cgroup rung is tried control by control (design review
