@@ -189,16 +189,6 @@ fn req_task_001_scope_rules() {
     assert_eq!(p.open(task).unwrap_err(), WorkspaceError::Missing);
 }
 
-#[test]
-fn target_inside_scope_is_lexical() {
-    assert!(target_inside_scope("a/b/link", Path::new("../c")));
-    assert!(target_inside_scope("a/b/link", Path::new("../../c")));
-    assert!(!target_inside_scope("a/b/link", Path::new("../../../c")));
-    assert!(!target_inside_scope("link", Path::new("../x")));
-    assert!(target_inside_scope("link", Path::new("./x/../y")));
-    assert!(!target_inside_scope("link", Path::new("/etc")));
-}
-
 mod snapshots {
     use super::*;
     use mimlys_core::clock::Instant;
@@ -2568,6 +2558,68 @@ mod snapshots {
             ),
             None
         );
+    }
+
+    /// REQ-WS-005: a chain of links that leaves the root through its own links is refused like a
+    /// link that leaves it: at the copy of the scope (omitted and counted), at a restore (omitted and
+    /// reported), at the plan of a promotion (the plan is refused, naming the link). The chain is
+    /// `mid/up -> ..` and `out -> mid/up/..`, which is lexically `mid` and really the parent of the
+    /// root; `mid/up` itself stays inside and is kept.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_005_a_link_chain_that_leaves_the_root_is_refused() {
+        // The copy of the scope.
+        let scope = scope();
+        std::fs::create_dir(scope.path().join("mid")).unwrap();
+        std::os::unix::fs::symlink("..", scope.path().join("mid/up")).unwrap();
+        std::os::unix::fs::symlink("mid/up/..", scope.path().join("out")).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let task = TaskId::new(&ScriptedIds::default());
+        let p = provider(data.path());
+        let info = p
+            .materialize(
+                task,
+                &ScopeSpec {
+                    root: scope.path().to_string_lossy().into_owned(),
+                    include: vec![],
+                },
+            )
+            .unwrap();
+        assert_eq!(info.symlinks_omitted, 1, "{info:?}");
+        let tree = p.tree_path(task);
+        assert!(std::fs::symlink_metadata(tree.join("mid/up")).is_ok());
+        assert!(std::fs::symlink_metadata(tree.join("out")).is_err());
+        // A restore: the chain was made in the tree by an action, and is in a snapshot.
+        let fx = Fx::new();
+        std::fs::create_dir(fx.tree().join("mid")).unwrap();
+        std::os::unix::fs::symlink("..", fx.tree().join("mid/up")).unwrap();
+        std::os::unix::fs::symlink("mid/up/..", fx.tree().join("out")).unwrap();
+        let snapshot = fx.snap(SnapshotReason::Base, None);
+        std::fs::remove_file(fx.tree().join("out")).unwrap();
+        std::fs::remove_file(fx.tree().join("mid/up")).unwrap();
+        let report = fx.p.restore(fx.task, &snapshot.record).unwrap();
+        assert_eq!(report.links_omitted, ["out"], "{report:?}");
+        assert!(std::fs::symlink_metadata(fx.tree().join("mid/up")).is_ok());
+        assert!(std::fs::symlink_metadata(fx.tree().join("out")).is_err());
+        // The plan of a promotion that holds the chain.
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::create_dir(fx.tree().join("mid")).unwrap();
+        std::os::unix::fs::symlink("..", fx.tree().join("mid/up")).unwrap();
+        std::os::unix::fs::symlink("mid/up/..", fx.tree().join("out")).unwrap();
+        let err = fx.plan(&base.record).unwrap_err();
+        let WorkspaceError::Refused { reason } = &err else {
+            panic!("{err:?}")
+        };
+        assert!(
+            reason.contains("out") && reason.contains("through other links"),
+            "{reason}"
+        );
+        assert!(!fx.scope.path().join("mid").exists(), "nothing is written");
+        // Without the link that leaves, the plan lists the one that stays.
+        std::fs::remove_file(fx.tree().join("out")).unwrap();
+        let plan = fx.plan(&base.record).unwrap();
+        assert!(plan.changes.iter().any(|c| c.path == "mid/up"));
     }
 
     /// REQ-TASK-004: a fork materializes the snapshot into a new tree.

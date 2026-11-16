@@ -271,6 +271,78 @@ pub fn target_inside_root(link: &str, target: &str) -> bool {
     true
 }
 
+/// How many links a path may be resolved through before it is refused (REQ-WS-005): the most a
+/// system itself follows on Linux (`MAXSYMLINKS`). A chain longer than that, or a loop, is not
+/// one a tree needs, and the bound is what ends the resolution of a loop.
+pub const MAX_LINK_HOPS: usize = 40;
+
+/// The links of a tree, by path: what a link chain is resolved through (REQ-WS-005).
+pub fn links_of(manifest: &Manifest) -> BTreeMap<&str, &str> {
+    manifest
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Symlink { path, target } => Some((path.as_str(), target.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a link at `link` (workspace-relative) pointing to `target` stays inside the root once
+/// it is **resolved through the links of the tree** (`links`, by path): each name on the way that
+/// is itself a link is replaced by that link's target, as the system does, so that `y -> s/x/..`
+/// with `s/x -> ..` is the parent of the root and not `s` (REQ-WS-005). The lexical rule of
+/// [`target_inside_root`] holds first. The resolution is refused when it passes through more than
+/// [`MAX_LINK_HOPS`] links (a loop included), when a link on the way is absolute, and when it
+/// would go above the root at any step. A name that is not a link of the tree is taken as it is.
+pub fn target_resolves_inside_root(link: &str, target: &str, links: &BTreeMap<&str, &str>) -> bool {
+    if !target_inside_root(link, target) {
+        return false;
+    }
+    // The components of the path still to resolve, the next one last; the directory resolved
+    // so far, from the root.
+    let mut todo: Vec<String> = components_of(target).into_iter().rev().collect();
+    let mut resolved: Vec<String> = link.split('/').map(str::to_owned).collect();
+    resolved.pop();
+    let mut hops = 0;
+    while let Some(component) = todo.pop() {
+        match component.as_str() {
+            "" | "." => {}
+            ".." => {
+                if resolved.pop().is_none() {
+                    return false;
+                }
+            }
+            name => {
+                resolved.push(name.to_owned());
+                if let Some(next) = links.get(resolved.join("/").as_str()) {
+                    hops += 1;
+                    if hops > MAX_LINK_HOPS || !target_inside_root_text(next) {
+                        return false;
+                    }
+                    resolved.pop();
+                    todo.extend(components_of(next).into_iter().rev());
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The components of a relative target, split at `/` and at `\` (a backslash separates on every
+/// platform, REQ-WS-011).
+fn components_of(target: &str) -> Vec<String> {
+    target.split(['/', '\\']).map(str::to_owned).collect()
+}
+
+/// Whether a link's target is relative (not rooted, no drive): the part of the lexical rule that
+/// does not depend on where the link is.
+fn target_inside_root_text(target: &str) -> bool {
+    let bytes = target.as_bytes();
+    !(bytes.first().is_some_and(|b| *b == b'/' || *b == b'\\')
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'))
+}
+
 /// Why a snapshot was taken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

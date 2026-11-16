@@ -219,3 +219,77 @@ fn req_ws_004_an_old_manifest_keeps_its_hash_and_a_mode_is_part_of_the_content()
     );
     assert!(changes(Some(0o600), None).is_empty());
 }
+
+/// REQ-WS-005: a link is resolved through the links of the tree before it is judged. The chain
+/// of the audit, `s/x -> ..` and `y -> s/x/..`, is lexically inside the root (`s/x/..` is `s`)
+/// and really the parent of the root, so `y` leaves; `s/x` itself does not. A chain is followed
+/// through every link on the way, a bounded number of times: `MAX_LINK_HOPS` links are allowed
+/// and one more is refused, which is also what ends a loop. A link on the way that is absolute
+/// refuses it. A name that is not a link of the tree is taken as it is.
+#[test]
+fn req_ws_005_a_link_chain_is_resolved_through_the_trees_own_links() {
+    let links = |pairs: &[(&'static str, &'static str)]| -> BTreeMap<&'static str, &'static str> {
+        pairs.iter().copied().collect()
+    };
+    let chain = links(&[("s/x", ".."), ("y", "s/x/..")]);
+    assert!(target_inside_root("y", "s/x/.."), "lexically inside");
+    assert!(
+        !target_resolves_inside_root("y", "s/x/..", &chain),
+        "through s/x it is the parent of the root"
+    );
+    assert!(target_resolves_inside_root("s/x", "..", &chain));
+    // The same shape with another set of names, and one level deeper.
+    let deeper = links(&[("a/b/up", "../.."), ("c", "a/b/up/..")]);
+    assert!(!target_resolves_inside_root("c", "a/b/up/..", &deeper));
+    let inside = links(&[("a/b/up", ".."), ("c", "a/b/up/..")]);
+    assert!(
+        target_resolves_inside_root("c", "a/b/up/..", &inside),
+        "`a/b/up` is `a`, and its parent is the root"
+    );
+    // A chain of plain links to a file is followed and inside.
+    let mut pairs: Vec<(String, String)> = (0..MAX_LINK_HOPS - 1)
+        .map(|i| (format!("l{i}"), format!("l{}", i + 1)))
+        .collect();
+    pairs.push((format!("l{}", MAX_LINK_HOPS - 1), "file".to_owned()));
+    let owned: BTreeMap<&str, &str> = pairs
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    // `l0 -> l1 -> ... -> l39 -> file`: from `start`, 40 links are passed through.
+    assert!(
+        target_resolves_inside_root("start", "l0", &owned),
+        "the bound is allowed"
+    );
+    // One more link on the way is refused.
+    let mut longer = owned.clone();
+    longer.insert("start2", "l0");
+    assert!(
+        !target_resolves_inside_root("start3", "start2", &longer),
+        "{MAX_LINK_HOPS} + 1 links are refused"
+    );
+    // A loop ends at the bound and is refused.
+    let looping = links(&[("a", "b"), ("b", "a")]);
+    assert!(!target_resolves_inside_root("start", "a", &looping));
+    // An absolute link on the way leaves; a drive does too.
+    assert!(!target_resolves_inside_root(
+        "y",
+        "s",
+        &links(&[("s", "/etc")])
+    ));
+    assert!(!target_resolves_inside_root(
+        "y",
+        "s",
+        &links(&[("s", "C:\\x")])
+    ));
+    // Names that are not links are taken as they are, and the lexical rule holds first.
+    let none = links(&[]);
+    assert!(target_resolves_inside_root("a/b/l", "../c", &none));
+    assert!(!target_resolves_inside_root("l", "../x", &none));
+    assert!(!target_resolves_inside_root("l", "/etc", &none));
+    // A backslash separates, on every platform.
+    assert!(!target_resolves_inside_root(
+        "y",
+        "s\\x\\..",
+        &links(&[("s/x", "..")])
+    ));
+}
