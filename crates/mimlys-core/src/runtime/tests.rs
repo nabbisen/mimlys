@@ -3551,3 +3551,58 @@ fn req_ws_006_a_promotions_backup_is_not_a_rollback_target() {
     assert_ne!(record.snapshot_id, promotion.backup_snapshot);
     assert_ne!(record.reason, crate::snapshot::SnapshotReason::Backup);
 }
+
+/// REQ-WS-006: a promotion's backup holds only the project's changed paths, so it is not the
+/// source of a fork either (`run --from-snapshot`): the request is invalid with the same kind as
+/// the rollback's refusal, says why, and creates nothing (no task, no workspace). A snapshot of
+/// the task is still a source.
+#[test]
+fn req_ws_006_a_promotions_backup_is_not_a_fork_source() {
+    let h = Harness::new(vec![
+        json!({"decision": "complete", "summary": "done"}),
+        json!({"decision": "complete", "summary": "forked done"}),
+    ]);
+    let id = h.create();
+    h.step(id);
+    let plan = one_file_plan(&h, id);
+    let promotion = h.runtime.promote_workspace(&h.session, id, &plan).unwrap();
+    let fork = |snapshot: Option<crate::ids::SnapshotId>| {
+        h.runtime.create_task(
+            &h.session,
+            CreateTask {
+                goal: "continue".into(),
+                scope: ScopeSpec {
+                    root: "/home/u/project".into(),
+                    include: vec![],
+                },
+                profile: None,
+                grants: vec![],
+                budgets: None,
+                deadline_ms: None,
+                completion_check: None,
+                hold: true,
+                from_task: Some(id),
+                from_snapshot: snapshot,
+            },
+        )
+    };
+    let tasks = h.runtime.list_tasks().unwrap().len();
+    let err = fork(Some(promotion.backup_snapshot)).unwrap_err();
+    assert_eq!(err.kind(), "invalid_request");
+    let text = err.to_string();
+    assert!(
+        text.contains(&promotion.backup_snapshot.to_string())
+            && text.contains("backup of a promotion")
+            && text.contains("source of a fork"),
+        "{text}"
+    );
+    assert_eq!(
+        h.runtime.list_tasks().unwrap().len(),
+        tasks,
+        "nothing was created"
+    );
+    // A snapshot of the task is accepted.
+    let own = h.persistence.load_snapshots(id).unwrap()[0].snapshot_id;
+    let forked = fork(Some(own));
+    assert!(forked.is_ok(), "{forked:?}");
+}

@@ -1004,19 +1004,7 @@ pub fn prune_done(count: usize, freed: u64) -> String {
 /// `task prune`: one task deleted with files left: its first paths (all of them are in the JSON
 /// report), then how many more.
 pub fn prune_task_left(task_id: &str, paths: &[String]) -> String {
-    const SHOWN: usize = 10;
-    let shown: Vec<&str> = paths.iter().take(SHOWN).map(String::as_str).collect();
-    let more = paths.len().saturating_sub(SHOWN);
-    format!(
-        "task {task_id} is deleted; {} path(s) could not be removed and are left to the next start: {}{}",
-        paths.len(),
-        shown.join(", "),
-        if more > 0 {
-            format!(" and {more} more")
-        } else {
-            String::new()
-        }
-    )
+    mimlys_core::spi::not_removed_text(task_id, paths)
 }
 /// `task prune`: tasks deleted with files left, which the next start removes (the run went on).
 pub fn prune_left(left: &[(String, Vec<String>)]) -> String {

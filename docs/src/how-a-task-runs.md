@@ -316,7 +316,8 @@ mimlys task new retry --from-task <task> --hold
 
 (Give a goal of more than one word in quotes.) The new task gets a workspace
 made from the source's latest snapshot (a promotion's backup does not count),
-or from `--from-snapshot S`; the source is untouched. It starts with the
+or from `--from-snapshot S` (a promotion's backup is refused there too: it holds
+only the paths the promotion changed); the source is untouched. It starts with the
 grants the source still holds (you may add `--grant`, within the same
 ceiling), and its first request carries a read-only history of the source: its
 goal, its latest plan, and its last 20 steps as the decision and the outcome
@@ -359,8 +360,12 @@ A promoted file keeps the mode your own file has: a file of yours that is
 `0600` stays `0600`, whatever the task's copy was recreated with. A file the
 task made takes the task's mode without the group's and others' write bits
 (`0666` becomes `0644`). If the task set or cleared the executable bit of a
-file, that is carried over, where your own mode allows reading. A change of
-mode alone is a change in the diff (it is shown as git shows it), and the
+file, that is carried over, where your own mode allows reading. The diff shows
+exactly what the promotion does: a change of mode that the promotion carries
+over (the executable bit) is shown as git shows it (`old mode`, `new mode`),
+even when the content is the same, and a file whose mode differs but which
+the promotion would leave as it is (the mode of the task's copy is not
+carried, or your file has the executable bit already) is not listed. The
 reversal puts the mode back as well as the content. On Windows there are no
 modes to keep.
 

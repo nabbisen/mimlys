@@ -126,7 +126,72 @@ pub struct RuntimeStatus {
     pub pending: Vec<(TaskId, WaitKind)>,
 }
 
+/// The scope is the request's input: a part of it that cannot be read (or whose name cannot be
+/// kept) is an invalid request, not a state of a task's tree (external design §18, §20); every
+/// other failure of the copy is what it was.
+fn scope_error(error: crate::spi::WorkspaceError) -> RuntimeError {
+    match error {
+        crate::spi::WorkspaceError::Unreadable { .. }
+        | crate::spi::WorkspaceError::ReadFailed { .. } => RuntimeError::InvalidRequest {
+            detail: error.to_string(),
+        },
+        other => RuntimeError::Workspace(other),
+    }
+}
+
+/// What a snapshot is asked for, to word the refusal of a promotion's backup.
+#[derive(Clone, Copy)]
+enum BackupUse {
+    /// `rollback --snapshot`: the task's own tree is restored to it.
+    Rollback,
+    /// `run --from-snapshot`: a new task's workspace is made from it.
+    Fork,
+}
+
 impl Runtime {
+    /// Refuses a promotion's backup as the snapshot to roll back to or to fork from: it holds only
+    /// the project's changed paths (REQ-WS-006). The same `InvalidRequest` for both; the advice
+    /// is the way that does what was probably meant.
+    fn refuse_backup(
+        &self,
+        task_id: TaskId,
+        record: &SnapshotRecord,
+        what: BackupUse,
+    ) -> Result<(), RuntimeError> {
+        if record.reason != crate::snapshot::SnapshotReason::Backup {
+            return Ok(());
+        }
+        let (target, advice) = match what {
+            BackupUse::Rollback => {
+                let promotion = self
+                    .deps
+                    .persistence
+                    .load_promotions(task_id)?
+                    .into_iter()
+                    .find(|p| p.backup_snapshot == record.snapshot_id);
+                let advice = match promotion {
+                    Some(p) => format!(
+                        "reverse the promotion with `mimlys rollback {task_id} --promotion {}`",
+                        p.promotion_id
+                    ),
+                    None => "reverse the promotion with `mimlys rollback <task> --promotion <id>`"
+                        .to_owned(),
+                };
+                ("a target of `rollback --snapshot`", advice)
+            }
+            BackupUse::Fork => (
+                "a source of a fork (`run --from-snapshot`)",
+                "choose another snapshot of the task (`mimlys task show` lists them)".to_owned(),
+            ),
+        };
+        Err(RuntimeError::InvalidRequest {
+            detail: format!(
+                "snapshot {} is the backup of a promotion: it holds only the project's changed paths and is not {target}; {advice}",
+                record.snapshot_id
+            ),
+        })
+    }
+
     fn ceiling_for(&self, task: &Task) -> ExtensionCeiling {
         ExtensionCeiling {
             max_steps: self.deps.policy.ceiling.max_steps,
@@ -238,13 +303,19 @@ impl Runtime {
                 }
                 let snapshots = self.deps.persistence.load_snapshots(source_id)?;
                 let from = match request.from_snapshot {
-                    Some(id) => snapshots
-                        .iter()
-                        .find(|s| s.snapshot_id == id)
-                        .cloned()
-                        .ok_or(RuntimeError::NotFound {
-                            what: "snapshot".into(),
-                        })?,
+                    Some(id) => {
+                        let found = snapshots
+                            .iter()
+                            .find(|s| s.snapshot_id == id)
+                            .cloned()
+                            .ok_or(RuntimeError::NotFound {
+                                what: "snapshot".into(),
+                            })?;
+                        // A promotion's backup is not a source either: a workspace of only the
+                        // paths the promotion changed (REQ-WS-006).
+                        self.refuse_backup(source_id, &found, BackupUse::Fork)?;
+                        found
+                    }
                     None => snapshots
                         .iter()
                         .rfind(|s| s.reason != crate::snapshot::SnapshotReason::Backup)
@@ -273,7 +344,10 @@ impl Runtime {
                 (info, Some(prepared))
             }
             None => (
-                self.deps.workspaces.materialize(task_id, &request.scope)?,
+                self.deps
+                    .workspaces
+                    .materialize(task_id, &request.scope)
+                    .map_err(scope_error)?,
                 None,
             ),
         };
@@ -437,28 +511,7 @@ impl Runtime {
         })?;
         // A promotion's backup holds only the project's changed paths: restoring the working
         // tree to it would delete the rest (REQ-WS-006). The promotion's reversal is the way.
-        if record.reason == crate::snapshot::SnapshotReason::Backup {
-            let promotion = self
-                .deps
-                .persistence
-                .load_promotions(task_id)?
-                .into_iter()
-                .find(|p| p.backup_snapshot == record.snapshot_id);
-            let advice = match promotion {
-                Some(p) => format!(
-                    "reverse the promotion with `mimlys rollback {task_id} --promotion {}`",
-                    p.promotion_id
-                ),
-                None => "reverse the promotion with `mimlys rollback <task> --promotion <id>`"
-                    .to_owned(),
-            };
-            return Err(RuntimeError::InvalidRequest {
-                detail: format!(
-                    "snapshot {} is the backup of a promotion: it holds only the project's changed paths and is not a target of `rollback --snapshot`; {advice}",
-                    record.snapshot_id
-                ),
-            });
-        }
+        self.refuse_backup(task_id, &record, BackupUse::Rollback)?;
         self.deps.workspaces.restore(task_id, &record)?;
         self.deps.persistence.append_event(&self.event(
             session.actor(),

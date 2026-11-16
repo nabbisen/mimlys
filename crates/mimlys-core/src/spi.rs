@@ -419,6 +419,31 @@ fn unlisted_message(paths: &[String]) -> String {
     text
 }
 
+/// How many paths of a deletion that left files the text names; the rest are counted. The JSON
+/// report of the command carries every path.
+const NOT_REMOVED_SHOWN: usize = 10;
+
+/// The text of a deletion that left files behind: the task is deleted, the first paths
+/// ([`NOT_REMOVED_SHOWN`]) are named and the rest counted, and the next start removes them
+/// (RFC 006 §6). `task delete` and `task prune` word it the same way.
+pub fn not_removed_text(task_id: &str, paths: &[String]) -> String {
+    let shown: Vec<&str> = paths
+        .iter()
+        .take(NOT_REMOVED_SHOWN)
+        .map(String::as_str)
+        .collect();
+    let more = paths.len().saturating_sub(NOT_REMOVED_SHOWN);
+    let mut text = format!(
+        "task {task_id} is deleted; {} path(s) could not be removed and are left to the next start: {}",
+        paths.len(),
+        shown.join(", ")
+    );
+    if more > 0 {
+        text.push_str(&format!(" and {more} more"));
+    }
+    text
+}
+
 /// A workspace could not be provided.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case")]
@@ -471,7 +496,7 @@ pub enum WorkspaceError {
     /// A deletion left files it could not remove (RFC 006 §6): every removal was attempted, and
     /// each failure is named. The task is deleted (its rows are gone); the next start tries
     /// these paths again.
-    #[error("task {task_id} is deleted; {} path(s) could not be removed and are left to the next start: {}", paths.len(), paths.join(", "))]
+    #[error("{}", not_removed_text(&task_id.to_string(), paths))]
     NotRemoved {
         /// The deleted task.
         task_id: TaskId,

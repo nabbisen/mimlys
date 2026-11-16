@@ -2034,6 +2034,87 @@ mod snapshots {
         assert!(status.success());
     }
 
+    /// REQ-WS-012, REQ-WS-004 (handoff 006c-6): the deletion of a task removes a tree deeper than
+    /// the stack bears and than a path may be, whole, and `NotRemoved` does not occur for it.
+    /// The chain is `DEPTH` levels of one-character names; on the way there are a read-only
+    /// directory (`ro`, 0555) and a directory nothing can enter (`locked`, 0000), each with a file;
+    /// a name that is not valid UTF-8; a link to a file outside the tree, which is not followed
+    /// (the file stays); and a named pipe. The previous `remove_tree` was recursive and worked by
+    /// path: it could not name the chain past 2 048 levels (a path of 4 096 bytes), and listed
+    /// every level above the first it could not reach as left.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_012_a_tree_deeper_than_a_path_may_be_is_deleted_whole() {
+        use std::os::unix::ffi::OsStrExt;
+        // Linux: five times what a path of 4 096 bytes holds here (2 048 levels), and a system's
+        // rmdir of a deep directory costs about 0.3 ms, so no more. Elsewhere a modest chain, as
+        // for the walk (see above).
+        const DEPTH: usize = if cfg!(target_os = "linux") {
+            10_000
+        } else {
+            300
+        };
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep"), "kept").unwrap();
+        let deep = fx.tree().join("deep");
+        std::fs::create_dir(&deep).unwrap();
+        mkfifo(&deep.join("pipe"));
+        let mut dir =
+            cap_std::fs::Dir::open_ambient_dir(&deep, cap_std::ambient_authority()).unwrap();
+        for level in 0..DEPTH {
+            if level == DEPTH / 3 {
+                dir.create_dir("ro").unwrap();
+                dir.write("ro/f", b"f").unwrap();
+                let ro = cap_std::fs::Permissions::from_std(
+                    std::os::unix::fs::PermissionsExt::from_mode(0o555),
+                );
+                dir.set_permissions("ro", ro).unwrap();
+                dir.create_dir("locked").unwrap();
+                dir.write("locked/f", b"f").unwrap();
+                let locked = cap_std::fs::Permissions::from_std(
+                    std::os::unix::fs::PermissionsExt::from_mode(0o000),
+                );
+                dir.set_permissions("locked", locked).unwrap();
+            }
+            if level == DEPTH / 2 {
+                dir.write(std::ffi::OsStr::from_bytes(b"caf\xE9.txt"), b"x")
+                    .unwrap();
+                // Absolute targets: the capability handle refuses to make these, rustix does.
+                rustix::fs::symlinkat(outside.path().join("keep"), &dir, "link").unwrap();
+                rustix::fs::symlinkat(outside.path(), &dir, "dirlink").unwrap();
+            }
+            dir.create_dir("d").unwrap();
+            dir = dir.open_dir("d").unwrap();
+        }
+        dir.write("bottom", b"12345").unwrap();
+        let manifest = fx.p.manifest(&base.record).unwrap();
+        let rows = DeletedRows {
+            objects_at_zero: manifest.objects().keys().cloned().collect(),
+            snapshots: vec![base.record.snapshot_id],
+            blobs: vec![],
+        };
+        fx.p.files.begin_deletion(fx.task, &rows).unwrap();
+        let result = fx.p.delete_files(fx.task, &rows);
+        let shown = match &result {
+            Ok(()) => String::new(),
+            Err(e) => e.to_string().chars().take(300).collect(),
+        };
+        assert!(result.is_ok(), "the deep tree is deleted whole: {shown}");
+        assert!(!fx.p.task_dir(fx.task).exists());
+        assert!(
+            fx.p.files.pending_deletions().unwrap().is_empty(),
+            "the journal of the deletion is closed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("keep")).unwrap(),
+            "kept",
+            "a link is removed, never followed"
+        );
+        assert!(outside.path().exists());
+    }
+
     /// REQ-WS-006, REQ-WS-005: a named pipe or a socket an action made in the tree (at a path the
     /// snapshot does not hold, in a directory it does not hold, or in the place of a file) is
     /// removed by a rollback, the restore does not block on it, and the file it replaced comes
@@ -2454,23 +2535,41 @@ mod snapshots {
         assert_eq!(mode_of(&fx.scope.path().join("p.txt")), 0o600);
     }
 
-    /// REQ-WS-007: a change of mode alone is in the plan, shown with the mode it will give, and
-    /// is promoted: a script made executable in the workspace becomes executable in the project,
-    /// with the project file's own bits otherwise (0640 becomes 0750, not the workspace's 0755),
-    /// and the reversal restores the mode it had. A change of mode that is not of the executable
-    /// bit is in the plan too (it is a change), and the promotion keeps the project's own mode.
+    /// REQ-WS-007 (external design §14.5; handoff 006c-6): the plan shows exactly what the promotion
+    /// does. A change of mode alone is in it only when the promotion carries it over, and is shown
+    /// with the mode it will give: a script made executable in the workspace becomes executable in
+    /// the project (0640 becomes 0750, the project's own bits otherwise), and the reversal restores
+    /// the mode it had. A change of mode that promotes nothing is not listed: a mode that is not of
+    /// the executable bit (the project keeps its own), and an executable bit the project already
+    /// has (set, or cleared). Nor does such a path hold up the plan, whatever the project holds there.
     #[cfg(unix)]
     #[test]
-    fn req_ws_007_a_mode_only_change_is_in_the_plan() {
+    fn req_ws_007_a_mode_only_change_is_in_the_plan_only_when_it_is_carried() {
         use mimlys_core::spi::EditedPaths;
         let fx = Fx::new();
         for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            put(&root, "src/set.sh", "echo set\n");
+            put(&root, "src/has.sh", "echo has\n");
+            put(&root, "src/clear.sh", "echo clear\n");
             chmod(&root.join("src/lib.rs"), 0o640);
             chmod(&root.join("src/deep/x.txt"), 0o644);
+            chmod(&root.join("src/set.sh"), 0o644);
+            chmod(&root.join("src/has.sh"), 0o644);
+            chmod(&root.join("src/clear.sh"), 0o755);
         }
+        // The project already has the bit the task is going to set, and lacks the one it clears.
+        chmod(&fx.scope.path().join("src/has.sh"), 0o755);
+        chmod(&fx.scope.path().join("src/clear.sh"), 0o644);
         let base = fx.snap(SnapshotReason::Base, None);
         chmod(&fx.tree().join("src/lib.rs"), 0o755);
         chmod(&fx.tree().join("src/deep/x.txt"), 0o600);
+        chmod(&fx.tree().join("src/set.sh"), 0o755);
+        chmod(&fx.tree().join("src/has.sh"), 0o755);
+        chmod(&fx.tree().join("src/clear.sh"), 0o644);
+        // The project has an edit the task knows nothing of, at a path that promotes nothing: it
+        // does not conflict, for nothing of it is written.
+        put(fx.scope.path(), "src/has.sh", "echo edited\n");
+        chmod(&fx.scope.path().join("src/has.sh"), 0o755);
         let plan = fx.plan(&base.record).unwrap();
         let changed: Vec<(&str, ChangeKind)> = plan
             .changes
@@ -2480,10 +2579,19 @@ mod snapshots {
         assert_eq!(
             changed,
             [
-                ("src/deep/x.txt", ChangeKind::Modified),
-                ("src/lib.rs", ChangeKind::Modified)
-            ]
+                ("src/lib.rs", ChangeKind::Modified),
+                ("src/set.sh", ChangeKind::Modified)
+            ],
+            "only what the promotion changes: x.txt (not an executable bit), has.sh (already set) and \
+             clear.sh (already clear) are not listed"
         );
+        for absent in ["src/deep/x.txt", "src/has.sh", "src/clear.sh"] {
+            assert!(
+                plan.text_diffs.iter().all(|(p, _)| p != absent),
+                "{absent} has nothing to show: {:?}",
+                plan.text_diffs
+            );
+        }
         let diff_of = |path: &str| {
             plan.text_diffs
                 .iter()
@@ -2495,19 +2603,28 @@ mod snapshots {
             shown.contains("old mode 100640") && shown.contains("new mode 100750"),
             "{shown}"
         );
-        let other = diff_of("src/deep/x.txt").unwrap_or_default();
+        let shown = diff_of("src/set.sh").unwrap();
         assert!(
-            !other.contains("mode"),
-            "nothing it will not do is shown: {other}"
+            shown.contains("old mode 100644") && shown.contains("new mode 100755"),
+            "{shown}"
         );
         let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
         fx.p.seal(backup.record.snapshot_id).unwrap();
         assert_eq!(mode_of(&fx.scope.path().join("src/lib.rs")), 0o750);
+        assert_eq!(mode_of(&fx.scope.path().join("src/set.sh")), 0o755);
         assert_eq!(mode_of(&fx.scope.path().join("src/deep/x.txt")), 0o644);
+        assert_eq!(mode_of(&fx.scope.path().join("src/has.sh")), 0o755);
+        assert_eq!(mode_of(&fx.scope.path().join("src/clear.sh")), 0o644);
         assert_eq!(read(fx.scope.path(), "src/lib.rs"), "fn a() {}\n");
+        assert_eq!(
+            read(fx.scope.path(), "src/has.sh"),
+            "echo edited\n",
+            "a path that promotes nothing is not written"
+        );
         fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
             .unwrap();
         assert_eq!(mode_of(&fx.scope.path().join("src/lib.rs")), 0o640);
+        assert_eq!(mode_of(&fx.scope.path().join("src/set.sh")), 0o644);
         assert_eq!(mode_of(&fx.scope.path().join("src/deep/x.txt")), 0o644);
     }
 

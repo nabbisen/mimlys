@@ -924,3 +924,183 @@ fn m3_fork() {
     let (_, shown, _) = env.run(&["task", "show", &fork]);
     assert!(shown.contains("forked    from task"), "{shown}");
 }
+
+/// A promoted task, for the tests below: the environment, the project, the task and the
+/// promotion's backup snapshot.
+fn promoted() -> (Env, tempfile::TempDir, String, String) {
+    let env = Env::new("edit.json");
+    let scope = scope();
+    let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["promote", &id, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    let (_, view) = env.json(&["task", "show", &id]);
+    let backup = view["promotions"][0]["backup_snapshot"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (env, scope, id, backup)
+}
+
+/// REQ-WS-006 (handoff 006c-6): a promotion's backup holds only the project's changed paths, so
+/// `task new --from-task ... --from-snapshot <backup>` (and `run`) refuses it as `invalid_request`
+/// and creates nothing, as `rollback --snapshot` does; a snapshot of the task is still a source.
+#[test]
+fn req_ws_006_a_promotions_backup_is_not_a_fork_source_on_the_command_line() {
+    let (env, _scope, id, backup) = promoted();
+    let listed = |env: &Env| {
+        let (_, list) = env.json(&["task", "list"]);
+        list.as_array().unwrap().len()
+    };
+    let before = listed(&env);
+    let (code, refused) = env.json(&[
+        "task",
+        "new",
+        "again",
+        "--from-task",
+        &id,
+        "--from-snapshot",
+        &backup,
+        "--hold",
+    ]);
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["error"]["kind"], "invalid_request", "{refused}");
+    let text = refused["error"]["message"].to_string();
+    assert!(
+        text.contains("backup of a promotion") && text.contains("source of a fork"),
+        "{text}"
+    );
+    assert_eq!(listed(&env), before, "no task was made");
+    let (_, view) = env.json(&["task", "show", &id]);
+    let base = view["snapshots"][0]["snapshot_id"].as_str().unwrap();
+    assert_ne!(base, backup);
+    let (code, forked) = env.json(&[
+        "task",
+        "new",
+        "again",
+        "--from-task",
+        &id,
+        "--from-snapshot",
+        base,
+        "--hold",
+    ]);
+    assert_eq!(code, 0, "{forked}");
+}
+
+/// REQ-WS-002 (handoff 006c-6): a part of the scope that cannot be read refuses the creation as
+/// `invalid_request`, since the scope is the request's input, naming the path; nothing is made.
+/// (A task's own tree that cannot be read is `state`.)
+#[cfg(unix)]
+#[test]
+fn req_ws_002_a_scope_that_cannot_be_read_is_an_invalid_request() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("edit.json");
+    let scope = scope();
+    let locked = scope.path().join("src/locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("f"), "x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let can_read = std::fs::read_dir(&locked).is_ok();
+    let (code, refused) = env.json(&[
+        "task",
+        "new",
+        "go",
+        "--scope",
+        scope.path().to_str().unwrap(),
+        "--hold",
+    ]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if can_read {
+        return; // permissions do not bind this user (root): the failure cannot be made this way
+    }
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["error"]["kind"], "invalid_request", "{refused}");
+    let text = refused["error"]["message"].to_string();
+    assert!(text.contains("src/locked"), "{text}");
+    let (_, list) = env.json(&["task", "list"]);
+    assert!(list.as_array().unwrap().is_empty(), "{list}");
+}
+
+/// REQ-WS-002 (handoff 006c-6): the same for a name that is not valid UTF-8 (Linux).
+#[cfg(target_os = "linux")]
+#[test]
+fn req_ws_002_a_name_that_is_not_utf8_in_the_scope_is_an_invalid_request() {
+    use std::os::unix::ffi::OsStrExt;
+    let env = Env::new("edit.json");
+    let scope = scope();
+    std::fs::write(
+        scope
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"src/caf\xE9.txt")),
+        "x",
+    )
+    .unwrap();
+    let (code, refused) = env.json(&[
+        "task",
+        "new",
+        "go",
+        "--scope",
+        scope.path().to_str().unwrap(),
+        "--hold",
+    ]);
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["error"]["kind"], "invalid_request", "{refused}");
+    let text = refused["error"]["message"].to_string();
+    assert!(text.contains("xE9"), "{text}");
+}
+
+/// REQ-WS-012 (handoff 006c-6): `task delete` of a task whose deletion leaves files names at most
+/// ten of them in its text and counts the rest; the JSON error carries every path. The files are
+/// left by putting twelve of the task's objects in the place of non-empty directories.
+#[test]
+fn req_ws_012_task_delete_names_at_most_ten_paths_and_the_report_all_of_them() {
+    for json in [false, true] {
+        let env = Env::new("edit.json");
+        let scope = scope();
+        std::fs::create_dir_all(scope.path().join("extra")).unwrap();
+        let mut held = Vec::new();
+        for i in 0..12 {
+            let text = format!("file number {i}\n");
+            std::fs::write(scope.path().join(format!("extra/f{i}.txt")), &text).unwrap();
+            held.push(format!(
+                "snapshots/objects/{}",
+                mimlys_core::hash::hash_bytes(text.as_bytes()).as_str()
+            ));
+        }
+        held.sort();
+        let (code, value) = env.json(&["run", "edit", "--scope", scope.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "{value}");
+        let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+        for rel in &held {
+            let path = env.data.path().join("data").join(rel);
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir_all(path.join("held")).unwrap();
+        }
+        if json {
+            let (code, value) = env.json(&["task", "delete", &id, "--yes"]);
+            assert_eq!(code, 1, "{value}");
+            let paths: Vec<&str> = value["error"]["detail"]["paths"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{value}"))
+                .iter()
+                .map(|p| p.as_str().unwrap())
+                .collect();
+            assert_eq!(paths, held, "every path is in the report");
+        } else {
+            let (code, _, stderr) = env.run(&["task", "delete", &id, "--yes"]);
+            assert_eq!(code, 1, "{stderr}");
+            assert!(
+                stderr.contains(&format!("task {id} is deleted"))
+                    && stderr.contains("12 path(s) could not be removed")
+                    && stderr.contains("and 2 more"),
+                "{stderr}"
+            );
+            assert_eq!(
+                stderr.matches("snapshots/objects/").count(),
+                10,
+                "ten paths are named: {stderr}"
+            );
+        }
+    }
+}

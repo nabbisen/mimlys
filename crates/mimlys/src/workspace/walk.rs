@@ -12,6 +12,10 @@
 //! [`LIVE_HANDLES`] at a time), so that the cost of a level does not grow with its depth and the
 //! length of a path (the system's limit on one) does not stop the walk of a deep tree; a
 //! directory whose parent is not held is opened from the root by its path.
+//!
+//! The removal of a deleted task's files ([`remove_below`], REQ-WS-012) is the same design
+//! bottom-up: one handle, down by one name at a time, up by `..` (checked) or from the root, so
+//! that a tree of any depth is removed.
 
 use super::snapshot::{special_name, unreadable};
 use super::{is_excluded, join};
@@ -195,4 +199,271 @@ pub(super) fn walk(
         }
     }
     Ok(())
+}
+
+/// How a directory is told apart from the one it is in (Unix: the device and the inode).
+type Identity = Option<(u64, u64)>;
+
+/// The identity of the directory behind a handle, where the system has one.
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)]
+fn identity(dir: &Dir) -> Identity {
+    let stat = rustix::fs::fstat(dir).ok()?;
+    Some((stat.st_dev as u64, stat.st_ino as u64))
+}
+
+#[cfg(not(unix))]
+fn identity(_dir: &Dir) -> Identity {
+    None
+}
+
+/// A directory on the way down of [`remove_below`].
+struct Level {
+    /// Its name in the directory above (empty for the directory the removal starts in).
+    name: OsString,
+    id: Identity,
+    /// Its subdirectories not yet emptied.
+    subdirs: Vec<OsString>,
+    /// Whether something in it or below it could not be removed (so that it is not named again
+    /// when it cannot be removed because of that).
+    left: bool,
+}
+
+/// What was found in a directory: its subdirectories, and the names that could not be removed
+/// (empty for the directory itself, when it could not be read).
+struct Scan {
+    subdirs: Vec<OsString>,
+    stayed: Vec<OsString>,
+}
+
+/// A name for a message: as it is, or written out byte by byte when it is not valid UTF-8.
+fn shown(name: &std::ffi::OsStr) -> String {
+    match name.to_str() {
+        Some(text) => text.to_owned(),
+        None => format!("{name:?}").trim_matches('"').to_owned(),
+    }
+}
+
+/// The path of `leaf` (the directory itself when empty) in the levels, from where the removal
+/// starts, `/`-separated.
+fn path_in(levels: &[Level], leaf: &std::ffi::OsStr) -> String {
+    let mut path = String::new();
+    for name in levels
+        .iter()
+        .skip(1)
+        .map(|l| l.name.as_os_str())
+        .chain(std::iter::once(leaf))
+        .filter(|n| !n.is_empty())
+    {
+        if !path.is_empty() {
+            path.push('/');
+        }
+        path.push_str(&shown(name));
+    }
+    path
+}
+
+/// Makes the directory `name` of `dir` readable, writable and searchable by its owner, so that
+/// it can be opened, emptied and removed (a toolchain may leave read-only ones). A failure is
+/// not an error here: the open that follows says what could not be done.
+fn make_dir_accessible(dir: &Dir, name: &std::ffi::OsStr) {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::PermissionsExt;
+        let Ok(meta) = dir.symlink_metadata(name) else {
+            return;
+        };
+        let mode = meta.permissions().mode();
+        if meta.is_dir() && mode & 0o700 != 0o700 {
+            let wanted =
+                rustix::fs::Mode::from_bits_truncate((mode | 0o700) as rustix::fs::RawMode);
+            let _ = rustix::fs::chmodat(dir, name, wanted, rustix::fs::AtFlags::empty());
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let Ok(meta) = dir.symlink_metadata(name) {
+            let mut perms = meta.permissions();
+            if meta.is_dir() && perms.readonly() {
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = dir.set_permissions(name, perms);
+            }
+        }
+    }
+}
+
+/// Removes one entry that is not a directory (a file, a link, a named pipe, a socket, a device),
+/// never following a link. A read-only file is made writable once and tried again (Windows).
+fn remove_entry(
+    dir: &Dir,
+    name: &std::ffi::OsStr,
+    kind: &cap_std::fs::FileType,
+) -> std::io::Result<()> {
+    let first = match dir.remove_file(name) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if dir.symlink_metadata(name).is_err() {
+        return Ok(()); // already gone
+    }
+    if kind.is_symlink() {
+        // A link to a directory is removed as a directory on Windows.
+        return dir.remove_dir(name).or(Err(first));
+    }
+    #[cfg(not(unix))]
+    if let Ok(meta) = dir.symlink_metadata(name) {
+        let mut perms = meta.permissions();
+        if perms.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            if dir.set_permissions(name, perms).is_ok() && dir.remove_file(name).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+    Err(first)
+}
+
+/// Reads `dir` and removes every entry in it that is not a directory.
+fn scan(dir: &Dir) -> Scan {
+    let mut found = Scan {
+        subdirs: Vec::new(),
+        stayed: Vec::new(),
+    };
+    let Ok(entries) = dir.entries() else {
+        found.stayed.push(OsString::new());
+        return found;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            found.stayed.push(OsString::new());
+            continue;
+        };
+        let name = entry.file_name();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => found.subdirs.push(name),
+            Ok(kind) => {
+                if remove_entry(dir, &name, &kind).is_err() {
+                    found.stayed.push(name);
+                }
+            }
+            Err(_) => found.stayed.push(name),
+        }
+    }
+    found.subdirs.sort();
+    found
+}
+
+/// The directory above `cur`; `levels` are the levels from the root down to it, `cur`'s own
+/// removed, so the last of them is the one to reach. Through `..` where the system has it,
+/// checked to be the directory that was left, and otherwise from the root, name by name. Never
+/// by a path, so that its length is never a limit.
+fn climb(root: &Dir, cur: &Dir, levels: &[Level]) -> std::io::Result<Dir> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Mode, OFlags, openat};
+        if let Ok(fd) = openat(
+            cur,
+            "..",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            let above = Dir::from_std_file(std::fs::File::from(fd));
+            if let Some(last) = levels.last()
+                && identity(&above) == last.id
+            {
+                return Ok(above);
+            }
+        }
+    }
+    let _ = cur;
+    let mut above = root.try_clone()?;
+    for level in levels.iter().skip(1) {
+        above = above.open_dir(&level.name)?;
+    }
+    Ok(above)
+}
+
+/// Removes everything below `root`, which stays, without following a link and attempting every
+/// removal: what could not be removed is added to `stayed` by its path from `root` (empty for
+/// `root` itself, when it could not be read), `/`-separated. A directory is made accessible
+/// before it is emptied. A directory that stays because something in it stayed is not named
+/// again; the cause is.
+///
+/// The walk is iterative, like [`walk`], and reads each directory through the handle of the one
+/// above it, so that a tree deeper than the stack, or than a path may be, is removed: it holds
+/// one handle, goes down by `open_dir` of one name, and goes up by [`climb`] after the
+/// directory is empty. Unlike [`walk`] it is bottom-up (a directory goes after its contents), it
+/// goes on past a failure, and it takes a name that is not valid UTF-8 as it is.
+pub(super) fn remove_below(root: &Dir, stayed: &mut Vec<String>) {
+    let Ok(mut cur) = root.try_clone() else {
+        stayed.push(String::new());
+        return;
+    };
+    let first = scan(&cur);
+    let mut levels = vec![Level {
+        name: OsString::new(),
+        id: identity(&cur),
+        subdirs: first.subdirs,
+        left: !first.stayed.is_empty(),
+    }];
+    for name in &first.stayed {
+        stayed.push(path_in(&levels, name));
+    }
+    loop {
+        let next = levels
+            .last_mut()
+            .expect("the root level stays")
+            .subdirs
+            .pop();
+        if let Some(name) = next {
+            make_dir_accessible(&cur, &name);
+            match cur.open_dir(&name) {
+                Ok(child) => {
+                    let found = scan(&child);
+                    levels.push(Level {
+                        name,
+                        id: identity(&child),
+                        subdirs: found.subdirs,
+                        left: !found.stayed.is_empty(),
+                    });
+                    for name in &found.stayed {
+                        stayed.push(path_in(&levels, name));
+                    }
+                    cur = child;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    stayed.push(path_in(&levels, &name));
+                    levels.last_mut().expect("the root level stays").left = true;
+                }
+            }
+            continue;
+        }
+        if levels.len() == 1 {
+            return;
+        }
+        let done = levels.pop().expect("a level above the root");
+        let Ok(above) = climb(root, &cur, &levels) else {
+            // Neither `..` nor the names from the root lead back: what is still to do above
+            // cannot be reached. Name the directory we are in, and what is waiting.
+            stayed.push(path_in(&levels, &done.name));
+            for at in 0..levels.len() {
+                for waiting in &levels[at].subdirs {
+                    stayed.push(path_in(&levels[..=at], waiting));
+                }
+            }
+            return;
+        };
+        cur = above;
+        if cur.remove_dir(&done.name).is_err() && cur.symlink_metadata(&done.name).is_ok() {
+            if !done.left {
+                stayed.push(path_in(&levels, &done.name));
+            }
+            levels.last_mut().expect("a level above").left = true;
+        } else if done.left {
+            levels.last_mut().expect("a level above").left = true;
+        }
+    }
 }

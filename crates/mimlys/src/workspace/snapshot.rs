@@ -766,13 +766,26 @@ impl LocalWorkspaces {
         // workspace, is not promoted, nor skipped and recorded as promoted: the plan is refused
         // and names it (REQ-WS-005, REQ-WS-007).
         Self::refuse_links_that_leave(&changes, &current)?;
-        // Conflicts: the project's target must equal the base entry (REQ-WS-007).
+        // Conflicts: the project's target must equal the base entry (REQ-WS-007). A change of
+        // mode alone (the content is the base's) is in the plan only when the promotion carries
+        // it over: the plan shows exactly what the promotion does (external design §14.5).
         let mut conflicts = Vec::new();
-        let mut in_project: std::collections::BTreeMap<&str, Entry> =
+        let mut in_project: std::collections::BTreeMap<String, Entry> =
             std::collections::BTreeMap::new();
-        for c in &changes {
+        let mut kept = Vec::new();
+        for c in changes {
             let found = project_entry(&project, &c.path)?;
             let in_base = base_by_path.get(c.path.as_str());
+            if is_mode_only(
+                in_base.copied(),
+                current_by_path.get(c.path.as_str()).copied(),
+            ) && !carries_mode(
+                current_by_path.get(c.path.as_str()).copied(),
+                in_base.copied(),
+                found.as_ref(),
+            ) {
+                continue;
+            }
             let same = match (&found, in_base) {
                 (None, None) => true,
                 (Some(p), Some(b)) => entry_equal(p, b),
@@ -782,9 +795,11 @@ impl LocalWorkspaces {
                 conflicts.push(c.path.clone());
             }
             if let Some(entry) = found {
-                in_project.insert(c.path.as_str(), entry);
+                in_project.insert(c.path.clone(), entry);
             }
+            kept.push(c);
         }
+        let changes = kept;
         if !conflicts.is_empty() {
             return Err(WorkspaceError::Conflict { paths: conflicts });
         }
@@ -1406,16 +1421,30 @@ fn remove_tree(path: &Path, root: &Path, failed: &mut Vec<String>) {
     };
     if meta.is_dir() {
         make_accessible(path, &meta);
-        match std::fs::read_dir(path) {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    remove_tree(&entry.path(), root, failed);
+        // The directory is emptied through handles, one name at a time (`walk::remove_below`),
+        // so that a tree deeper than the stack or than a path may be is removed (REQ-WS-012).
+        match Dir::open_ambient_dir(path, cap_std::ambient_authority()) {
+            Ok(dir) => {
+                let mut stayed = Vec::new();
+                super::walk::remove_below(&dir, &mut stayed);
+                drop(dir);
+                let base = name(path);
+                if stayed.is_empty() {
+                    if std::fs::remove_dir(path).is_err() && std::fs::symlink_metadata(path).is_ok()
+                    {
+                        failed.push(base);
+                    }
+                } else {
+                    failed.extend(stayed.into_iter().map(|rel| {
+                        if rel.is_empty() {
+                            base.clone()
+                        } else {
+                            format!("{base}/{rel}")
+                        }
+                    }));
                 }
             }
             Err(_) => failed.push(name(path)),
-        }
-        if std::fs::remove_dir(path).is_err() && std::fs::symlink_metadata(path).is_ok() {
-            failed.push(name(path));
         }
     } else if std::fs::remove_file(path).is_err() {
         make_accessible(path, &meta);
@@ -1528,6 +1557,28 @@ pub(super) fn promoted_mode(
         }
         _ => mode.map(|m| m & !0o022),
     }
+}
+
+/// Whether the workspace's entry differs from the base's in mode alone: a file with the base's
+/// content (a change of its executable bit included).
+fn is_mode_only(base: Option<&Entry>, workspace: Option<&Entry>) -> bool {
+    matches!((base, workspace), (Some(Entry::File { hash: a, .. }), Some(Entry::File { hash: b, .. })) if a == b)
+}
+
+/// Whether a promotion of a file that differs from the base in mode alone changes the project's
+/// file: the mode it would give (`promoted_mode`) is not the one the project's file has. A path
+/// that is not a file of the project, or whose system has no mode, is not changed.
+fn carries_mode(workspace: Option<&Entry>, base: Option<&Entry>, project: Option<&Entry>) -> bool {
+    let (
+        Some(workspace),
+        Some(Entry::File {
+            mode: Some(own), ..
+        }),
+    ) = (workspace, project)
+    else {
+        return false;
+    };
+    matches!(promoted_mode(workspace, base, project), Some(new) if new != *own)
 }
 
 /// As `entry_equal`, and a file's mode too when both entries record one: what a reversal compares
