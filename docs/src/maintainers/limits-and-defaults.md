@@ -86,6 +86,7 @@
 | LIM-W3 | Single file written by a tool | 8 MiB | 64 KiB – 1 GiB | Context and snapshot cost |
 | LIM-W4 | Materialization exclusions (default) | `.git/`, `.hg/`, `.svn/`, `target/`, `node_modules/` | operator | VCS metadata and build outputs |
 | LIM-W5 | Secret patterns excluded from materialization and reading (default) | `.env`, `.env.*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.gnupg/` | operator | R-16, D-22 |
+| LIM-W6 | Links a path is resolved through before it is refused (a loop included) | 40 | fixed | What Linux itself follows (`MAXSYMLINKS`); macOS follows 32, Windows 63 (handoff 006c) |
 
 ## Concurrency
 

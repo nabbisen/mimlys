@@ -273,7 +273,7 @@ pub fn target_inside_root(link: &str, target: &str) -> bool {
 
 /// How many links a path may be resolved through before it is refused (REQ-WS-005): the most a
 /// system itself follows on Linux (`MAXSYMLINKS`). A chain longer than that, or a loop, is not
-/// one a tree needs, and the bound is what ends the resolution of a loop.
+/// one a tree needs, and the bound is what ends the resolution of a loop (LIM-W6).
 pub const MAX_LINK_HOPS: usize = 40;
 
 /// The links of a tree, by path: what a link chain is resolved through (REQ-WS-005).

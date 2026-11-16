@@ -96,3 +96,30 @@ The lines below are as found on `main` at `70ab081`, in `crates/mimlys/src/works
 - CHANGELOG: Fixed (each item) and Changed (non-UTF-8 names refused; modes kept; the halt lines; `left`).
 
 Return: `.git-exclude/review-requests/006c-workspace/README.md`.
+
+## After review (2026-11-16): 006c-6
+
+006c-1 to 006c-5 are landed. Five small changes follow. The specification is amended: external design §14.5 (modes), §17.1 and §20; LIM-W6.
+
+1. **The plan shows exactly what the promotion does** (your question 1).
+   - Keep your rule: the project's own mode, with an executable-bit change carried.
+   - A mode difference that promotes nothing is **not** in the plan. A path changed in mode only, with nothing carried, is not listed.
+   - A carried executable bit shows as `old mode` / `new mode`.
+2. **A backup is not a fork source either.** `run --from-snapshot`, or a fork (`control.rs`, the fork's `find`), refuses a promotion's backup with the same message as `rollback --snapshot` (X-06's sibling).
+3. **`remove_tree` uses the one walk.** Task deletion's removal is recursive and works by path today. Make it iterative over handles, as the walk is, so that a tree deeper than the stack, or than a path may be, is removed.
+4. **`task delete`'s message is bounded:** at most ten paths in the text, every path in the JSON, as `prune`'s lines are.
+5. **The scope's read errors at creation are `invalid_request`** (your question 4): the scope is the request's input. `state` stays for a task's tree.
+
+**Answers that need no code:**
+- question 2 (a mode difference is not a conflict): accepted;
+- questions 3, 5, 6 and 7: accepted as you did them;
+- `MAX_LINK_HOPS` is registered as LIM-W6, and its comment cites it.
+
+**Tests and mutations:**
+- 1: a mode-only change outside the carried bit is absent from the plan.
+- 2: a fork from a backup is refused.
+- 3: the deep tree of your prune test is deleted whole, and `NotRemoved` no longer occurs for it. Your prune test then needs another way to leave files: choose one and say it.
+- 4: the bound on the text.
+- 5: the error kind.
+
+Return: `.git-exclude/review-requests/006c-6-workspace/README.md`.
