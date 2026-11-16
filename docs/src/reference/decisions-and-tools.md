@@ -202,7 +202,28 @@ A snapshot is a manifest (every file hashed, every time) plus the files'
 contents stored once by hash under the data directory. Two consecutive
 snapshots of an unchanged tree share one record. Symbolic links are stored
 as links and never followed; a link whose target leaves the workspace is
-never recreated.
+never recreated. A link's target is kept exactly as the system holds it (a
+backslash in it stays a backslash on Linux and macOS).
+
+A restore verifies, then replaces. Every file it needs to write is checked
+against its hash and written into a staging directory in the root of the tree
+(`.mimlys-stage-<pid>-<n>`) before anything is removed; a missing or damaged
+object, or a full disk, stops the restore with the tree as it was. Then what
+the snapshot does not hold is removed, the staged files are renamed into place,
+and links are written last. The same holds for the reversal of a promotion
+(it stages in the root of your project). A staging directory that a crash left
+is removed by the next restore, or the next reversal. What the snapshot does
+not hold includes a named pipe, a socket or a device that an action made in the
+tree: a rollback removes it, and no walk of the tree ever opens one. On Windows
+a link to a directory is restored as a directory link.
+
+The walk that reads a tree (the snapshot, the restore, the size check, the copy
+at the start of a task) is one and does not nest: a tree of any depth is read in
+the same stack. A name that is not valid UTF-8 cannot be recorded, so it
+refuses the creation of the workspace (and stops a snapshot), naming the path
+with the name written out byte by byte (`src/caf\xE9.txt`); a part of your
+project that cannot be read refuses it too, naming the path and, unless it is a
+permission, the kind of the failure.
 
 ## Budgets and halts
 

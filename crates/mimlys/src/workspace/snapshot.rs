@@ -5,6 +5,7 @@
 //! and deletion of the files the database released. Links are entries and
 //! are never followed (REQ-WS-005).
 
+use super::walk::{Flow, Found, Node, target_of, walk};
 use super::{LocalWorkspaces, is_excluded, join};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
@@ -61,7 +62,7 @@ fn persist(e: mimlys_core::spi::PersistenceError) -> WorkspaceError {
 }
 
 /// What a path is when it is neither a regular file, a directory nor a link.
-fn special_name(file_type: &cap_std::fs::FileType) -> &'static str {
+pub(super) fn special_name(file_type: &cap_std::fs::FileType) -> &'static str {
     #[cfg(unix)]
     {
         use cap_std::fs::FileTypeExt;
@@ -138,14 +139,22 @@ fn hash_file(dir: &Dir, rel: &str) -> Result<(Hash, u64), WorkspaceError> {
 }
 
 #[cfg(unix)]
-fn is_executable(meta: &cap_std::fs::Metadata) -> bool {
+pub(super) fn is_executable(meta: &cap_std::fs::Metadata) -> bool {
     use cap_std::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(not(unix))]
-fn is_executable(_meta: &cap_std::fs::Metadata) -> bool {
+pub(super) fn is_executable(_meta: &cap_std::fs::Metadata) -> bool {
     false
+}
+
+/// A tree walked into a manifest: what the manifest holds (files hashed, directories, links
+/// with their raw target) and the paths of what it cannot hold, a named pipe, a socket or a
+/// device, which a restore removes and nothing else ever reads.
+pub(super) struct Walked {
+    pub manifest: Manifest,
+    pub specials: Vec<String>,
 }
 
 /// Walks a tree into a manifest, hashing every regular file; links are
@@ -154,51 +163,38 @@ pub(crate) fn walk_manifest(
     dir: &Dir,
     matcher: Option<&ExclusionMatcher>,
 ) -> Result<Manifest, WorkspaceError> {
-    let mut entries = Vec::new();
-    walk(dir, "", matcher, &mut entries)?;
-    Ok(Manifest::new(entries))
+    Ok(walk_state(dir, matcher)?.manifest)
 }
 
-fn walk(
+/// As [`walk_manifest`], also naming the entries a manifest cannot hold.
+pub(super) fn walk_state(
     dir: &Dir,
-    rel: &str,
     matcher: Option<&ExclusionMatcher>,
-    out: &mut Vec<Entry>,
-) -> Result<(), WorkspaceError> {
-    for entry in dir
-        .read_dir(if rel.is_empty() { "." } else { rel })
-        .map_err(unreadable(rel))?
-    {
-        let entry = entry.map_err(unreadable(rel))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let child = join(rel, &name);
-        if matcher.is_some_and(|m| is_excluded(m, &child)) {
-            continue;
+) -> Result<Walked, WorkspaceError> {
+    let mut entries = Vec::new();
+    let mut specials = Vec::new();
+    walk(dir, "", matcher, |found| {
+        let Found { path, node } = found;
+        match node {
+            Node::File { executable, .. } => {
+                let (hash, size) = hash_file(dir, &path)?;
+                entries.push(Entry::File {
+                    path,
+                    executable,
+                    size,
+                    hash,
+                });
+            }
+            Node::Dir => entries.push(Entry::Dir { path }),
+            Node::Link { target } => entries.push(Entry::Symlink { path, target }),
+            Node::Special(_) => specials.push(path),
         }
-        let ty = entry.file_type().map_err(unreadable(&child))?;
-        if ty.is_symlink() {
-            let target = dir.read_link_contents(&child).map_err(unreadable(&child))?;
-            out.push(Entry::Symlink {
-                path: child,
-                target: target.to_string_lossy().replace('\\', "/"),
-            });
-        } else if ty.is_dir() {
-            out.push(Entry::Dir {
-                path: child.clone(),
-            });
-            walk(dir, &child, matcher, out)?;
-        } else if ty.is_file() {
-            let meta = entry.metadata().map_err(unreadable(&child))?;
-            let (hash, size) = hash_file(dir, &child)?;
-            out.push(Entry::File {
-                path: child,
-                executable: is_executable(&meta),
-                size,
-                hash,
-            });
-        }
-    }
-    Ok(())
+        Ok(Flow::Descend)
+    })?;
+    Ok(Walked {
+        manifest: Manifest::new(entries),
+        specials,
+    })
 }
 
 /// The number of temporary names made by this process.
@@ -251,19 +247,7 @@ impl<'a> TempFile<'a> {
 
     /// Sets the mode: executable or not (Unix).
     fn set_mode(&self, executable: bool) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = if executable { 0o755 } else { 0o644 };
-            let _ = self.dir.set_permissions(
-                &self.path,
-                cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(mode)),
-            );
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = executable;
-        }
+        set_file_mode(self.dir, &self.path, executable);
     }
 
     /// Renames the file onto `rel` in the same directory.
@@ -274,6 +258,114 @@ impl<'a> TempFile<'a> {
         self.placed = true;
         Ok(())
     }
+}
+
+/// Sets the mode of the file at `path`: executable or not (Unix).
+fn set_file_mode(dir: &Dir, path: &str, executable: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o755 } else { 0o644 };
+        let _ = dir.set_permissions(
+            path,
+            cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(mode)),
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (dir, path, executable);
+    }
+}
+
+const STAGE_PREFIX: &str = ".mimlys-stage-";
+const TEMP_PREFIX: &str = ".mimlys-tmp-";
+
+/// The directory a restore verifies and writes into before it removes anything (REQ-WS-006),
+/// inside the root being restored so that a file is renamed into place and never copied again.
+/// It is removed when dropped, whatever is left in it; one a crash leaves is an entry the
+/// manifest does not hold, which the next restore removes.
+pub(super) struct Stage<'a> {
+    dir: &'a Dir,
+    name: String,
+    made: usize,
+}
+
+impl<'a> Stage<'a> {
+    /// Makes a new staging directory in the root `dir`.
+    pub(super) fn create(dir: &'a Dir) -> Result<Self, WorkspaceError> {
+        for _ in 0..TEMP_ATTEMPTS {
+            let n = TEMP_NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let name = format!("{STAGE_PREFIX}{:x}-{n:x}", std::process::id());
+            match dir.create_dir(&name) {
+                Ok(()) => {
+                    return Ok(Self { dir, name, made: 0 });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(storage("create_dir")(e)),
+            }
+        }
+        Err(storage("create_dir")(
+            std::io::ErrorKind::AlreadyExists.into(),
+        ))
+    }
+
+    /// A new file of the stage, opened for writing, with its path.
+    fn next(&mut self) -> Result<(String, cap_std::fs::File), WorkspaceError> {
+        let path = format!("{}/{}", self.name, self.made);
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let file = self
+            .dir
+            .open_with(&path, &options)
+            .map_err(storage("create"))?;
+        self.made += 1;
+        Ok((path, file))
+    }
+}
+
+impl Drop for Stage<'_> {
+    fn drop(&mut self) {
+        let _ = self.dir.remove_dir_all(&self.name);
+    }
+}
+
+/// Moves a staged file onto `rel` in the same root: a rename, which replaces what is there. Where
+/// the root holds a mount point and the rename cannot cross it, the verified copy is written
+/// beside the entry and renamed from there.
+fn place_staged(dir: &Dir, staged: &str, rel: &str) -> Result<(), WorkspaceError> {
+    match dir.rename(staged, dir, rel) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            let mut from = open_file(dir, staged)?;
+            let permissions = from.metadata().map_err(storage("stat"))?.permissions();
+            let (tmp, mut out) = TempFile::create(dir, rel)?;
+            std::io::copy(&mut from, &mut out).map_err(storage("write"))?;
+            out.set_permissions(permissions)
+                .map_err(storage("set_permissions"))?;
+            drop(out);
+            tmp.place(rel)
+        }
+        Err(e) => Err(storage("rename")(e)),
+    }
+}
+
+/// Copies `source` to `out` and returns the SHA-256 of what was copied, in hex.
+fn copy_hashed(source: &mut impl Read, out: &mut impl Write) -> Result<String, WorkspaceError> {
+    let mut hasher = Sha256::default();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = source.read(&mut buf).map_err(storage("read"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        out.write_all(&buf[..n]).map_err(storage("write"))?;
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 impl Drop for TempFile<'_> {
@@ -337,39 +429,26 @@ impl LocalWorkspaces {
         })
     }
 
-    /// Copies an object into `dir` at `rel` through a temporary file, verifying its hash.
-    fn write_object(
+    /// Verifies the object by its hash as it is written into the stage; returns the staged
+    /// path. A missing object, a damaged one or a write that fails ends here, before anything
+    /// is changed.
+    fn stage_object(
         &self,
-        dir: &Dir,
-        rel: &str,
+        stage: &mut Stage<'_>,
         hash: &Hash,
         executable: bool,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<String, WorkspaceError> {
         let mut source = self.files.open_object(hash).map_err(persist)?;
-        let (tmp, mut out) = TempFile::create(dir, rel)?;
-        let mut hasher = Sha256::default();
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = source.read(&mut buf).map_err(storage("read"))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-            out.write_all(&buf[..n]).map_err(storage("write"))?;
-        }
-        let actual: String = hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let (path, mut out) = stage.next()?;
+        let actual = copy_hashed(&mut source, &mut out)?;
         if actual != hash.as_str() {
             return Err(WorkspaceError::Storage {
                 detail: "object_hash_mismatch".into(),
             });
         }
         drop(out);
-        tmp.set_mode(executable);
-        tmp.place(rel)
+        set_file_mode(stage.dir, &path, executable);
+        Ok(path)
     }
 
     /// Copies a file from one handle to another through a temporary file, verifying its hash.
@@ -382,21 +461,7 @@ impl LocalWorkspaces {
     ) -> Result<(), WorkspaceError> {
         let mut source = open_file(src, rel)?;
         let (tmp, mut out) = TempFile::create(dst, rel)?;
-        let mut hasher = Sha256::default();
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = source.read(&mut buf).map_err(storage("read"))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-            out.write_all(&buf[..n]).map_err(storage("write"))?;
-        }
-        let actual: String = hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let actual = copy_hashed(&mut source, &mut out)?;
         if actual != hash.as_str() {
             return Err(WorkspaceError::Refused {
                 reason: "the workspace changed while promoting; plan again".into(),
@@ -407,55 +472,69 @@ impl LocalWorkspaces {
         tmp.place(rel)
     }
 
-    /// Makes `dir` equal to `manifest` (REQ-WS-006): extras deleted, objects
-    /// verified as they are copied, links recreated only inside the root.
+    /// Makes `dir` equal to `manifest` (REQ-WS-006): **verify, then replace.** Every object a
+    /// file needs is verified by its hash and written into a staging directory inside the root
+    /// before anything is removed, so that a missing or damaged object, or a disk too full to
+    /// hold the copies, leaves the tree as it was. Then what the manifest does not hold is
+    /// removed (a named pipe, a socket or a device included), and the staged files are renamed
+    /// into place; links are written last and only inside the root.
     fn restore_into(
         &self,
         dir: &Dir,
         manifest: &Manifest,
-        matcher: Option<&ExclusionMatcher>,
     ) -> Result<RestoreReport, WorkspaceError> {
-        let current = walk_manifest(dir, matcher)?;
+        let current = walk_state(dir, None)?;
         let wanted = manifest.by_path();
+        let have = current.manifest.by_path();
         let mut report = RestoreReport::default();
-        // Delete what the manifest does not have, deepest first.
-        let mut extras: Vec<&Entry> = current
+        // 1. Verify: the files whose content is not in the tree are written into the stage.
+        // (A stage left behind by a crash is in the walk above, and is removed as an extra.)
+        let mut stage = Stage::create(dir)?;
+        let mut staged: std::collections::BTreeMap<&str, String> =
+            std::collections::BTreeMap::new();
+        for entry in &manifest.entries {
+            if let Entry::File {
+                path,
+                hash,
+                executable,
+                ..
+            } = entry
+            {
+                let same = matches!(have.get(path.as_str()), Some(Entry::File { hash: h, executable: x, .. }) if h == hash && x == executable);
+                if !same {
+                    staged.insert(path, self.stage_object(&mut stage, hash, *executable)?);
+                }
+            }
+        }
+        // 2. Replace. Delete what the manifest does not have, deepest first (every entry of the
+        // tree was walked, so a directory is empty by the time it is reached).
+        let mut extras: Vec<(&str, bool)> = current
+            .manifest
             .entries
             .iter()
             .filter(|e| !wanted.contains_key(e.path()))
+            .map(|e| (e.path(), matches!(e, Entry::Dir { .. })))
+            .chain(current.specials.iter().map(|p| (p.as_str(), false)))
             .collect();
-        extras.sort_by_key(|e| std::cmp::Reverse(e.path().len()));
-        for e in extras {
-            match e {
-                Entry::Dir { path } => dir.remove_dir_all(path).map_err(storage("remove_dir"))?,
-                Entry::File { path, .. } | Entry::Symlink { path, .. } => {
-                    dir.remove_file(path).map_err(storage("remove_file"))?
-                }
+        extras.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+        for (path, is_dir) in extras {
+            if is_dir {
+                dir.remove_dir(path).map_err(storage("remove_dir"))?;
+            } else {
+                dir.remove_file(path).map_err(storage("remove_file"))?;
             }
             report.deleted += 1;
         }
-        // Replace entries whose type changed, then create or write.
-        let have = current.by_path();
+        // Entries whose type changed are replaced.
+        let mut links: Vec<(&str, &str)> = Vec::new();
         for entry in &manifest.entries {
             let path = entry.path();
-            let existing = have.get(path);
-            let changed_type = matches!(
-                (existing, entry),
-                (
-                    Some(Entry::Dir { .. }),
-                    Entry::File { .. } | Entry::Symlink { .. }
-                ) | (
-                    Some(Entry::File { .. }),
-                    Entry::Dir { .. } | Entry::Symlink { .. }
-                ) | (
-                    Some(Entry::Symlink { .. }),
-                    Entry::Dir { .. } | Entry::File { .. }
-                )
-            );
+            let existing = have.get(path).copied();
+            let changed_type = existing.is_some_and(|e| Kind::of(e) != Kind::of(entry));
             if changed_type {
                 match existing {
                     Some(Entry::Dir { .. }) => {
-                        dir.remove_dir_all(path).map_err(storage("remove_dir"))?
+                        dir.remove_dir(path).map_err(storage("remove_dir"))?
                     }
                     Some(_) => dir.remove_file(path).map_err(storage("remove_file"))?,
                     None => {}
@@ -468,16 +547,9 @@ impl LocalWorkspaces {
                         dir.create_dir(path).map_err(storage("create_dir"))?;
                     }
                 }
-                Entry::File {
-                    path,
-                    hash,
-                    executable,
-                    ..
-                } => {
-                    let same = matches!(existing, Some(Entry::File { hash: h, executable: x, .. }) if h == hash && x == executable)
-                        && !changed_type;
-                    if !same {
-                        self.write_object(dir, path, hash, *executable)?;
+                Entry::File { path, .. } => {
+                    if let Some(from) = staged.get(path.as_str()) {
+                        place_staged(dir, from, path)?;
                         report.written += 1;
                     }
                 }
@@ -491,13 +563,20 @@ impl LocalWorkspaces {
                         report.links_omitted.push(path.clone());
                         continue;
                     }
-                    if dir.symlink_metadata(path).is_ok() {
-                        dir.remove_file(path).map_err(storage("remove_file"))?;
-                    }
-                    super::recreate_symlink_in(dir, path, Path::new(target))?;
-                    report.written += 1;
+                    links.push((path, target));
                 }
             }
+        }
+        // Links are written last: what a link points at is in place, and a link to a directory
+        // is made as one where the system tells them apart (Windows).
+        for (path, target) in links {
+            if dir.symlink_metadata(path).is_ok() {
+                dir.remove_file(path).map_err(storage("remove_file"))?;
+            }
+            let to_dir =
+                cfg!(windows) && super::points_at_directory(dir, path, target, Some(&wanted));
+            super::recreate_symlink_in(dir, path, Path::new(target), to_dir)?;
+            report.written += 1;
         }
         Ok(report)
     }
@@ -561,7 +640,7 @@ impl LocalWorkspaces {
             .read_manifest(snapshot.snapshot_id, &snapshot.manifest_hash)
             .map_err(persist)?;
         let dir = self.tree_dir(task_id)?;
-        let report = self.restore_into(&dir, &manifest, None)?;
+        let report = self.restore_into(&dir, &manifest)?;
         // The ephemeral tmp of the task is not part of the tree; leave it.
         Ok(report)
     }
@@ -584,7 +663,7 @@ impl LocalWorkspaces {
         let dir = Dir::open_ambient_dir(task_dir.join("tree"), ambient_authority())
             .map_err(storage("open"))?;
         let case_mode = Self::probe_case(&dir)?;
-        let report = self.restore_into(&dir, &manifest, None)?;
+        let report = self.restore_into(&dir, &manifest)?;
         let info = WorkspaceInfo {
             root: task_dir.join("tree").to_string_lossy().into_owned(),
             case_mode,
@@ -899,6 +978,9 @@ impl LocalWorkspaces {
             .read_manifest(backup.snapshot_id, &backup.manifest_hash)
             .map_err(persist)?;
         let project = Self::scope_dir(&promotion.project_root)?;
+        // What a crash of the promotion left of its own: temporary files beside the paths it
+        // wrote, and a staging directory of an earlier reversal (REQ-WS-006, REQ-WS-007).
+        remove_leftovers(&project, promotion.files.iter().map(|c| c.path.as_str()));
         let by_path = manifest.by_path();
         let decided = revert_decisions(&project, promotion, &by_path)?;
         let mut report = RestoreReport::default();
@@ -959,6 +1041,24 @@ impl LocalWorkspaces {
         report: &mut RestoreReport,
     ) -> Result<(), WorkspaceError> {
         let mut checked: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // Verify, then replace (REQ-WS-006): the objects a reversal writes are verified, and
+        // written into a staging directory of the project's root, before anything is removed, so
+        // that a missing or damaged object leaves the project as it was.
+        let mut staged: std::collections::BTreeMap<&str, String> =
+            std::collections::BTreeMap::new();
+        let mut stage = None;
+        if matches!(source, Source::Objects) {
+            let mut made = Stage::create(project)?;
+            for w in wants {
+                if let Some(Entry::File {
+                    hash, executable, ..
+                }) = w.entry
+                {
+                    staged.insert(w.path, self.stage_object(&mut made, hash, *executable)?);
+                }
+            }
+            stage = Some(made);
+        }
         // Removals: what is there and is not what is wanted.
         let mut removals: Vec<(&str, Kind)> = Vec::new();
         for w in wants {
@@ -1012,7 +1112,12 @@ impl LocalWorkspaces {
             .iter()
             .filter_map(|w| w.entry.map(|e| (w.path, e)))
             .collect();
-        writes.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        // Links are written last: what a link points at is in place (REQ-WS-005).
+        writes.sort_by(|a, b| {
+            matches!(a.1, Entry::Symlink { .. })
+                .cmp(&matches!(b.1, Entry::Symlink { .. }))
+                .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+        });
         for (path, entry) in writes {
             if report
                 .left
@@ -1037,7 +1142,12 @@ impl LocalWorkspaces {
                         Source::Tree(tree) => {
                             Self::copy_verified(tree, project, path, hash, *executable)?
                         }
-                        Source::Objects => self.write_object(project, path, hash, *executable)?,
+                        Source::Objects => {
+                            let from = staged.get(path).ok_or_else(|| WorkspaceError::Storage {
+                                detail: "staged".into(),
+                            })?;
+                            place_staged(project, from, path)?
+                        }
                     }
                     report.written += 1;
                 }
@@ -1049,11 +1159,14 @@ impl LocalWorkspaces {
                     if project_kind(project, path)?.is_some() {
                         project.remove_file(path).map_err(storage("remove_file"))?;
                     }
-                    super::recreate_symlink_in(project, path, Path::new(target))?;
+                    let to_dir =
+                        cfg!(windows) && super::points_at_directory(project, path, target, None);
+                    super::recreate_symlink_in(project, path, Path::new(target), to_dir)?;
                     report.written += 1;
                 }
             }
         }
+        drop(stage);
         Ok(())
     }
 
@@ -1094,6 +1207,66 @@ impl LocalWorkspaces {
                 task_id,
                 paths: failed,
             })
+        }
+    }
+}
+
+/// Whether `name` is `prefix`, then two hexadecimal numbers joined by `-`: the form of the
+/// temporary names and staging names this program makes.
+fn is_leftover(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(pid, n)| {
+            [pid, n]
+                .iter()
+                .all(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+        })
+}
+
+/// Removes what a crashed promotion or reversal left in the project (REQ-WS-006, REQ-WS-007):
+/// the temporary files (`.mimlys-tmp-<pid>-<n>`) in the directories above the given paths, and a
+/// staging directory (`.mimlys-stage-<pid>-<n>`) in the root. Only entries of exactly those
+/// names are removed, a file or a directory as the name says and never through a link, and only
+/// in directories that are real directories on the way from the root; a failure to remove is
+/// not an error (the reversal does not depend on it, and the next one tries again).
+fn remove_leftovers<'a>(project: &Dir, paths: impl Iterator<Item = &'a str>) {
+    let mut parents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    parents.insert(String::new());
+    for path in paths {
+        let mut prefix = String::new();
+        let components: Vec<&str> = path.split('/').collect();
+        for part in &components[..components.len() - 1] {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            parents.insert(prefix.clone());
+        }
+    }
+    for parent in parents {
+        // Every directory on the way is a real one: a link or a file ends the look.
+        if !parent.is_empty() && !matches!(project_kind(project, &parent), Ok(Some(Kind::Dir))) {
+            continue;
+        }
+        if matches!(link_parent(project, &parent), Ok(Some(_)) | Err(_)) {
+            continue;
+        }
+        let Ok(entries) = project.read_dir(if parent.is_empty() { "." } else { &parent }) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = join(&parent, &name);
+            if file_type.is_file() && is_leftover(&name, TEMP_PREFIX) {
+                let _ = project.remove_file(&path);
+            } else if file_type.is_dir() && parent.is_empty() && is_leftover(&name, STAGE_PREFIX) {
+                let _ = project.remove_dir_all(&path);
+            }
         }
     }
 }
@@ -1174,12 +1347,9 @@ fn probe(project: &Dir, rel: &str) -> Result<Probed, WorkspaceError> {
         return Ok(Probed::Absent);
     };
     if meta.is_symlink() {
-        let target = project
-            .read_link_contents(rel)
-            .map_err(storage("read_link"))?;
         return Ok(Probed::Entry(Entry::Symlink {
             path: rel.to_owned(),
-            target: target.to_string_lossy().replace('\\', "/"),
+            target: target_of(project, rel, rel)?,
         }));
     }
     if meta.is_dir() {
@@ -1473,24 +1643,21 @@ fn unlisted_entries(
     Ok(out)
 }
 
+/// Adds to `out` the top-most entries below `dir` that are not in `listed`.
 fn unlisted_in(
     project: &Dir,
     dir: &str,
     listed: &std::collections::BTreeSet<&str>,
     out: &mut Vec<String>,
 ) -> Result<(), WorkspaceError> {
-    for entry in project.read_dir(dir).map_err(storage("walk"))? {
-        let entry = entry.map_err(storage("walk"))?;
-        let child = join(dir, &entry.file_name().to_string_lossy());
-        if !listed.contains(child.as_str()) {
-            out.push(child);
-            continue;
+    walk(project, dir, None, |found| {
+        if listed.contains(found.path.as_str()) {
+            Ok(Flow::Descend)
+        } else {
+            out.push(found.path);
+            Ok(Flow::Skip)
         }
-        if entry.file_type().map_err(storage("walk"))?.is_dir() {
-            unlisted_in(project, &child, listed, out)?;
-        }
-    }
-    Ok(())
+    })
 }
 
 /// Whether the project's entry is the base entry (both absent counts).

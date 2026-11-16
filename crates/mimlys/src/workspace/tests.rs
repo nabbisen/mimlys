@@ -1770,6 +1770,531 @@ mod snapshots {
         assert_eq!(read(fx.scope.path(), "src/lib.rs"), "fn a() {}\n");
     }
 
+    /// The names of the staging directories and temporary files left under `root`.
+    fn leftovers(root: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(".mimlys-tmp-") || name.starts_with(".mimlys-stage-") {
+                    found.push(name);
+                }
+                if entry.file_type().unwrap().is_dir() {
+                    stack.push(entry.path());
+                }
+            }
+        }
+        found
+    }
+
+    /// The path of an object of the store.
+    fn object(fx: &Fx, hash: &mimlys_core::hash::Hash) -> PathBuf {
+        fx.data().join("snapshots/objects").join(hash.as_str())
+    }
+
+    /// The hash of the object of the file at `path` in `manifest`.
+    fn hash_at(manifest: &mimlys_core::snapshot::Manifest, path: &str) -> mimlys_core::hash::Hash {
+        manifest
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                Entry::File { path: p, hash, .. } if p == path => Some(hash.clone()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// Makes an object of the store unreadable (`remove`) or damaged: the store keeps them read-only.
+    fn spoil(object: &Path, remove: bool) {
+        let mut permissions = std::fs::metadata(object).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(object, permissions).unwrap();
+        if remove {
+            std::fs::remove_file(object).unwrap();
+        } else {
+            std::fs::write(object, b"damaged").unwrap();
+        }
+    }
+
+    /// REQ-WS-006: a restore verifies every object it needs before it removes anything: with an
+    /// object of the snapshot missing, and then damaged, the restore fails and the tree is as it
+    /// was, entry for entry (nothing removed, nothing written, no staging directory or temporary
+    /// file left).
+    #[test]
+    fn req_ws_006_a_missing_or_damaged_object_leaves_the_tree_as_it_was() {
+        for remove in [true, false] {
+            let fx = Fx::new();
+            let base = fx.snap(SnapshotReason::Base, None);
+            let manifest = fx.p.manifest(&base.record).unwrap();
+            put(&fx.tree(), "src/lib.rs", "changed\n");
+            put(&fx.tree(), "extra/dir/f", "x");
+            std::fs::remove_file(fx.tree().join("src/deep/x.txt")).unwrap();
+            let before = walk(&fx).hash();
+            // `src/lib.rs` is written back last in the old order, after the extras were removed.
+            spoil(&object(&fx, &hash_at(&manifest, "src/lib.rs")), remove);
+            let err = fx.p.restore(fx.task, &base.record).unwrap_err();
+            assert!(
+                matches!(&err, WorkspaceError::Storage { .. }),
+                "remove: {remove}: {err:?}"
+            );
+            assert_eq!(
+                walk(&fx).hash(),
+                before,
+                "remove: {remove}: the tree changed"
+            );
+            assert_eq!(read(&fx.tree(), "src/lib.rs"), "changed\n");
+            assert!(fx.tree().join("extra/dir/f").exists());
+            assert!(leftovers(&fx.tree()).is_empty());
+        }
+    }
+
+    /// REQ-WS-006: a fork, which restores into a new tree, fails the same way and leaves nothing.
+    #[test]
+    fn req_ws_006_a_damaged_object_fails_a_fork_and_leaves_no_staging_directory() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        let manifest = fx.p.manifest(&base.record).unwrap();
+        spoil(&object(&fx, &hash_at(&manifest, "src/lib.rs")), false);
+        let new_task = TaskId::new(&fx.ids);
+        let result = fx.p.materialize_from(
+            new_task,
+            mimlys_core::ids::SnapshotId::new(&fx.ids),
+            &base.record,
+            &ScopeSpec {
+                root: fx.root(),
+                include: vec![],
+            },
+            fx.now(),
+        );
+        assert!(result.is_err());
+        assert!(leftovers(&fx.p.tree_path(new_task)).is_empty());
+    }
+
+    /// REQ-WS-006, REQ-WS-007: a reversal verifies every object it needs before it removes or
+    /// writes anything in the project: with an object of the backup damaged, and then missing,
+    /// the reversal fails and the project is as the promotion left it, and nothing is left in it.
+    #[test]
+    fn req_ws_006_a_damaged_or_missing_object_leaves_the_project_as_it_was_in_a_reversal() {
+        use mimlys_core::spi::EditedPaths;
+        for remove in [false, true] {
+            let fx = Fx::new();
+            let base = fx.snap(SnapshotReason::Base, None);
+            put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+            put(&fx.tree(), "src/added.rs", "added");
+            let plan = fx.plan(&base.record).unwrap();
+            let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+            fx.p.seal(backup.record.snapshot_id).unwrap();
+            let manifest = fx.p.manifest(&backup.record).unwrap();
+            let project = fx.scope.path();
+            spoil(&object(&fx, &hash_at(&manifest, "src/lib.rs")), remove);
+            let err =
+                fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
+                    .unwrap_err();
+            assert!(
+                matches!(&err, WorkspaceError::Storage { .. }),
+                "remove: {remove}: {err:?}"
+            );
+            // `src/added.rs` is removed before `src/lib.rs` is written back in the old order.
+            assert_eq!(read(project, "src/added.rs"), "added", "remove: {remove}");
+            assert_eq!(read(project, "src/lib.rs"), "fn a() -> i32 { 1 }\n");
+            assert!(leftovers(project).is_empty(), "remove: {remove}");
+        }
+    }
+
+    /// REQ-WS-006: a staging directory a crash left in the root is an extra entry, and the next
+    /// restore of the tree removes it with the rest; the next reversal of a promotion removes the
+    /// one in the project's root, and only a directory of exactly that form.
+    #[test]
+    fn req_ws_006_a_staging_directory_left_behind_is_removed_by_the_next_restore() {
+        use mimlys_core::spi::EditedPaths;
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        put(&fx.tree(), ".mimlys-stage-1f-2/0", "left by a crash");
+        let report = fx.p.restore(fx.task, &base.record).unwrap();
+        assert!(report.deleted >= 2, "{report:?}");
+        assert!(leftovers(&fx.tree()).is_empty());
+        assert_eq!(walk(&fx).hash(), base.record.manifest_hash);
+        // The project's root, at a reversal.
+        put(&fx.tree(), "src/lib.rs", "fn a() -> i32 { 1 }\n");
+        let plan = fx.plan(&base.record).unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        let project = fx.scope.path();
+        put(project, ".mimlys-stage-1f-2/0", "left by a crash");
+        put(project, ".mimlys-stage-notes/0", "the user's own");
+        fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
+            .unwrap();
+        assert!(!project.join(".mimlys-stage-1f-2").exists());
+        assert_eq!(read(project, ".mimlys-stage-notes/0"), "the user's own");
+        assert_eq!(read(project, "src/lib.rs"), "fn a() {}\n");
+    }
+
+    /// REQ-WS-006, REQ-WS-007: the restore of a promotion after a crash also removes the
+    /// temporary files the promotion made beside the paths it wrote (`.mimlys-tmp-<pid>-<n>`),
+    /// so that a directory the promotion made is not kept for a file nobody will place; a file of
+    /// the user's of another name in the same directory is left, and so is the directory then.
+    #[test]
+    fn req_ws_007_the_restore_after_a_crash_removes_the_temporary_files_of_the_promotion() {
+        use mimlys_core::spi::EditedPaths;
+        for user_file in [false, true] {
+            let fx = Fx::new();
+            let base = fx.snap(SnapshotReason::Base, None);
+            put(&fx.tree(), "made/by/promotion.txt", "new");
+            let plan = fx.plan(&base.record).unwrap();
+            let (backup, mut promotion) = fx.promote_backup(&plan, &base.record).unwrap();
+            fx.p.seal(backup.record.snapshot_id).unwrap();
+            // The crash: `made/by` exists, a temporary file was written in it, and nothing else.
+            let project = fx.scope.path();
+            put(
+                project,
+                "made/by/.mimlys-tmp-1a2b-3",
+                "half of the new file",
+            );
+            put(project, ".mimlys-tmp-1a2b-4", "in the root");
+            if user_file {
+                put(project, "made/by/notes.txt", "the user's");
+            }
+            promotion.state = mimlys_core::snapshot::PromotionState::Applying;
+            let report =
+                fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
+                    .unwrap();
+            assert!(leftovers(project).is_empty(), "user_file: {user_file}");
+            if user_file {
+                assert_eq!(read(project, "made/by/notes.txt"), "the user's");
+                assert!(!report.left.is_empty(), "{report:?}");
+            } else {
+                assert!(!project.join("made").exists(), "{report:?}");
+            }
+        }
+    }
+
+    /// REQ-WS-004, REQ-WS-008: the walk of a tree deeper than any recursion would bear. The chain
+    /// is made with handles, one directory in the next, `DEPTH` levels with a file at the bottom;
+    /// the quota check (`remaining_bytes`) reads it in the stack of the test thread (2 MiB), and
+    /// so does the snapshot walk of a chain below the system's limit on a path. A recursive walk
+    /// overflowed the stack of this thread at the depth the request names.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_004_a_tree_deeper_than_any_recursion_would_bear_is_walked() {
+        const DEPTH: usize = 30_000;
+        let fx = Fx::new();
+        let deep = fx.tree().join("deep");
+        std::fs::create_dir(&deep).unwrap();
+        let mut dir =
+            cap_std::fs::Dir::open_ambient_dir(&deep, cap_std::ambient_authority()).unwrap();
+        for _ in 0..DEPTH {
+            dir.create_dir("d").unwrap();
+            dir = dir.open_dir("d").unwrap();
+        }
+        dir.write("bottom", b"12345").unwrap();
+        let used = fx.p.remaining_bytes(fx.task).unwrap().unwrap();
+        assert_eq!(used, 10_000 - 12 - 5, "the file at the bottom is counted");
+        assert_eq!(fx.p.tree_bytes(fx.task).unwrap(), 12 + 5);
+        // Taken off by the system's own tool: the tree is deeper than a path may be.
+        let status = std::process::Command::new("rm")
+            .arg("-rf")
+            .arg(&deep)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        // The walk of the snapshot (hashes, manifest) on a chain shorter than a path may be.
+        let mut dir =
+            cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority()).unwrap();
+        for _ in 0..1_500 {
+            dir.create_dir("d").unwrap();
+            dir = dir.open_dir("d").unwrap();
+        }
+        let manifest = walk(&fx);
+        let dirs = manifest
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Dir { .. }))
+            .count();
+        assert_eq!(dirs, 1_500 + 2, "the chain, `src` and `src/deep`");
+        let status = std::process::Command::new("rm")
+            .arg("-rf")
+            .arg(fx.tree().join("d"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    /// REQ-WS-006, REQ-WS-005: a named pipe or a socket an action made in the tree (at a path the
+    /// snapshot does not hold, in a directory it does not hold, or in the place of a file) is
+    /// removed by a rollback, the restore does not block on it, and the file it replaced comes
+    /// back. The snapshot of a tree that holds one holds neither.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_006_a_named_pipe_or_socket_made_by_an_action_is_removed_by_a_rollback() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::remove_file(fx.tree().join("src/lib.rs")).unwrap();
+        mkfifo(&fx.tree().join("src/lib.rs"));
+        mkfifo(&fx.tree().join("pipe"));
+        let _listener =
+            std::os::unix::net::UnixListener::bind(fx.tree().join("src/socket")).unwrap();
+        std::fs::create_dir_all(fx.tree().join("made/inside")).unwrap();
+        mkfifo(&fx.tree().join("made/inside/pipe"));
+        let (p, task) = (&fx.p, fx.task);
+        // A snapshot of the tree is taken without opening any of them, and holds none.
+        let after = without_blocking("the snapshot", || {
+            p.snapshot(
+                task,
+                mimlys_core::ids::SnapshotId::new(&fx.ids),
+                SnapshotReason::After,
+                None,
+                None,
+                fx.now(),
+            )
+        })
+        .unwrap();
+        let manifest = fx.p.manifest(&after.record).unwrap();
+        assert!(
+            manifest
+                .entries
+                .iter()
+                .all(|e| !e.path().ends_with("pipe") && e.path() != "src/socket")
+        );
+        let record = base.record.clone();
+        let report = without_blocking("the rollback", || p.restore(task, &record)).unwrap();
+        assert!(report.deleted >= 4, "{report:?}");
+        assert_eq!(walk(&fx).hash(), base.record.manifest_hash);
+        assert_eq!(read(&fx.tree(), "src/lib.rs"), "fn a() {}\n");
+        for gone in ["pipe", "src/socket", "made"] {
+            assert!(
+                std::fs::symlink_metadata(fx.tree().join(gone)).is_err(),
+                "{gone}"
+            );
+        }
+        assert!(leftovers(&fx.tree()).is_empty());
+    }
+
+    /// REQ-WS-002, REQ-WS-004: a name that is not valid UTF-8 refuses the creation of the
+    /// workspace, naming the path with the name written out byte by byte and saying why;
+    /// nothing is copied. The same walk refuses it in a task's tree, so a snapshot of one is a
+    /// stated failure and not a lossy name that is later "not found". Linux; other systems
+    /// restrict the names a file may have.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn req_ws_002_a_name_that_is_not_utf8_refuses_the_creation_and_names_the_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let scope = scope();
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.txt");
+        std::fs::write(scope.path().join("src").join(name), "x").unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let task = TaskId::new(&ScriptedIds::default());
+        let p = provider(data.path());
+        let err = p
+            .materialize(
+                task,
+                &ScopeSpec {
+                    root: scope.path().to_string_lossy().into_owned(),
+                    include: vec![],
+                },
+            )
+            .unwrap_err();
+        let WorkspaceError::ReadFailed { path, kind } = &err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(path, "src/caf\\xE9.txt");
+        assert!(kind.contains("not valid UTF-8"), "{kind}");
+        assert!(
+            std::fs::read_dir(p.tree_path(task))
+                .unwrap()
+                .next()
+                .is_none(),
+            "nothing is copied"
+        );
+        // In a task's tree: the snapshot refuses it the same way.
+        let fx = Fx::new();
+        std::fs::write(fx.tree().join(name), "x").unwrap();
+        let dir =
+            cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority()).unwrap();
+        assert_eq!(
+            super::super::snapshot::walk_manifest(&dir, None).unwrap_err(),
+            WorkspaceError::ReadFailed {
+                path: "caf\\xE9.txt".into(),
+                kind: "the name is not valid UTF-8".into()
+            }
+        );
+    }
+
+    /// REQ-WS-005, REQ-WS-006: a link's target is kept byte for byte: a backslash in it, a
+    /// character that is a name on Unix, is not rewritten to a slash, in the copy, the manifest
+    /// and the restore. (Windows reads a backslash as its separator and writes the manifest's
+    /// slash; the same test is Unix only.)
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_005_a_link_target_with_a_backslash_survives() {
+        let scope = scope();
+        std::os::unix::fs::symlink("odd\\name", scope.path().join("src/l")).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let ids = ScriptedIds::default();
+        let task = TaskId::new(&ids);
+        let p = provider(data.path());
+        let info = p
+            .materialize(
+                task,
+                &ScopeSpec {
+                    root: scope.path().to_string_lossy().into_owned(),
+                    include: vec![],
+                },
+            )
+            .unwrap();
+        assert_eq!(info.symlinks_omitted, 0);
+        let link = p.tree_path(task).join("src/l");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("odd\\name"));
+        let prepared = p
+            .snapshot(
+                task,
+                mimlys_core::ids::SnapshotId::new(&ids),
+                SnapshotReason::Base,
+                None,
+                None,
+                Instant::from_unix_millis(1_700_000_000_000).unwrap(),
+            )
+            .unwrap();
+        p.seal(prepared.record.snapshot_id).unwrap();
+        let manifest = p.manifest(&prepared.record).unwrap();
+        assert!(
+            manifest.entries.iter().any(|e| matches!(e, Entry::Symlink { path, target } if path == "src/l" && target == "odd\\name")),
+            "{manifest:?}"
+        );
+        std::fs::remove_file(&link).unwrap();
+        p.restore(task, &prepared.record).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("odd\\name"));
+    }
+
+    /// REQ-WS-002, REQ-WS-004: a part of the scope that cannot be read refuses the creation with
+    /// its path (and nothing is copied), where it was the internal `walk` failure; with the
+    /// permissions back, the creation works. Unix; the superuser reads anything and the test then
+    /// has nothing to show.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_002_an_unreadable_directory_of_the_scope_refuses_the_creation_with_its_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let scope = scope();
+        let locked = scope.path().join("src/deep");
+        let _restore = Restore(locked.clone());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&locked).is_ok() {
+            eprintln!("skipped: the permissions do not apply to this user");
+            return;
+        }
+        let data = tempfile::tempdir().unwrap();
+        let task = TaskId::new(&ScriptedIds::default());
+        let p = provider(data.path());
+        let spec = ScopeSpec {
+            root: scope.path().to_string_lossy().into_owned(),
+            include: vec![],
+        };
+        let err = p.materialize(task, &spec).unwrap_err();
+        assert_eq!(
+            err,
+            WorkspaceError::Unreadable {
+                path: "src/deep".into()
+            }
+        );
+        assert!(
+            std::fs::read_dir(p.tree_path(task))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(p.materialize(task, &spec).is_ok());
+    }
+
+    /// REQ-WS-006: which kind of link a target is, from the manifest's own entries: a directory
+    /// (also through a chain of links) is one, a file is not, and a target that is absolute or
+    /// leaves the root is neither. It decides, on Windows, between a directory link and a file link;
+    /// the other systems do not ask, so this is checked here.
+    #[test]
+    fn req_ws_006_the_kind_of_a_link_is_found_in_the_manifest() {
+        use super::super::{points_at_directory, resolve_target};
+        let entries = [
+            Entry::Dir { path: "d".into() },
+            Entry::Dir {
+                path: "d/sub".into(),
+            },
+            Entry::File {
+                path: "d/f".into(),
+                executable: false,
+                size: 0,
+                hash: mimlys_core::hash::hash_bytes(b""),
+            },
+            Entry::Symlink {
+                path: "l".into(),
+                target: "d".into(),
+            },
+            Entry::Symlink {
+                path: "d/up".into(),
+                target: "../l".into(),
+            },
+            Entry::Symlink {
+                path: "loop".into(),
+                target: "loop".into(),
+            },
+        ];
+        let manifest = mimlys_core::snapshot::Manifest::new(entries.to_vec());
+        let known = manifest.by_path();
+        let dst = tempfile::tempdir().unwrap();
+        let dst =
+            cap_std::fs::Dir::open_ambient_dir(dst.path(), cap_std::ambient_authority()).unwrap();
+        let kind = |link: &str, target: &str| points_at_directory(&dst, link, target, Some(&known));
+        assert!(kind("x", "d"));
+        assert!(kind("x", "./d/sub"));
+        assert!(kind("d/x", ".."), "the root is a directory");
+        assert!(kind("x", "l"), "a link to a link to a directory");
+        assert!(kind("x", "d/up"), "through a link that goes up");
+        assert!(!kind("x", "d/f"));
+        assert!(!kind("x", "/d"));
+        assert!(!kind("x", "../d"), "leaves the root");
+        assert!(!kind("x", "loop"), "a loop ends");
+        assert!(!kind("x", "missing"));
+        assert_eq!(resolve_target("a/b/l", "../c").as_deref(), Some("a/c"));
+        assert_eq!(resolve_target("l", "..\\x"), None);
+    }
+
+    /// REQ-WS-006: a directory link is restored as a directory link (Windows makes the two kinds of
+    /// link differently). The tree is made with a directory and a link to it, snapshotted, emptied,
+    /// and restored. Needs the right to make links, which the Windows job has; where the system
+    /// refuses it, the test says so and has nothing to show.
+    #[cfg(windows)]
+    #[test]
+    fn req_ws_006_a_directory_link_is_restored_as_a_directory_link() {
+        use std::os::windows::fs::FileTypeExt;
+        let fx = Fx::new();
+        std::fs::create_dir_all(fx.tree().join("target_dir/inner")).unwrap();
+        std::fs::write(fx.tree().join("target_dir/inner/f.txt"), "x").unwrap();
+        std::fs::write(fx.tree().join("a_file.txt"), "y").unwrap();
+        let made = std::os::windows::fs::symlink_dir("target_dir", fx.tree().join("dir_link"))
+            .and_then(|()| {
+                std::os::windows::fs::symlink_file("a_file.txt", fx.tree().join("file_link"))
+            });
+        if let Err(e) = made {
+            eprintln!("skipped: the system refuses to make links here: {e}");
+            return;
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        std::fs::remove_dir(fx.tree().join("dir_link")).unwrap();
+        std::fs::remove_file(fx.tree().join("file_link")).unwrap();
+        fx.p.restore(fx.task, &base.record).unwrap();
+        let dir_link = std::fs::symlink_metadata(fx.tree().join("dir_link")).unwrap();
+        assert!(dir_link.file_type().is_symlink_dir(), "{dir_link:?}");
+        assert!(fx.tree().join("dir_link/inner/f.txt").exists());
+        let file_link = std::fs::symlink_metadata(fx.tree().join("file_link")).unwrap();
+        assert!(file_link.file_type().is_symlink_file(), "{file_link:?}");
+        // Forgotten and restored again from the manifest alone (the destination holds nothing).
+        std::fs::remove_dir_all(fx.tree().join("target_dir")).unwrap();
+        std::fs::remove_dir(fx.tree().join("dir_link")).unwrap();
+        fx.p.restore(fx.task, &base.record).unwrap();
+        let dir_link = std::fs::symlink_metadata(fx.tree().join("dir_link")).unwrap();
+        assert!(dir_link.file_type().is_symlink_dir(), "{dir_link:?}");
+    }
+
     /// REQ-TASK-004: a fork materializes the snapshot into a new tree.
     #[test]
     fn req_task_004_materialize_from() {
