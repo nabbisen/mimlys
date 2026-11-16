@@ -17,8 +17,8 @@ use mimlys_core::path::CaseMode;
 use mimlys_core::policy::ExclusionMatcher;
 use mimlys_core::snapshot::{
     Change, ChangeKind, Entry, Manifest, Promotion, PromotionPlan, PromotionState, RestoreReport,
-    RevertAction, RevertEntry, RevertPlan, SnapshotReason, SnapshotRecord, diff,
-    target_inside_root,
+    RevertAction, RevertEntry, RevertPlan, SnapshotReason, SnapshotRecord, diff, links_of,
+    target_inside_root, target_resolves_inside_root,
 };
 use mimlys_core::spi::{
     DeletedRows, EditedPaths, PreparedSnapshot, PromotionRequest, WorkspaceError, WorkspaceInfo,
@@ -486,6 +486,7 @@ impl LocalWorkspaces {
         let current = walk_state(dir, None)?;
         let wanted = manifest.by_path();
         let have = current.manifest.by_path();
+        let tree_links = links_of(manifest);
         let mut report = RestoreReport::default();
         // 1. Verify: the files whose content is not in the tree are written into the stage.
         // (A stage left behind by a crash is in the walk above, and is removed as an extra.)
@@ -559,7 +560,9 @@ impl LocalWorkspaces {
                     if same {
                         continue;
                     }
-                    if !target_inside_root(path, target) {
+                    // Resolved through the manifest's own links: a chain that leaves the root is
+                    // refused as a link that does (REQ-WS-005).
+                    if !target_resolves_inside_root(path, target, &tree_links) {
                         report.links_omitted.push(path.clone());
                         continue;
                     }
@@ -728,20 +731,10 @@ impl LocalWorkspaces {
         for c in &changes {
             walk_parents(&project, &c.path, false)?;
         }
-        // A link whose target leaves the project is not promoted, nor skipped and recorded as
-        // promoted: the plan is refused and names it (REQ-WS-005, REQ-WS-007).
-        for c in &changes {
-            if let Some(Entry::Symlink { target, .. }) = current_by_path.get(c.path.as_str())
-                && !target_inside_root(&c.path, target)
-            {
-                return Err(WorkspaceError::Refused {
-                    reason: format!(
-                        "the workspace holds a link at {} whose target ({target}) is outside the project; it is not promoted. Remove it or point it inside the project, then plan again",
-                        c.path
-                    ),
-                });
-            }
-        }
+        // A link whose target leaves the project, directly or through other links of the
+        // workspace, is not promoted, nor skipped and recorded as promoted: the plan is refused
+        // and names it (REQ-WS-005, REQ-WS-007).
+        Self::refuse_links_that_leave(&changes, &current)?;
         // Conflicts: the project's target must equal the base entry (REQ-WS-007).
         let mut conflicts = Vec::new();
         for c in &changes {
@@ -802,6 +795,29 @@ impl LocalWorkspaces {
         })
     }
 
+    /// Refuses a link of the plan that leaves the project, directly or through the links of the
+    /// workspace `current` (REQ-WS-005): the error names the link and its target.
+    fn refuse_links_that_leave(
+        changes: &[Change],
+        current: &Manifest,
+    ) -> Result<(), WorkspaceError> {
+        let tree_links = links_of(current);
+        let current_by_path = current.by_path();
+        for c in changes {
+            if let Some(Entry::Symlink { target, .. }) = current_by_path.get(c.path.as_str())
+                && !target_resolves_inside_root(&c.path, target, &tree_links)
+            {
+                return Err(WorkspaceError::Refused {
+                    reason: format!(
+                        "the workspace holds a link at {} whose target ({target}) is outside the project, or leads outside it through other links; it is not promoted. Remove it or point it inside the project, then plan again",
+                        c.path
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Step 1 of a promotion: the backup is written and the promotion made, `applying`. The
     /// project is not touched; the runtime commits the backup before `promote_apply_impl`.
     pub(crate) fn promote_backup_impl(
@@ -824,6 +840,7 @@ impl LocalWorkspaces {
                 reason: "the workspace changed since the plan was made; plan again".into(),
             });
         }
+        Self::refuse_links_that_leave(&plan.changes, &current)?;
         let base_manifest = self
             .files
             .read_manifest(base.snapshot_id, &base.manifest_hash)

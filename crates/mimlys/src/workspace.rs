@@ -10,13 +10,14 @@ use cap_std::fs::Dir;
 use mimlys_core::ids::TaskId;
 use mimlys_core::path::{CaseMode, WorkspacePath};
 use mimlys_core::policy::ExclusionMatcher;
+use mimlys_core::snapshot::target_resolves_inside_root;
 use mimlys_core::spi::{
     ToolProvider, WorkspaceError, WorkspaceInfo, WorkspaceProvider, WorkspaceRead,
 };
 use mimlys_core::task::ScopeSpec;
 use mimlys_exec::builtin::BuiltinTools;
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod snapshot;
@@ -259,8 +260,11 @@ impl LocalWorkspaces {
                 Node::Special(_) => {}
             }
         }
+        // A link stays inside the scope when it is resolved through the scope's own links too
+        // (REQ-WS-005): a chain that leaves it is omitted like a link that does.
+        let scope_links: std::collections::BTreeMap<&str, &str> = links.iter().copied().collect();
         for (path, target) in links {
-            if target_inside_scope(path, Path::new(target)) {
+            if target_resolves_inside_root(path, target, &scope_links) {
                 recreate_symlink(src, dst, path, Path::new(target))?;
             } else {
                 *omitted += 1;
@@ -323,29 +327,6 @@ fn is_excluded(matcher: &ExclusionMatcher, rel: &str) -> bool {
         // A name the canonicalizer refuses (control characters, reserved names) is never copied.
         Err(_) => true,
     }
-}
-
-/// Whether a link at `link` (relative to the scope root) pointing to
-/// `target` stays inside the scope, resolved lexically against the root.
-fn target_inside_scope(link: &str, target: &Path) -> bool {
-    if target.is_absolute() {
-        return false;
-    }
-    let mut depth: i64 = link.split('/').count() as i64 - 1;
-    for component in target.components() {
-        match component {
-            Component::Normal(_) => depth += 1,
-            Component::ParentDir => {
-                depth -= 1;
-                if depth < 0 {
-                    return false;
-                }
-            }
-            Component::CurDir => {}
-            Component::RootDir | Component::Prefix(_) => return false,
-        }
-    }
-    true
 }
 
 /// How many links are followed to tell what a link points at (the most the system itself follows

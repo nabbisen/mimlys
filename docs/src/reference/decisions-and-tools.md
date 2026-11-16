@@ -202,7 +202,10 @@ A snapshot is a manifest (every file hashed, every time) plus the files'
 contents stored once by hash under the data directory. Two consecutive
 snapshots of an unchanged tree share one record. Symbolic links are stored
 as links and never followed; a link whose target leaves the workspace is
-never recreated. A link's target is kept exactly as the system holds it (a
+never recreated. The target is judged as the system would resolve it, through
+the workspace's own links: `x -> ..` in a directory and `y -> dir/x/..` leave
+it, though `dir/x/..` is lexically inside; a chain is followed through at most
+40 links (a loop is refused at that bound). A link's target is kept exactly as the system holds it (a
 backslash in it stays a backslash on Linux and macOS).
 
 A restore verifies, then replaces. Every file it needs to write is checked
