@@ -355,6 +355,15 @@ In order, a promotion:
    only when it is empty;
 4. records the promotion `applied`.
 
+A promoted file keeps the mode your own file has: a file of yours that is
+`0600` stays `0600`, whatever the task's copy was recreated with. A file the
+task made takes the task's mode without the group's and others' write bits
+(`0666` becomes `0644`). If the task set or cleared the executable bit of a
+file, that is carried over, where your own mode allows reading. A change of
+mode alone is a change in the diff (it is shown as git shows it), and the
+reversal puts the mode back as well as the content. On Windows there are no
+modes to keep.
+
 If step 3 fails, or the process ends in it, mimlys restores what it had written
 from the backup and records the promotion `failed` with the reason, and the next
 start does the same for a promotion it finds `applying`. A path you edited

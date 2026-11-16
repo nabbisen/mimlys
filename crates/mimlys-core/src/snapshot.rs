@@ -22,6 +22,11 @@ pub enum Entry {
         path: String,
         /// Executable bit (POSIX).
         executable: bool,
+        /// The permission bits, masked to 0o777 (Unix), taken at the snapshot. Absent in a
+        /// manifest made before 0.11 and where the system has none, so that the hash of an old
+        /// manifest is unchanged; a restore of an absent mode gives 0o755 or 0o644 by `executable`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
         /// Size in bytes.
         size: u64,
         /// SHA-256 of the content (LIM-U6).
@@ -55,21 +60,32 @@ impl Entry {
             (
                 Entry::File {
                     executable: a,
+                    mode: m,
                     size: s,
                     hash: h,
                     ..
                 },
                 Entry::File {
                     executable: b,
+                    mode: n,
                     size: t,
                     hash: i,
                     ..
                 },
-            ) => a == b && s == t && h == i,
+            ) => a == b && modes_agree(*m, *n) && s == t && h == i,
             (Entry::Dir { .. }, Entry::Dir { .. }) => true,
             (Entry::Symlink { target: a, .. }, Entry::Symlink { target: b, .. }) => a == b,
             _ => false,
         }
+    }
+}
+
+/// Whether two modes are the same, an absent one (a manifest from before 0.11) agreeing with any:
+/// what is not recorded is not a difference.
+pub fn modes_agree(a: Option<u32>, b: Option<u32>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x == y,
+        _ => true,
     }
 }
 

@@ -369,6 +369,7 @@ fn req_ws_013_holdings_come_from_the_records() {
     let file = |path: &str, content: &[u8]| Entry::File {
         path: path.into(),
         executable: false,
+        mode: None,
         size: content.len() as u64,
         hash: hash_bytes(content),
     };

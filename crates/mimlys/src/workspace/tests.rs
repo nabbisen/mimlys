@@ -2244,6 +2244,7 @@ mod snapshots {
             Entry::File {
                 path: "d/f".into(),
                 executable: false,
+                mode: None,
                 size: 0,
                 hash: mimlys_core::hash::hash_bytes(b""),
             },
@@ -2320,6 +2321,253 @@ mod snapshots {
         fx.p.restore(fx.task, &base.record).unwrap();
         let dir_link = std::fs::symlink_metadata(fx.tree().join("dir_link")).unwrap();
         assert!(dir_link.file_type().is_symlink_dir(), "{dir_link:?}");
+    }
+
+    #[cfg(unix)]
+    fn chmod(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// REQ-WS-006: the manifest records a file's mode (0o777 mask) and a restore gives it back
+    /// exactly: a 0600 and a 0755 file whose modes were changed come back with their modes, though
+    /// their content is the same. A directory-level umask does not change what is restored.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_006_a_restore_gives_back_the_recorded_mode() {
+        let fx = Fx::new();
+        put(&fx.tree(), "private/key.txt", "k");
+        put(&fx.tree(), "bin/run.sh", "#!/bin/sh\n");
+        put(&fx.tree(), "group.txt", "g");
+        chmod(&fx.tree().join("private/key.txt"), 0o600);
+        chmod(&fx.tree().join("bin/run.sh"), 0o755);
+        chmod(&fx.tree().join("group.txt"), 0o664);
+        let base = fx.snap(SnapshotReason::Base, None);
+        let manifest = fx.p.manifest(&base.record).unwrap();
+        let recorded = |path: &str| {
+            manifest.entries.iter().find_map(|e| match e {
+                Entry::File { path: p, mode, .. } if p == path => Some(*mode),
+                _ => None,
+            })
+        };
+        assert_eq!(recorded("private/key.txt"), Some(Some(0o600)));
+        assert_eq!(recorded("bin/run.sh"), Some(Some(0o755)));
+        assert_eq!(recorded("group.txt"), Some(Some(0o664)));
+        for (path, other) in [
+            ("private/key.txt", 0o644),
+            ("bin/run.sh", 0o644),
+            ("group.txt", 0o600),
+        ] {
+            chmod(&fx.tree().join(path), other);
+        }
+        // Content is unchanged, the modes are not: the snapshot is not the base.
+        assert_ne!(walk(&fx).hash(), base.record.manifest_hash);
+        let report = fx.p.restore(fx.task, &base.record).unwrap();
+        assert_eq!(report.written, 3, "{report:?}");
+        assert_eq!(mode_of(&fx.tree().join("private/key.txt")), 0o600);
+        assert_eq!(mode_of(&fx.tree().join("bin/run.sh")), 0o755);
+        assert_eq!(mode_of(&fx.tree().join("group.txt")), 0o664);
+        assert_eq!(walk(&fx).hash(), base.record.manifest_hash);
+    }
+
+    /// REQ-WS-006: a mode that cannot be set is an error, never ignored; an entry from a manifest
+    /// made before 0.11, which records none, gets 0o755 when it is executable and 0o644 when it is
+    /// not, as it always did.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_006_a_failed_chmod_is_an_error_and_an_absent_mode_gives_the_old_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "x").unwrap();
+        std::fs::write(dir.path().join("b"), "x").unwrap();
+        let handle =
+            cap_std::fs::Dir::open_ambient_dir(dir.path(), cap_std::ambient_authority()).unwrap();
+        let set = super::super::snapshot::set_file_mode;
+        assert!(matches!(
+            set(&handle, "missing", false, Some(0o600)),
+            Err(WorkspaceError::Storage { detail }) if detail == "set_permissions"
+        ));
+        set(&handle, "a", true, None).unwrap();
+        set(&handle, "b", false, None).unwrap();
+        assert_eq!(mode_of(&dir.path().join("a")), 0o755);
+        assert_eq!(mode_of(&dir.path().join("b")), 0o644);
+        set(&handle, "b", false, Some(0o4755)).unwrap();
+        assert_eq!(mode_of(&dir.path().join("b")), 0o755, "the mask is 0o777");
+    }
+
+    /// REQ-WS-007: a promotion keeps the project file's own mode: a 0600 file of the project,
+    /// rewritten in the workspace by a tool that recreated it with the default mode, stays 0600
+    /// in the project through the promotion and through its reversal (the content comes back and
+    /// so does the mode). The promotion forced 0644 before.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_0600_file_stays_0600_through_a_promotion_and_a_reversal() {
+        use mimlys_core::spi::EditedPaths;
+        let fx = Fx::new();
+        for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            put(&root, "private/notes.txt", "secret v1\n");
+            chmod(&root.join("private/notes.txt"), 0o600);
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        // The tool recreated the file: new content, the default mode.
+        std::fs::remove_file(fx.tree().join("private/notes.txt")).unwrap();
+        put(&fx.tree(), "private/notes.txt", "secret v2\n");
+        chmod(&fx.tree().join("private/notes.txt"), 0o644);
+        let plan = fx.plan(&base.record).unwrap();
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        let project_file = fx.scope.path().join("private/notes.txt");
+        assert_eq!(read(fx.scope.path(), "private/notes.txt"), "secret v2\n");
+        assert_eq!(
+            mode_of(&project_file),
+            0o600,
+            "the project's own mode is kept"
+        );
+        // Somebody loosened it since the promotion: that is an edit since, kept, not undone.
+        chmod(&project_file, 0o644);
+        let report =
+            fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
+                .unwrap();
+        assert_eq!(report.left, ["private/notes.txt"], "{report:?}");
+        assert_eq!(mode_of(&project_file), 0o644);
+        // Back as the promotion wrote it, the reversal restores content and mode.
+        chmod(&project_file, 0o600);
+        let report =
+            fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
+                .unwrap();
+        assert!(report.left.is_empty(), "{report:?}");
+        assert_eq!(read(fx.scope.path(), "private/notes.txt"), "secret v1\n");
+        assert_eq!(mode_of(&project_file), 0o600);
+    }
+
+    /// REQ-WS-007: a new file takes the workspace file's mode without the group's and others'
+    /// write bits: 0666 is promoted as 0644 and 0775 as 0755, 0600 stays 0600; the reversal removes
+    /// them.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_new_file_of_0666_is_promoted_as_0644() {
+        let fx = Fx::new();
+        let base = fx.snap(SnapshotReason::Base, None);
+        for (name, mode) in [("w.txt", 0o666), ("x.sh", 0o775), ("p.txt", 0o600)] {
+            put(&fx.tree(), name, "new");
+            chmod(&fx.tree().join(name), mode);
+        }
+        let plan = fx.plan(&base.record).unwrap();
+        let (_backup, _promotion) = fx.promote(&plan, &base.record).unwrap();
+        assert_eq!(mode_of(&fx.scope.path().join("w.txt")), 0o644);
+        assert_eq!(mode_of(&fx.scope.path().join("x.sh")), 0o755);
+        assert_eq!(mode_of(&fx.scope.path().join("p.txt")), 0o600);
+    }
+
+    /// REQ-WS-007: a change of mode alone is in the plan, shown with the mode it will give, and
+    /// is promoted: a script made executable in the workspace becomes executable in the project,
+    /// with the project file's own bits otherwise (0640 becomes 0750, not the workspace's 0755),
+    /// and the reversal restores the mode it had. A change of mode that is not of the executable
+    /// bit is in the plan too (it is a change), and the promotion keeps the project's own mode.
+    #[cfg(unix)]
+    #[test]
+    fn req_ws_007_a_mode_only_change_is_in_the_plan() {
+        use mimlys_core::spi::EditedPaths;
+        let fx = Fx::new();
+        for root in [fx.tree(), fx.scope.path().to_path_buf()] {
+            chmod(&root.join("src/lib.rs"), 0o640);
+            chmod(&root.join("src/deep/x.txt"), 0o644);
+        }
+        let base = fx.snap(SnapshotReason::Base, None);
+        chmod(&fx.tree().join("src/lib.rs"), 0o755);
+        chmod(&fx.tree().join("src/deep/x.txt"), 0o600);
+        let plan = fx.plan(&base.record).unwrap();
+        let changed: Vec<(&str, ChangeKind)> = plan
+            .changes
+            .iter()
+            .map(|c| (c.path.as_str(), c.kind))
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                ("src/deep/x.txt", ChangeKind::Modified),
+                ("src/lib.rs", ChangeKind::Modified)
+            ]
+        );
+        let diff_of = |path: &str| {
+            plan.text_diffs
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, d)| d.clone())
+        };
+        let shown = diff_of("src/lib.rs").unwrap();
+        assert!(
+            shown.contains("old mode 100640") && shown.contains("new mode 100750"),
+            "{shown}"
+        );
+        let other = diff_of("src/deep/x.txt").unwrap_or_default();
+        assert!(
+            !other.contains("mode"),
+            "nothing it will not do is shown: {other}"
+        );
+        let (backup, promotion) = fx.promote(&plan, &base.record).unwrap();
+        fx.p.seal(backup.record.snapshot_id).unwrap();
+        assert_eq!(mode_of(&fx.scope.path().join("src/lib.rs")), 0o750);
+        assert_eq!(mode_of(&fx.scope.path().join("src/deep/x.txt")), 0o644);
+        assert_eq!(read(fx.scope.path(), "src/lib.rs"), "fn a() {}\n");
+        fx.p.revert_promotion(&promotion, &backup.record, EditedPaths::Keep)
+            .unwrap();
+        assert_eq!(mode_of(&fx.scope.path().join("src/lib.rs")), 0o640);
+        assert_eq!(mode_of(&fx.scope.path().join("src/deep/x.txt")), 0o644);
+    }
+
+    /// REQ-WS-007: the mode a promoted file is given, by cases (the project's own, the executable
+    /// bit carried over where the project allows reading, the workspace's mode without write bits
+    /// for others for a new file).
+    #[test]
+    fn req_ws_007_the_mode_a_promoted_file_is_given() {
+        let file = |mode: Option<u32>, executable: bool| Entry::File {
+            path: "f".into(),
+            executable,
+            mode,
+            size: 0,
+            hash: mimlys_core::hash::hash_bytes(b""),
+        };
+        let given = super::super::snapshot::promoted_mode;
+        // No file in the project: the workspace's, without group and others' write.
+        assert_eq!(given(&file(Some(0o666), false), None, None), Some(0o644));
+        assert_eq!(given(&file(Some(0o775), true), None, None), Some(0o755));
+        assert_eq!(given(&file(Some(0o600), false), None, None), Some(0o600));
+        // A file in the project: its own, whatever the workspace holds.
+        let own = file(Some(0o600), false);
+        let base = file(Some(0o600), false);
+        assert_eq!(
+            given(&file(Some(0o666), false), Some(&base), Some(&own)),
+            Some(0o600)
+        );
+        // The executable bit the task changed is carried over.
+        let base = file(Some(0o640), false);
+        let own = file(Some(0o640), false);
+        assert_eq!(
+            given(&file(Some(0o755), true), Some(&base), Some(&own)),
+            Some(0o750)
+        );
+        let base = file(Some(0o755), true);
+        let own = file(Some(0o755), true);
+        assert_eq!(
+            given(&file(Some(0o644), false), Some(&base), Some(&own)),
+            Some(0o644)
+        );
+        // Windows: none.
+        assert_eq!(given(&file(None, false), None, None), None);
+        assert_eq!(
+            given(
+                &file(None, true),
+                Some(&file(None, false)),
+                Some(&file(None, false))
+            ),
+            None
+        );
     }
 
     /// REQ-TASK-004: a fork materializes the snapshot into a new tree.

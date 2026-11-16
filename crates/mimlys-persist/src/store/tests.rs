@@ -952,6 +952,7 @@ fn crash_child_sequence() {
             mimlys_core::snapshot::Manifest::new(vec![mimlys_core::snapshot::Entry::File {
                 path: "f".into(),
                 executable: false,
+                mode: None,
                 size: content.len() as u64,
                 hash: hash.clone(),
             }]);
@@ -1052,6 +1053,7 @@ mod snapshots_m3 {
         let manifest = Manifest::new(vec![Entry::File {
             path: "f".into(),
             executable: false,
+            mode: None,
             size: content.len() as u64,
             hash: hash.clone(),
         }]);

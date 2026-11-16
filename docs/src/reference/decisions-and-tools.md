@@ -205,6 +205,12 @@ as links and never followed; a link whose target leaves the workspace is
 never recreated. A link's target is kept exactly as the system holds it (a
 backslash in it stays a backslash on Linux and macOS).
 
+The manifest records each file's permission bits (masked to `0777`; none on
+Windows), and a restore gives them back exactly: a `0600` file comes back
+`0600`. A manifest made before 0.11 records none and keeps its hash; its files
+are restored as before, `0755` when executable and `0644` when not. A mode that
+cannot be set is an error, not ignored.
+
 A restore verifies, then replaces. Every file it needs to write is checked
 against its hash and written into a staging directory in the root of the tree
 (`.mimlys-stage-<pid>-<n>`) before anything is removed; a missing or damaged

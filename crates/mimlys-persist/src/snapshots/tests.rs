@@ -35,6 +35,7 @@ fn req_ws_004_objects_and_manifests() {
     let manifest = Manifest::new(vec![Entry::File {
         path: "a".into(),
         executable: false,
+        mode: None,
         size: 5,
         hash: hash.clone(),
     }]);

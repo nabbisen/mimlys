@@ -37,6 +37,8 @@ pub(super) enum Node {
         len: u64,
         /// Whether any execute bit is set (Unix).
         executable: bool,
+        /// The permission bits, masked to 0o777 (Unix).
+        mode: Option<u32>,
     },
     /// A directory.
     Dir,
@@ -173,6 +175,7 @@ pub(super) fn walk(
                 Node::File {
                     len: meta.len(),
                     executable: super::snapshot::is_executable(&meta),
+                    mode: super::snapshot::file_mode(&meta),
                 }
             } else {
                 Node::Special(special_name(&file_type))
