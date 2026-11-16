@@ -416,16 +416,21 @@ impl Server {
             }
             *count += 1;
         }
-        // A start is attempted: from here on, a start is a restart, so that a
-        // server that fails to start or to list every time is bounded by LIM-X3
-        // as one that dies is.
-        self.started_once.store(true, Ordering::SeqCst);
+        // A start attempted for a task makes every later start a restart, so
+        // that a server that fails to start or to list every time is bounded by
+        // LIM-X3 as one that dies is. An attempt made for no task (`status`, the
+        // import) that fails does not: a listing for no task is never counted
+        // (external design 11.1); one that succeeds does, below.
+        if task.is_some() {
+            self.started_once.store(true, Ordering::SeqCst);
+        }
         let epoch = self.epoch.load(Ordering::SeqCst);
         let started = self.start_and_list(startup, cancel).await;
         if let Err(error) = &started {
             *self.last_start_failure.lock().expect("failure lock") = Some(error.reason());
         }
         let (connection, info, tools) = started?;
+        self.started_once.store(true, Ordering::SeqCst);
         if self.epoch.load(Ordering::SeqCst) != epoch {
             // A shutdown came while this start was in flight: it ends the
             // process it made.

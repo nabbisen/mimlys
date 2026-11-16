@@ -51,6 +51,8 @@
 | LIM-I14 | Entries of one list of an output schema (`properties`, `required`, `enum`, `anyOf`, `oneOf`, `$defs`) | 128 | fixed | rypsok's widest is under 10 (handoff 009g) |
 | LIM-I15 | Cost of the alternatives that apply to one value, in visits, references followed | 64 | fixed | rypsok's costliest definition is 14 (measured, handoff 009g) |
 | LIM-I16 | Visits of one output validation | 100000 | fixed | Linear in the value once LIM-I15 holds; rypsok's largest answer takes a few hundred (handoff 009g) |
+| LIM-I17 | Bytes kept of one line a server writes on standard error | 1024 bytes | fixed | A server's usual line is a few hundred bytes; the rest is read and discarded to the newline (handoff 009h) |
+| LIM-I18 | Lines of a server's standard error logged in one LIM-O18 window | 50 | fixed | The log path costs about 3 µs per line; a flood writes at most about 60 KB/s, the rest counted in one line (handoff 009h) |
 
 ## Context
 
@@ -132,6 +134,7 @@
 | LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
 | LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
 | LIM-O17 | Wait of `events --follow` for a runtime to take the store of a `running` task no runtime holds, before it says `recovery pending` and ends | 5000 ms | fixed | A runtime takes the lock within a process start; ten polls of LIM-O15 (handoff 002d) |
+| LIM-O18 | Window of the rate bound on a server's standard error (LIM-I18) | 1000 ms | fixed | One count line per second at most (handoff 009h) |
 | LIM-O16 | Grace for an MCP server to end after its standard input closes, before its group is killed | 5000 ms | 500 – 30000; per server `shutdown_ms` | rypsok's graceful shutdown takes up to 3 s by default (its letter of 2026-11-11); LIM-O2's 2 s cut it short |
 
 ## Model backend

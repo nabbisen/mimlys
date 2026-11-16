@@ -25,14 +25,14 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use tokio::time::Instant;
 
 /// The most bytes of one line of a server's standard error that are kept
-/// (awaits registration as a limit).
+/// (LIM-I17).
 pub const STDERR_LINE_MAX_BYTES: usize = 1024;
 
 /// The most lines of a server's standard error that are logged in one window
-/// (awaits registration as a limit).
+/// (LIM-I18).
 pub const STDERR_LINES_PER_WINDOW: u32 = 50;
 
-/// The length of a window of the rate bound (awaits registration as a limit).
+/// The length of a window of the rate bound (LIM-O18).
 pub const STDERR_WINDOW: Duration = Duration::from_secs(1);
 
 /// One line read from a server's standard error.

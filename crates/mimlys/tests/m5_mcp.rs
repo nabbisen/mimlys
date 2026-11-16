@@ -2837,6 +2837,53 @@ fn req_mcp_002_a_list_changed_during_a_listing_is_not_lost() {
     });
 }
 
+/// REQ-TOOL-009 (external design 11.1, review of handoff 009h): a start that
+/// fails when it is made for no task (`status`, the import at task creation)
+/// is never counted against a task: the task still has its first start and
+/// then LIM-X3 restarts.
+#[test]
+fn req_tool_009_a_failed_start_for_no_task_is_not_counted_against_a_task() {
+    use mimlys_mcp::server::ServerError;
+    let limit = mimlys_core::limits::LIM_X3_RESTARTS as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("list.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = knob_server(
+            15_000,
+            &[
+                ("MIMLYS_TESTSERVER_FAIL_LIST_AFTER", "0".to_owned()),
+                list_log_knob(&log),
+            ],
+        );
+        let unscoped = 3;
+        for _ in 0..unscoped {
+            assert!(matches!(
+                server.list().await,
+                Err(ServerError::Unavailable { .. })
+            ));
+        }
+        let task = a_task();
+        let mut started = 0;
+        for _ in 0..(limit + 3) {
+            match server
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await
+            {
+                Err(ServerError::Unavailable { .. }) => started += 1,
+                Err(ServerError::RestartLimitReached { .. }) => {}
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(
+            started,
+            1 + limit,
+            "the task's first start and LIM-X3 restarts, whatever was tried for no task"
+        );
+        assert_eq!(list_requests_seen(&log), unscoped + 1 + limit);
+    });
+}
+
 /// REQ-TOOL-009, REQ-MCP-001 (handoff 009h, item 5; external design §11.1): a start
 /// that fails counts. The stand-in answers its first listing with an error
 /// (`FAIL_LIST_AFTER=0`), every time: the first start and LIM-X3 restarts of a
