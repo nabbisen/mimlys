@@ -22,6 +22,10 @@ your project until you delete the task.
 | `tmp/` | Temporary files of the worker and of host tools | A running tool |
 | `mimlys.lock`, `mimlys.holder` | Who has the store open | Nothing (a few bytes) |
 
+A restore (and the reversal of a promotion) briefly keeps its verified copies in a
+directory named `.mimlys-stage-<pid>-<n>` in the root of the tree (or of the project), and removes
+it when it ends. `snapshots/objects` and the other directories are not used for it.
+
 Copying the data directory while mimlys is not running is a complete backup.
 
 ## Seeing what is stored

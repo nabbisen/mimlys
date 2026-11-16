@@ -20,7 +20,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod snapshot;
-use snapshot::unreadable;
+mod walk;
+use walk::{Flow, Found, Node, walk};
 
 /// The metadata file beside a task's tree.
 const INFO_FILE: &str = "workspace.json";
@@ -211,80 +212,58 @@ impl LocalWorkspaces {
         })
     }
 
-    /// Walks the scope, measuring what would be copied. No write happens.
+    /// Walks the scope once, measuring what would be copied and refusing it above the limits
+    /// as soon as one is passed. No write happens. A name that is not valid UTF-8, or a part
+    /// of the scope that cannot be read, ends the walk with an error that names the path.
     fn measure(
         &self,
         src: &Dir,
-        rel: &str,
         matcher: &ExclusionMatcher,
-        out: &mut Measured,
-    ) -> Result<(), WorkspaceError> {
-        for entry in src
-            .read_dir(if rel.is_empty() { "." } else { rel })
-            .map_err(Self::storage("walk"))?
-        {
-            let entry = entry.map_err(Self::storage("walk"))?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let child = join(rel, &name);
-            if is_excluded(matcher, &child) {
-                continue;
-            }
-            let ty = entry.file_type().map_err(Self::storage("walk"))?;
-            if ty.is_symlink() {
-                continue;
-            }
-            if ty.is_dir() {
-                self.measure(src, &child, matcher, out)?;
-            } else if ty.is_file() {
-                out.files += 1;
-                out.bytes += entry.metadata().map_err(Self::storage("walk"))?.len();
-                if out.bytes > self.max_bytes || out.files > self.max_files {
+    ) -> Result<(Vec<Found>, Measured), WorkspaceError> {
+        let mut found = Vec::new();
+        let mut measured = Measured::default();
+        walk(src, "", Some(matcher), |entry| {
+            if let Node::File { len, .. } = entry.node {
+                measured.files += 1;
+                measured.bytes += len;
+                if measured.bytes > self.max_bytes || measured.files > self.max_files {
                     return Err(WorkspaceError::TooLarge {
-                        bytes: out.bytes,
-                        files: out.files,
+                        bytes: measured.bytes,
+                        files: measured.files,
                     });
                 }
             }
-        }
-        Ok(())
+            found.push(entry);
+            Ok(Flow::Descend)
+        })?;
+        Ok((found, measured))
     }
 
-    /// Copies the walked entries; symbolic links are recreated only when
-    /// their target stays inside the scope, lexically.
-    fn copy_tree(
-        &self,
+    /// Copies the walked entries, parents first; symbolic links are recreated, last, only when
+    /// their target stays inside the scope, lexically. A named pipe, a socket or a device of the
+    /// scope is not copied.
+    fn copy_found(
         src: &Dir,
         dst: &Dir,
-        rel: &str,
-        matcher: &ExclusionMatcher,
+        found: &[Found],
         omitted: &mut u64,
     ) -> Result<(), WorkspaceError> {
-        for entry in src
-            .read_dir(if rel.is_empty() { "." } else { rel })
-            .map_err(Self::storage("walk"))?
-        {
-            let entry = entry.map_err(Self::storage("walk"))?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let child = join(rel, &name);
-            if is_excluded(matcher, &child) {
-                continue;
+        let mut links = Vec::new();
+        for entry in found {
+            match &entry.node {
+                Node::Dir => dst
+                    .create_dir(&entry.path)
+                    .map_err(Self::storage("create_dir"))?,
+                Node::File { .. } => copy_file(src, dst, &entry.path)?,
+                Node::Link { target } => links.push((entry.path.as_str(), target.as_str())),
+                Node::Special(_) => {}
             }
-            let ty = entry.file_type().map_err(Self::storage("walk"))?;
-            if ty.is_symlink() {
-                let target = src
-                    .read_link_contents(&child)
-                    .map_err(Self::storage("read_link"))?;
-                if target_inside_scope(&child, &target) {
-                    recreate_symlink(src, dst, &child, &target)?;
-                } else {
-                    *omitted += 1;
-                }
-            } else if ty.is_dir() {
-                dst.create_dir(&child)
-                    .map_err(Self::storage("create_dir"))?;
-                self.copy_tree(src, dst, &child, matcher, omitted)?;
-            } else if ty.is_file() {
-                copy_file(src, dst, &child)?;
+        }
+        for (path, target) in links {
+            if target_inside_scope(path, Path::new(target)) {
+                recreate_symlink(src, dst, path, Path::new(target))?;
+            } else {
+                *omitted += 1;
             }
         }
         Ok(())
@@ -298,21 +277,15 @@ impl LocalWorkspaces {
         })
     }
 
-    fn tree_size(dir: &Dir, rel: &str) -> Result<u64, WorkspaceError> {
+    /// The bytes of the regular files of the tree, by the one walk (REQ-WS-008).
+    fn tree_size(dir: &Dir) -> Result<u64, WorkspaceError> {
         let mut total = 0;
-        for entry in dir
-            .read_dir(if rel.is_empty() { "." } else { rel })
-            .map_err(unreadable(rel))?
-        {
-            let entry = entry.map_err(unreadable(rel))?;
-            let child = join(rel, &entry.file_name().to_string_lossy());
-            let ty = entry.file_type().map_err(unreadable(&child))?;
-            if ty.is_dir() {
-                total += Self::tree_size(dir, &child)?;
-            } else if ty.is_file() {
-                total += entry.metadata().map_err(unreadable(&child))?.len();
+        walk(dir, "", None, |entry| {
+            if let Node::File { len, .. } = entry.node {
+                total += len;
             }
-        }
+            Ok(Flow::Descend)
+        })?;
         Ok(total)
     }
 }
@@ -375,12 +348,75 @@ fn target_inside_scope(link: &str, target: &Path) -> bool {
     true
 }
 
-/// Recreates a link inside one directory handle (restore and promotion).
+/// How many links are followed to tell what a link points at (the most the system itself follows
+/// on Linux: `MAXSYMLINKS`).
+const KIND_HOPS: usize = 40;
+
+/// Where a link at `link` pointing at `target` lands, written from the root: the link's directory,
+/// then the target with `.` and `..` resolved by text (a backslash separates, as everywhere in the
+/// manifest's rules). `None` when the target is absolute or leaves the root.
+pub(crate) fn resolve_target(link: &str, target: &str) -> Option<String> {
+    let bytes = target.as_bytes();
+    if bytes.first().is_some_and(|b| *b == b'/' || *b == b'\\')
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+    {
+        return None;
+    }
+    let mut parts: Vec<&str> = link.split('/').collect();
+    parts.pop();
+    for piece in target.split(['/', '\\']) {
+        match piece {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            name => parts.push(name),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Whether the link at `link` pointing at `target` points at a directory (REQ-WS-006): the entry
+/// the target names is looked up in `known`, the entries of the manifest being restored, following
+/// a link it finds a bounded number of times; what `known` does not hold is looked at in `dst` as
+/// it stands, after its writes. Windows makes a directory link another way than a file link; the
+/// other systems do not ask.
+pub(crate) fn points_at_directory(
+    dst: &Dir,
+    link: &str,
+    target: &str,
+    known: Option<&std::collections::BTreeMap<&str, &mimlys_core::snapshot::Entry>>,
+) -> bool {
+    use mimlys_core::snapshot::Entry;
+    let (mut link, mut target) = (link.to_owned(), target.to_owned());
+    for _ in 0..KIND_HOPS {
+        let Some(path) = resolve_target(&link, &target) else {
+            return false;
+        };
+        if path.is_empty() {
+            return true;
+        }
+        match known.and_then(|k| k.get(path.as_str())) {
+            Some(Entry::Dir { .. }) => return true,
+            Some(Entry::File { .. }) => return false,
+            Some(Entry::Symlink { target: next, .. }) => {
+                target = next.clone();
+                link = path;
+            }
+            None => return dst.metadata(&path).map(|m| m.is_dir()).unwrap_or(false),
+        }
+    }
+    false
+}
+
+/// Recreates a link inside one directory handle (restore and promotion). `to_dir`: it points at a
+/// directory, which Windows needs to know and the other systems ignore.
 #[cfg(not(windows))]
 pub(crate) fn recreate_symlink_in(
     dst: &Dir,
     link: &str,
     target: &Path,
+    _to_dir: bool,
 ) -> Result<(), WorkspaceError> {
     dst.symlink(target, link)
         .map_err(|_| WorkspaceError::Storage {
@@ -388,17 +424,24 @@ pub(crate) fn recreate_symlink_in(
         })
 }
 
+/// As above; the target is written with the separator Windows needs in a link, and a directory
+/// link is made as one.
 #[cfg(windows)]
 pub(crate) fn recreate_symlink_in(
     dst: &Dir,
     link: &str,
     target: &Path,
+    to_dir: bool,
 ) -> Result<(), WorkspaceError> {
-    // Without the source, a link is recreated as a file link; a directory target is rare in a project tree.
-    dst.symlink_file(target, link)
-        .map_err(|_| WorkspaceError::Storage {
-            detail: "symlink".into(),
-        })
+    let target = PathBuf::from(target.to_string_lossy().replace('/', "\\"));
+    let result = if to_dir {
+        dst.symlink_dir(&target, link)
+    } else {
+        dst.symlink_file(&target, link)
+    };
+    result.map_err(|_| WorkspaceError::Storage {
+        detail: "symlink".into(),
+    })
 }
 
 #[cfg(not(windows))]
@@ -417,10 +460,11 @@ fn recreate_symlink(
 #[cfg(windows)]
 fn recreate_symlink(src: &Dir, dst: &Dir, link: &str, target: &Path) -> Result<(), WorkspaceError> {
     let is_dir = src.metadata(link).map(|m| m.is_dir()).unwrap_or(false);
+    let target = PathBuf::from(target.to_string_lossy().replace('/', "\\"));
     let result = if is_dir {
-        dst.symlink_dir(target, link)
+        dst.symlink_dir(&target, link)
     } else {
-        dst.symlink_file(target, link)
+        dst.symlink_file(&target, link)
     };
     result.map_err(|_| WorkspaceError::Storage {
         detail: "symlink".into(),
@@ -451,7 +495,7 @@ impl WorkspaceRead for LocalWorkspaces {
     fn tree_bytes(&self, task_id: TaskId) -> Result<u64, WorkspaceError> {
         let dir = Dir::open_ambient_dir(self.tree_path(task_id), ambient_authority())
             .map_err(|_| WorkspaceError::Missing)?;
-        Self::tree_size(&dir, "")
+        Self::tree_size(&dir)
     }
 }
 
@@ -488,10 +532,9 @@ impl WorkspaceProvider for LocalWorkspaces {
         let src = Dir::open_ambient_dir(&root, ambient_authority())
             .map_err(|_| WorkspaceError::ScopeNotFound)?;
         // Walk first, copy second (REQ-WS-002).
-        let mut measured = Measured::default();
-        self.measure(&src, "", &matcher, &mut measured)?;
+        let (found, measured) = self.measure(&src, &matcher)?;
         let mut omitted = 0;
-        self.copy_tree(&src, &dst, "", &matcher, &mut omitted)?;
+        Self::copy_found(&src, &dst, &found, &mut omitted)?;
         let info = WorkspaceInfo {
             root: task_dir.join("tree").to_string_lossy().into_owned(),
             case_mode,
@@ -557,7 +600,7 @@ impl WorkspaceProvider for LocalWorkspaces {
     fn remaining_bytes(&self, task_id: TaskId) -> Result<Option<u64>, WorkspaceError> {
         let dir = Dir::open_ambient_dir(self.tree_path(task_id), ambient_authority())
             .map_err(|_| WorkspaceError::Missing)?;
-        let used = Self::tree_size(&dir, "")?;
+        let used = Self::tree_size(&dir)?;
         Ok(Some(self.max_bytes.saturating_sub(used)))
     }
 
