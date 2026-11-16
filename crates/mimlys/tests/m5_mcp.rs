@@ -371,6 +371,88 @@ fn m5_errors_are_mapped_by_kind() {
     assert_eq!(rejected, ["denied"]);
 }
 
+/// REQ-MCP-005 (handoff 009h, item 1), end to end: a destination is judged as it is
+/// sent. The stand-in logs every `url` it receives. The model proposes, in turn, an
+/// address with its empty path left out (one address, admitted), then in a form the
+/// grants and a server may read differently (an upper-case host, user information:
+/// `denied` with `destination_not_canonical`, nothing reaches the server), a page
+/// that moved, and, after the `redirected` result, the new location with its default
+/// port written out (refused again) and then as the parse writes it. The server
+/// received exactly the three strings that were admitted, as the model wrote them.
+#[test]
+fn req_mcp_005_the_server_receives_exactly_the_destination_that_was_judged() {
+    let env = Env::new(
+        &[
+            act("rypsok.web_fetch", json!({"url": "https://example.org"})),
+            act("rypsok.web_fetch", json!({"url": "https://EXAMPLE.org/a"})),
+            act(
+                "rypsok.web_fetch",
+                json!({"url": "https://example.org@evil.test/"}),
+            ),
+            act(
+                "rypsok.web_fetch",
+                json!({"url": "https://example.org/moved"}),
+            ),
+            act(
+                "rypsok.web_fetch",
+                json!({"url": "https://example.org:443/new"}),
+            ),
+            act(
+                "rypsok.web_fetch",
+                json!({"url": "https://example.org/new?a=b%20c#frag"}),
+            ),
+            complete(),
+        ],
+        "",
+        &[],
+    );
+    let log = env.data.path().join("calls.log");
+    let env = env.env("MIMLYS_TESTSERVER_CALL_LOG", log.to_str().unwrap());
+    let_the_server_see(&env, "MIMLYS_TESTSERVER_CALL_LOG");
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "fetch",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "network:example.org",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let events = env.events(&id);
+    let rejected: Vec<(String, String)> = events
+        .iter()
+        .filter(|e| e["event"] == "decision.rejected")
+        .map(|e| {
+            (
+                e["code"].as_str().unwrap().to_owned(),
+                e["reason"].as_str().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rejected,
+        vec![("denied".to_owned(), "destination_not_canonical".to_owned()); 3],
+        "{events:?}"
+    );
+    let received: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        received,
+        [
+            "https://example.org",
+            "https://example.org/moved",
+            "https://example.org/new?a=b%20c#frag"
+        ],
+        "the server got the strings that were judged, as they were written"
+    );
+}
+
 /// Lets the child server see `name` (the config's `env_allow`), so that a test
 /// can hand it a knob of the stand-in through the process's environment.
 fn let_the_server_see(env: &Env, name: &str) {

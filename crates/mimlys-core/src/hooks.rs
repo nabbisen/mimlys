@@ -5,7 +5,7 @@
 use crate::action::{EffectKind, EffectView};
 use crate::clock::Instant;
 use crate::effect;
-use crate::grant::GrantSet;
+use crate::grant::{DestinationForm, GrantSet};
 use crate::host_tool::ArgViolation;
 use crate::path::{CaseMode, WorkspacePath};
 use crate::policy::{ExclusionMatcher, Profile};
@@ -65,6 +65,15 @@ impl GrantCheck for PolicyHooks<'_> {
                 Some(Value::String(url)) => {
                     if crate::grant::GrantSet::is_plain_http(url) {
                         return Err(Denial::new(DeniedReason::SchemeNotHttps));
+                    }
+                    // The text that is judged is the text a server reads
+                    // (REQ-MCP-005): written otherwise than its parse, it is
+                    // refused, with the form to write instead. A destination
+                    // that does not parse is not covered by any grant.
+                    if let DestinationForm::NotCanonical(canonical) =
+                        crate::grant::destination_form(url)
+                    {
+                        return Err(Denial::not_canonical(&canonical));
                     }
                     if !self.grants.permits_destination(url, self.task.now) {
                         return Err(Denial::grant(

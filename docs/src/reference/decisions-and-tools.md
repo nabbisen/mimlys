@@ -37,8 +37,10 @@ the model may change:
 
 A `denied` rejection names its reason (`path_outside_workspace`,
 `path_excluded`, `grant_missing`, `destination_not_granted`,
-`scheme_not_https` (only `https` addresses are admitted), `promote_not_allowed`, `argument_not_allowed`,
-`arguments_do_not_fit`) and
+`scheme_not_https` (only `https` addresses are admitted), `destination_not_canonical`
+(the address is not written the way it parses, or holds user information; the
+rejection's `value` is the form to write instead), `promote_not_allowed`,
+`argument_not_allowed`, `arguments_do_not_fit`) and
 its hint follows the reason. `arguments_do_not_fit` means that the names of a
 tool's arguments are too long to put to you for approval, so the action is
 refused before it is recorded; the hint tells the model to use another tool or
@@ -51,7 +53,8 @@ What the model reads of a rejection is its code, its own hint and its detail,
 code (`problem` and `limit` for `malformed`; `path`, `expected` and `allowed`
 for `schema`; `tool` and `visible_tools` for `unknown_tool`; `path`, `min`,
 `max` and `allowed` for `invalid_argument`; `reason`, `grant_kind` and, for
-`argument_not_allowed`, `argument` with `value`, or `max`, for `denied`;
+`argument_not_allowed`, `argument` with `value`, or `max`, and for
+`destination_not_canonical` `value`, for `denied`;
 `reason` for `state`; `budget` for `budget`), every string cut to 200
 characters. A hint names only keys that its segment carries. The rejected
 decision is not repeated, and the detail holds nothing from the file system
@@ -150,8 +153,12 @@ are never dropped. Every piece of data has a provenance label:
 ```
 
 The segment body is JSON, so a tool result or a user answer can never
-forge a label. Control characters, zero-width and bidirectional marks are
-removed from external text with a `characters_removed` notice.
+forge a label. Control characters, zero-width and bidirectional marks, and the
+other characters that draw nothing (the soft hyphen, variation selectors, the
+fillers of some scripts, tag characters, invisible format characters) are
+removed from external text with a `characters_removed` notice. Symbols that are
+drawn stay, even those whose name sounds blank (the braille blank, the object
+replacement character).
 
 ## Observations
 

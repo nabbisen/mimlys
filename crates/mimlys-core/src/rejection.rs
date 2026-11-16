@@ -137,6 +137,9 @@ pub enum DeniedReason {
     DestinationNotGranted,
     /// A destination argument is an `http` URL; only `https` is admitted (REQ-MCP-005).
     SchemeNotHttps,
+    /// A destination argument is not written in its canonical form, or holds user
+    /// information: the text that is judged is the text that is sent (REQ-MCP-005).
+    DestinationNotCanonical,
     /// Promotion is not allowed here.
     PromoteNotAllowed,
     /// A host tool argument is neither an allowed literal nor a pattern match (RFC 011 §6).
@@ -148,12 +151,13 @@ pub enum DeniedReason {
 
 impl DeniedReason {
     /// Every reason, in the order of external design §6.4.
-    pub const ALL: [DeniedReason; 8] = [
+    pub const ALL: [DeniedReason; 9] = [
         DeniedReason::PathOutsideWorkspace,
         DeniedReason::PathExcluded,
         DeniedReason::GrantMissing,
         DeniedReason::DestinationNotGranted,
         DeniedReason::SchemeNotHttps,
+        DeniedReason::DestinationNotCanonical,
         DeniedReason::PromoteNotAllowed,
         DeniedReason::ArgumentNotAllowed,
         DeniedReason::ArgumentsDoNotFit,
@@ -176,6 +180,9 @@ impl DeniedReason {
             }
             DeniedReason::SchemeNotHttps => {
                 "Only `https` addresses are admitted; propose the `https` form of this URL (the same host and path), or ask the user."
+            }
+            DeniedReason::DestinationNotCanonical => {
+                "Write the destination in its canonical form, given in `value`: a lower-case host, no user information, no default port, no spaces or backslashes."
             }
             DeniedReason::PromoteNotAllowed => {
                 "Promotion is the user's operation; finish the task and leave the promotion to the user."
@@ -234,6 +241,7 @@ impl DeniedReason {
             DeniedReason::GrantMissing => "grant_missing",
             DeniedReason::DestinationNotGranted => "destination_not_granted",
             DeniedReason::SchemeNotHttps => "scheme_not_https",
+            DeniedReason::DestinationNotCanonical => "destination_not_canonical",
             DeniedReason::PromoteNotAllowed => "promote_not_allowed",
             DeniedReason::ArgumentNotAllowed => "argument_not_allowed",
             DeniedReason::ArgumentsDoNotFit => "arguments_do_not_fit",
@@ -305,7 +313,8 @@ pub enum Detail {
         /// `argument_not_allowed`: the position of the refused argument.
         #[serde(skip_serializing_if = "Option::is_none")]
         argument: Option<usize>,
-        /// `argument_not_allowed`: the refused argument, bounded.
+        /// `argument_not_allowed`: the refused argument, bounded;
+        /// `destination_not_canonical`: the destination in its canonical form, bounded.
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<String>,
         /// `argument_not_allowed`: how many arguments may be added.
@@ -529,7 +538,7 @@ pub struct Denial {
     pub grant_kind: Option<String>,
     /// The position of a refused host-tool argument.
     pub argument: Option<usize>,
-    /// The refused argument, bounded.
+    /// The refused argument, bounded; for `destination_not_canonical`, the canonical form.
     pub value: Option<String>,
     /// How many arguments may be added.
     pub max: Option<usize>,
@@ -561,6 +570,17 @@ impl Denial {
             argument: Some(index),
             value: Some(value.chars().take(LIM_I5_MESSAGE_CHARS).collect()),
             ..Self::new(DeniedReason::ArgumentNotAllowed)
+        }
+    }
+
+    /// `destination_not_canonical`: the destination is not written in its canonical
+    /// form, which is `canonical`. It is the model's text that is judged and sent, never
+    /// rewritten; the form is what the model may write instead (bounded like every
+    /// string of a detail, LIM-I9).
+    pub fn not_canonical(canonical: &str) -> Self {
+        Self {
+            value: Some(canonical.chars().take(LIM_I9_DETAIL_CHARS).collect()),
+            ..Self::new(DeniedReason::DestinationNotCanonical)
         }
     }
 

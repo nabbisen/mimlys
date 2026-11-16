@@ -53,7 +53,10 @@
 //! `MIMLYS_TESTSERVER_STDERR_LINE=<text>` makes every call of the rypsok tools
 //! and `echo_env` write `<text>` as a line on standard error, then wait 5000 ms
 //! before it answers (so that the client's reader has read the line while the
-//! call is still in flight).
+//! call is still in flight);
+//! `MIMLYS_TESTSERVER_CALL_LOG=<path>` appends, for every `web_fetch` call that
+//! reaches the server, one line holding its `url` argument exactly as received,
+//! as a JSON string (to see what the server was sent).
 //!
 //! `MIMLYS_TESTSERVER_CONTROL_TEXT=1` gives the server a name and a version, and
 //! lists a tool whose name, with a parameter whose name, carry control sequences
@@ -313,6 +316,14 @@ fn call(name: &str, arguments: &Map<String, Value>) -> Value {
         }
         "web_fetch" => {
             let url = arguments.get("url").and_then(Value::as_str).unwrap_or("");
+            if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_CALL_LOG")
+                && let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+            {
+                let _ = writeln!(file, "{}", Value::String(url.to_owned()));
+            }
             let start = arguments
                 .get("start_char")
                 .and_then(Value::as_u64)

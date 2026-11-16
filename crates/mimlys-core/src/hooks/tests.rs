@@ -378,6 +378,88 @@ fn req_mcp_005_an_http_destination_is_scheme_not_https_at_stage_7() {
     );
 }
 
+/// REQ-MCP-005 (stage 7, and again on a `redirected` result, whose location the
+/// model proposes as a new decision; handoff 009h, item 1): a destination is judged
+/// as it is sent. One whose parse does not serialize back to the same text (an empty
+/// path's `/` aside), or that holds user information, is `denied` with the reason
+/// `destination_not_canonical`, before the grants are asked and whether or not the
+/// host is granted; the detail's `value` is the form to write instead, which the
+/// stage then admits. The text is not rewritten.
+#[test]
+fn req_mcp_005_a_destination_is_judged_as_it_is_sent() {
+    let net = Fixture::new(true);
+    let call = |url: &str| {
+        net.run(
+            &serde_json::to_string(
+                &json!({"decision": "act", "tool": "rypsok.web_fetch", "arguments": {"url": url}}),
+            )
+            .unwrap(),
+            1000,
+            None,
+        )
+    };
+    // The kinds of string the audit named, each with its canonical form.
+    for (text, canonical) in [
+        ("https://example.org\\x", "https://example.org/x"),
+        ("https://example.org/a b", "https://example.org/a%20b"),
+        ("https://example.org/\u{7}x", "https://example.org/%07x"),
+        (" https://example.org/x", "https://example.org/x"),
+        ("https://example.org@other.org/", "https://other.org/"),
+        ("https://user:pw@example.org/x", "https://example.org/x"),
+        ("https://0x7f.1/", "https://127.0.0.1/"),
+        ("https://2130706433/", "https://127.0.0.1/"),
+        ("https://example.org:443/x", "https://example.org/x"),
+        ("https://EXAMPLE.org/x", "https://example.org/x"),
+        // Not granted either: the form is told first.
+        ("https://OTHER.org/x", "https://other.org/x"),
+    ] {
+        let o = call(text);
+        assert_eq!(
+            denied_reason(&o),
+            DeniedReason::DestinationNotCanonical,
+            "{text:?}"
+        );
+        let Outcome::Rejected { rejection, .. } = &o else {
+            unreachable!()
+        };
+        let Detail::Denied { value, .. } = &rejection.detail else {
+            unreachable!()
+        };
+        assert_eq!(value.as_deref(), Some(canonical), "{text:?}");
+        assert_eq!(rejection.hint, DeniedReason::DestinationNotCanonical.hint());
+        // Following the hint is admitted (the form is granted).
+        if canonical.contains("example.org") {
+            assert!(
+                matches!(call(canonical), Outcome::Authorized(_)),
+                "{canonical}"
+            );
+        }
+    }
+    // An empty path is written without its `/`: one address, admitted as written.
+    for text in ["https://example.org", "https://example.org?q=1"] {
+        assert!(matches!(call(text), Outcome::Authorized(_)), "{text}");
+    }
+    // The scheme is judged first (`http` has its own reason), then the form, then the grants.
+    assert_eq!(
+        denied_reason(&call("http://EXAMPLE.org/")),
+        DeniedReason::SchemeNotHttps
+    );
+    assert_eq!(
+        denied_reason(&call("https://other.org/x")),
+        DeniedReason::DestinationNotGranted
+    );
+    assert_eq!(
+        denied_reason(&call("not a url")),
+        DeniedReason::DestinationNotGranted
+    );
+    // The hint names only a key the detail always carries.
+    assert!(
+        DeniedReason::DestinationNotCanonical
+            .hint()
+            .contains("`value`")
+    );
+}
+
 /// REQ-MCP-005 (stage 7; handoff 009g, item 2): a destination argument that is
 /// present and is not a string is `destination_not_granted`, whatever it holds:
 /// an array of URLs the grant would cover, an object, a number, a boolean, null.

@@ -104,6 +104,21 @@ Only `https` addresses are admitted. rypsok reads an `http` address over
 that your grant for port 80 never named; mimlys refuses it as `denied` with the reason `scheme_not_https`, and
 the hint tells the model to propose the `https` form of the page.
 
+**A destination is checked as the server will read it.** The grants judge the
+address after it is parsed, and the server receives the text the model wrote,
+so the two must be one address. An address is admitted only when it is written
+the way the parse writes it: a lower-case host, no user information
+(`user@host`), no default port written out (`:443`), no spaces, control
+characters or backslashes, no short forms of a number (`0x7f.1`, `127.1`,
+`2130706433`), and no `.` or `..` in the path. An empty path may be left out
+(`https://example.org` and `https://example.org/` are one address). Any other
+spelling is refused as `denied` with the reason `destination_not_canonical`,
+before the grants are asked, and the rejection's `value` gives the form to
+write instead, which the model may propose at once. mimlys never rewrites the
+text: the call, its hash and your approval are of what the model wrote. The
+same check applies to the address a server gives in a `redirected` result when
+the model proposes it.
+
 What the model receives is rypsok's response as data: `outcome` (`ok`,
 `partial`, `empty`), `notices`, and `results` whose `title`, `url` and
 `snippet` are external text, bounded and cleaned twice (once by rypsok,
