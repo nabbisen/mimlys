@@ -37,6 +37,25 @@ static RUNS: AtomicU64 = AtomicU64::new(0);
 /// Panics with both streams when the bound passes.
 pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
     let n = RUNS.fetch_add(1, Ordering::Relaxed);
+    // The stack-margin guard (REQ-CLI-001, handoff 009h item 8): every `mimlys`
+    // a suite runs through here has the command thread's stack at a quarter of
+    // its size (a debug build only; a release build ignores the variable; the
+    // other programs of the suites are left as they are), so that a
+    // growth of the heaviest path past a quarter fails here, with a margin of
+    // four, and not on a platform with less stack. A suite that tests the
+    // variable sets its own value first, and a value exported in the shell that
+    // runs the tests wins (to measure the stack a path needs).
+    let is_mimlys = Path::new(cmd.get_program())
+        .file_stem()
+        .is_some_and(|name| name == "mimlys");
+    if is_mimlys
+        && std::env::var_os("MIMLYS_DEBUG_STACK_DIVISOR").is_none()
+        && cmd
+            .get_envs()
+            .all(|(key, _)| key != "MIMLYS_DEBUG_STACK_DIVISOR")
+    {
+        cmd.env("MIMLYS_DEBUG_STACK_DIVISOR", "4");
+    }
     let out_path = dir.join(format!("run-{}-{n}.stdout", std::process::id()));
     let err_path = dir.join(format!("run-{}-{n}.stderr", std::process::id()));
     cmd.stdin(Stdio::null())
