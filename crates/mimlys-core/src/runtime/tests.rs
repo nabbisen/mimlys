@@ -3521,3 +3521,33 @@ fn req_ctx_002_the_instructions_say_the_goal_is_the_task_and_tools_come_before_a
         "the old sentence, which called user text data"
     );
 }
+
+/// REQ-WS-006: a promotion's backup holds only the project's changed paths, so it is not a target
+/// of the user's rollback: the request is invalid, names `rollback <task> --promotion <id>`, and
+/// restores nothing. The latest snapshot by default is never the backup.
+#[test]
+fn req_ws_006_a_promotions_backup_is_not_a_rollback_target() {
+    let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
+    let id = h.create();
+    h.step(id);
+    let plan = one_file_plan(&h, id);
+    let promotion = h.runtime.promote_workspace(&h.session, id, &plan).unwrap();
+    let before = h.workspaces.restores();
+    let err = h
+        .runtime
+        .rollback_workspace(&h.session, id, Some(promotion.backup_snapshot))
+        .unwrap_err();
+    assert_eq!(err.kind(), "invalid_request");
+    let text = err.to_string();
+    assert!(
+        text.contains(&format!(
+            "rollback {id} --promotion {}",
+            promotion.promotion_id
+        )),
+        "{text}"
+    );
+    assert_eq!(h.workspaces.restores(), before, "nothing was restored");
+    let record = h.runtime.rollback_workspace(&h.session, id, None).unwrap();
+    assert_ne!(record.snapshot_id, promotion.backup_snapshot);
+    assert_ne!(record.reason, crate::snapshot::SnapshotReason::Backup);
+}

@@ -1048,11 +1048,16 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
     }
     for s in &view.snapshots {
         lines.push(format!(
-            "snapshot  {}  {}  {} bytes, {} files",
+            "snapshot  {}  {}  {} bytes, {} files{}",
             s.snapshot_id,
             s.reason.name(),
             s.bytes,
-            s.files
+            s.files,
+            if s.reason == mimlys_core::snapshot::SnapshotReason::Backup {
+                " (a promotion's backup: not a rollback target; use rollback --promotion)"
+            } else {
+                ""
+            }
         ));
     }
     for p in &view.promotions {

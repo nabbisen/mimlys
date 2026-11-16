@@ -60,9 +60,64 @@ fn persist(e: mimlys_core::spi::PersistenceError) -> WorkspaceError {
     }
 }
 
+/// What a path is when it is neither a regular file, a directory nor a link.
+fn special_name(file_type: &cap_std::fs::FileType) -> &'static str {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::FileTypeExt;
+        if file_type.is_fifo() {
+            return "named pipe";
+        }
+        if file_type.is_socket() {
+            return "socket";
+        }
+        if file_type.is_block_device() || file_type.is_char_device() {
+            return "device";
+        }
+    }
+    if file_type.is_dir() {
+        return "directory";
+    }
+    if file_type.is_symlink() {
+        return "link";
+    }
+    "special file"
+}
+
+/// The refusal for a path that is not a regular file, a directory or a link (REQ-WS-007):
+/// it names the path and what it is.
+fn not_regular(path: &str, what: &str) -> WorkspaceError {
+    WorkspaceError::Refused {
+        reason: format!(
+            "{} is a {what}, not a regular file, a directory or a link; it is neither read nor promoted. Remove it (or exclude it), then try again",
+            mimlys_core::panic_text::bounded_message(path, None)
+        ),
+    }
+}
+
+/// Opens the regular file at `rel` for reading without blocking (`O_NONBLOCK` on Unix, so that
+/// a named pipe never waits for its other end) and looks at what was opened through the handle
+/// (`fstat`), which also decides when the path changed after it was looked at. A path that is
+/// not a regular file is refused by name, as 002e's `open_regular` does for a tool.
+pub(super) fn open_file(dir: &Dir, rel: &str) -> Result<cap_std::fs::File, WorkspaceError> {
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    }
+    let file = dir.open_with(rel, &options).map_err(unreadable(rel))?;
+    let file_type = file.metadata().map_err(unreadable(rel))?.file_type();
+    if !file_type.is_file() {
+        return Err(not_regular(rel, special_name(&file_type)));
+    }
+    Ok(file)
+}
+
 /// Hashes a file through a capability handle, streaming.
 fn hash_file(dir: &Dir, rel: &str) -> Result<(Hash, u64), WorkspaceError> {
-    let mut file = dir.open(rel).map_err(unreadable(rel))?;
+    let mut file = open_file(dir, rel)?;
     let mut hasher = Sha256::default();
     let mut buf = vec![0u8; 64 * 1024];
     let mut size = 0u64;
@@ -262,7 +317,7 @@ impl LocalWorkspaces {
             if let Entry::File { path, hash, .. } = entry
                 && !self.files.has_object(hash)
             {
-                let file = dir.open(path).map_err(unreadable(path))?;
+                let file = open_file(dir, path)?;
                 self.files.put_object(hash, file).map_err(persist)?;
             }
         }
@@ -325,7 +380,7 @@ impl LocalWorkspaces {
         hash: &Hash,
         executable: bool,
     ) -> Result<(), WorkspaceError> {
-        let mut source = src.open(rel).map_err(storage("open"))?;
+        let mut source = open_file(src, rel)?;
         let (tmp, mut out) = TempFile::create(dst, rel)?;
         let mut hasher = Sha256::default();
         let mut buf = vec![0u8; 64 * 1024];
@@ -634,10 +689,13 @@ impl LocalWorkspaces {
         for c in &changes {
             let before = in_base_text(&base_by_path, &c.path, &self.files).unwrap_or_default();
             let after = match current_by_path.get(c.path.as_str()) {
-                Some(Entry::File { size, .. }) if *size as usize <= LIM_W3_FILE_BYTES => dir
-                    .read(&c.path)
-                    .ok()
-                    .and_then(|b| String::from_utf8(b).ok()),
+                Some(Entry::File { size, .. }) if *size as usize <= LIM_W3_FILE_BYTES => {
+                    open_file(&dir, &c.path).ok().and_then(|mut f| {
+                        let mut bytes = Vec::new();
+                        f.read_to_end(&mut bytes).ok()?;
+                        String::from_utf8(bytes).ok()
+                    })
+                }
                 _ => None,
             };
             let after = match (c.kind, after) {
@@ -1101,32 +1159,55 @@ fn make_accessible(path: &Path, meta: &std::fs::Metadata) {
     }
 }
 
-/// The project's entry at `rel`, hashed, or `None` when absent.
-fn project_entry(project: &Dir, rel: &str) -> Result<Option<Entry>, WorkspaceError> {
+/// What the project holds at a path.
+enum Probed {
+    Absent,
+    Entry(Entry),
+    /// A named pipe, a socket, a device or anything else that is not a file, a directory or a
+    /// link: looked at and never opened. The name says what it is.
+    Special(&'static str),
+}
+
+/// Looks at the project's entry at `rel` (hashing a file, with the non-blocking open).
+fn probe(project: &Dir, rel: &str) -> Result<Probed, WorkspaceError> {
     let Ok(meta) = project.symlink_metadata(rel) else {
-        return Ok(None);
+        return Ok(Probed::Absent);
     };
     if meta.is_symlink() {
         let target = project
             .read_link_contents(rel)
             .map_err(storage("read_link"))?;
-        return Ok(Some(Entry::Symlink {
+        return Ok(Probed::Entry(Entry::Symlink {
             path: rel.to_owned(),
             target: target.to_string_lossy().replace('\\', "/"),
         }));
     }
     if meta.is_dir() {
-        return Ok(Some(Entry::Dir {
+        return Ok(Probed::Entry(Entry::Dir {
             path: rel.to_owned(),
         }));
     }
+    if !meta.is_file() {
+        return Ok(Probed::Special(special_name(&meta.file_type())));
+    }
     let (hash, size) = hash_file(project, rel)?;
-    Ok(Some(Entry::File {
+    Ok(Probed::Entry(Entry::File {
         path: rel.to_owned(),
         executable: is_executable(&meta),
         size,
         hash,
     }))
+}
+
+/// The project's entry at `rel`, hashed, or `None` when absent. A path that is a named pipe, a
+/// socket or a device is refused, naming it: nothing of the project that is not a file, a
+/// directory or a link is ever opened (REQ-WS-007).
+fn project_entry(project: &Dir, rel: &str) -> Result<Option<Entry>, WorkspaceError> {
+    match probe(project, rel)? {
+        Probed::Absent => Ok(None),
+        Probed::Entry(entry) => Ok(Some(entry)),
+        Probed::Special(what) => Err(not_regular(rel, what)),
+    }
 }
 
 fn entry_equal(a: &Entry, b: &Entry) -> bool {
@@ -1201,7 +1282,15 @@ fn revert_decisions<'a>(
             let current = if link_parent(project, path)?.is_some() {
                 None
             } else {
-                project_entry(project, path)?
+                match probe(project, path)? {
+                    Probed::Absent => None,
+                    Probed::Entry(entry) => Some(entry),
+                    // Something put there since the promotion: an edit, kept as it is.
+                    Probed::Special(_) => {
+                        edited.push(path.to_owned());
+                        continue;
+                    }
+                }
             };
             if matches_base(current.as_ref(), backup_entry) {
                 continue;

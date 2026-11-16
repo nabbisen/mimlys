@@ -344,7 +344,9 @@ In order, a promotion:
    changed target, a directory it would remove that holds files the diff does not
    list (a `.env`, keys, a nested `.git/`, files you added since), a link as a
    parent of a path to write (even when the same promotion replaces that link),
-   and a link in the workspace whose target is outside the project;
+   a link in the workspace whose target is outside the project, and a named
+   pipe, a socket or a device of the project at a path of the diff (it is named
+   and never opened: a named pipe would wait for a writer that never comes);
 2. stores the backup of the targets, commits and seals it, and records the
    promotion `applying`, before the first file of the project is written;
 3. writes entry by entry, comparing the project with the base again at each
@@ -360,7 +362,10 @@ since is left as you have it and listed. If the restore itself fails, the
 promotion stays reversible: the backup is kept, `task show` lists the promotion
 `failed`, and the message names `mimlys rollback <task> --promotion <id>`, which
 restores the project from it. One reversal is allowed for an `applied` promotion
-and for a `failed` one whose own restore failed, never twice.
+and for a `failed` one whose own restore failed, never twice. A promotion's
+backup holds only the paths of your project it changed, so it is not a target of
+`mimlys rollback <task> --snapshot`: that is refused, naming
+`rollback --promotion`, and `task show` marks the backup.
 
 Where this is written: [Getting started](./getting-started.md#bringing-the-result-into-your-project),
 [Storage](./reference/storage.md), [Command line](./reference/cli.md),
