@@ -145,7 +145,25 @@ pub enum ServerError {
     RestartLimitReached {
         /// The server.
         server: String,
+        /// The reason the last start failed, when the last start did: a server
+        /// that never served is bounded by the limit too, and says why it never did.
+        last: Option<String>,
     },
+}
+
+impl ServerError {
+    /// The reason word `status` and the payload of `tool_unavailable` give: the
+    /// start's own reason, or `restart_limit_reached`, which keeps the reason of the
+    /// last start when that one failed (`restart_limit_reached (last: list:protocol)`).
+    pub fn reason(&self) -> String {
+        match self {
+            ServerError::Unavailable { reason, .. } => reason.clone(),
+            ServerError::RestartLimitReached { last: None, .. } => "restart_limit_reached".into(),
+            ServerError::RestartLimitReached {
+                last: Some(last), ..
+            } => format!("restart_limit_reached (last: {last})"),
+        }
+    }
 }
 
 /// What a listing yields: the server's information, its tools and their hashes.
@@ -206,10 +224,12 @@ pub struct Server {
     /// Restarts per task (LIM-X3): every start of a server that had started
     /// before, made for the task (a listing for no task is not counted).
     restarts: Mutex<HashMap<TaskId, u32>>,
-    /// Whether the process was started at least once: a start after that is a
+    /// Whether a start was attempted at least once: a start after that is a
     /// restart, whatever ended the process before (its death, the kill after
-    /// LIM-O2).
+    /// LIM-O2) and whether or not the first one served.
     started_once: AtomicBool,
+    /// Why the last start failed; cleared by a start that succeeds.
+    last_start_failure: Mutex<Option<String>>,
     /// Events produced and not yet drained (RFC 009 §1).
     events: Mutex<Vec<Event>>,
     /// Whether the last known list may be stale (`list_changed` or a
@@ -230,6 +250,7 @@ impl Server {
             epoch: AtomicU64::new(0),
             restarts: Mutex::new(HashMap::new()),
             started_once: AtomicBool::new(false),
+            last_start_failure: Mutex::new(None),
             events: Mutex::new(Vec::new()),
             dirty: Arc::new(AtomicBool::new(false)),
             last: Mutex::new(None),
@@ -386,24 +407,25 @@ impl Server {
             if *count >= LIM_X3_RESTARTS {
                 return Err(ServerError::RestartLimitReached {
                     server: self.config.name.clone(),
+                    last: self
+                        .last_start_failure
+                        .lock()
+                        .expect("failure lock")
+                        .clone(),
                 });
             }
             *count += 1;
         }
+        // A start is attempted: from here on, a start is a restart, so that a
+        // server that fails to start or to list every time is bounded by LIM-X3
+        // as one that dies is.
+        self.started_once.store(true, Ordering::SeqCst);
         let epoch = self.epoch.load(Ordering::SeqCst);
-        let connection = bounded(
-            Connection::start(&self.config, Arc::clone(&self.dirty)),
-            startup,
-            cancel,
-        )
-        .await
-        .map_err(|why| self.unavailable(start_reason(why)))?
-        .map_err(|reason| self.unavailable(reason))?;
-        let info = connection.info();
-        let tools = connection
-            .list_tools(startup, cancel)
-            .await
-            .map_err(|reason| self.unavailable(reason))?;
+        let started = self.start_and_list(startup, cancel).await;
+        if let Err(error) = &started {
+            *self.last_start_failure.lock().expect("failure lock") = Some(error.reason());
+        }
+        let (connection, info, tools) = started?;
         if self.epoch.load(Ordering::SeqCst) != epoch {
             // A shutdown came while this start was in flight: it ends the
             // process it made.
@@ -415,8 +437,7 @@ impl Server {
             server: self.config.name.clone(),
             version: info.version.clone(),
         });
-        self.dirty.store(false, Ordering::SeqCst);
-        self.started_once.store(true, Ordering::SeqCst);
+        *self.last_start_failure.lock().expect("failure lock") = None;
         let live = Arc::new(Live {
             connection,
             info,
@@ -424,6 +445,36 @@ impl Server {
         });
         *self.live.lock().expect("live lock") = Some(Arc::clone(&live));
         Ok(live)
+    }
+
+    /// Starts the process and reads its first list, each within `startup`.
+    ///
+    /// The mark of a changed list is cleared after the process started and
+    /// before the listing, never after it: a `list_changed` the server sends
+    /// while it is listed stays, and the next check relists. A start that fails
+    /// puts the mark back as it was.
+    async fn start_and_list(
+        &self,
+        startup: Duration,
+        cancel: Option<&Cancellation>,
+    ) -> Result<(Connection, ServerInfo, Vec<Listed>), ServerError> {
+        let connection = bounded(
+            Connection::start(&self.config, Arc::clone(&self.dirty)),
+            startup,
+            cancel,
+        )
+        .await
+        .map_err(|why| self.unavailable(start_reason(why)))?
+        .map_err(|reason| self.unavailable(reason))?;
+        let info = connection.info();
+        let was_dirty = self.dirty.swap(false, Ordering::SeqCst);
+        match connection.list_tools(startup, cancel).await {
+            Ok(tools) => Ok((connection, info, tools)),
+            Err(reason) => {
+                self.dirty.fetch_or(was_dirty, Ordering::SeqCst);
+                Err(self.unavailable(reason))
+            }
+        }
     }
 
     /// The process, when it is running.
@@ -466,15 +517,27 @@ impl Server {
     /// Calls `tool` for `task` with the deadline; cancellation sends
     /// `notifications/cancelled` and, after LIM-O2, kills the process. The
     /// call waits for no other request of the server.
+    ///
+    /// `pinned` is the hash the tool was pinned with, when it is pinned. It is
+    /// compared with the list of the very connection the call is sent on, so that
+    /// a restart between the pin check and the call, which may bring a changed
+    /// definition, is seen: the call is then not sent
+    /// ([`CallOutcome::DefinitionChanged`]).
     pub async fn call(
         &self,
         task: TaskId,
         tool: &str,
         arguments: Map<String, Value>,
+        pinned: Option<&Hash>,
         deadline_ms: i64,
         cancel: &Cancellation,
     ) -> Result<CallOutcome, ServerError> {
         let live = self.ensure_started(Some(task), Some(cancel)).await?;
+        if let Some(pinned) = pinned
+            && live.current.lock().expect("current lock").hashes.get(tool) != Some(pinned)
+        {
+            return Ok(CallOutcome::DefinitionChanged);
+        }
         let deadline = Duration::from_millis(deadline_ms.max(1) as u64);
         let outcome = live
             .connection

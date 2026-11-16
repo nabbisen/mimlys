@@ -11,6 +11,7 @@
 pub mod client;
 pub mod import;
 pub mod server;
+pub mod stderr;
 pub mod tools;
 
 #[cfg(feature = "test-server")]

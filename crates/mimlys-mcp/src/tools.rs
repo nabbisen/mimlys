@@ -114,16 +114,7 @@ impl Servers {
         for server in &self.servers {
             let (info, listed, detail) = match server.list().await {
                 Ok((info, tools, _)) => (info, tools, None),
-                Err(e) => (
-                    ServerInfo::default(),
-                    vec![],
-                    Some(match e {
-                        ServerError::Unavailable { reason, .. } => reason,
-                        ServerError::RestartLimitReached { .. } => {
-                            "restart_limit_reached".to_owned()
-                        }
-                    }),
-                ),
+                Err(e) => (ServerInfo::default(), vec![], Some(e.reason())),
             };
             let running = detail.is_none();
             let mut tools = Vec::new();
@@ -216,12 +207,10 @@ fn map_server_error(error: ServerError, wall_ms: i64) -> ExecutionOutcome {
         wall_ms,
         ..ExecutionMetrics::default()
     };
-    match error {
-        ServerError::Unavailable { reason, .. } => unavailable(&reason, metrics),
-        // A refusal to restart, not one more death: `server.stopped` and
-        // `status` keep `died` for a death (external design §11.1).
-        ServerError::RestartLimitReached { .. } => unavailable("restart_limit_reached", metrics),
-    }
+    // `restart_limit_reached` is a refusal to restart, not one more death:
+    // `server.stopped` and `status` keep `died` for a death (external design
+    // §11.1); it keeps the last start's reason when that start failed.
+    unavailable(&error.reason(), metrics)
 }
 
 /// The external tools of one task.
@@ -232,6 +221,11 @@ pub struct McpTools {
     imported: BTreeMap<String, Imported>,
     /// Tools unpinned for this task (RFC 009 §7).
     unpinned: Mutex<BTreeSet<String>>,
+    /// The servers whose relisting failed at the step's boundary, with the
+    /// reason, until the next boundary: a call to one of them is
+    /// `tool_unavailable` with that reason without asking the server again, so
+    /// that a server that does not answer costs one wait (LIM-O6) in a step.
+    boundary_failures: Mutex<BTreeMap<String, String>>,
     /// Decisions on the loop's runtime.
     handle: tokio::runtime::Handle,
 }
@@ -250,6 +244,7 @@ impl McpTools {
             servers,
             imported,
             unpinned: Mutex::new(BTreeSet::new()),
+            boundary_failures: Mutex::new(BTreeMap::new()),
             handle: tokio::runtime::Handle::current(),
         }
     }
@@ -290,6 +285,13 @@ impl McpTools {
             };
         match outcome {
             CallOutcome::Timeout => self.map_outcome_timeout(metrics),
+            // Nothing was sent (the pin check answers this before the result is
+            // mapped; it is what a call to a changed definition gives).
+            CallOutcome::DefinitionChanged => ExecutionOutcome::tool_error(
+                "definition_changed",
+                json!({"hint": "a new task pins the new definition"}),
+                wall_ms,
+            ),
             CallOutcome::Cancelled | CallOutcome::Killed => ExecutionOutcome {
                 termination: Termination::Cancelled,
                 failure: None,
@@ -353,6 +355,13 @@ impl McpTools {
                         .then(|| c.get("text").and_then(Value::as_str).map(str::to_owned))
                         .flatten()
                 });
+                // The blocks that are not the payload, when there is no structured
+                // content to take it from: all but the first text block.
+                let omitted_blocks = if structured.is_none() {
+                    content.len().saturating_sub(usize::from(text.is_some()))
+                } else {
+                    0
+                };
                 let mut payload = match structured {
                     Some(v) => v,
                     None => match text
@@ -364,6 +373,14 @@ impl McpTools {
                     },
                 };
                 let mut notices = Vec::new();
+                // With no structured content only the first text block is passed
+                // on: any other block is dropped, and the observation says how
+                // many (REQ-CTX-006: no content is dropped without a word).
+                if omitted_blocks > 0 {
+                    notices.push(Notice::ContentOmitted {
+                        count: omitted_blocks as u64,
+                    });
+                }
                 let mut found = Vec::new();
                 bound_strings(&mut payload, &mut notices, redactor, &mut found);
                 mimlys_core::observation::add_secret_notices(&mut notices, found);
@@ -437,6 +454,21 @@ impl McpTools {
 }
 
 impl McpTools {
+    /// What a call gives when the definition it is pinned with is not the
+    /// server's: the tool is unpinned for this task and the model is told to
+    /// start a new one. Nothing was sent.
+    fn definition_changed(&self, name: &str, started: tokio::time::Instant) -> ExecutionOutcome {
+        self.unpinned
+            .lock()
+            .expect("unpinned lock")
+            .insert(name.to_owned());
+        ExecutionOutcome::tool_error(
+            "definition_changed",
+            json!({"hint": "a new task pins the new definition"}),
+            started.elapsed().as_millis() as i64,
+        )
+    }
+
     /// What a call that passed its deadline gives.
     fn map_outcome_timeout(&self, metrics: ExecutionMetrics) -> ExecutionOutcome {
         ExecutionOutcome {
@@ -560,6 +592,11 @@ impl ToolProvider for McpTools {
         interruption: &Cancellation,
     ) -> Vec<String> {
         let mut changed = Vec::new();
+        // A new boundary: what the last one found is forgotten.
+        self.boundary_failures
+            .lock()
+            .expect("boundary failures lock")
+            .clear();
         for server in self.servers.all() {
             if !server.is_dirty() {
                 continue;
@@ -574,9 +611,14 @@ impl ToolProvider for McpTools {
                 // The server cannot serve now (the restart limit is reached,
                 // it could not be started, or it did not answer the listing in
                 // time): its definitions did not change as far as is known. The
-                // tools stay pinned, the list stays marked stale, and the call
-                // will be refused as `tool_unavailable`.
-                Err(ServerError::RestartLimitReached { .. } | ServerError::Unavailable { .. }) => {
+                // tools stay pinned, the list stays marked stale, and a call is
+                // refused as `tool_unavailable` with this reason until the next
+                // boundary, without the server being asked, and waited for, again.
+                Err(error) => {
+                    self.boundary_failures
+                        .lock()
+                        .expect("boundary failures lock")
+                        .insert(server.name().to_owned(), error.reason());
                     continue;
                 }
             };
@@ -614,9 +656,25 @@ impl ToolProvider for McpTools {
             let Some((server, tool)) = self.server_of(&name) else {
                 return ExecutionOutcome::tool_error("unknown_server", Value::Null, 0);
             };
+            // A server the boundary could not list is not asked again in this
+            // step: one wait, not two (the reason is the boundary's).
+            let failed = self
+                .boundary_failures
+                .lock()
+                .expect("boundary failures lock")
+                .get(server.name())
+                .cloned();
+            if let Some(reason) = failed {
+                let metrics = ExecutionMetrics {
+                    wall_ms: started.elapsed().as_millis() as i64,
+                    ..ExecutionMetrics::default()
+                };
+                return unavailable(&reason, metrics);
+            }
             // Second line of pinning (RFC 009 §7): the hash at call time.
             // The listing is made for this task: a restart it makes counts
             // against the task (LIM-X3).
+            let pinned = self.imported.get(&name).map(|i| i.record.hash.clone());
             if let Some(record) = self.imported.get(&name).map(|i| &i.record) {
                 let current = match server
                     .current_hash(self.task_id, tool, &context.cancel)
@@ -631,27 +689,25 @@ impl ToolProvider for McpTools {
                     }
                 };
                 if current.as_ref() != Some(&record.hash) {
-                    self.unpinned
-                        .lock()
-                        .expect("unpinned lock")
-                        .insert(name.clone());
-                    return ExecutionOutcome::tool_error(
-                        "definition_changed",
-                        json!({"hint": "a new task pins the new definition"}),
-                        started.elapsed().as_millis() as i64,
-                    );
+                    return self.definition_changed(&name, started);
                 }
             }
+            // The pinned hash is compared once more on the connection the call
+            // is sent on: a restart since the check may have changed it.
             let outcome = server
                 .call(
                     self.task_id,
                     tool,
                     action.arguments().clone(),
+                    pinned.as_ref(),
                     context.deadline_ms,
                     &context.cancel,
                 )
                 .await;
             let wall_ms = started.elapsed().as_millis() as i64;
+            if matches!(outcome, Ok(CallOutcome::DefinitionChanged)) {
+                return self.definition_changed(&name, started);
+            }
             match outcome {
                 Ok(o) => {
                     let deadline = Duration::from_millis(context.deadline_ms.max(1) as u64);

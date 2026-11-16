@@ -52,6 +52,13 @@ pub enum Notice {
         /// How many.
         count: u64,
     },
+    /// Content blocks of an external tool's result were not passed on: the
+    /// payload is the first text block when the result has no structured
+    /// content (handoff 009h).
+    ContentOmitted {
+        /// How many blocks.
+        count: u64,
+    },
     /// Entries were skipped by a listing or search, aggregated by reason.
     EntriesSkipped {
         /// Why.

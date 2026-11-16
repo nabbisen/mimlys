@@ -1,6 +1,6 @@
 //! The SDK wrapper: one connection to one child process (RFC 009 §1, §6;
 //! REQ-MCP-007). It spawns the process with an explicit environment inside
-//! its own process group (or Job Object), initializes within the caller's
+//! its own session and process group (or Job Object), initializes within the caller's
 //! deadline, lists tools, calls one tool with a deadline and cancellation
 //! (`notifications/cancelled`, then the kill of the group), and shuts down
 //! by closing the transport and then killing.
@@ -107,6 +107,10 @@ pub enum CallOutcome {
     Cancelled,
     /// Cancelled, and the server did not stop within the grace period: the process was killed.
     Killed,
+    /// Nothing was sent: the connection the call would have used lists the tool
+    /// otherwise than it was pinned (a restart between the pin check and the call
+    /// brought a changed definition).
+    DefinitionChanged,
     /// The transport failed or the server answered a protocol error.
     Failed {
         /// A fixed-vocabulary reason.
@@ -177,11 +181,12 @@ impl Connection {
         if let Some(dir) = &config.current_dir {
             command.current_dir(dir);
         }
-        // Clause K: the child leads its own process group (Job Object on
-        // Windows), so that a kill reaches whatever it spawned.
+        // Clause K: the child leads a session of its own (`setsid`, which is also
+        // a process group of its own; a Job Object on Windows), so that a kill
+        // reaches whatever it spawned and the server has no controlling terminal.
         let mut wrapped = process_wrap::tokio::CommandWrap::from(command);
         #[cfg(unix)]
-        wrapped.wrap(process_wrap::tokio::ProcessGroup::leader());
+        wrapped.wrap(process_wrap::tokio::ProcessSession);
         #[cfg(windows)]
         wrapped.wrap(process_wrap::tokio::JobObject);
         wrapped.wrap(process_wrap::tokio::KillOnDrop);
@@ -195,20 +200,16 @@ impl Connection {
             return Err("spawn:no_stdio".into());
         };
         if let Some(stderr) = stderr {
-            let server = config.name.clone();
             // The server outlives the step that started it and serves many
             // calls: each line is written in the span of the call in flight
             // when it is read (none between calls), not in a span captured here.
-            let reader_span = reader_span.clone();
-            tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    reader_span.current().in_scope(
-                        || tracing::info!(target: "mimlys_mcp", server = %server, "{line}"),
-                    );
-                }
-            });
+            // A line is cut and the lines are counted: what a server writes on
+            // its standard error is bounded (`stderr`).
+            tokio::spawn(crate::stderr::pump(
+                tokio::io::BufReader::new(stderr),
+                config.name.clone(),
+                reader_span.clone(),
+            ));
         }
         let handler = Handler {
             dirty: Arc::clone(&dirty),
