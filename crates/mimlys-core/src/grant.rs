@@ -262,7 +262,12 @@ impl GrantSet {
 
     /// Whether a destination URL is covered by a `network` grant: scheme
     /// `https`, host equal to a domain or under a `*.` domain, port allowed.
+    /// A destination that is not in its canonical form (`destination_form`) is
+    /// covered by no grant: what is judged is what is sent.
     pub fn permits_destination(&self, url: &str, now: Instant) -> bool {
+        if destination_form(url) != DestinationForm::Canonical {
+            return false;
+        }
         let Ok(parsed) = url::Url::parse(url) else {
             return false;
         };
@@ -297,6 +302,53 @@ impl GrantSet {
             .map(|g| g.grant_id)
             .collect()
     }
+}
+
+/// How a destination is written (REQ-MCP-005): whether the text that is judged
+/// is the text a server reads. The grants judge the parse of a destination, and
+/// the server receives the text, so the two must agree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DestinationForm {
+    /// The parse serializes back to the same text (an empty path's `/` aside)
+    /// and holds no user information.
+    Canonical,
+    /// It parses, but is written otherwise: the form the parse serializes to,
+    /// without user information. A backslash, white space or a control
+    /// character, an upper-case host, a number written short (`0x7f.1`,
+    /// `2130706433`), an explicit default port, a path not reduced, and user
+    /// information (`user@host`) are all this.
+    NotCanonical(String),
+    /// It does not parse as a URL.
+    Unparsable,
+}
+
+/// Judges how `text` is written as a destination. The text is never rewritten:
+/// the hash and the approval are of what the model wrote.
+pub fn destination_form(text: &str) -> DestinationForm {
+    use url::Position;
+    let Ok(mut parsed) = url::Url::parse(text) else {
+        return DestinationForm::Unparsable;
+    };
+    let user_information = !parsed.username().is_empty() || parsed.password().is_some();
+    if !user_information {
+        if parsed.as_str() == text {
+            return DestinationForm::Canonical;
+        }
+        // An empty path is written `/` by the parse and may be left out:
+        // `https://host` and `https://host/` are one address.
+        if parsed.path() == "/" {
+            let serialized = parsed.as_str();
+            let (head, tail) = serialized.split_at(parsed[..Position::BeforePath].len());
+            if tail.starts_with('/') && format!("{head}{}", &tail[1..]) == text {
+                return DestinationForm::Canonical;
+            }
+        }
+    }
+    // The form to write instead has no user information (a URL that cannot
+    // have any, such as `mailto:`, has none to remove).
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    DestinationForm::NotCanonical(parsed.as_str().to_owned())
 }
 
 /// Lexical normalization of an absolute host path: one separator, no `.`

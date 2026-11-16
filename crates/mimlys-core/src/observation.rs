@@ -316,9 +316,12 @@ pub fn decode_lossy(bytes: &[u8]) -> (String, bool) {
 }
 
 /// Removes control characters (except tab, line feed and carriage return),
-/// zero-width and other invisible format characters, Unicode tag
-/// characters and bidirectional controls (REQ-CTX-008; THR-21). Returns
-/// the clean text and the number of characters removed.
+/// zero-width and other invisible format characters, the other default-ignorable
+/// characters (soft hyphen, variation selectors, fillers, invisible musical and
+/// interlinear controls), Unicode tag characters and bidirectional controls
+/// (REQ-CTX-008; THR-21). Visible symbols stay, whatever their name: U+2800
+/// (a blank braille pattern) and U+FFFC (the object replacement character) are
+/// drawn. Returns the clean text and the number of characters removed.
 pub fn sanitize(text: &str) -> (String, usize) {
     let mut out = String::with_capacity(text.len());
     let mut removed = 0;
@@ -332,16 +335,49 @@ pub fn sanitize(text: &str) -> (String, usize) {
     (out, removed)
 }
 
+/// Whether `c` is removed by [`sanitize`]. The ranges are a table of our own, by
+/// class, so that what is removed does not move with a Unicode version.
 fn is_invisible(c: char) -> bool {
     match c {
         '\t' | '\n' | '\r' => false,
         c if c.is_control() => true,
+        // Zero-width characters, directional marks, line and paragraph
+        // separators, embeddings and isolates, invisible operators.
         '\u{200B}'..='\u{200F}'
         | '\u{2028}'..='\u{202E}'
         | '\u{2060}'..='\u{2064}'
         | '\u{2066}'..='\u{206F}' => true,
         '\u{FEFF}' | '\u{061C}' | '\u{180E}' => true,
-        '\u{E0000}'..='\u{E007F}' => true,
+        // Tag characters, and the variation selectors supplement after them.
+        '\u{E0000}'..='\u{E0FFF}' => true,
+        // The other default-ignorable characters: the soft hyphen, the
+        // combining grapheme joiner, the Hangul fillers, the Khmer inherent
+        // vowels, the Mongolian free variation selectors, the variation
+        // selectors, the halfwidth Hangul filler, the specials before the
+        // object replacement character, the Duployan shorthand format controls
+        // and the musical symbol format controls.
+        '\u{00AD}'
+        | '\u{034F}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}'
+        | '\u{3164}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{FFA0}'
+        | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}' => true,
+        // Format characters (category Cf) that the lists above did not hold, a
+        // prefix to a number or a mark that runs into the text around it: the
+        // Arabic number signs and end of ayah, the Syriac abbreviation mark,
+        // the Arabic pound and piastre marks above, the Arabic disputed end of
+        // ayah, and the Kaithi number sign.
+        '\u{0600}'..='\u{0605}'
+        | '\u{06DD}'
+        | '\u{070F}'
+        | '\u{0890}'..='\u{0891}'
+        | '\u{08E2}'
+        | '\u{110BD}' => true,
         _ => false,
     }
 }

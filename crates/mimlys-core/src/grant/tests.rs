@@ -199,7 +199,8 @@ fn req_cap_001_destination_matching() {
     }]);
     let now = clock.now();
     assert!(s.permits_destination("https://example.org/page", now));
-    assert!(s.permits_destination("https://EXAMPLE.org:443/", now));
+    assert!(s.permits_destination("https://example.org", now));
+    assert!(s.permits_destination("https://example.org/a?b=c#d", now));
     assert!(s.permits_destination("https://docs.rust-lang.org/std/", now));
     assert!(s.permits_destination("https://rust-lang.org/", now));
     assert!(!s.permits_destination("https://example.org:8443/", now));
@@ -213,6 +214,115 @@ fn req_cap_001_destination_matching() {
     }]);
     assert!(p.permits_destination("https://api.test:8443/", now));
     assert!(!p.permits_destination("https://api.test/", now));
+}
+
+/// REQ-MCP-005 (handoff 009h, item 1): a destination is judged as it is sent. Its
+/// parse must serialize back to the same text (an empty path's `/` aside) and hold
+/// no user information; else the form to write instead is given, and the text is
+/// covered by no grant, whatever the grant says of the host the parse reads.
+#[test]
+fn req_mcp_005_a_destination_is_admitted_only_in_its_canonical_form() {
+    use DestinationForm::{Canonical, NotCanonical, Unparsable};
+    // Written as the parse writes it, or with the empty path left out.
+    for text in [
+        "https://example.org/",
+        "https://example.org",
+        "https://example.org?q=1",
+        "https://example.org#top",
+        "https://example.org:8443/x/y?z=1#f",
+        "https://docs.rust-lang.org/std/",
+        "https://[2001:db8::1]/a",
+        "https://127.0.0.1/",
+        "https://example.org/a%20b",
+        "https://xn--mnchen-3ya.de/",
+    ] {
+        assert_eq!(destination_form(text), Canonical, "{text}");
+    }
+    // The kinds of text the grants and a server may read differently, with the
+    // form to write instead.
+    for (text, canonical) in [
+        // A backslash is a slash to the parse.
+        ("https://example.org\\x", "https://example.org/x"),
+        ("https:\\\\example.org/x", "https://example.org/x"),
+        // White space around, in the path, and control characters in it.
+        (" https://example.org/", "https://example.org/"),
+        ("https://example.org/ ", "https://example.org/"),
+        ("https://example.org/a b", "https://example.org/a%20b"),
+        ("https://example.org/\tx", "https://example.org/x"),
+        ("https://exa\nmple.org/", "https://example.org/"),
+        ("https://example.org/\u{1}x", "https://example.org/%01x"),
+        // User information: the host is the one after the `@`.
+        ("https://example.org@evil.test/", "https://evil.test/"),
+        ("https://user:secret@example.org/x", "https://example.org/x"),
+        ("https://@example.org/", "https://example.org/"),
+        ("https://:@example.org/", "https://example.org/"),
+        // A numeric host written short.
+        ("https://127.1/", "https://127.0.0.1/"),
+        ("https://0x7f.1/", "https://127.0.0.1/"),
+        ("https://2130706433/", "https://127.0.0.1/"),
+        ("https://0177.0.0.1/", "https://127.0.0.1/"),
+        ("https://[0:0:0:0:0:0:0:1]/", "https://[::1]/"),
+        // The default port written out.
+        ("https://example.org:443/", "https://example.org/"),
+        ("https://example.org:443", "https://example.org/"),
+        // Other spellings of the same address.
+        ("https://EXAMPLE.org/x", "https://example.org/x"),
+        ("HTTPS://example.org/x", "https://example.org/x"),
+        ("https://example.org/a/../b", "https://example.org/b"),
+        ("https://example.org/./a", "https://example.org/a"),
+        ("https://m\u{fc}nchen.de/", "https://xn--mnchen-3ya.de/"),
+    ] {
+        let form = destination_form(text);
+        assert_eq!(form, NotCanonical(canonical.to_owned()), "{text:?}");
+        // The form given is itself canonical: following the hint ends it.
+        assert_eq!(destination_form(canonical), Canonical, "{canonical}");
+    }
+    for text in ["", "not a url", "https://", "https://exa mple.org/", "/x"] {
+        assert_eq!(destination_form(text), Unparsable, "{text:?}");
+    }
+}
+
+/// REQ-MCP-005 (handoff 009h, item 1): no grant covers a destination that is not
+/// in its canonical form, though the parse of it is a granted host: the text a
+/// server reads is not the text the grant judged.
+#[test]
+fn req_mcp_005_no_grant_covers_a_destination_written_otherwise_than_its_parse() {
+    let (s, clock, _) = set(vec![GrantKind::Network {
+        domains: vec!["example.org".into()],
+        ports: vec![],
+    }]);
+    let now = clock.now();
+    for text in [
+        "https://example.org\\x",
+        " https://example.org/",
+        "https://example.org/a b",
+        "https://example.org/\tx",
+        "https://evil.test@example.org/",
+        "https://user:secret@example.org/",
+        "https://example.org:443/",
+        "https://EXAMPLE.org/",
+        "https://example.org/a/../b",
+    ] {
+        assert!(!s.permits_destination(text, now), "{text:?}");
+    }
+    // The canonical forms of the same are covered.
+    for text in [
+        "https://example.org/x",
+        "https://example.org",
+        "https://example.org/a%20b",
+        "https://example.org/b",
+    ] {
+        assert!(s.permits_destination(text, now), "{text:?}");
+    }
+    // A granted host the numbers of which are written short is not the granted one.
+    let (n, clock, _) = set(vec![GrantKind::Network {
+        domains: vec!["127.0.0.1".into()],
+        ports: vec![],
+    }]);
+    assert!(n.permits_destination("https://127.0.0.1/", clock.now()));
+    for text in ["https://127.1/", "https://0x7f.1/", "https://2130706433/"] {
+        assert!(!n.permits_destination(text, clock.now()), "{text}");
+    }
 }
 
 /// REQ-MCP-005 (K-02): an `http` destination is never admitted, whatever the

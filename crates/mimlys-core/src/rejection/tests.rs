@@ -140,6 +140,7 @@ fn req_dec_008_every_hint_names_only_keys_the_segment_carries() {
         Denial::grant(DeniedReason::GrantMissing, "host_tool"),
         Denial::grant(DeniedReason::DestinationNotGranted, "network"),
         Denial::new(DeniedReason::SchemeNotHttps),
+        Denial::not_canonical("https://example.org/x"),
         Denial::new(DeniedReason::PromoteNotAllowed),
         Denial::argument(0, "--all"),
         Denial::too_many(2),
@@ -292,7 +293,7 @@ fn req_dec_008_a_stored_detail_reads_back_bounded() {
     );
 }
 
-/// REQ-DEC-009: the reasons of a `denied` rejection are the eight of external design §6.4,
+/// REQ-DEC-009: the reasons of a `denied` rejection are the nine of external design §6.4,
 /// in its order, with one hint each; there is no reason for an effect the profile does not
 /// allow (the effect rules are the ceiling and the grants).
 #[test]
@@ -306,6 +307,7 @@ fn req_dec_009_the_denied_reasons_are_the_vocabulary_of_the_design() {
             "grant_missing",
             "destination_not_granted",
             "scheme_not_https",
+            "destination_not_canonical",
             "promote_not_allowed",
             "argument_not_allowed",
             "arguments_do_not_fit",
@@ -321,4 +323,29 @@ fn req_dec_009_the_denied_reasons_are_the_vocabulary_of_the_design() {
         serde_json::from_value::<DeniedReason>(serde_json::json!("effect_not_allowed")).is_err(),
         "the name is not a reason any more"
     );
+}
+
+/// REQ-MCP-005, REQ-DEC-009 (handoff 009h, item 1): `destination_not_canonical` carries the
+/// canonical form in `value`, which its hint names; the form is bounded like every string of a
+/// detail (LIM-I9) and survives the store.
+#[test]
+fn req_dec_009_a_destination_not_canonical_carries_the_form_to_write() {
+    use crate::native::DecisionTransport::Envelope;
+    let r = Rejection::denied(Denial::not_canonical("https://example.org/x"));
+    assert_eq!(
+        r.feedback(Envelope),
+        json!({
+            "code": "denied",
+            "hint": DeniedReason::DestinationNotCanonical.hint(),
+            "detail": {"reason": "destination_not_canonical", "value": "https://example.org/x"}
+        })
+    );
+    let long = format!("https://example.org/{}", "a".repeat(400));
+    let r = Rejection::denied(Denial::not_canonical(&long));
+    let Detail::Denied { value, .. } = &r.detail else {
+        unreachable!()
+    };
+    assert_eq!(value.as_ref().unwrap().chars().count(), LIM_I9_DETAIL_CHARS);
+    let back = Detail::from_value(RejectionCode::Denied, &r.detail.to_value()).unwrap();
+    assert_eq!(back, r.detail, "what is stored reads back as it was");
 }
