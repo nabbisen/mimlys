@@ -221,6 +221,9 @@ fn identity(_dir: &Dir) -> Identity {
 struct Level {
     /// Its name in the directory above (empty for the directory the removal starts in).
     name: OsString,
+    /// Compared on the way up where the system has an identity for a directory (Unix); read
+    /// nowhere else.
+    #[cfg_attr(not(unix), allow(dead_code))]
     id: Identity,
     /// Its subdirectories not yet emptied.
     subdirs: Vec<OsString>,
