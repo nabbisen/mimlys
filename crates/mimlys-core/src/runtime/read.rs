@@ -122,6 +122,14 @@ pub(super) fn get_task(
         } => unreadable_path(persistence, task_id)?,
         _ => None,
     };
+    let rollback_failed = match task.state {
+        TaskState::Halted { .. } => last_halt_followed_a_failed_rollback(persistence, task_id)?,
+        _ => false,
+    };
+    let (unreadable, unreadable_kind) = match unreadable {
+        Some((path, kind)) => (Some(path), kind),
+        None => (None, None),
+    };
     Ok(TaskView {
         task,
         pending_approval,
@@ -133,14 +141,44 @@ pub(super) fn get_task(
         footprint,
         unknown_actions,
         unreadable,
+        unreadable_kind,
+        rollback_failed,
     })
 }
 
-/// The path of the task's last `workspace.unreadable` event.
+/// Whether the task's last halt followed a rollback of the workspace that failed: the last
+/// `task.state_changed` to `halted` says so (`rollback_failed`).
+fn last_halt_followed_a_failed_rollback(
+    persistence: &dyn PersistenceRead,
+    task_id: TaskId,
+) -> Result<bool, RuntimeError> {
+    let mut found = false;
+    let mut position = 0;
+    loop {
+        let page = persistence.events_since(position, Some(task_id), 1_000)?;
+        let Some(last) = page.last() else {
+            return Ok(found);
+        };
+        position = last.position;
+        for event in &page {
+            if let Event::TaskStateChanged {
+                reason: Some(_),
+                rollback_failed,
+                ..
+            } = &event.record.event
+            {
+                found = *rollback_failed;
+            }
+        }
+    }
+}
+
+/// The path of the task's last `workspace.unreadable` event, with the kind of the failure when
+/// the event has one.
 fn unreadable_path(
     persistence: &dyn PersistenceRead,
     task_id: TaskId,
-) -> Result<Option<String>, RuntimeError> {
+) -> Result<Option<(String, Option<String>)>, RuntimeError> {
     let mut found = None;
     let mut position = 0;
     loop {
@@ -150,8 +188,8 @@ fn unreadable_path(
         };
         position = last.position;
         for event in &page {
-            if let Event::WorkspaceUnreadable { path } = &event.record.event {
-                found = Some(path.clone());
+            if let Event::WorkspaceUnreadable { path, kind } = &event.record.event {
+                found = Some((path.clone(), kind.clone()));
             }
         }
     }

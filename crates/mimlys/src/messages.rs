@@ -68,14 +68,31 @@ pub fn task_created(id: &str, state: &TaskState) -> String {
 }
 /// A task changed state.
 pub fn task_state(id: &str, state: &TaskState) -> String {
-    format!("task {id}: {}", state_text(state))
+    task_state_after(id, state, false)
 }
-/// The path a task halted `workspace_unreadable` is waiting for: the remedy, naming it.
-pub fn unreadable_line(path: &str) -> String {
-    format!("workspace path that could not be read: {path}; restore its permissions, then resume")
+/// A task changed state; `rollback_failed`: it halted after a rollback of its workspace failed.
+pub fn task_state_after(id: &str, state: &TaskState, rollback_failed: bool) -> String {
+    format!("task {id}: {}", state_text_after(state, rollback_failed))
+}
+/// The path a task halted `workspace_unreadable` is waiting for, naming it: for a refused
+/// permission the remedy is to restore it; for any other cause (`kind`, in the words of the
+/// failure) nothing is advised that cannot be backed.
+pub fn unreadable_line(path: &str, kind: Option<&str>) -> String {
+    match kind {
+        None => format!(
+            "workspace path that could not be read: {path}; restore its permissions, then resume"
+        ),
+        Some(kind) => format!(
+            "workspace path that could not be read: {path} ({kind}); deal with that, then resume"
+        ),
+    }
 }
 /// The human reading of a state.
 pub fn state_text(state: &TaskState) -> String {
+    state_text_after(state, false)
+}
+/// The human reading of a state; `rollback_failed`: the halt followed a rollback that failed.
+pub fn state_text_after(state: &TaskState, rollback_failed: bool) -> String {
     match state {
         TaskState::Created => "created, not started".into(),
         TaskState::Running => "running".into(),
@@ -84,7 +101,9 @@ pub fn state_text(state: &TaskState) -> String {
             WaitKind::Question => "waiting for your answer".into(),
         },
         TaskState::Paused => "paused".into(),
-        TaskState::Halted { halt_reason } => format!("halted: {}", halt_text(*halt_reason)),
+        TaskState::Halted { halt_reason } => {
+            format!("halted: {}", halt_line(*halt_reason, rollback_failed))
+        }
         TaskState::Recovering => "recovering".into(),
         TaskState::Completed { completion } => format!(
             "completed ({})",
@@ -121,13 +140,32 @@ pub fn halt_text(reason: HaltReason) -> &'static str {
         }
         HaltReason::WorkspaceQuota => "the workspace quota was reached",
         HaltReason::WorkspaceUnreadable => {
-            "part of the workspace could not be read; restore its permissions, then resume"
+            "part of the workspace could not be read; deal with the cause, then resume"
         }
         HaltReason::BackendUnavailable => {
             "the model backend could not be reached; check the backend and resume"
         }
         HaltReason::ToolUnavailable => "a tool could not be reached; resume to try again",
         HaltReason::Policy => "the policy did not allow the completion check to run",
+    }
+}
+/// Why a task halted when its workspace was to be rolled back and could not be: the line says so
+/// (`the workspace was not rolled back`) for the two reasons such a halt has, and is `halt_text`
+/// for the rest and when no rollback failed.
+pub fn halt_line(reason: HaltReason, rollback_failed: bool) -> String {
+    if !rollback_failed {
+        return halt_text(reason).to_owned();
+    }
+    match reason {
+        HaltReason::UnknownOutcome => {
+            "an action failed or was interrupted and the changes it made to the workspace could not be undone, so what it left is unknown; the workspace was not rolled back; check before resuming"
+                .to_owned()
+        }
+        HaltReason::WorkspaceUnreadable => {
+            "part of the workspace could not be read; the workspace was not rolled back; deal with the cause, then resume"
+                .to_owned()
+        }
+        other => halt_text(other).to_owned(),
     }
 }
 /// Why a task failed.
@@ -963,6 +1001,49 @@ pub fn prune_failed(task_id: &str, why: &str) -> String {
 pub fn prune_done(count: usize, freed: u64) -> String {
     format!("pruned {count} task(s), {} freed", bytes_text(freed))
 }
+/// `task prune`: one task deleted with files left: its first paths (all of them are in the JSON
+/// report), then how many more.
+pub fn prune_task_left(task_id: &str, paths: &[String]) -> String {
+    const SHOWN: usize = 10;
+    let shown: Vec<&str> = paths.iter().take(SHOWN).map(String::as_str).collect();
+    let more = paths.len().saturating_sub(SHOWN);
+    format!(
+        "task {task_id} is deleted; {} path(s) could not be removed and are left to the next start: {}{}",
+        paths.len(),
+        shown.join(", "),
+        if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        }
+    )
+}
+/// `task prune`: tasks deleted with files left, which the next start removes (the run went on).
+pub fn prune_left(left: &[(String, Vec<String>)]) -> String {
+    const SHOWN: usize = 10;
+    let parts: Vec<String> = left
+        .iter()
+        .map(|(task, paths)| {
+            let shown: Vec<&str> = paths.iter().take(SHOWN).map(String::as_str).collect();
+            let more = paths.len().saturating_sub(SHOWN);
+            format!(
+                "{task} ({} path(s): {}{})",
+                paths.len(),
+                shown.join(", "),
+                if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                }
+            )
+        })
+        .collect();
+    format!(
+        "{} deleted task(s) have files left that the next start removes: {}",
+        left.len(),
+        parts.join("; ")
+    )
+}
 /// `task prune`: stopped at a failure; the rest is untouched and named.
 pub fn prune_stopped(failed: &str, why: &str, untouched: &[String], deleted: usize) -> String {
     let rest = if untouched.is_empty() {
@@ -1012,7 +1093,10 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
     let t = &view.task;
     let mut lines = vec![
         format!("task      {}", t.task_id),
-        format!("state     {}", state_text(&t.state)),
+        format!(
+            "state     {}",
+            state_text_after(&t.state, view.rollback_failed)
+        ),
         format!(
             "goal      {}",
             serde_json::to_string(&t.goal).unwrap_or_default()
@@ -1037,7 +1121,7 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
     }
     lines.push(footprint_line(&view.footprint));
     if let Some(path) = &view.unreadable {
-        lines.push(unreadable_line(path));
+        lines.push(unreadable_line(path, view.unreadable_kind.as_deref()));
     }
     for a in &view.unknown_actions {
         lines.push(unknown_action_line(
@@ -1093,4 +1177,66 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         }
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mimlys_core::task::HaltReason;
+
+    /// REQ-WS-004, REQ-WS-006: the halt lines say what happened. After a rollback that failed,
+    /// both lines say that the workspace was not rolled back, and `unknown_outcome` no longer says
+    /// that an action *that cannot be undone* did not finish. A tree unreadable for a reason other
+    /// than its permissions is advised nothing about permissions, in the line of the halt and in
+    /// the line of the path; a permission problem is.
+    #[test]
+    fn req_ws_004_the_halt_lines_say_what_happened() {
+        let clause = "the workspace was not rolled back";
+        for reason in [HaltReason::UnknownOutcome, HaltReason::WorkspaceUnreadable] {
+            let after = halt_line(reason, true);
+            assert!(after.contains(clause), "{reason:?}: {after}");
+            assert!(
+                !halt_line(reason, false).contains(clause),
+                "{reason:?} without a failed rollback"
+            );
+        }
+        assert!(
+            !halt_line(HaltReason::UnknownOutcome, true).contains("cannot be undone did not"),
+            "a reversible action is not said to be irreversible"
+        );
+        assert_eq!(
+            halt_line(HaltReason::UnknownOutcome, false),
+            halt_text(HaltReason::UnknownOutcome),
+            "an action that cannot be undone keeps its line"
+        );
+        // The other reasons do not change.
+        assert_eq!(
+            halt_line(HaltReason::BudgetSteps, true),
+            halt_text(HaltReason::BudgetSteps)
+        );
+        // Neutral: no advice the cause may not allow.
+        assert!(!halt_text(HaltReason::WorkspaceUnreadable).contains("permission"));
+        assert!(!halt_line(HaltReason::WorkspaceUnreadable, true).contains("permission"));
+        // The path's line: the permissions only for a permission problem.
+        assert_eq!(
+            unreadable_line("src", None),
+            "workspace path that could not be read: src; restore its permissions, then resume"
+        );
+        let other = unreadable_line("src", Some("entity not found"));
+        assert!(
+            other.contains("src") && other.contains("entity not found"),
+            "{other}"
+        );
+        assert!(!other.contains("permission"), "{other}");
+        // The state line carries the clause when the view says so.
+        let halted = TaskState::Halted {
+            halt_reason: HaltReason::WorkspaceUnreadable,
+        };
+        assert!(task_state_after("t", &halted, true).contains(clause));
+        assert!(!task_state_after("t", &halted, false).contains(clause));
+        assert_eq!(
+            task_state("t", &halted),
+            task_state_after("t", &halted, false)
+        );
+    }
 }

@@ -79,6 +79,14 @@ pub struct TaskView {
     /// `workspace_unreadable`: the last `workspace.unreadable` event of the task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unreadable: Option<String>,
+    /// The kind of the failure, when the path could not be read for a reason other than its
+    /// permissions (an entry that vanished, a failing device): from the same event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreadable_kind: Option<String>,
+    /// Whether the task halted after a rollback of its workspace that failed, so that the
+    /// workspace was not rolled back: from the halt's event.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rollback_failed: bool,
 }
 
 /// An action whose outcome is unknown (REQ-CLI-005).

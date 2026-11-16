@@ -11,6 +11,7 @@ fn every_event() -> Vec<Event> {
             from: "running".into(),
             to: "halted".into(),
             reason: Some(HaltReason::Convergence),
+            rollback_failed: false,
         },
         Event::TaskPauseRequested,
         Event::TaskDeleted { audit: false },
@@ -78,7 +79,10 @@ fn every_event() -> Vec<Event> {
         Event::WorkspacePromotionFailed {
             reason: "restored".into(),
         },
-        Event::WorkspaceUnreadable { path: "d".into() },
+        Event::WorkspaceUnreadable {
+            path: "d".into(),
+            kind: None,
+        },
         Event::TaskRecovered {
             disposition: RecoveryDisposition::RolledBack,
         },
@@ -190,6 +194,7 @@ fn req_obs_001_event_record_envelope_is_flat() {
             from: "created".into(),
             to: "running".into(),
             reason: None,
+            rollback_failed: false,
         },
     };
     let json = serde_json::to_value(&record).unwrap();

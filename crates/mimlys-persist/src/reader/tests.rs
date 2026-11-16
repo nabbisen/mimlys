@@ -227,6 +227,7 @@ fn req_pers_013_a_task_found_recovering_is_recovery_pending() {
                         from: "running".into(),
                         to: "recovering".into(),
                         reason: None,
+                        rollback_failed: false,
                     },
                 ),
             )

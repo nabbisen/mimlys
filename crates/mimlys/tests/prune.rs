@@ -357,3 +357,94 @@ fn req_ws_014_prune_stops_at_a_failure_and_names_the_rest() {
         assert!(env.has_workspace(&third), "never touched");
     }
 }
+
+/// Removes a tree the system's own tool way when dropped (a path longer than the system allows
+/// cannot be removed by path, so neither by the test's temporary directory).
+#[cfg(target_os = "linux")]
+struct Remove(PathBuf);
+
+#[cfg(target_os = "linux")]
+impl Drop for Remove {
+    fn drop(&mut self) {
+        let _ = Command::new("rm").arg("-rf").arg(&self.0).status();
+    }
+}
+
+/// REQ-WS-014, REQ-WS-012: a prune over two tasks, the first deleted with files left, goes on: both
+/// are deleted, the files left are listed by path (the line names the first few, the report all of
+/// them) and said to be left to the next start, `left` is in the report, the exit code is 1 so
+/// that a script sees that files remain, and nothing is `failed` or `untouched`. The files are left
+/// because a directory of the first task's tree is nested deeper than a path may be (20 names of
+/// 255 bytes), which no removal by path can reach and which needs no privilege to make. Linux.
+#[cfg(target_os = "linux")]
+#[test]
+fn req_ws_014_a_prune_goes_on_past_a_task_deleted_with_files_left() {
+    for json in [true, false] {
+        let env = Env::new();
+        let first = env.completed("a");
+        let second = env.completed("b");
+        let tree = env.data.join("workspaces").join(&first).join("tree");
+        let _remove = Remove(tree.clone());
+        let mut dir =
+            cap_std::fs::Dir::open_ambient_dir(&tree, cap_std::ambient_authority()).unwrap();
+        let name = "d".repeat(255);
+        for _ in 0..20 {
+            dir.create_dir(&name).unwrap();
+            dir = dir.open_dir(&name).unwrap();
+        }
+        let prefix = format!("workspaces/{first}/tree/");
+        if json {
+            let (code, value) = env.json(&["task", "prune", "--yes"]);
+            assert_eq!(
+                code,
+                1,
+                "{}",
+                &value.to_string()[..value.to_string().len().min(2000)]
+            );
+            let ids: Vec<&str> = value["deleted"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{value}"))
+                .iter()
+                .map(|d| d["task_id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, [first.as_str(), second.as_str()]);
+            let left = value["left"].as_array().unwrap();
+            assert_eq!(left.len(), 1, "only the first has files left");
+            assert_eq!(left[0]["task_id"], first.as_str());
+            let paths = left[0]["paths"].as_array().unwrap();
+            assert!(!paths.is_empty());
+            assert!(
+                paths
+                    .iter()
+                    .all(|p| p.as_str().unwrap().starts_with(&prefix)
+                        || p.as_str().unwrap() == format!("workspaces/{first}")
+                        || p.as_str().unwrap() == format!("workspaces/{first}/tree")),
+                "every path is the first task's"
+            );
+            assert!(value["failed"].is_null() && value["untouched"] == serde_json::json!([]));
+        } else {
+            let (code, stdout, stderr) = env.run(&["task", "prune", "--yes"]);
+            assert_eq!(code, 1, "{stderr}");
+            assert!(
+                stdout.contains(&format!("task {first} is deleted")),
+                "{stdout}"
+            );
+            assert!(stdout.contains("left to the next start"), "{stdout}");
+            assert!(stdout.contains(&format!("deleted {second}")), "{stdout}");
+            assert!(stdout.contains("pruned 2 task(s)"), "{stdout}");
+            assert!(
+                stderr.contains(&first)
+                    && stderr.contains(&prefix)
+                    && stderr.contains("next start"),
+                "{stderr}"
+            );
+            assert!(!stdout.contains("failed ") && !stderr.contains("prune stopped"));
+            assert!(
+                stdout.contains(" path(s) could not be removed") && stdout.contains(" more"),
+                "a line lists the first paths and counts the rest: {}",
+                &stdout[..stdout.len().min(600)]
+            );
+        }
+        assert!(!env.has_workspace(&second), "the second was removed whole");
+    }
+}

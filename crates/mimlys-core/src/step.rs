@@ -87,6 +87,11 @@ pub struct Step {
     /// the code only and reads with `None`.
     #[serde(skip)]
     pub rejection_detail: Option<Detail>,
+    /// Whether the step ended with a rollback of the workspace that failed, so that the halt it
+    /// causes is recorded as following one (`task.state_changed`, `rollback_failed`). In memory
+    /// only: it lives from the failed rollback to the recording of the halt.
+    #[serde(skip)]
+    pub rollback_failed: bool,
     /// The action, when the decision produced one.
     pub action_id: Option<ActionId>,
     /// The observation, when the action produced one.
@@ -146,6 +151,7 @@ impl Step {
             decision_hash: None,
             rejection: None,
             rejection_detail: None,
+            rollback_failed: false,
             action_id: None,
             observation_id: None,
             outcome: None,

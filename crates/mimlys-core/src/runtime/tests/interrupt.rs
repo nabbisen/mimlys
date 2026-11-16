@@ -1154,7 +1154,7 @@ impl Rig {
             .into_iter()
             .filter(|e| e.task_id == Some(self.task))
             .filter_map(|e| match e.event {
-                crate::event::Event::WorkspaceUnreadable { path } => {
+                crate::event::Event::WorkspaceUnreadable { path, .. } => {
                     Some((path, e.action_id.is_some()))
                 }
                 _ => None,
@@ -1413,4 +1413,138 @@ fn req_ws_004_an_approved_action_continues_after_the_tree_can_be_read_again() {
     assert_eq!(next.outcome, StepOutcome::Continued, "{next:?}");
     assert_eq!(rig.action().status, ActionStatus::Succeeded);
     assert_eq!(rig.calls(), 1);
+}
+
+impl Rig {
+    /// The `rollback_failed` field of the task's last halt event.
+    fn halt_followed_a_failed_rollback(&self) -> bool {
+        self.persistence
+            .events()
+            .into_iter()
+            .filter(|e| e.task_id == Some(self.task))
+            .filter_map(|e| match e.event {
+                crate::event::Event::TaskStateChanged {
+                    reason: Some(_),
+                    rollback_failed,
+                    ..
+                } => Some(rollback_failed),
+                _ => None,
+            })
+            .next_back()
+            .expect("the task halted")
+    }
+
+    /// The kinds the task's `workspace.unreadable` events carry.
+    fn unreadable_kinds(&self) -> Vec<Option<String>> {
+        self.persistence
+            .events()
+            .into_iter()
+            .filter(|e| e.task_id == Some(self.task))
+            .filter_map(|e| match e.event {
+                crate::event::Event::WorkspaceUnreadable { kind, .. } => Some(kind),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// REQ-WS-006, REQ-OBS-001: a halt that follows a rollback that failed says so in its event
+/// (`task.state_changed`, `rollback_failed`) and in the view of the task, whether the reason is
+/// `unknown_outcome` (the restore failed) or `workspace_unreadable` (the restore could not read
+/// the tree); and a halt for the same reasons that follows no rollback does not say so: the
+/// snapshot before an action, and the snapshot after it, are not rollbacks. A tree that fails to
+/// read for a reason other than its permissions carries the kind of the failure in
+/// `workspace.unreadable`, a permission carries none.
+#[test]
+fn req_ws_006_a_halt_after_a_failed_rollback_says_so_and_the_others_do_not() {
+    let failing_write = || {
+        Rig::ending(
+            effect_tool("a_workspace_write", EffectKind::WorkspaceWrite, true, false),
+            ExecutionOutcome::tool_error("rejected", json!({}), 1),
+        )
+    };
+    // The restore fails: `unknown_outcome`, after a rollback that failed.
+    let rig = failing_write();
+    rig.workspaces.fail_restores();
+    rig.execute_the_action();
+    assert!(rig.halt_followed_a_failed_rollback());
+    let view = rig.runtime.get_task(rig.task).unwrap();
+    assert!(view.rollback_failed && view.unreadable.is_none());
+    // The restore cannot read the tree (a permission): `workspace_unreadable`, after a failed rollback.
+    let rig = failing_write();
+    let workspaces = rig.workspaces.clone();
+    rig.effect(move || workspaces.make_unreadable("d"));
+    rig.execute_the_action();
+    assert!(rig.halt_followed_a_failed_rollback());
+    assert_eq!(rig.unreadable_kinds(), [None]);
+    let view = rig.runtime.get_task(rig.task).unwrap();
+    assert!(view.rollback_failed);
+    assert_eq!(
+        (view.unreadable.as_deref(), view.unreadable_kind),
+        (Some("d"), None)
+    );
+    // The same for another reason: the kind of the failure is recorded and shown.
+    let rig = failing_write();
+    let workspaces = rig.workspaces.clone();
+    rig.effect(move || {
+        workspaces.make_unreadable_to_snapshots_for_another_reason("d", "entity not found")
+    });
+    rig.execute_the_action();
+    assert!(rig.halt_followed_a_failed_rollback());
+    assert_eq!(
+        rig.unreadable_kinds(),
+        [Some("entity not found".to_owned())]
+    );
+    let view = rig.runtime.get_task(rig.task).unwrap();
+    assert!(view.rollback_failed);
+    assert_eq!(view.unreadable_kind.as_deref(), Some("entity not found"));
+    // No rollback: the snapshot before the action could not be taken.
+    let rig = Rig::new(effect_tool(
+        "a_workspace_write",
+        EffectKind::WorkspaceWrite,
+        true,
+        true,
+    ));
+    rig.workspaces
+        .make_unreadable_to_snapshots_for_another_reason("d", "entity not found");
+    rig.execute_the_action();
+    assert!(!rig.halt_followed_a_failed_rollback());
+    assert!(!rig.runtime.get_task(rig.task).unwrap().rollback_failed);
+    // No rollback: the action succeeded and the snapshot after it could not be taken.
+    let rig = Rig::new(effect_tool(
+        "a_workspace_write",
+        EffectKind::WorkspaceWrite,
+        true,
+        true,
+    ));
+    let workspaces = rig.workspaces.clone();
+    rig.effect(move || workspaces.make_unreadable_to_snapshots("d/inner"));
+    rig.execute_the_action();
+    assert!(!rig.halt_followed_a_failed_rollback());
+    assert_eq!(rig.unreadable_kinds(), [None]);
+    // An older record has neither field: it reads as no failed rollback and no kind.
+    let old: crate::event::Event = serde_json::from_value(
+        json!({"event": "task.state_changed", "from": "running", "to": "halted", "reason": "unknown_outcome"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        old,
+        crate::event::Event::TaskStateChanged {
+            rollback_failed: false,
+            ..
+        }
+    ));
+    let old: crate::event::Event =
+        serde_json::from_value(json!({"event": "workspace.unreadable", "path": "d"})).unwrap();
+    assert!(matches!(
+        old,
+        crate::event::Event::WorkspaceUnreadable { kind: None, .. }
+    ));
+    // And a new record without either writes neither field (additive: no schema version moves).
+    let json = serde_json::to_value(crate::event::Event::WorkspaceUnreadable {
+        path: "d".into(),
+        kind: None,
+    })
+    .unwrap();
+    assert_eq!(json, json!({"event": "workspace.unreadable", "path": "d"}));
 }
