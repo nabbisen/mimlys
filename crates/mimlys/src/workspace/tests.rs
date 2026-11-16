@@ -2045,6 +2045,7 @@ mod snapshots {
     #[cfg(unix)]
     #[test]
     fn req_ws_012_a_tree_deeper_than_a_path_may_be_is_deleted_whole() {
+        #[cfg(target_os = "linux")]
         use std::os::unix::ffi::OsStrExt;
         // Linux: five times what a path of 4 096 bytes holds here (2 048 levels), and a system's
         // rmdir of a deep directory costs about 0.3 ms, so no more. Elsewhere a modest chain, as
@@ -2079,6 +2080,8 @@ mod snapshots {
                 dir.set_permissions("locked", locked).unwrap();
             }
             if level == DEPTH / 2 {
+                // Linux only: macOS refuses a name that is not valid UTF-8.
+                #[cfg(target_os = "linux")]
                 dir.write(std::ffi::OsStr::from_bytes(b"caf\xE9.txt"), b"x")
                     .unwrap();
                 // Absolute targets: the capability handle refuses to make these, rustix does.
