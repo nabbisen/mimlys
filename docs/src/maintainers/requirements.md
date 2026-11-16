@@ -469,7 +469,7 @@ Observations shall carry excerpts per LIM-C2 with truncation notices; full bound
 Configured secret values and LIM-W5 content shall be redacted from observations before they enter the context. (REQ-PRIV-002)
 
 ### REQ-CTX-008 Invisible characters — M1 · T
-Control, zero-width, tag and bidirectional characters shall be removed from external text before it enters the context or a display, with a notice. (THR-21)
+Control, zero-width, tag and bidirectional characters, and the other default-ignorable characters (soft hyphen, variation selectors, fillers, invisible format characters), shall be removed from external text before it enters the context or a display, with a notice; visible symbols are kept (amended 2026-11-16: audit A-25). (THR-21)
 
 ### REQ-CTX-009 Structured results preserved — M1 · T
 Tool results shall be kept as validated JSON and shown to the model as JSON, never flattened to prose. (K-10)
@@ -716,7 +716,7 @@ Descriptions shall be sanitized (REQ-CTX-008) and bounded by LIM-I2; schemas abo
 The administrator declares, per external tool, the effect, `idempotent`, destination arguments and deadline (`reversible` is always false for external effects, RFC 003). An undeclared tool is `external_write`, non-idempotent. A declaration admits the tool to the ceiling (RFC 009 §4). (K-06)
 
 ### REQ-MCP-005 Destination validation — M5 · T
-Destination arguments shall be validated against the task's `network` grants (scheme, domain, port) before the call and again on a `redirected` result; a destination is a string, and any other value is refused (amended 2026-11-14: audit A-11). Only `https` destinations are admitted. An `http` destination is refused with the reason `scheme_not_https`, whose hint says to propose its `https` form (rypsok reads an `http` URL over `https` in any case). (K-02; amended 2026-11-11. An earlier wording of the same day assumed that mimlys admitted `http`; it never did, as handoff 009d found.)
+Destination arguments shall be validated against the task's `network` grants (scheme, domain, port) before the call and again on a `redirected` result; a destination is a string, and any other value is refused (amended 2026-11-14: audit A-11); a destination whose parse does not serialize back to the same text, or that holds user information, is refused (amended 2026-11-16: audit A-12). Only `https` destinations are admitted. An `http` destination is refused with the reason `scheme_not_https`, whose hint says to propose its `https` form (rypsok reads an `http` URL over `https` in any case). (K-02; amended 2026-11-11. An earlier wording of the same day assumed that mimlys admitted `http`; it never did, as handoff 009d found.)
 
 ### REQ-MCP-006 Results — M5 · T
 Structured content is validated against the declared output schema; `isError` becomes the cause `tool_error`; content is bounded and labelled external. (K-10)

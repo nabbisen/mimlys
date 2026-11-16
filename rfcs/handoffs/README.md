@@ -86,6 +86,7 @@ The audit's remainder, in three phases (ROADMAP, "Release 0.11"). Each later han
 | Order | Handoff | RFC | Depends on |
 |---|---|---|---|
 | 1 | [011n Windows and confinement: the small fixes](./011n-windows-and-confinement-small/implementation-handoff.md) | RFC 011 | — |
+| 2 | [009h MCP and context: the small fixes](./009h-mcp-and-context-small/implementation-handoff.md) | RFC 009 | — |
 
 ## Milestone M5
 
