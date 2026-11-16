@@ -64,6 +64,19 @@
 //! holds the value and an object whose key is the value; `leak_long` answers with
 //! a text longer than any answer is kept in, with the value across the point
 //! where it is cut.
+//!
+//! `MIMLYS_TESTSERVER_STDERR_FLOOD=long=<bytes>,many=<lines>` makes every call of
+//! the rypsok tools write, on standard error before it answers, one line of
+//! `<bytes>` bytes with no newline until its end, a short line after it, and
+//! `<lines>` short lines, as fast as the pipe takes them (a server that floods
+//! its standard error; the lines are numbered `flood line <i>`);
+//! `MIMLYS_TESTSERVER_NOTIFY_DURING_LIST_MS=<ms>` makes every `tools/list`
+//! answer come `<ms>` milliseconds after a `notifications/tools/list_changed`
+//! (a server that announces a change while it is listed);
+//! `MIMLYS_TESTSERVER_SESSION=1` lists a tool `session` that answers with the
+//! process's id, process group and session (Unix);
+//! `MIMLYS_TESTSERVER_TOOL_LOG=<path>` appends the name of every tool that is
+//! called (a `tools/call` that reaches the server) as a line of the file.
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -266,6 +279,13 @@ fn tool_list(changed: bool) -> Vec<Value> {
             }));
         }
     }
+    if env_flag("MIMLYS_TESTSERVER_SESSION") {
+        tools.push(json!({
+            "name": "session",
+            "description": "The process's id, process group and session.",
+            "inputSchema": {"type": "object", "additionalProperties": false},
+        }));
+    }
     if env_flag("MIMLYS_TESTSERVER_WIDE") {
         let mut props = Map::new();
         for i in 0..9 {
@@ -290,6 +310,55 @@ fn tool_list(changed: bool) -> Vec<Value> {
         }
     }
     tools
+}
+
+/// The process's id, process group and session (Unix; zeros elsewhere).
+#[cfg(unix)]
+fn session_ids() -> Value {
+    let group = rustix::process::getpgid(None).map(|p| p.as_raw_nonzero().get());
+    let session = rustix::process::getsid(None).map(|p| p.as_raw_nonzero().get());
+    json!({
+        "pid": rustix::process::getpid().as_raw_nonzero().get(),
+        "pgid": group.unwrap_or(0),
+        "sid": session.unwrap_or(0),
+    })
+}
+
+#[cfg(not(unix))]
+fn session_ids() -> Value {
+    json!({"pid": 0, "pgid": 0, "sid": 0})
+}
+
+/// The flood of `MIMLYS_TESTSERVER_STDERR_FLOOD`, written to standard error.
+fn flood_stderr(spec: &str) {
+    use std::io::Write as _;
+    let mut err = std::io::stderr().lock();
+    for part in spec.split(',') {
+        let Some((kind, n)) = part.split_once('=') else {
+            continue;
+        };
+        let Ok(n) = n.parse::<usize>() else { continue };
+        match kind {
+            "long" => {
+                // No newline until the end of the bytes.
+                let chunk = [b'x'; 8192];
+                let mut left = n;
+                while left > 0 {
+                    let take = left.min(chunk.len());
+                    let _ = err.write_all(&chunk[..take]);
+                    left -= take;
+                }
+                let _ = err.write_all(b"\nafter the long line\n");
+            }
+            "many" => {
+                for i in 0..n {
+                    let _ = writeln!(err, "flood line {i}");
+                }
+            }
+            _ => {}
+        }
+    }
+    let _ = err.flush();
 }
 
 /// The answer to one `tools/call`.
@@ -325,6 +394,13 @@ fn call(name: &str, arguments: &Map<String, Value>) -> Value {
             })
         }
         "engine_status" => from("engine-status"),
+        "session" => {
+            let ids = session_ids();
+            json!({
+                "content": [{"type": "text", "text": ids.to_string()}],
+                "structuredContent": ids,
+            })
+        }
         "leak" => {
             let value = leak_value().unwrap_or_default();
             json!({
@@ -457,6 +533,18 @@ pub fn main() {
                     use std::io::Write as _;
                     let _ = writeln!(file, "tools/list {}", seen + 1);
                 }
+                if let Some(ms) = std::env::var("MIMLYS_TESTSERVER_NOTIFY_DURING_LIST_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    // Announced while it is listed: the notice is written, and the
+                    // answer comes after it.
+                    write(
+                        &stdout,
+                        &json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                    );
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
                 if std::env::var("MIMLYS_TESTSERVER_HANG_LIST_AFTER")
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok())
@@ -519,6 +607,15 @@ pub fn main() {
                     .and_then(Value::as_object)
                     .cloned()
                     .unwrap_or_default();
+                if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_TOOL_LOG")
+                    && let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(file, "{name}");
+                }
                 match name.as_str() {
                     "die" => {
                         if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_DIE_LOG")
@@ -582,6 +679,9 @@ pub fn main() {
                         });
                     }
                     other => {
+                        if let Ok(spec) = std::env::var("MIMLYS_TESTSERVER_STDERR_FLOOD") {
+                            flood_stderr(&spec);
+                        }
                         if let Ok(text) = std::env::var("MIMLYS_TESTSERVER_STDERR_LINE") {
                             eprintln!("{text}");
                             std::thread::sleep(Duration::from_millis(5000));

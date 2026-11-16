@@ -782,6 +782,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 task,
                 "slow",
                 json!({"ms": 60_000}).as_object().unwrap().clone(),
+                None,
                 120_000,
                 &cancel,
             )
@@ -801,6 +802,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 task,
                 "slow",
                 json!({"ms": 60_000}).as_object().unwrap().clone(),
+                None,
                 300,
                 &Cancellation::new(),
             )
@@ -818,6 +820,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                     task,
                     "die",
                     Default::default(),
+                    None,
                     30_000,
                     &Cancellation::new(),
                 )
@@ -831,6 +834,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                     task,
                     "engine_status",
                     Default::default(),
+                    None,
                     30_000,
                     &Cancellation::new(),
                 )
@@ -846,6 +850,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 task,
                 "die",
                 Default::default(),
+                None,
                 30_000,
                 &Cancellation::new(),
             )
@@ -855,6 +860,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 task,
                 "engine_status",
                 Default::default(),
+                None,
                 30_000,
                 &Cancellation::new(),
             )
@@ -899,6 +905,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 task,
                 "slow",
                 json!({"ms": 60_000}).as_object().unwrap().clone(),
+                None,
                 120_000,
                 &cancel,
             )
@@ -1118,6 +1125,7 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
                     task,
                     "engine_status",
                     Default::default(),
+                    None,
                     30_000,
                     &Cancellation::new(),
                 )
@@ -1415,6 +1423,7 @@ fn req_mcp_007_a_killed_server_is_gone() {
                 task,
                 "slow",
                 json!({"ms": 60000}).as_object().unwrap().clone(),
+                None,
                 120_000,
                 &cancel,
             )
@@ -1793,6 +1802,7 @@ async fn change_and_wait(server: &Server) {
             task,
             "change_definition",
             Default::default(),
+            None,
             30_000,
             &Cancellation::new(),
         )
@@ -1947,6 +1957,7 @@ async fn kill_server(server: &Server) {
             task,
             "die",
             Default::default(),
+            None,
             30_000,
             &Cancellation::new(),
         )
@@ -2203,6 +2214,7 @@ fn req_mcp_007_a_call_and_the_shutdown_never_queue_behind_a_listing() {
                 task,
                 "engine_status",
                 Default::default(),
+                None,
                 30_000,
                 &Cancellation::new(),
             ),
@@ -2406,5 +2418,487 @@ fn req_mcp_007_an_unanswered_listing_leaves_the_tool_pinned_and_the_call_unavail
         assert_eq!(search["status"], "failed", "{search}");
         assert_eq!(search["cause"]["cause"], "tool_unavailable", "{search}");
         assert_eq!(search["payload"]["reason"], "list:timeout", "{search}");
+    }
+}
+
+// Handoff 009h, items 3 to 7: the lifecycle of a server.
+
+/// A task that is not any other.
+fn a_task() -> mimlys_core::ids::TaskId {
+    mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7())
+}
+
+/// The log lines of a capturing subscriber.
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Captured {
+    fn lines(&self) -> Vec<String> {
+        String::from_utf8_lossy(&self.0.lock().unwrap())
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// The lines of a server's standard error that were logged, by what the capturing
+/// subscriber saw: (lines of the flood, lines that say the cut, lines dropped
+/// as the sum of the counts, the longest line logged).
+fn logged_standard_error(captured: &Captured) -> (usize, usize, u64, usize) {
+    let mut flood = 0;
+    let mut cut = 0;
+    let mut dropped = 0;
+    let mut longest = 0;
+    for line in captured.lines() {
+        if !line.contains("mimlys_mcp") {
+            continue;
+        }
+        longest = longest.max(line.len());
+        if line.contains("line cut at") {
+            cut += 1;
+            flood += 1;
+        } else if line.contains("flood line") || line.contains("after the long line") {
+            flood += 1;
+        } else if let Some(at) = line
+            .find(" line dropped")
+            .or_else(|| line.find(" lines dropped"))
+        {
+            let count: String = line[..at]
+                .chars()
+                .rev()
+                .take_while(char::is_ascii_digit)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            dropped += count.parse::<u64>().unwrap();
+        }
+    }
+    (flood, cut, dropped, longest)
+}
+
+/// REQ-MCP-001, REQ-OBS-004 (handoff 009h, item 3; external design §11.1): what a
+/// server writes on standard error is bounded. The stand-in writes, on a call,
+/// one line of 32 MiB with no newline until its end, a line after it, and 20 000
+/// short lines at once. Memory stays the bound of a line (no log line is longer than
+/// that bound and its mark: the whole line was never held), the lines logged are at most
+/// the rate bound's for the time it took, the cut is marked, and the lines past the
+/// bound are counted in lines of their own: the lines logged and the lines said to
+/// be dropped are all the lines the server wrote, none lost without a word, and
+/// the line after the long one is read as it is. Standard error is read for as long
+/// as the server lives, so the count arrives when the window ends, with no more input.
+#[test]
+fn req_mcp_001_a_servers_standard_error_is_bounded_by_line_and_by_rate() {
+    use mimlys_mcp::stderr::{STDERR_LINE_MAX_BYTES, STDERR_LINES_PER_WINDOW, STDERR_WINDOW};
+    const LONG: usize = 32 * 1024 * 1024;
+    const MANY: usize = 20_000;
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer({
+            let captured = captured.clone();
+            move || captured.clone()
+        })
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+    // A runtime on this thread alone, so that the reader's task logs here.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    tracing::subscriber::with_default(subscriber, || {
+        rt.block_on(async {
+            let server = knob_server(
+                15_000,
+                &[(
+                    "MIMLYS_TESTSERVER_STDERR_FLOOD",
+                    format!("long={LONG},many={MANY}"),
+                )],
+            );
+            let began = std::time::Instant::now();
+            let outcome = server
+                .call(
+                    a_task(),
+                    "engine_status",
+                    Default::default(),
+                    None,
+                    60_000,
+                    &Cancellation::new(),
+                )
+                .await;
+            assert!(
+                matches!(outcome, Ok(CallOutcome::Result { .. })),
+                "{outcome:?}"
+            );
+            // Every line the server wrote is accounted for: logged, or counted as dropped.
+            let written = (MANY + 2) as u64;
+            let mut seen = (0, 0, 0, 0);
+            for _ in 0..1200 {
+                seen = logged_standard_error(&captured);
+                if seen.0 as u64 + seen.2 >= written {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            let (flood, cut, dropped, longest) = seen;
+            assert_eq!(
+                flood as u64 + dropped,
+                written,
+                "logged {flood}, dropped {dropped}"
+            );
+            assert_eq!(cut, 1, "the long line is logged once, cut and marked");
+            assert!(
+                longest < STDERR_LINE_MAX_BYTES + 400,
+                "the longest log line is {longest} bytes"
+            );
+            // The rate: at most the bound in each window the reader ran for.
+            let windows =
+                (began.elapsed().as_secs_f64() / STDERR_WINDOW.as_secs_f64()).ceil() as usize + 1;
+            assert!(
+                flood <= STDERR_LINES_PER_WINDOW as usize * windows,
+                "{flood} lines in {windows} windows"
+            );
+            assert!(dropped > 0, "{MANY} lines at once cannot all be logged");
+            server.shutdown().await;
+        });
+    });
+    // The line after the long one, and the first lines, are in the log as written.
+    let log = captured.lines().join("\n");
+    assert!(
+        log.contains("after the long line"),
+        "{}",
+        &log[..log.len().min(2000)]
+    );
+    assert!(log.contains("flood line 0"));
+}
+
+/// REQ-MCP-002, REQ-MCP-001 (handoff 009h, item 4a): the pin is compared on the
+/// connection the call is sent on. The tool is pinned as one process lists it; the
+/// process dies, and the restart that the call makes lists the tool otherwise (the
+/// definition is changed on disk meanwhile, as an upgrade would). The call is not
+/// sent: `DefinitionChanged`, and the server never sees `web_search`. With the hash
+/// that process lists, the same call is sent.
+#[test]
+fn req_mcp_002_a_definition_changed_by_a_restart_between_the_check_and_the_call_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let changed = dir.path().join("changed");
+    let tools = dir.path().join("tools.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = knob_server(
+            15_000,
+            &[
+                (
+                    "MIMLYS_TESTSERVER_CHANGED_FILE",
+                    changed.to_string_lossy().into_owned(),
+                ),
+                (
+                    "MIMLYS_TESTSERVER_TOOL_LOG",
+                    tools.to_string_lossy().into_owned(),
+                ),
+            ],
+        );
+        let task = a_task();
+        // The pin check: the hash as this process lists it.
+        let pinned = server
+            .current_hash(task, "web_search", &Cancellation::new())
+            .await
+            .unwrap()
+            .expect("listed");
+        // Between the check and the call: the process dies and its replacement lists
+        // the tool otherwise.
+        kill_server(&server).await;
+        std::fs::write(&changed, b"changed").unwrap();
+        let args: serde_json::Map<String, Value> =
+            json!({"query": "rust"}).as_object().unwrap().clone();
+        let refused = server
+            .call(
+                task,
+                "web_search",
+                args.clone(),
+                Some(&pinned),
+                30_000,
+                &Cancellation::new(),
+            )
+            .await;
+        assert!(
+            matches!(refused, Ok(CallOutcome::DefinitionChanged)),
+            "{refused:?}"
+        );
+        let called = |log: &std::path::Path| {
+            std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| *l == "web_search")
+                .count()
+        };
+        assert_eq!(called(&tools), 0, "the call was not sent");
+        // The restarted process lists the changed definition: its own hash is the pin
+        // that lets the call through.
+        let now = server
+            .current_hash(task, "web_search", &Cancellation::new())
+            .await
+            .unwrap()
+            .expect("listed");
+        assert_ne!(now, pinned, "the definition changed");
+        let sent = server
+            .call(
+                task,
+                "web_search",
+                args,
+                Some(&now),
+                30_000,
+                &Cancellation::new(),
+            )
+            .await;
+        assert!(matches!(sent, Ok(CallOutcome::Result { .. })), "{sent:?}");
+        assert_eq!(called(&tools), 1);
+        server.shutdown().await;
+    });
+}
+
+/// REQ-MCP-002 (handoff 009h, item 4b): a `list_changed` that arrives while the
+/// server is being listed is not lost, at a start and at a relisting. The stand-in
+/// announces a change just before each answer to a listing and answers 300 ms later.
+/// After the start the list is marked stale, and after the relisting it is marked
+/// stale again.
+#[test]
+fn req_mcp_002_a_list_changed_during_a_listing_is_not_lost() {
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = knob_server(
+            15_000,
+            &[("MIMLYS_TESTSERVER_NOTIFY_DURING_LIST_MS", "300".to_owned())],
+        );
+        // A call starts the process and lists it, and nothing else.
+        let started = server
+            .call(
+                a_task(),
+                "engine_status",
+                Default::default(),
+                None,
+                30_000,
+                &Cancellation::new(),
+            )
+            .await;
+        assert!(
+            matches!(started, Ok(CallOutcome::Result { .. })),
+            "{started:?}"
+        );
+        assert!(
+            server.is_dirty(),
+            "the notice came during the start's listing"
+        );
+        // The relisting that follows is announced to as well.
+        server.list().await.unwrap();
+        assert!(server.is_dirty(), "the notice came during the relisting");
+        server.shutdown().await;
+    });
+}
+
+/// REQ-TOOL-009, REQ-MCP-001 (handoff 009h, item 5; external design §11.1): a start
+/// that fails counts. The stand-in answers its first listing with an error
+/// (`FAIL_LIST_AFTER=0`), every time: the first start and LIM-X3 restarts of a
+/// task are made (1 + LIM-X3 listing requests reach the stand-in, none after),
+/// and then `restart_limit_reached` is the answer every time, with the reason of the
+/// last start. Another task has its allowance of LIM-X3. A start that cannot spawn
+/// is bounded the same way and the reason is the spawn's.
+#[test]
+fn req_tool_009_a_start_that_fails_every_time_is_bounded_by_the_restart_limit() {
+    use mimlys_mcp::server::ServerError;
+    let limit = mimlys_core::limits::LIM_X3_RESTARTS as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("list.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = knob_server(
+            15_000,
+            &[
+                ("MIMLYS_TESTSERVER_FAIL_LIST_AFTER", "0".to_owned()),
+                list_log_knob(&log),
+            ],
+        );
+        let task = a_task();
+        let mut reasons = Vec::new();
+        for _ in 0..(limit + 4) {
+            let answer = server
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await;
+            reasons.push(match answer {
+                Err(error) => error,
+                Ok(h) => panic!("listed: {h:?}"),
+            });
+        }
+        let started = reasons
+            .iter()
+            .filter(|e| matches!(e, ServerError::Unavailable { .. }))
+            .count();
+        assert_eq!(started, 1 + limit, "{reasons:?}");
+        assert!(
+            reasons[..1 + limit]
+                .iter()
+                .all(|e| matches!(e, ServerError::Unavailable { .. }))
+        );
+        assert_eq!(list_requests_seen(&log), 1 + limit, "none after the limit");
+        let refused = &reasons[1 + limit];
+        assert!(
+            matches!(refused, ServerError::RestartLimitReached { .. }),
+            "{refused:?}"
+        );
+        // The reason is the last start's own, whatever it was.
+        let last = match &reasons[limit] {
+            ServerError::Unavailable { reason, .. } => reason.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            refused.reason(),
+            format!("restart_limit_reached (last: {last})")
+        );
+        assert!(last.starts_with("list:"), "{last}");
+        for later in &reasons[1 + limit..] {
+            assert_eq!(later.reason(), refused.reason(), "every time");
+        }
+        // Another task has its own allowance.
+        let other = a_task();
+        for _ in 0..limit {
+            let answer = server
+                .current_hash(other, "web_search", &Cancellation::new())
+                .await;
+            assert!(matches!(answer, Err(ServerError::Unavailable { .. })));
+        }
+        let refused = server
+            .current_hash(other, "web_search", &Cancellation::new())
+            .await;
+        assert!(matches!(
+            refused,
+            Err(ServerError::RestartLimitReached { .. })
+        ));
+        assert_eq!(list_requests_seen(&log), 1 + 2 * limit);
+        server.shutdown().await;
+
+        // A program that cannot be started: the reason of the spawn is kept.
+        let mut config = ServerConfig::new("gone", dir.path().join("no-such-program"), vec![]);
+        config.env_allow = vec!["PATH".into()];
+        let gone = Server::new(config);
+        let task = a_task();
+        let spawn_reason = format!("spawn:{}", std::io::ErrorKind::NotFound);
+        for _ in 0..(1 + limit) {
+            let answer = gone
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await;
+            assert!(
+                matches!(&answer, Err(ServerError::Unavailable { reason, .. }) if *reason == spawn_reason),
+                "{answer:?}"
+            );
+        }
+        let refused = gone
+            .current_hash(task, "web_search", &Cancellation::new())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.reason(),
+            format!("restart_limit_reached (last: {spawn_reason})")
+        );
+    });
+}
+
+/// REQ-MCP-001 (handoff 009h, item 6b; external design §11.1): a server runs in a
+/// session of its own (`setsid`), which is also a process group of its own, so that
+/// it has no controlling terminal and a kill of the group reaches what it started
+/// (`req_mcp_007_a_killed_server_is_gone` kills a server and the process it started).
+/// The server reports its own ids: it leads both, and neither is the test's.
+#[cfg(unix)]
+#[test]
+fn req_mcp_001_a_server_runs_in_a_session_of_its_own() {
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let server = knob_server(15_000, &[("MIMLYS_TESTSERVER_SESSION", "1".to_owned())]);
+        let answer = server
+            .call(
+                a_task(),
+                "session",
+                Default::default(),
+                None,
+                30_000,
+                &Cancellation::new(),
+            )
+            .await
+            .unwrap();
+        let CallOutcome::Result {
+            structured: Some(ids),
+            ..
+        } = answer
+        else {
+            panic!("{answer:?}");
+        };
+        let pid = ids["pid"].as_i64().unwrap();
+        assert!(pid > 0, "{ids}");
+        assert_eq!(
+            ids["sid"], pid,
+            "the server leads a session of its own: {ids}"
+        );
+        assert_eq!(ids["pgid"], pid, "and a process group of its own: {ids}");
+        let ours = rustix::process::getsid(None)
+            .unwrap()
+            .as_raw_nonzero()
+            .get() as i64;
+        assert_ne!(ids["sid"], ours, "not the test's session");
+        server.shutdown().await;
+    });
+}
+
+/// REQ-MCP-007 (handoff 009h, item 7), end to end: an unanswering server costs one
+/// wait (LIM-O6) in a step, not two. The server announces a changed list and then
+/// never answers the listing; its deadline is 1 s. The step boundary waits it out
+/// once and remembers; the call's pin check does not ask again, so the action ends
+/// at once, `tool_unavailable` with the boundary's reason, and so does its retry
+/// (LIM-T3): each attempt takes a fraction of the wait, not the wait. (Before, each
+/// attempt waited the full second.)
+#[test]
+fn req_mcp_007_an_unanswering_server_costs_one_wait_in_a_step() {
+    let env = Env::new(
+        &[
+            act("rypsok.change_definition", json!({})),
+            act("rypsok.web_search", json!({"query": "after the change"})),
+            complete(),
+        ],
+        "startup_ms = 1000",
+        &[],
+    );
+    allow_in_server_environment(&env, "MIMLYS_TESTSERVER_HANG_LIST_AFTER");
+    let env = env.env("MIMLYS_TESTSERVER_HANG_LIST_AFTER", "1");
+    let scope = env.scope();
+    let (code, value) = env.json(&["run", "wait", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let conn = rusqlite::Connection::open(env.data.path().join("data/mimlys.db")).unwrap();
+    let mut stmt = conn
+        .prepare("select o.record from observations o join actions a on a.action_id = o.action_id where a.task_id = ?1 order by o.rowid")
+        .unwrap();
+    let observations: Vec<Value> = stmt
+        .query_map([&id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+        .collect();
+    assert!(observations.len() >= 2, "{observations:?}");
+    let searches = &observations[1..];
+    for search in searches {
+        assert_eq!(search["cause"]["cause"], "tool_unavailable", "{search}");
+        assert_eq!(search["payload"]["reason"], "list:timeout", "{search}");
+        let wall = search["metrics"]["wall_ms"].as_i64().unwrap();
+        assert!(
+            wall < 500,
+            "the action waited {wall} ms for a server the boundary found unanswering: {search}"
+        );
     }
 }

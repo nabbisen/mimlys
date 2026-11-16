@@ -148,7 +148,12 @@ each definition on the task (`tool.pinned`). The server's annotations
 (`readOnlyHint` and friends) are recorded and never trusted: the effect of
 a tool is what you declared. If the server changes a definition while a
 task runs, the tool is unpinned once (`tool.unpinned`), hidden from the
-model, and named to it as unavailable; nothing changes meaning silently.
+model, and named to it as unavailable; nothing changes meaning silently. The
+hash is compared once more on the very connection the call is sent on, so a
+server that was restarted between the check and the call, and now lists the
+tool otherwise, is not called: the model is told `definition_changed`. A
+change the server announces while it is being listed is kept for the next
+check, not lost.
 
 ## What mimlys bounds in a server's answers
 
@@ -191,3 +196,29 @@ unavailable, with the reason in `status`, rather than half imported.
   tool's output streams before a long text is cut, so that a secret that
   straddles the cut leaves nothing of itself in the excerpt. A secret's case
   and percent-encoded variants are not covered.
+- **What a server writes on standard error is bounded.** The runtime logs it
+  line by line at the level `info`, where you read a server's errors. A line is
+  kept up to 1 024 bytes: a longer one is logged at once with the cut marked
+  (`[... line cut at 1024 bytes]`) and the rest of it, up to its newline, is
+  read and thrown away, so a server that writes one line that never ends costs
+  one log line and no memory. At most 50 lines are logged in each second; the
+  lines past that are counted, and when the second ends one line says how many
+  (`N lines dropped`). The three numbers are proposals that await registration
+  as limits.
+- **Content that is not passed on is said.** When a tool answers without
+  `structuredContent`, only its first text block is the result; any other
+  content block (an image, a second text) is not passed on, and the
+  observation carries a `content_omitted` notice with the number of blocks.
+- **A server that does not answer costs one wait in a step.** When the
+  listing at a step boundary does not finish within `startup_ms`, a call to that
+  server in the same step is `tool_unavailable` with the same reason at once,
+  without waiting again; the next boundary asks again.
+- **A server's start counts.** The first start of a server is free; every start
+  after it made for a task counts against the restart limit of 3 per task, a
+  start that fails (the program cannot be run, or does not initialize or list)
+  as well as a server that died. Past it the tools are `tool_unavailable` with
+  `restart_limit_reached`, and when the last start failed its reason follows
+  (`restart_limit_reached (last: list:protocol)`).
+- **A server has a session of its own.** On Linux and macOS the server is the
+  leader of a new session (`setsid`) and of its own process group, so it has
+  no controlling terminal; at the end, what it started is killed with it.
