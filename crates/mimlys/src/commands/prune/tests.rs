@@ -223,3 +223,76 @@ fn req_ws_014_a_deletion_that_left_files_says_the_task_is_deleted() {
         failure_line(&task.to_string(), &other)
     );
 }
+
+/// REQ-WS-014, RFC 006 §6: a task deleted with files left is deleted: the run goes on past it,
+/// counts it among the deleted, keeps its paths in `left`, and does not stop (only another error
+/// does, and then the files left are named too).
+#[test]
+fn req_ws_014_a_task_deleted_with_files_left_does_not_stop_the_run() {
+    let found: Vec<Candidate> = (1..=4).map(|n| candidate(n, 0)).collect();
+    let left = |c: &Candidate| {
+        AppError::Runtime(mimlys_core::runtime::RuntimeError::Workspace(
+            mimlys_core::spi::WorkspaceError::NotRemoved {
+                task_id: TaskId::from_uuid(c.task_id.parse().unwrap()),
+                paths: vec![format!("workspaces/{}/tree", c.task_id)],
+            },
+        ))
+    };
+    let mut tried = Vec::new();
+    let outcome = execute(
+        &found,
+        |c| {
+            tried.push(c.task_id.clone());
+            if c.task_id == found[0].task_id {
+                Err(left(c))
+            } else {
+                Ok(c.footprint.clone())
+            }
+        },
+        |_, _| {},
+    );
+    assert_eq!(tried.len(), 4, "every task is tried");
+    assert_eq!(
+        outcome.deleted.len(),
+        4,
+        "the task with files left is deleted"
+    );
+    assert!(outcome.failed.is_none() && outcome.untouched.is_empty());
+    assert_eq!(
+        outcome.left,
+        [(
+            found[0].task_id.clone(),
+            vec![format!("workspaces/{}/tree", found[0].task_id)]
+        )]
+    );
+    let line = crate::messages::prune_left(&outcome.left);
+    assert!(
+        line.contains(&found[0].task_id) && line.contains("next start"),
+        "{line}"
+    );
+    // A failure after it stops the run as before, and the message names the files left as well.
+    let outcome = execute(
+        &found,
+        |c| {
+            if c.task_id == found[0].task_id {
+                Err(left(c))
+            } else if c.task_id == found[1].task_id {
+                Err(AppError::Io {
+                    detail: "disk on fire".into(),
+                })
+            } else {
+                Ok(c.footprint.clone())
+            }
+        },
+        |_, _| {},
+    );
+    assert_eq!(outcome.left.len(), 1);
+    assert_eq!(
+        outcome.failed.as_ref().map(|f| f.0.as_str()),
+        Some(found[1].task_id.as_str())
+    );
+    assert_eq!(
+        outcome.untouched,
+        [found[2].task_id.clone(), found[3].task_id.clone()]
+    );
+}

@@ -3062,7 +3062,7 @@ fn m6a_a_directory_made_unreadable_halts_the_task_and_the_resume_goes_on() {
     assert_eq!(code, 0, "{stderr}");
     assert!(
         text.contains(
-            "halted: part of the workspace could not be read; restore its permissions, then resume"
+            "halted: part of the workspace could not be read; deal with the cause, then resume"
         ),
         "{text}"
     );

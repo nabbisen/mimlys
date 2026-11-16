@@ -5,7 +5,10 @@
 //! is not terminal; a task whose promotion is still reversible is listed as
 //! `kept: promotion reversible` and skipped; audits stay unless `--audit`; a
 //! failure stops the run, leaving the remaining tasks as they were and naming
-//! them.
+//! them. A task deleted with files left (the next start removes them) is not a
+//! failure: it counts as deleted, its paths are listed, the run goes on, and
+//! the command finishes `Partial` (exit 1) so that a script sees that files
+//! remain.
 //!
 //! The selection, the plan and the run are plain functions over data, so that
 //! the rules are tested without a store; `run` joins them to the runtime.
@@ -110,16 +113,25 @@ impl Candidate {
     }
 }
 
+/// The paths a deletion left, when that is what its error says: the task is deleted, and the
+/// next start removes these.
+fn files_left(error: &AppError) -> Option<&[String]> {
+    match error {
+        AppError::Runtime(mimlys_core::runtime::RuntimeError::Workspace(
+            mimlys_core::spi::WorkspaceError::NotRemoved { paths, .. },
+        ))
+        | AppError::Workspace(mimlys_core::spi::WorkspaceError::NotRemoved { paths, .. }) => {
+            Some(paths)
+        }
+        _ => None,
+    }
+}
+
 /// The line for a task whose deletion returned an error. A deletion that left files behind has
 /// deleted the task: its message says so and names the task, so it is not labelled `failed`.
 pub fn failure_line(task_id: &str, error: &AppError) -> String {
-    if matches!(
-        error,
-        AppError::Runtime(mimlys_core::runtime::RuntimeError::Workspace(
-            mimlys_core::spi::WorkspaceError::NotRemoved { .. }
-        ))
-    ) {
-        return error.to_string();
+    if let Some(paths) = files_left(error) {
+        return messages::prune_task_left(task_id, paths);
     }
     messages::prune_failed(task_id, &error.to_string())
 }
@@ -132,8 +144,10 @@ pub fn to_delete(candidates: &[Candidate]) -> Vec<&Candidate> {
 /// What a run did.
 #[derive(Debug, Default)]
 pub struct Outcome {
-    /// The tasks deleted, with what each freed.
+    /// The tasks deleted, with what each freed (a task deleted with files left is among them).
     pub deleted: Vec<(String, Footprint)>,
+    /// The tasks deleted with files left, with the paths: the next start removes them.
+    pub left: Vec<(String, Vec<String>)>,
     /// The task whose deletion failed, and why.
     pub failed: Option<(String, String)>,
     /// The tasks after the failed one, which were not touched.
@@ -141,8 +155,9 @@ pub struct Outcome {
 }
 
 /// Deletes the candidates not kept, one at a time, through `delete`, calling
-/// `report` after each result. The first failure stops the run: the tasks
-/// after it are not touched and are named.
+/// `report` after each result. A deletion that left files behind has deleted the task: the run
+/// goes on, and the paths are kept in `left`. Any other failure stops the run: the tasks after
+/// it are not touched and are named.
 pub fn execute(
     candidates: &[Candidate],
     mut delete: impl FnMut(&Candidate) -> Result<Footprint, AppError>,
@@ -155,6 +170,13 @@ pub fn execute(
         report(c, &result);
         match result {
             Ok(footprint) => out.deleted.push((c.task_id.clone(), footprint)),
+            Err(e) if files_left(&e).is_some() => {
+                out.deleted.push((c.task_id.clone(), c.footprint.clone()));
+                out.left.push((
+                    c.task_id.clone(),
+                    files_left(&e).map(<[String]>::to_vec).unwrap_or_default(),
+                ));
+            }
             Err(e) => {
                 out.failed = Some((c.task_id.clone(), e.to_string()));
                 out.untouched = todo[i + 1..].iter().map(|c| c.task_id.clone()).collect();
@@ -253,9 +275,11 @@ pub fn run(
             Err(e) => out.line(failure_line(&c.task_id, e)),
         },
     );
+    // What a task deleted with files left freed is not known: it is not counted.
     let freed: u64 = outcome
         .deleted
         .iter()
+        .filter(|(id, _)| !outcome.left.iter().any(|(left, _)| left == id))
         .map(|(_, f)| f.workspace_bytes + f.object_bytes_exclusive + f.blob_bytes)
         .sum();
     let report = serde_json::json!({
@@ -267,17 +291,31 @@ pub fn run(
         "freed_bytes": freed,
         "failed": outcome.failed.as_ref().map(|(id, why)| serde_json::json!({ "task_id": id, "error": why })),
         "untouched": outcome.untouched,
+        "left": outcome.left.iter().map(|(id, paths)| serde_json::json!({ "task_id": id, "paths": paths })).collect::<Vec<_>>(),
     });
-    match outcome.failed {
-        None => {
+    match (outcome.failed, outcome.left.is_empty()) {
+        (None, true) => {
             out.line(messages::prune_done(outcome.deleted.len(), freed));
             out.value(&report);
             Ok(())
         }
-        Some((id, why)) => Err(AppError::Partial {
-            message: messages::prune_stopped(&id, &why, &outcome.untouched, outcome.deleted.len()),
-            report,
-        }),
+        // Every task was deleted, and files of some are left for the next start to remove.
+        (None, false) => {
+            out.line(messages::prune_done(outcome.deleted.len(), freed));
+            Err(AppError::Partial {
+                message: messages::prune_left(&outcome.left),
+                report,
+            })
+        }
+        (Some((id, why)), _) => {
+            let mut message =
+                messages::prune_stopped(&id, &why, &outcome.untouched, outcome.deleted.len());
+            if !outcome.left.is_empty() {
+                message.push_str("; ");
+                message.push_str(&messages::prune_left(&outcome.left));
+            }
+            Err(AppError::Partial { message, report })
+        }
     }
 }
 

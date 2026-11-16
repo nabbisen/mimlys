@@ -49,12 +49,16 @@ pub async fn finish(
 
 /// The task view: lines for humans, the object for JSON.
 pub fn print_view(view: &TaskView, out: &Output) {
-    out.line(messages::task_state(
+    out.line(messages::task_state_after(
         &view.task.task_id.to_string(),
         &view.task.state,
+        view.rollback_failed,
     ));
     if let Some(path) = &view.unreadable {
-        out.line(messages::unreadable_line(path));
+        out.line(messages::unreadable_line(
+            path,
+            view.unreadable_kind.as_deref(),
+        ));
     }
     for a in &view.unknown_actions {
         out.line(messages::unknown_action_line(

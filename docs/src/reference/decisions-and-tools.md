@@ -185,18 +185,23 @@ running after a crash is restored at the next start and the task halts
 restore) is recovered again from the start, and every step of the recovery can
 be repeated. If the restore after a cancelled write fails, the failure is
 logged and the task halts `unknown_outcome`, not silently paused on a
-half-restored tree.
+half-restored tree. Every halt that follows a rollback that failed says so: the
+line ends `the workspace was not rolled back`, the halt's event
+(`task.state_changed`) carries `rollback_failed: true` and `task show --json`
+has `rollback_failed: true`. (`unknown_outcome` without that clause is the halt
+of an action that cannot be undone.)
 
 If a part of the task's workspace cannot be read (an action made a directory
 unreadable, or the tree could not be walked), the task halts
-`workspace_unreadable`: the halt names the path and says to restore its
-permissions, then resume (`task show`, `resume`, `run`). A rollback of such a
-tree names the path and changes nothing. When the cause is not a refused
-permission (an entry that vanished during the walk, a failing device), the error
-names the path and the kind of the failure, `part of the workspace could not be
-read: <path> (<kind>)`, and the task halts the same way; the two lines of the
-halt itself still advise restoring permissions then, which will not always be
-the remedy.
+`workspace_unreadable`: the halt names the path and, when the cause is a
+refused permission, says to restore its permissions, then resume (`task show`,
+`resume`, `run`). A rollback of such a tree names the path and changes nothing.
+When the cause is not a refused permission (an entry that vanished during the
+walk, a failing device), the error names the path and the kind of the failure,
+`part of the workspace could not be read: <path> (<kind>)`, and the task halts
+the same way; the event `workspace.unreadable` then carries the `kind`, and the
+lines of the halt give no advice about permissions, which would not be the
+remedy.
 
 A snapshot is a manifest (every file hashed, every time) plus the files'
 contents stored once by hash under the data directory. Two consecutive

@@ -190,6 +190,7 @@ fn sequence_with(
                     from: "created".into(),
                     to: "running".into(),
                     reason: None,
+                    rollback_failed: false,
                 },
             ),
         )
@@ -1026,6 +1027,7 @@ fn crash_child_sequence() {
                     from: "running".into(),
                     to: "running".into(),
                     reason: None,
+                    rollback_failed: false,
                 },
             ),
         )

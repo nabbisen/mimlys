@@ -64,6 +64,7 @@ fn state_changed(from: &Task, to: &Task) -> Event {
             TaskState::Halted { halt_reason } => Some(*halt_reason),
             _ => None,
         },
+        rollback_failed: false,
     }
 }
 

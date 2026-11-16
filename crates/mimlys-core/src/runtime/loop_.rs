@@ -1247,7 +1247,7 @@ impl Runtime {
         loop {
             // Part of the tree could not be read when the action's workspace was restored or
             // snapshotted after it: the task halts naming the path.
-            let mut unreadable_after: Option<String> = None;
+            let mut unreadable_after: Option<(String, Option<String>)> = None;
             step.phase = StepPhase::Execute;
             // The step in flight starts no new action once a stop signal has
             // come (REQ-CLI-005, external design §19.2): read here, before the
@@ -1388,7 +1388,8 @@ impl Runtime {
                                 "the workspace could not be restored; the action was not rolled back"
                             );
                             unknown_after_restore = true;
-                            unreadable_after = unreadable_path(&error).map(str::to_owned);
+                            unreadable_after = unreadable_path(&error)
+                                .map(|u| (u.path.to_owned(), u.kind.map(str::to_owned)));
                         }
                     }
                 } else if status == ObservationStatus::Succeeded {
@@ -1402,7 +1403,10 @@ impl Runtime {
                         // The action ran and is recorded as it ended; there is no snapshot
                         // of what it left, and the task halts naming the path.
                         Err(error) => match unreadable_path(&error) {
-                            Some(path) => unreadable_after = Some(path.to_owned()),
+                            Some(u) => {
+                                unreadable_after =
+                                    Some((u.path.to_owned(), u.kind.map(str::to_owned)))
+                            }
                             None => return Err(error),
                         },
                     }
@@ -1492,12 +1496,18 @@ impl Runtime {
             // restore, or the snapshot after a success, could not read part of the tree, the
             // reason is the one that names the path.
             if unknown_after_restore || unreadable_after.is_some() {
+                // The halt is recorded with the step's end, which says that nothing was rolled
+                // back when the restore is what failed.
+                step.rollback_failed = unknown_after_restore;
                 return self.halt_after_restore(
                     task,
                     step,
                     action.action_id,
                     status == ObservationStatus::Succeeded,
-                    unreadable_after.as_deref(),
+                    unreadable_after.as_ref().map(|(path, kind)| Unread {
+                        path,
+                        kind: kind.as_deref(),
+                    }),
                     ended,
                 );
             }
@@ -1612,14 +1622,18 @@ impl Runtime {
         task: &Task,
         step_id: Option<StepId>,
         action_id: Option<ActionId>,
-        path: &str,
+        unread: Unread<'_>,
         now: Instant,
     ) -> Result<Task, RuntimeError> {
-        let path = bounded_message(path, Some(&self.redactor));
+        let path = bounded_message(unread.path, Some(&self.redactor));
+        let kind = unread
+            .kind
+            .map(|kind| bounded_message(kind, Some(&self.redactor)));
         tracing::warn!(
             target: "mimlys_core",
             task_id = %task.task_id,
             path = %path,
+            kind = kind.as_deref().unwrap_or("permission"),
             "part of the workspace could not be read; the task is halted"
         );
         self.deps.persistence.append_event(&self.event(
@@ -1627,7 +1641,7 @@ impl Runtime {
             Some(task.task_id),
             step_id,
             action_id,
-            Event::WorkspaceUnreadable { path },
+            Event::WorkspaceUnreadable { path, kind },
         ))?;
         Ok(task.transition(TaskInput::Halt(HaltReason::WorkspaceUnreadable), now)?)
     }
@@ -1640,10 +1654,10 @@ impl Runtime {
         task: &Task,
         step_id: Option<StepId>,
         action_id: Option<ActionId>,
-        path: &str,
+        unread: Unread<'_>,
         now: Instant,
     ) -> Result<StepResultView, RuntimeError> {
-        let halted = self.halt_unreadable(task, step_id, action_id, path, now)?;
+        let halted = self.halt_unreadable(task, step_id, action_id, unread, now)?;
         self.persist_task(task, &halted)?;
         Ok(StepResultView {
             outcome: StepOutcome::Halted,
@@ -1660,7 +1674,7 @@ impl Runtime {
         step: Step,
         action_id: ActionId,
         succeeded: bool,
-        unreadable: Option<&str>,
+        unreadable: Option<Unread<'_>>,
         ended: Instant,
     ) -> Result<(Step, Option<ActionOutcome>, Task), RuntimeError> {
         let outcome = if succeeded {
@@ -1669,8 +1683,8 @@ impl Runtime {
             ActionOutcome::Failed
         };
         let halted = match unreadable {
-            Some(path) => {
-                self.halt_unreadable(&task, Some(step.step_id), Some(action_id), path, ended)?
+            Some(unread) => {
+                self.halt_unreadable(&task, Some(step.step_id), Some(action_id), unread, ended)?
             }
             None => task.transition(TaskInput::Halt(HaltReason::UnknownOutcome), ended)?,
         };
@@ -1688,7 +1702,7 @@ impl Runtime {
         error: RuntimeError,
         now: Instant,
     ) -> Result<StepResultView, RuntimeError> {
-        let Some(path) = unreadable_path(&error) else {
+        let Some(unread) = unreadable_path(&error) else {
             return Err(error);
         };
         let cancelled = action
@@ -1707,8 +1721,13 @@ impl Runtime {
                 },
             ),
         )?;
-        let halted =
-            self.halt_unreadable(&task, Some(step.step_id), Some(action.action_id), path, now)?;
+        let halted = self.halt_unreadable(
+            &task,
+            Some(step.step_id),
+            Some(action.action_id),
+            unread,
+            now,
+        )?;
         step.phase = StepPhase::Evaluate;
         self.finish_step_after(task, halted, step, StepOutcome::Halted, None, now)
     }
@@ -1849,14 +1868,15 @@ impl Runtime {
                 }
                 Ok(_) => {}
                 Err(
-                    crate::spi::WorkspaceError::Unreadable { path }
-                    | crate::spi::WorkspaceError::ReadFailed { path, .. },
+                    error @ (crate::spi::WorkspaceError::Unreadable { .. }
+                    | crate::spi::WorkspaceError::ReadFailed { .. }),
                 ) => {
+                    let unread = unread_of(&error).expect("an unreadable tree");
                     after = self.halt_unreadable(
                         &after,
                         Some(step.step_id),
                         step.action_id,
-                        &path,
+                        unread,
                         now,
                     )?;
                 }
@@ -1898,7 +1918,7 @@ impl Runtime {
                 Some(after.task_id),
                 None,
                 None,
-                state_changed(&before, &after),
+                state_changed_after(&before, &after, step.rollback_failed),
             ))?;
         }
         // A request does not outlive a transition (handoff 010e).
@@ -1945,13 +1965,30 @@ impl Runtime {
     }
 }
 
-/// The path of a tree that could not be read, when `error` says so.
-fn unreadable_path(error: &RuntimeError) -> Option<&str> {
+/// A part of the tree that could not be read: its path and, unless it was a refused permission,
+/// the kind of the failure.
+#[derive(Clone, Copy, Debug)]
+struct Unread<'a> {
+    path: &'a str,
+    kind: Option<&'a str>,
+}
+
+/// What the workspace error says of a tree that could not be read.
+fn unread_of(error: &crate::spi::WorkspaceError) -> Option<Unread<'_>> {
     match error {
-        RuntimeError::Workspace(
-            crate::spi::WorkspaceError::Unreadable { path }
-            | crate::spi::WorkspaceError::ReadFailed { path, .. },
-        ) => Some(path),
+        crate::spi::WorkspaceError::Unreadable { path } => Some(Unread { path, kind: None }),
+        crate::spi::WorkspaceError::ReadFailed { path, kind } => Some(Unread {
+            path,
+            kind: Some(kind),
+        }),
+        _ => None,
+    }
+}
+
+/// The tree that could not be read, when `error` says so.
+fn unreadable_path(error: &RuntimeError) -> Option<Unread<'_>> {
+    match error {
+        RuntimeError::Workspace(error) => unread_of(error),
         _ => None,
     }
 }
@@ -1980,13 +2017,21 @@ fn termination_name(termination: &Termination) -> String {
 
 /// The `task.state_changed` event between two task values.
 pub(crate) fn state_changed(before: &Task, after: &Task) -> Event {
+    state_changed_after(before, after, false)
+}
+
+/// As `state_changed`, for a halt that followed a rollback of the workspace that failed
+/// (`rollback_failed`): the event says that nothing was rolled back.
+pub(crate) fn state_changed_after(before: &Task, after: &Task, rollback_failed: bool) -> Event {
+    let reason = match &after.state {
+        TaskState::Halted { halt_reason } => Some(*halt_reason),
+        _ => None,
+    };
     Event::TaskStateChanged {
         from: before.state.name().to_owned(),
         to: after.state.name().to_owned(),
-        reason: match &after.state {
-            TaskState::Halted { halt_reason } => Some(*halt_reason),
-            _ => None,
-        },
+        reason,
+        rollback_failed: rollback_failed && reason.is_some(),
     }
 }
 

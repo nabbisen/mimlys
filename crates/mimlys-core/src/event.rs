@@ -96,6 +96,10 @@ pub enum Event {
         /// Halt reason when the new state is `halted`.
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<HaltReason>,
+        /// Whether the halt followed a rollback of the workspace that failed: nothing was rolled
+        /// back (from 0.11; absent, and read as `false`, in earlier records).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rollback_failed: bool,
     },
     /// The user requested a pause; it takes effect at the next step boundary.
     #[serde(rename = "task.pause_requested")]
@@ -254,6 +258,10 @@ pub enum Event {
     WorkspaceUnreadable {
         /// The path, relative to the task's tree; cleaned and bounded.
         path: String,
+        /// The kind of the failure, in words (`entity not found`), when the cause was not a
+        /// refused permission (from 0.11; absent for a permission and in earlier records).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// A task was recovered at startup.
     #[serde(rename = "task.recovered")]
