@@ -972,6 +972,18 @@ mod snapshots {
         assert!(status.success(), "mkfifo");
     }
 
+    /// Makes a socket at `at`. The path of a socket may not be longer than the system allows
+    /// (104 bytes on macOS), which the path of a test's tree can be: it is bound where the path is
+    /// short, in a directory of its own beside the test's, and moved.
+    #[cfg(unix)]
+    fn make_socket(at: &Path) {
+        let short = tempfile::tempdir().unwrap();
+        let from = short.path().join("s");
+        let listener = std::os::unix::net::UnixListener::bind(&from).unwrap();
+        std::fs::rename(&from, at).unwrap();
+        drop(listener);
+    }
+
     #[cfg(unix)]
     fn is_special(path: &Path) -> bool {
         use std::os::unix::fs::FileTypeExt;
@@ -998,11 +1010,10 @@ mod snapshots {
             put(&fx.tree(), "src/new.rs", "new");
             let target = fx.scope.path().join(name);
             let _ = std::fs::remove_file(&target);
-            let _listener;
             if make {
                 mkfifo(&target);
             } else {
-                _listener = std::os::unix::net::UnixListener::bind(&target).unwrap();
+                make_socket(&target);
             }
             let (p, task, root) = (&fx.p, fx.task, fx.root());
             let err = without_blocking("the plan", || p.promotion_plan(task, &base.record, &root))
@@ -1968,7 +1979,19 @@ mod snapshots {
     #[cfg(unix)]
     #[test]
     fn req_ws_004_a_tree_deeper_than_any_recursion_would_bear_is_walked() {
-        const DEPTH: usize = 30_000;
+        // Linux: far past what a recursive walk bore (it overflowed this thread's stack between 700
+        // and 1000 levels). Elsewhere a smaller chain: a system that finds the path of a deep
+        // directory by walking up from it makes every operation on one cost its depth.
+        const DEPTH: usize = if cfg!(target_os = "linux") {
+            30_000
+        } else {
+            300
+        };
+        const CHAIN: usize = if cfg!(target_os = "linux") {
+            1_500
+        } else {
+            100
+        };
         let fx = Fx::new();
         let deep = fx.tree().join("deep");
         std::fs::create_dir(&deep).unwrap();
@@ -1992,7 +2015,7 @@ mod snapshots {
         // The walk of the snapshot (hashes, manifest) on a chain shorter than a path may be.
         let mut dir =
             cap_std::fs::Dir::open_ambient_dir(fx.tree(), cap_std::ambient_authority()).unwrap();
-        for _ in 0..1_500 {
+        for _ in 0..CHAIN {
             dir.create_dir("d").unwrap();
             dir = dir.open_dir("d").unwrap();
         }
@@ -2002,7 +2025,7 @@ mod snapshots {
             .iter()
             .filter(|e| matches!(e, Entry::Dir { .. }))
             .count();
-        assert_eq!(dirs, 1_500 + 2, "the chain, `src` and `src/deep`");
+        assert_eq!(dirs, CHAIN + 2, "the chain, `src` and `src/deep`");
         let status = std::process::Command::new("rm")
             .arg("-rf")
             .arg(fx.tree().join("d"))
@@ -2023,8 +2046,7 @@ mod snapshots {
         std::fs::remove_file(fx.tree().join("src/lib.rs")).unwrap();
         mkfifo(&fx.tree().join("src/lib.rs"));
         mkfifo(&fx.tree().join("pipe"));
-        let _listener =
-            std::os::unix::net::UnixListener::bind(fx.tree().join("src/socket")).unwrap();
+        make_socket(&fx.tree().join("src/socket"));
         std::fs::create_dir_all(fx.tree().join("made/inside")).unwrap();
         mkfifo(&fx.tree().join("made/inside/pipe"));
         let (p, task) = (&fx.p, fx.task);
