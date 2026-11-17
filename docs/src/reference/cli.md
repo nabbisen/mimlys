@@ -107,6 +107,11 @@ Ctrl-C (and SIGTERM on Unix) once asks for a pause. Three things follow at once:
   (nothing ran, so the record is exact), its observation says that your stop
   signal came before it began, and the task pauses. This holds for every action,
   also for one that needs no approval.
+  The check and the start are one step: a signal never falls between them. An
+  action is either not begun, and then it never begins, or it is already
+  recorded as running when the process looks at what is in flight, and the
+  process then waits for it or interrupts it by its kind, as described below.
+  The signal may wait for one write of the store (a moment) to be sure of that.
 - **No new step begins.** A step that would begin after the signal ends at once,
   without a model request, and the task pauses.
 - The task pauses when what is in flight has finished.

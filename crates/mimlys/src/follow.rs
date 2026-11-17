@@ -63,6 +63,12 @@ trait Interrupt: Send + Sync {
     /// signal makes it before it looks at what is in flight, so that an action
     /// that starts after the look is closed without starting and one that
     /// started before is seen by the look at the grace.
+    ///
+    /// The runtime makes the request at the task's start gate (handoff 010f,
+    /// external design §19.2), so this call returns only when no action is
+    /// being recorded as running: it waits for at most that one durable write
+    /// (the kind of read the look after it makes as well). Then the look finds
+    /// every action that was begun, and none begins after it.
     fn start_no_new_action(&self);
     /// Interrupts what can be undone: the model request, or an action whose
     /// rule after `unknown` (external design §7.2) is re-execution or rollback.
@@ -251,10 +257,13 @@ impl Signals {
         match self.stage.load(Ordering::SeqCst) {
             NONE => {
                 self.stage.store(PAUSE, Ordering::SeqCst);
-                // The request first, the look after it: an action that
-                // slipped past the step's check was started before the look,
-                // and the look (here, or at the grace) sees it; one that
-                // starts after the look finds the request and is not started.
+                // The request first, the look after it. The request is made at
+                // the task's start gate, which a step holds across its check
+                // and the record that its action runs: an action that was
+                // checked before the request is recorded running before the
+                // request returns, so the look sees it; one that is checked
+                // after finds the request and is not begun. No action falls
+                // between the two (A-33).
                 step.start_no_new_action();
                 match step.irreversible() {
                     Some(in_flight) => {

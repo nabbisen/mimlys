@@ -10,6 +10,8 @@ use crate::observation::{Notice, ObservationStatus};
 use crate::spi::{BackendDescriptor, BoxFuture, Cancellation, GenerateRequest, ModelBackend};
 use std::sync::Mutex;
 
+mod start_gate;
+
 /// What the provider asks of the runtime while its action runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ask {
