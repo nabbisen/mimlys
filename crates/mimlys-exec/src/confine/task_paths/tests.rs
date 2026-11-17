@@ -107,6 +107,21 @@ fn req_conf_006_a_non_plain_component_is_refused() {
     // Another task's temporary directory; the task directory itself.
     assert!(names(&tree, &ws.join("b/tmp")).is_err());
     assert!(names(&tree, &ws.join("a")).is_err());
+    // The temporary directory is `tmp` or inside it, never anything else in the
+    // task's directory (handoff 011o, D7: that directory holds the workspace
+    // record, and the tree is not a temporary directory).
+    for elsewhere in [
+        "a/INFO",
+        "a/elsewhere",
+        "a/elsewhere/exec1",
+        "a/tree",
+        "a/tree/x",
+        "a/tmpx",
+    ] {
+        let e = names(&tree, &ws.join(elsewhere)).unwrap_err();
+        assert!(e.contains("do not belong"), "{elsewhere}: {e}");
+    }
+    assert!(names(&tree, &ws.join("a/tmp/exec1/deeper")).is_ok());
     // A name that is not plain on some platform is refused on all.
     assert!(names(&ws.join("a:b/tree"), &ws.join("a:b/tmp")).is_err());
     assert!(names(&ws.join("a./tree"), &ws.join("a./tmp")).is_err());
@@ -188,6 +203,37 @@ fn req_conf_006_task_spec_opens_the_paths_and_refuses_links() {
         &through.join("workspaces/a/tmp"),
     )
     .expect("a data directory reached through a link is the administrator's choice");
+}
+
+/// REQ-CONF-006 (handoff 011o, D5), on every job: each of the runtime's own
+/// directories is refused when it is a link (a symbolic link, or a junction on
+/// Windows), naming it; an ordinary directory and a missing one pass.
+#[test]
+fn req_conf_006_the_runtimes_own_directories_are_never_links() {
+    let (root, data) = data_dir();
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    for name in ["workspaces", "tmp", "interpreters"] {
+        let dir = data.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(refuse_link(&dir), Ok(()), "{name} as a directory");
+        let moved = data.join(format!("{name}-moved"));
+        std::fs::rename(&dir, &moved).unwrap();
+        link(&elsewhere, &dir);
+        let e = refuse_link(&dir).unwrap_err();
+        assert!(
+            e.contains(&dir.display().to_string()) && e.contains("link"),
+            "{name} as a link: {e}"
+        );
+        unlink(&dir);
+        std::fs::rename(&moved, &dir).unwrap();
+        assert_eq!(refuse_link(&dir), Ok(()), "{name} restored");
+    }
+    assert_eq!(
+        refuse_link(&data.join("not-yet")),
+        Ok(()),
+        "a missing directory"
+    );
 }
 
 /// REQ-CONF-006 (handoff 011n item 9), Unix: the descriptors are those of the
