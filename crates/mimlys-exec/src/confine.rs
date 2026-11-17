@@ -427,6 +427,16 @@ impl Confinement for Platform {
             ),
             None => None,
         };
+        // Handoff 011o: a worker made for one task (its specification narrowed to
+        // the task's tree and temporary directory, `task_spec`) carries that task's
+        // capability, the only thing that opens the task's directories to it and
+        // to the tools it starts (they inherit its token). Any other worker (the
+        // probe) carries none and writes nothing of the data directory.
+        let task_capabilities: Vec<Vec<u8>> =
+            match spec.and_then(|s| task_paths::task_of(&s.data_dir, &s.write_paths)) {
+                Some(task) => vec![windows::task_capability(&task).map_err(ConfineError::Tree)?],
+                None => Vec::new(),
+            };
         // External design §13.3: the profile and temporary locations point
         // into `<data>/tmp`; AppContainer creation also requires them.
         let mut env = command.env.clone();
@@ -446,6 +456,7 @@ impl Confinement for Platform {
             container: sid
                 .as_deref()
                 .map(|sid| (sid, spec.is_some_and(|s| !s.deny_network))),
+            capabilities: &task_capabilities,
             job: Some(&job),
             restricted_token: spec.is_some(),
             stdin: windows::Stdin::Piped,

@@ -96,7 +96,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tools_dir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle", "exit", "stdin-read"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle", "exit", "stdin-read", "list"]
 arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
 allow_paths = true
 max_args = 3
@@ -947,7 +947,7 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
         let (code, v) = env.json(&["toolchain", "grant", dir, "--yes"]);
         assert_eq!(code, 0, "{v}");
     }
-    assert_ne!(icacls(&own[0]), before[0], "mimlys's own entry is in force");
+    assert_ne!(icacls(&own[1]), before[1], "mimlys's own entry is in force");
     assert_ne!(icacls(Path::new(&a)), before[3], "the grant is in force");
     let on_worker = icacls(&worker);
     assert!(
@@ -980,8 +980,11 @@ fn req_conf_008_revoke_all_leaves_the_directories_as_they_were() {
         .iter()
         .map(|e| e["path"].as_str().unwrap().to_owned())
         .collect();
+    // The workspaces carry none of the container's entries any more (handoff
+    // 011o: each task's directories carry the task's own), so they are not listed.
     for dir in dirs
         .iter()
+        .skip(1)
         .map(|d| plain(d))
         .chain(std::iter::once(plain(&worker)))
     {
@@ -1395,20 +1398,21 @@ fn req_conf_008_a_host_tool_cannot_change_the_permissions_of_its_files() {
         account(&obs)
     );
     assert_eq!(stdout_of(&obs[6]).trim(), "cycle ok", "{}", account(&obs));
-    // The entry on the workspaces is the stated one.
+    // The container holds no entry of its own on the workspaces any more (each
+    // task's directories carry their task's capability, handoff 011o), and only
+    // the read mask on `<data>/tmp`.
     use mimlys_exec::confine::windows::acl;
     let sid = container_sid(&env);
     let workspaces = env.data.path().join("data/workspaces");
-    assert_eq!(
-        acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
-        acl::EntryState::Applied
-    );
-    assert!(acl::has_entry(&workspaces.join("..").join("tmp"), &sid, acl::Access::Write).unwrap());
+    assert!(!acl::has_any_entry(&workspaces, &sid).unwrap());
+    let tmp = workspaces.join("..").join("tmp");
+    assert!(acl::has_entry(&tmp, &sid, acl::Access::Read).unwrap());
+    assert!(!acl::has_entry(&tmp, &sid, acl::Access::Write).unwrap());
 }
 
 /// REQ-CONF-008, REQ-CONF-006 (the upgrade): an installation of 0.10 holds the
-/// container's `GENERIC_ALL` entry on the workspaces. The next start does not
-/// count it as applied, replaces it by the stated entry in one write, and says
+/// container's `GENERIC_ALL` entry on `<data>/tmp`. The next start does not
+/// count it as applied, replaces it by the read entry in one write, and says
 /// so in the log; the start after that finds nothing to do and says nothing.
 #[test]
 fn req_conf_008_an_old_wide_entry_is_replaced_at_start() {
@@ -1419,16 +1423,16 @@ fn req_conf_008_an_old_wide_entry_is_replaced_at_start() {
         let (_, listed) = env.json(&["toolchain", "list"]);
         listed["container"]["sid"].as_str().unwrap().to_owned()
     };
-    let workspaces = env.data.path().join("data/workspaces");
+    let tmp = env.data.path().join("data/tmp");
     let tools = plain(env.tools.path());
     assert_eq!(
-        acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
+        acl::entry_state(&tmp, &sid, acl::Access::Read).unwrap(),
         acl::EntryState::Applied,
         "the first start wrote the stated entry"
     );
     // The entry of 0.10: full control, for the directory and what lies beneath.
     let planted = Command::new("icacls")
-        .arg(&workspaces)
+        .arg(&tmp)
         .args(["/grant", &format!("*{sid_text}:(OI)(CI)(F)")])
         .output()
         .unwrap();
@@ -1439,7 +1443,7 @@ fn req_conf_008_an_old_wide_entry_is_replaced_at_start() {
     );
     assert!(
         matches!(
-            acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
+            acl::entry_state(&tmp, &sid, acl::Access::Read).unwrap(),
             acl::EntryState::Wrong { .. }
         ),
         "the old entry is not the applied one"
@@ -1451,7 +1455,7 @@ fn req_conf_008_an_old_wide_entry_is_replaced_at_start() {
         "the replacement is in the log:\n{log}"
     );
     assert_eq!(
-        acl::entry_state(&workspaces, &sid, acl::Access::Write).unwrap(),
+        acl::entry_state(&tmp, &sid, acl::Access::Read).unwrap(),
         acl::EntryState::Applied,
         "replaced by the stated entry"
     );
@@ -1461,6 +1465,383 @@ fn req_conf_008_an_old_wide_entry_is_replaced_at_start() {
         !log.contains("replacing the container's permissions"),
         "once, not at every start:\n{log}"
     );
+}
+
+/// Makes the data directory of an environment look as a start of 0.10 leaves it
+/// (two tasks already made): the container's `(OI)(CI)(F)` entry on
+/// `<data>/workspaces` and on `<data>/tmp` (it reaches every file beneath, so
+/// every task's tree), none of any task's own, and a record without the flag
+/// of the migration. Returns the container's SID.
+fn as_ten_left_it(env: &Env, tasks: &[String]) -> Vec<u8> {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let sid = container_sid(env);
+    let sid_text = {
+        let (_, listed) = env.json(&["toolchain", "list"]);
+        listed["container"]["sid"].as_str().unwrap().to_owned()
+    };
+    let data = env.data.path().join("data");
+    for task in tasks {
+        let cap = task_capability(task).unwrap();
+        for sub in ["tree", "tmp"] {
+            acl::revoke(&data.join("workspaces").join(task).join(sub), &cap).unwrap();
+        }
+    }
+    for dir in ["workspaces", "tmp"] {
+        let planted = Command::new("icacls")
+            .arg(data.join(dir))
+            .args(["/grant", &format!("*{sid_text}:(OI)(CI)(F)")])
+            .output()
+            .unwrap();
+        assert!(
+            planted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&planted.stdout)
+        );
+    }
+    let record_file = data.join("toolchain-acls.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&record_file).unwrap()).unwrap();
+    record
+        .as_object_mut()
+        .unwrap()
+        .remove("task_entries_migrated");
+    std::fs::write(&record_file, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    sid
+}
+
+/// Two tasks made by a script of one `ok` and a completion; their ids.
+fn two_tasks(env: &Env) -> Vec<String> {
+    let scope = env.scope();
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let (code, value) = env.json(&[
+            "run",
+            "make a task",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ]);
+        assert_eq!(code, 0, "{value}");
+        ids.push(value["task"]["task_id"].as_str().unwrap().to_owned());
+    }
+    ids
+}
+
+/// REQ-CONF-006, REQ-CONF-008 (handoff 011o, the migration), on the Windows job:
+/// a data directory as 0.10 leaves it, with two tasks, becomes the new layout at
+/// the next start: the container holds nothing on the workspaces and only the
+/// read mask on `<data>/tmp`, each task's `tree` and `tmp` carry their task's
+/// entry and no other's (the files already there are reached through it), the
+/// record says so, `status` says so in one line until then, and a second start
+/// changes nothing (read back from the directories; the record is the same
+/// bytes).
+#[test]
+fn req_conf_006_the_first_start_of_this_release_gives_each_task_its_own_entry() {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let env = Env::new(&[probe(&["write", "mine.txt"]), complete()], "").ready();
+    let ids = two_tasks(&env);
+    let sid = as_ten_left_it(&env, &ids);
+    let data = env.data.path().join("data");
+    let workspaces = data.join("workspaces");
+    assert!(
+        acl::has_any_entry(&workspaces, &sid).unwrap(),
+        "0.10's entry"
+    );
+    let (_, status_text, _) = env.run(&["status"]);
+    assert!(
+        status_text.contains("not yet moved to this release's layout"),
+        "{status_text}"
+    );
+    let tools = plain(env.tools.path());
+    // The next start does it.
+    let (code, _, log) = env.run(&["--json", "toolchain", "grant", &tools, "--yes"]);
+    assert_eq!(code, 0, "{log}");
+    assert!(
+        !acl::has_any_entry(&workspaces, &sid).unwrap(),
+        "removed from the workspaces"
+    );
+    assert!(acl::has_entry(&data.join("tmp"), &sid, acl::Access::Read).unwrap());
+    assert!(!acl::has_entry(&data.join("tmp"), &sid, acl::Access::Write).unwrap());
+    for (i, id) in ids.iter().enumerate() {
+        let mine = task_capability(id).unwrap();
+        let other = task_capability(&ids[1 - i]).unwrap();
+        for sub in ["tree", "tmp"] {
+            let dir = workspaces.join(id).join(sub);
+            assert!(
+                acl::has_entry(&dir, &mine, acl::Access::Write).unwrap(),
+                "{id} {sub}"
+            );
+            assert!(
+                !acl::has_any_entry(&dir, &other).unwrap(),
+                "{id} {sub}: not the other task's"
+            );
+            assert!(
+                !acl::has_any_entry(&dir, &sid).unwrap(),
+                "{id} {sub}: not the container's"
+            );
+        }
+        assert!(
+            !acl::has_any_entry(&workspaces.join(id), &mine).unwrap(),
+            "{id}: none on the task's directory"
+        );
+    }
+    let (_, status_text, _) = env.run(&["status"]);
+    assert!(!status_text.contains("not yet moved"), "{status_text}");
+    let record_file = data.join("toolchain-acls.json");
+    let record: Value = serde_json::from_slice(&std::fs::read(&record_file).unwrap()).unwrap();
+    assert_eq!(record["task_entries_migrated"], true);
+    let first = std::fs::read(&record_file).unwrap();
+    let (code, _, log) = env.run(&["--json", "toolchain", "grant", &tools, "--yes"]);
+    assert_eq!(code, 0, "{log}");
+    assert!(
+        !log.contains("giving task"),
+        "the second start has nothing to do:\n{log}"
+    );
+    assert_eq!(std::fs::read(&record_file).unwrap(), first);
+    // A tool of a migrated task still writes its tree.
+    let (code, value) = env.json(&[
+        "run",
+        "again",
+        "--scope",
+        env.scope().to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    assert!(env.tree(&id).join("mine.txt").exists());
+}
+
+/// REQ-CONF-006, REQ-CONF-008 (handoff 011o): a start interrupted after the
+/// first task is finished by the next start: the second task gets its entry,
+/// nothing is recorded before. (The state an interruption leaves is made by
+/// giving the first task its entries and leaving the second without, with the
+/// record's flag absent.)
+#[test]
+fn req_conf_006_a_migration_stopped_in_the_middle_is_finished() {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let env = Env::new(&[probe(&["ok"]), complete()], "").ready();
+    let ids = two_tasks(&env);
+    let sid = as_ten_left_it(&env, &ids);
+    let workspaces = env.data.path().join("data/workspaces");
+    let first = task_capability(&ids[0]).unwrap();
+    for sub in ["tree", "tmp"] {
+        acl::grant(
+            &workspaces.join(&ids[0]).join(sub),
+            &first,
+            acl::Access::Write,
+        )
+        .unwrap();
+    }
+    let (code, _, log) = env.run(&[
+        "--json",
+        "toolchain",
+        "grant",
+        &plain(env.tools.path()),
+        "--yes",
+    ]);
+    assert_eq!(code, 0, "{log}");
+    let second = task_capability(&ids[1]).unwrap();
+    for sub in ["tree", "tmp"] {
+        assert!(
+            acl::has_entry(
+                &workspaces.join(&ids[1]).join(sub),
+                &second,
+                acl::Access::Write
+            )
+            .unwrap(),
+            "the second task got its entry: {sub}"
+        );
+    }
+    assert!(!acl::has_any_entry(&workspaces, &sid).unwrap());
+}
+
+/// REQ-CONF-006, REQ-CONF-008 (handoff 011o; A-06 on Windows, ROADMAP's "done
+/// when"), on the Windows job: a host tool of one task cannot open another
+/// task's tree or temporary directory, for reading, writing or listing, cannot
+/// list `<data>/workspaces` nor its own task's directory, and cannot write its
+/// own task's workspace record; it reads and writes its own tree and its own
+/// temporary directory. The tools of the first task wrote the files the second
+/// tries to reach, so a denial is the permission's and not a missing file.
+#[test]
+fn req_conf_006_a_host_tool_reaches_only_its_own_task() {
+    let env = Env::new(
+        &[
+            probe(&["write", "secret.txt"]),
+            probe(&["write", "..\\tmp\\secret-tmp.txt"]),
+            complete(),
+        ],
+        "",
+    )
+    .ready();
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "make secrets",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let a_id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let a_tree = env.tree(&a_id);
+    let a_dir = a_tree.parent().unwrap().to_path_buf();
+    let a_tmp = a_dir.join("tmp");
+    assert!(
+        a_tree.join("secret.txt").exists(),
+        "the first task wrote its file"
+    );
+    assert!(a_tmp.join("secret-tmp.txt").exists());
+    let workspaces = a_dir.parent().unwrap().to_path_buf();
+    let text = |p: &std::path::Path| p.to_string_lossy().into_owned();
+    let denied_reads = [
+        probe(&["read", &text(&a_tree.join("secret.txt"))]),
+        probe(&["write", &text(&a_tree.join("planted.txt"))]),
+        probe(&["list", &text(&a_tree)]),
+        probe(&["read", &text(&a_tmp.join("secret-tmp.txt"))]),
+        probe(&["write", &text(&a_tmp.join("planted.txt"))]),
+        probe(&["list", &text(&a_tmp)]),
+        probe(&["list", &text(&workspaces)]),
+        probe(&["list", &text(&a_dir)]),
+        // Its own task's record, and its own task's directory.
+        probe(&["write", "..\\workspace.json"]),
+        probe(&["list", ".."]),
+    ];
+    let allowed = [
+        probe(&["write", "own.txt"]),
+        probe(&["read", "own.txt"]),
+        probe(&["write", "..\\tmp\\own-tmp.txt"]),
+    ];
+    let mut script: Vec<Value> = denied_reads.to_vec();
+    script.extend(allowed.iter().cloned());
+    script.push(complete());
+    std::fs::write(
+        env.data.path().join("script.json"),
+        serde_json::to_string(&script).unwrap(),
+    )
+    .unwrap();
+    let (code, value) = env.json(&[
+        "run",
+        "reach the other task",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let b_id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    assert_ne!(a_id, b_id);
+    let obs = env.observations(&b_id);
+    assert_eq!(obs.len(), script.len() - 1, "{}", account(&obs));
+    for (index, what) in [
+        "read A's file",
+        "write A's tree",
+        "list A's tree",
+        "read A's temporary file",
+        "write A's temporary directory",
+        "list A's temporary directory",
+        "list the workspaces",
+        "list A's task directory",
+        "write its own task's record",
+        "list its own task's directory",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(exit_code_of(&obs[index]), 3, "{what}: {}", account(&obs));
+        assert!(
+            stdout_of(&obs[index]).contains("PermissionDenied"),
+            "{what} is refused by the permission: {}",
+            account(&obs)
+        );
+    }
+    for (offset, what) in [
+        "write its tree",
+        "read its tree",
+        "write its temporary directory",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(
+            exit_code_of(&obs[denied_reads.len() + offset]),
+            0,
+            "{what}: {}",
+            account(&obs)
+        );
+    }
+    // Nothing of the first task changed, and the second task's record is its own.
+    assert!(!a_tree.join("planted.txt").exists());
+    assert!(!a_tmp.join("planted.txt").exists());
+    assert_eq!(std::fs::read(a_tree.join("secret.txt")).unwrap(), b"x");
+    let b_info = std::fs::read(env.tree(&b_id).parent().unwrap().join("workspace.json")).unwrap();
+    assert!(
+        serde_json::from_slice::<Value>(&b_info).is_ok(),
+        "the workspace record was not written by the tool"
+    );
+    assert!(env.tree(&b_id).join("own.txt").exists());
+}
+
+/// REQ-CONF-008, REQ-CONF-006 (handoff 011o): `toolchain list` counts the tasks
+/// that carry their own entries in one line (never one line each);
+/// `toolchain revoke --all` removes them, finding the tasks on disk (the record
+/// holds none), says so in one line, and the next start gives them back.
+#[test]
+fn req_conf_008_revoke_all_removes_the_per_task_entries_and_list_counts_them() {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let env = Env::new(&[probe(&["ok"]), complete()], "").ready();
+    let ids = two_tasks(&env);
+    let (_, text, _) = env.run(&["toolchain", "list"]);
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.contains("per-task entries on"))
+            .collect::<Vec<_>>(),
+        ["per-task entries on 2 task(s)"],
+        "one summary line:\n{text}"
+    );
+    let (code, listed) = env.json(&["toolchain", "list"]);
+    assert_eq!(code, 0, "{listed}");
+    assert_eq!(listed["container"]["per_task_entries"], 2, "{listed}");
+    let (code, report) = env.json(&["toolchain", "revoke", "--all", "--yes"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["per_task_entries"]["removed"], 2, "{report}");
+    assert_eq!(
+        report["per_task_entries"]["failed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "{report}"
+    );
+    let workspaces = env.data.path().join("data/workspaces");
+    for id in &ids {
+        let cap = task_capability(id).unwrap();
+        for sub in ["tree", "tmp"] {
+            assert!(
+                !acl::has_any_entry(&workspaces.join(id).join(sub), &cap).unwrap(),
+                "{id} {sub}: removed"
+            );
+        }
+    }
+    // The next start gives them back (the record is gone, so the migration runs again).
+    let (code, _, log) = env.run(&[
+        "--json",
+        "toolchain",
+        "grant",
+        &plain(env.tools.path()),
+        "--yes",
+    ]);
+    assert_eq!(code, 0, "{log}");
+    for id in &ids {
+        let cap = task_capability(id).unwrap();
+        for sub in ["tree", "tmp"] {
+            assert!(
+                acl::has_entry(&workspaces.join(id).join(sub), &cap, acl::Access::Write).unwrap(),
+                "{id} {sub}: given back"
+            );
+        }
+    }
 }
 
 /// REQ-CONF-008 (A-23): a corrupt permission record stops the start with the

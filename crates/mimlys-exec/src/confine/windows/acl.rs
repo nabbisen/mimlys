@@ -734,7 +734,7 @@ pub fn ensure_entry(path: &Path, sid: &[u8], access: Access) -> Result<Ensured, 
     if let Some(mask) = held {
         tracing::info!(
             target: "mimlys_worker",
-            "replacing the container's permissions on {}: they were {mask:#x}, wider than read, write, execute and delete (a tool could change the permissions of its files); they are now {:#x}",
+            "replacing the container's permissions on {}: they were {mask:#x}, not the wanted entry (wider, or missing a right); they are now {:#x}",
             dir.shown(),
             wanted_mask(access)
         );

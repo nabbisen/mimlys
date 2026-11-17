@@ -35,6 +35,53 @@ fn provider(data: &Path) -> LocalWorkspaces {
     LocalWorkspaces::new(data.to_path_buf(), patterns(), 10_000, 100).unwrap()
 }
 
+/// REQ-CONF-006 (handoff 011o; Windows): a workspace is made with its task's
+/// entry on `tree` and on `tmp`, written while they were empty, so the files
+/// copied into the tree carry it; the task's directory, which holds the
+/// workspace record, carries none; another task's capability is on neither; and
+/// a fork gets its own. Elsewhere nothing is written and nothing is read back.
+#[cfg(windows)]
+#[test]
+fn req_conf_006_a_workspace_is_made_with_its_tasks_entries() {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let scope = scope();
+    let data = tempfile::tempdir().unwrap();
+    let ids = ScriptedIds::default();
+    let (task, other) = (TaskId::new(&ids), TaskId::new(&ids));
+    let p = provider(data.path());
+    p.materialize(
+        task,
+        &ScopeSpec {
+            root: scope.path().to_string_lossy().into_owned(),
+            include: vec![],
+        },
+    )
+    .unwrap();
+    let mine = task_capability(&task.to_string()).unwrap();
+    let theirs = task_capability(&other.to_string()).unwrap();
+    let dir = data.path().join("workspaces").join(task.to_string());
+    for sub in ["tree", "tmp"] {
+        assert!(
+            acl::has_entry(&dir.join(sub), &mine, acl::Access::Write).unwrap(),
+            "{sub} carries the task's entry"
+        );
+        assert!(!acl::has_any_entry(&dir.join(sub), &theirs).unwrap());
+    }
+    assert!(
+        !acl::has_any_entry(&dir, &mine).unwrap(),
+        "not the task's directory"
+    );
+    assert!(
+        !acl::has_any_entry(&dir.join(super::INFO_FILE), &mine).unwrap(),
+        "not the record"
+    );
+    // The entry reached the copied file by inheritance, not by an entry of its own.
+    let copied = dir.join("tree").join("src").join("lib.rs");
+    assert!(copied.is_file());
+    assert!(!acl::has_any_entry(&copied, &mine).unwrap());
+    assert!(!acl::has_any_entry(&dir.join("tree").join("src"), &mine).unwrap());
+}
+
 /// REQ-WS-002 / REQ-WS-003: the copy has the project files and none of the
 /// LIM-W4 or LIM-W5 entries; the measured numbers count what was copied.
 #[test]

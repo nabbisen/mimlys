@@ -278,6 +278,9 @@ pub struct SpawnOptions<'a> {
     /// The AppContainer to run in, as its SID, and whether the internet
     /// client capability is granted (the dependency step only).
     pub container: Option<(&'a [u8], bool)>,
+    /// Capability SIDs the container's token carries besides the network one:
+    /// the task's own, for a worker made for one task (handoff 011o).
+    pub capabilities: &'a [Vec<u8>],
     /// The job to belong to before the first instruction runs.
     pub job: Option<&'a Job>,
     /// Try a restricted, low-integrity primary token first (clause P).
@@ -577,6 +580,62 @@ pub fn legacy_profile_name(data_dir: &Path) -> String {
     super::acl_rules::profile_name_for_spelling(&data_dir.to_string_lossy())
 }
 
+/// The capability SID derived from a name (`DeriveCapabilitySidsFromName`; the
+/// first of the capability SIDs, `S-1-15-3-1024-...`): the same SID for the
+/// same name on every machine, and no profile or registration behind it.
+pub fn derive_capability(name: &str) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
+    let name_w = wide(OsStr::new(name));
+    let mut groups: *mut PSID = std::ptr::null_mut();
+    let mut group_count = 0u32;
+    let mut capabilities: *mut PSID = std::ptr::null_mut();
+    let mut capability_count = 0u32;
+    // SAFETY: the name is null-terminated UTF-16; the four out pointers are valid; the arrays and their SIDs are allocated by the system and freed below.
+    let ok = unsafe {
+        DeriveCapabilitySidsFromName(
+            name_w.as_ptr(),
+            &mut groups,
+            &mut group_count,
+            &mut capabilities,
+            &mut capability_count,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "DeriveCapabilitySidsFromName({name}) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let first = if capability_count > 0 && !capabilities.is_null() {
+        // SAFETY: the array holds `capability_count` valid SID pointers.
+        Some(copy_sid(unsafe { *capabilities }))
+    } else {
+        None
+    };
+    // SAFETY: each SID and each array was allocated by the system for the caller to free once with LocalFree.
+    unsafe {
+        for i in 0..capability_count as usize {
+            LocalFree((*capabilities.add(i)).cast());
+        }
+        if !capabilities.is_null() {
+            LocalFree(capabilities.cast());
+        }
+        for i in 0..group_count as usize {
+            LocalFree((*groups.add(i)).cast());
+        }
+        if !groups.is_null() {
+            LocalFree(groups.cast());
+        }
+    }
+    first.ok_or_else(|| format!("DeriveCapabilitySidsFromName({name}) returned no capability"))
+}
+
+/// The capability a task's host tools carry (handoff 011o): derived from the
+/// task's identifier alone.
+pub fn task_capability(task: &str) -> Result<Vec<u8>, String> {
+    derive_capability(&super::acl_rules::task_capability_name(task))
+}
+
 /// Creates the AppContainer profile when it does not exist and returns its
 /// SID as bytes (the same SID whether created now or earlier).
 pub fn ensure_profile(name: &str) -> Result<Vec<u8>, String> {
@@ -774,17 +833,27 @@ pub fn spawn(opts: SpawnOptions<'_>) -> Result<RawChild, String> {
         ));
     }
     let internet = well_known_sid(WinCapabilityInternetClientSid);
-    let mut capability = SID_AND_ATTRIBUTES {
-        Sid: std::ptr::null_mut(),
-        Attributes: SE_GROUP_ENABLED as u32,
-    };
+    // The capabilities the token carries: the network one for the dependency
+    // step, and the task's own (the SIDs stay alive until the call returns).
+    let mut capability_list: Vec<SID_AND_ATTRIBUTES> = Vec::new();
     let mut caps = SECURITY_CAPABILITIES::default();
     if let Some((sid, allow_network)) = opts.container {
         caps.AppContainerSid = sid.as_ptr() as PSID;
         if allow_network && let Some(net) = &internet {
-            capability.Sid = net.as_ptr() as PSID;
-            caps.Capabilities = &mut capability;
-            caps.CapabilityCount = 1;
+            capability_list.push(SID_AND_ATTRIBUTES {
+                Sid: net.as_ptr() as PSID,
+                Attributes: SE_GROUP_ENABLED as u32,
+            });
+        }
+        for extra in opts.capabilities {
+            capability_list.push(SID_AND_ATTRIBUTES {
+                Sid: extra.as_ptr() as PSID,
+                Attributes: SE_GROUP_ENABLED as u32,
+            });
+        }
+        if !capability_list.is_empty() {
+            caps.Capabilities = capability_list.as_mut_ptr();
+            caps.CapabilityCount = capability_list.len() as u32;
         }
         inject("attribute_capabilities")?;
         // SAFETY: `caps` and the SIDs it points at outlive the CreateProcess call below.

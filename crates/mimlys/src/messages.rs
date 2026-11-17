@@ -511,15 +511,25 @@ pub fn toolchain_revoke_runtime_path(path: &str) -> String {
 /// `toolchain revoke --all` where nothing was changed outside the data directory.
 pub const TOOLCHAIN_REVOKE_ALL_NOTHING: &str = "nothing was changed outside the data directory on this platform, so there is nothing to remove (only Windows changes directory permissions)";
 /// `toolchain revoke --all`: the plan.
-pub fn toolchain_revoke_all_plan(profile: &str, rows: &[(String, &str, &str)]) -> Vec<String> {
+pub fn toolchain_revoke_all_plan(
+    profile: &str,
+    rows: &[(String, &str, &str)],
+    tasks: Option<usize>,
+) -> Vec<String> {
     let mut lines = vec![format!(
         "container       {profile} (the AppContainer profile will be deleted)"
     )];
-    if rows.is_empty() {
+    if rows.is_empty() && tasks.unwrap_or(0) == 0 {
         lines.push("no directory carries a permission for the container".to_owned());
     }
     for (path, source, found) in rows {
         lines.push(format!("remove          {path}  ({source}, {found})"));
+    }
+    if let Some(count) = tasks.filter(|n| *n > 0) {
+        lines.push(format!(
+            "remove          {}  (found by scan)",
+            task_entries_summary(count)
+        ));
     }
     lines.push(
         "mimlys applies the entries of its own directories again at its next start; delete the data directory too if mimlys is being uninstalled"
@@ -527,12 +537,24 @@ pub fn toolchain_revoke_all_plan(profile: &str, rows: &[(String, &str, &str)]) -
     );
     lines
 }
+/// The per-task permissions as one line (`toolchain list`, `toolchain revoke
+/// --all`): how many tasks carry their own entry on their tree and temporary
+/// directory (Windows, handoff 011o). Never one line per task.
+pub fn task_entries_summary(count: usize) -> String {
+    format!("per-task entries on {count} task(s)")
+}
+/// `status`: the one-time migration of 0.11 has not finished (Windows).
+pub const MIGRATION_PENDING: &str = "permissions     not yet moved to this release's layout (the container and the per-task entries): the next command that starts mimlys does it once, which can take a while on a data directory with many tasks; a tool whose permission is read from the new container may show as unavailable until then";
 /// `toolchain revoke --all`: the question.
 pub fn toolchain_revoke_all_confirm(count: usize, profile: &str) -> String {
     format!("Remove {count} permission(s) and delete the container profile {profile}?")
 }
 /// `toolchain revoke --all`: without a terminal and without `--yes`.
 pub const TOOLCHAIN_REVOKE_ALL_NEEDS_YES: &str = "nothing changed; `toolchain revoke --all` asks before it removes anything: run it in a terminal or add --yes";
+/// `toolchain revoke --all`: the per-task entries removed.
+pub fn toolchain_revoke_all_tasks_removed(count: usize) -> String {
+    format!("removed         {}", task_entries_summary(count))
+}
 /// `toolchain revoke --all`: one line per result.
 pub fn toolchain_revoke_all_removed(path: &str) -> String {
     format!("removed         {path}")

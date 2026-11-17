@@ -82,6 +82,11 @@ pub struct Record {
     /// The entries applied.
     #[serde(default)]
     pub entries: Vec<Entry>,
+    /// The one-time migration of 0.11 (handoff 011o) has finished: the
+    /// container holds no entry on the workspaces, and each task's `tree` and
+    /// `tmp` carry their own. A record of an earlier release reads as `false`.
+    #[serde(default)]
+    pub task_entries_migrated: bool,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -204,6 +209,10 @@ pub struct Container {
     pub sid_text: String,
     /// The entries on record.
     pub record: Record,
+    /// A command that only reads found the migration of handoff 011o not
+    /// finished (the container is still the earlier one, or the entries are not
+    /// yet per task): the next start finishes it, and `status` says so.
+    pub migration_pending: bool,
 }
 
 /// The directories mimlys itself needs the container to reach.
@@ -246,10 +255,11 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
     let mut changed = move_container(&mut record, &profile, &sid, paths)?;
     record.profile = profile.clone();
     record.sid = sid_string(&sid);
-    let mut wanted: Vec<(PathBuf, Access)> = vec![
-        (paths.workspaces.to_path_buf(), Access::Write),
-        (paths.tmp.to_path_buf(), Access::Write),
-    ];
+    // The container's own entries (handoff 011o): the temporary directory is
+    // readable and nothing more, and `<data>/workspaces` and the task
+    // directories hold none (each task's `tree` and `tmp` carry their task's
+    // capability instead, [`task_entries`]).
+    let mut wanted: Vec<(PathBuf, Access)> = vec![(paths.tmp.to_path_buf(), Access::Read)];
     wanted.extend(paths.read.iter().map(|p| (p.clone(), Access::Read)));
     for (path, access) in wanted {
         if !path.exists() {
@@ -274,6 +284,14 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
             changed = true;
         }
     }
+    // The one-time migration (handoff 011o): the container's entry leaves the
+    // workspaces, each existing task's `tree` and `tmp` get theirs, and only
+    // then is it recorded; until it is, every start repeats what is left.
+    if !record.task_entries_migrated {
+        migrate_to_task_entries(&sid, paths, &mut record)?;
+        record.task_entries_migrated = true;
+        changed = true;
+    }
     if changed || !data_dir.join(RECORD_FILE).exists() {
         record.save(data_dir)?;
     }
@@ -282,7 +300,219 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
         sid_text: record.sid.clone(),
         sid,
         record,
+        migration_pending: false,
     }))
+}
+
+/// One task's directories under `<data>/workspaces`, as found on disk.
+#[cfg(windows)]
+struct TaskDirs {
+    /// The directory's name, the task's identifier.
+    name: String,
+    tree: PathBuf,
+    tmp: PathBuf,
+}
+
+/// The tasks found under `workspaces`: a directory whose name is a plain
+/// name and that is not a link, with the `tree` and `tmp` it holds (a missing
+/// one is left out). Nothing is followed.
+#[cfg(windows)]
+fn task_dirs(workspaces: &Path) -> Vec<TaskDirs> {
+    use mimlys_exec::confine::task_paths::is_plain_name;
+    use std::os::windows::fs::MetadataExt;
+    let Ok(listing) = std::fs::read_dir(workspaces) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in listing.flatten() {
+        let name = entry.file_name();
+        let dir = entry.path();
+        // A link is not a task's directory: nothing is followed.
+        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if !is_plain_name(&name)
+            || meta.file_type().is_symlink()
+            || meta.file_attributes() & 0x400 != 0
+            || !meta.is_dir()
+        {
+            continue;
+        }
+        let Some(name) = name.to_str().map(str::to_owned) else {
+            continue;
+        };
+        found.push(TaskDirs {
+            tree: dir.join("tree"),
+            tmp: dir.join("tmp"),
+            name,
+        });
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+/// The migration of handoff 011o (item 4), in the order that is safe to stop
+/// anywhere in: (1) the container's entry on `<data>/workspaces` is removed
+/// (the one write that propagates to every file; nothing else runs yet);
+/// (2) each existing task's `tree` and `tmp` receive the task's entry, a task
+/// at a time, skipping the ones that already have it (the entries on a
+/// directory full of files reach them by the same propagation, measured at
+/// 0.04 s per 1 000 files in spike W1); the record's stale entry for the
+/// workspaces goes, and the temporary directory's reads as read. The caller
+/// records the migration after this returns, so a start that stops anywhere in
+/// it is repeated, and each step skips what is already done.
+#[cfg(windows)]
+fn migrate_to_task_entries(
+    container: &[u8],
+    paths: &RuntimePaths<'_>,
+    record: &mut Record,
+) -> Result<(), AppError> {
+    use mimlys_exec::confine::windows::acl;
+    if paths.workspaces.exists()
+        && acl::has_any_entry(paths.workspaces, container)
+            .map_err(|detail| AppError::Io { detail })?
+    {
+        tracing::info!(
+            "removing the container's permission from {} (every task's tool could reach every other task); this changes every file beneath it and may take a while",
+            paths.workspaces.display()
+        );
+        acl::revoke(paths.workspaces, container).map_err(acl_error)?;
+    }
+    let tasks = task_dirs(paths.workspaces);
+    for (done, task) in tasks.iter().enumerate() {
+        tracing::info!(
+            "giving task {} its own permission ({} of {})",
+            task.name,
+            done + 1,
+            tasks.len()
+        );
+        // A directory that is not there (a task whose creation stopped) is left
+        // alone: it holds nothing to reach, and must not stop every start.
+        for dir in [&task.tree, &task.tmp] {
+            if dir.is_dir() {
+                give_task_entry(&task.name, dir).map_err(|detail| AppError::Io {
+                    detail: format!("task {}: {detail}", task.name),
+                })?;
+            }
+        }
+    }
+    let workspaces = normalized(paths.workspaces);
+    record.entries.retain(|e| !same_path(&e.path, &workspaces));
+    let tmp = normalized(paths.tmp);
+    for e in &mut record.entries {
+        if same_path(&e.path, &tmp) {
+            e.access = Access::Read;
+        }
+    }
+    Ok(())
+}
+
+/// Gives a task's `tree` and `tmp` the entry of the task's capability (handoff
+/// 011o, item 2): one inheritable entry each, with the write mask, written
+/// under the directory's lock through its handle. At the creation of a
+/// workspace the directories are empty, so the system's propagation has
+/// nothing to walk (spike W1: the entry first costs the copy alone). `Err` is
+/// the reason, beginning `acl_not_applied:`. Nothing on other platforms.
+#[cfg(windows)]
+pub fn task_entries(task: &str, tree: &Path, tmp: &Path) -> Result<(), String> {
+    for dir in [tree, tmp] {
+        give_task_entry(task, dir)?;
+    }
+    Ok(())
+}
+
+/// One directory's entry for a task (see [`task_entries`]): a directory that
+/// already has it is not written again.
+#[cfg(windows)]
+fn give_task_entry(task: &str, dir: &Path) -> Result<(), String> {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let reason = |e: &dyn std::fmt::Display| {
+        let text = e.to_string();
+        if text.starts_with("acl_not_applied") {
+            text
+        } else {
+            format!("acl_not_applied: {text}")
+        }
+    };
+    let capability = task_capability(task).map_err(|e| reason(&e))?;
+    acl::ensure_entry(dir, &capability, acl::Access::Write).map_err(|e| reason(&e))?;
+    Ok(())
+}
+
+/// Nothing to give: Landlock and Seatbelt take the task's paths from its worker.
+#[cfg(not(windows))]
+pub fn task_entries(_task: &str, _tree: &Path, _tmp: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// How many tasks carry their capability's entry on their `tree` now, read
+/// from the directories (`toolchain list`, Windows); `None` elsewhere.
+#[cfg(windows)]
+pub fn task_entry_count(data_dir: &Path) -> Option<usize> {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let tasks = task_dirs(&data_dir.join("workspaces"));
+    Some(
+        tasks
+            .iter()
+            .filter(|t| {
+                task_capability(&t.name)
+                    .ok()
+                    .and_then(|cap| acl::has_any_entry(&t.tree, &cap).ok())
+                    .unwrap_or(false)
+            })
+            .count(),
+    )
+}
+
+/// No per-task entries on this platform.
+#[cfg(not(windows))]
+pub fn task_entry_count(_data_dir: &Path) -> Option<usize> {
+    None
+}
+
+/// What `toolchain revoke --all` did to the per-task entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TaskRevoke {
+    /// Tasks that had an entry and no longer do.
+    pub removed: usize,
+    /// Directories whose entry could not be removed, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
+/// Removes every task's entry from its `tree` and `tmp` (Windows), finding the
+/// tasks on disk: the record holds none of them (a task's entry is written with
+/// its workspace, never recorded, so the creation of a task is one write).
+#[cfg(windows)]
+pub fn revoke_task_entries(data_dir: &Path) -> TaskRevoke {
+    use mimlys_exec::confine::windows::{acl, task_capability};
+    let mut outcome = TaskRevoke::default();
+    for task in task_dirs(&data_dir.join("workspaces")) {
+        let Ok(cap) = task_capability(&task.name) else {
+            continue;
+        };
+        let mut had = false;
+        for dir in [&task.tree, &task.tmp] {
+            if !dir.exists() || !acl::has_any_entry(dir, &cap).unwrap_or(false) {
+                continue;
+            }
+            had = true;
+            if let Err(e) = acl::revoke(dir, &cap) {
+                outcome
+                    .failed
+                    .push((dir.to_string_lossy().into_owned(), e.to_string()));
+            }
+        }
+        if had {
+            outcome.removed += 1;
+        }
+    }
+    outcome
+}
+
+/// No per-task entries on this platform.
+#[cfg(not(windows))]
+pub fn revoke_task_entries(_data_dir: &Path) -> TaskRevoke {
+    TaskRevoke::default()
 }
 
 /// D1 (handoff 011o): the record names the container an earlier release made
@@ -360,6 +590,10 @@ pub fn inspect(data_dir: &Path) -> Result<Option<Container>, AppError> {
     let Ok(sid) = derive_sid(&profile) else {
         return Ok(None);
     };
+    // A record that names another container, or says the migration is not done,
+    // belongs to a start that has not happened yet (or did not finish).
+    let migration_pending =
+        !record.profile.is_empty() && (!record.task_entries_migrated || record.profile != profile);
     record.profile = profile.clone();
     record.sid = sid_string(&sid);
     Ok(Some(Container {
@@ -367,6 +601,7 @@ pub fn inspect(data_dir: &Path) -> Result<Option<Container>, AppError> {
         sid_text: record.sid.clone(),
         sid,
         record,
+        migration_pending,
     }))
 }
 
@@ -543,35 +778,47 @@ pub struct Outcome {
     pub profile_deleted: bool,
     /// The record file was deleted.
     pub record_deleted: bool,
+    /// The per-task entries (handoff 011o), found on disk and removed.
+    pub tasks: TaskRevoke,
 }
 
 impl Outcome {
     /// Everything on the list was removed.
     pub fn complete(&self) -> bool {
-        self.failed.is_empty()
+        self.failed.is_empty() && self.tasks.failed.is_empty()
     }
 
-    /// The documented JSON shape.
+    /// The documented JSON shape. `per_task_entries` is there only when there
+    /// were per-task entries to remove (Windows), so the shape elsewhere is the
+    /// one of 0.10.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut value = serde_json::json!({
             "removed": self.removed.iter().map(Planned::to_json).collect::<Vec<_>>(),
             "failed": self.failed.iter().map(|(p, reason)| serde_json::json!({ "path": p.path, "reason": reason })).collect::<Vec<_>>(),
             "profile_deleted": self.profile_deleted,
             "record_deleted": self.record_deleted,
-        })
+        });
+        if self.tasks != TaskRevoke::default() {
+            value["per_task_entries"] = serde_json::json!({
+                "removed": self.tasks.removed,
+                "failed": self.tasks.failed.iter().map(|(path, reason)| serde_json::json!({ "path": path, "reason": reason })).collect::<Vec<_>>(),
+            });
+        }
+        value
     }
 }
 
 /// The record after a run: exactly what was not removed, so that a second
 /// run retries exactly that. `None` when nothing is left.
 pub fn record_after(record: &Record, outcome: &Outcome) -> Option<Record> {
-    if outcome.failed.is_empty() {
+    if outcome.complete() {
         return None;
     }
     let mut kept = Record {
         profile: record.profile.clone(),
         sid: record.sid.clone(),
         entries: Vec::new(),
+        task_entries_migrated: record.task_entries_migrated,
     };
     for (planned, _) in &outcome.failed {
         let entry = record
@@ -609,6 +856,8 @@ pub fn revoke_all(container: &Container, data_dir: &Path, plan: &[Planned]) -> O
             Err(reason) => outcome.failed.push((planned.clone(), reason.to_string())),
         }
     }
+    // The tasks' own entries are on their directories, not in the record.
+    outcome.tasks = revoke_task_entries(data_dir);
     match record_after(&container.record, &outcome) {
         Some(kept) => {
             let _ = kept.save(data_dir);

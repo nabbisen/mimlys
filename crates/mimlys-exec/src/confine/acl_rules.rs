@@ -76,6 +76,13 @@ pub const FILE_ALL_ACCESS: u32 = 0x001F_01FF;
 /// anything.
 pub const WRITE_MASK: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE;
 
+/// The rights that change a directory's or a file's content or contents:
+/// write data (create a file), append data (create a subdirectory), write
+/// extended attributes, delete a child, write attributes, and delete. A read
+/// entry holds none of them.
+pub const WRITE_RIGHTS: u32 =
+    0x0000_0002 | 0x0000_0004 | 0x0000_0010 | 0x0000_0040 | 0x0000_0100 | DELETE;
+
 /// What the container holds on the toolchain paths: read and execute.
 pub const READ_MASK: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
 
@@ -157,11 +164,23 @@ pub fn classify(access: Access, aces: &[Ace]) -> EntryState {
         .filter(|a| !a.inherit_only)
         .fold(0, |m, a| m | map_generic(a.mask));
     let wanted = wanted_mask(access);
-    if here & wanted == wanted && union & (WRITE_DAC | WRITE_OWNER) == 0 {
+    // A read entry holds no right to write: `<data>/tmp` is readable, not
+    // writable, to the container (handoff 011o), and the write entry 0.10 and
+    // earlier gave it is not the read entry it replaces.
+    let too_wide = access == Access::Read && here & WRITE_RIGHTS != 0;
+    if here & wanted == wanted && union & (WRITE_DAC | WRITE_OWNER) == 0 && !too_wide {
         EntryState::Applied
     } else {
         EntryState::Wrong { mask: union }
     }
+}
+
+/// The name a task's capability is derived from (handoff 011o): the task's
+/// identifier under a fixed prefix, so the same task has the same capability
+/// on every start, and no other task has it. The capability SID is made from
+/// the name alone (`DeriveCapabilitySidsFromName`); nothing is registered.
+pub fn task_capability_name(task: &str) -> String {
+    format!("mimlys-task-{task}")
 }
 
 /// The name of a directory's lock: the directory's identity (the volume's

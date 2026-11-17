@@ -437,7 +437,10 @@ fn spawn_tool(program: &Path, r: &HostRun<'_>) -> Result<ToolProc, String> {
         args: &args,
         env: &child_env(r),
         current_dir: Some(r.workspace),
+        // The tool inherits the worker's token, its container and its task's
+        // capability with them: nothing is added or taken away here.
         container: None,
+        capabilities: &[],
         job: Some(&job),
         restricted_token: false,
         // Unix gives `Stdio::null()`: a tool that reads its input finds the end at once.
