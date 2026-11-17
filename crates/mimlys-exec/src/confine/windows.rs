@@ -558,14 +558,23 @@ fn copy_sid(sid: PSID) -> Vec<u8> {
     bytes
 }
 
-/// The AppContainer profile name for a data directory (RFC 011 §3): a fixed
-/// prefix and the first sixteen hex digits of the directory's hash, so that
-/// one installation is one container and the name is valid wherever it goes.
+/// The AppContainer profile name for a data directory (RFC 011 §3; handoff
+/// 011o, D1): keyed on the directory's **identity** (the volume and the file
+/// id of the directory itself, as the permission lock is), so that every
+/// spelling of one directory is one container. Where the directory cannot be
+/// opened (it does not exist yet), the spelling of 0.10 stands in; the
+/// commands that make the container have created the directory first.
 pub fn profile_name(data_dir: &Path) -> String {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(data_dir.to_string_lossy().to_lowercase().as_bytes());
-    let hex: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    format!("mimlys-{hex}")
+    match acl::identity_of(data_dir) {
+        Ok((volume, file_id)) => super::acl_rules::profile_name_for_identity(volume, file_id),
+        Err(_) => legacy_profile_name(data_dir),
+    }
+}
+
+/// The name 0.10 and earlier gave the container: the configured spelling's
+/// hash (see [`profile_name`]), to find and remove what that container held.
+pub fn legacy_profile_name(data_dir: &Path) -> String {
+    super::acl_rules::profile_name_for_spelling(&data_dir.to_string_lossy())
 }
 
 /// Creates the AppContainer profile when it does not exist and returns its

@@ -263,3 +263,145 @@ fn req_conf_008_the_record_is_saved_by_a_replace() {
     assert!(blocked.is_dir());
     assert_eq!(names(dir.path()), ["blocked", "toolchain-acls.json"]);
 }
+
+/// The data directory of a test, as 0.10 left it: private, with the runtime's
+/// three directories, a toolchain directory outside it, the container of the
+/// configured spelling (the name 0.10 gave) holding `workspaces`, `tmp` and the
+/// toolchain path, and a record that says so.
+#[cfg(windows)]
+struct Earlier {
+    _root: tempfile::TempDir,
+    data: std::path::PathBuf,
+    workspaces: std::path::PathBuf,
+    tmp: std::path::PathBuf,
+    interpreters: std::path::PathBuf,
+    toolchain: std::path::PathBuf,
+    legacy: String,
+    old_sid: Vec<u8>,
+}
+
+#[cfg(windows)]
+fn earlier_installation() -> Earlier {
+    use mimlys_exec::confine::windows::{acl, ensure_profile, legacy_profile_name, sid_string};
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    mimlys_exec::confine::create_private_dir(&data).unwrap();
+    let make = |name: &str| {
+        let dir = data.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    let (workspaces, tmp, interpreters) = (make("workspaces"), make("tmp"), make("interpreters"));
+    let toolchain = root.path().join("toolchain");
+    std::fs::create_dir_all(&toolchain).unwrap();
+    let legacy = legacy_profile_name(&data);
+    let old_sid = ensure_profile(&legacy).unwrap();
+    acl::grant(&workspaces, &old_sid, acl::Access::Write).unwrap();
+    acl::grant(&tmp, &old_sid, acl::Access::Write).unwrap();
+    acl::grant(&interpreters, &old_sid, acl::Access::Read).unwrap();
+    acl::grant(&toolchain, &old_sid, acl::Access::Read).unwrap();
+    Record {
+        profile: legacy.clone(),
+        sid: sid_string(&old_sid),
+        entries: vec![
+            Entry {
+                path: super::normalized(&workspaces),
+                access: Access::Write,
+                source: Source::Runtime,
+                applied_at: "2026-11-07T00:00:00Z".into(),
+            },
+            entry(&super::normalized(&toolchain), Source::User),
+        ],
+    }
+    .save(&data)
+    .unwrap();
+    Earlier {
+        _root: root,
+        data,
+        workspaces,
+        tmp,
+        interpreters,
+        toolchain,
+        legacy,
+        old_sid,
+    }
+}
+
+/// REQ-CONF-008 (handoff 011o, D1), on the Windows job: an installation of 0.10
+/// has its container under the name of the configured spelling. The first start
+/// of 0.11 gives the entries to the container of the directory's identity (the
+/// administrator's granted path included), removes the old container's entries
+/// from every directory, records the new container, and the second start
+/// changes nothing (the record is byte for byte the same).
+#[cfg(windows)]
+#[test]
+fn req_conf_008_the_earlier_container_moves_to_the_directory_identity_once() {
+    use mimlys_exec::confine::windows::{acl, delete_profile, profile_name};
+    let e = earlier_installation();
+    let paths = super::RuntimePaths {
+        workspaces: &e.workspaces,
+        tmp: &e.tmp,
+        read: vec![e.interpreters.clone()],
+    };
+    let first = super::prepare(&e.data, &paths).unwrap().unwrap();
+    assert_eq!(first.profile, profile_name(&e.data));
+    assert_ne!(first.profile, e.legacy, "another container");
+    assert_ne!(first.sid, e.old_sid);
+    for (dir, access) in [
+        (&e.workspaces, acl::Access::Write),
+        (&e.tmp, acl::Access::Write),
+        (&e.interpreters, acl::Access::Read),
+        (&e.toolchain, acl::Access::Read),
+    ] {
+        assert!(
+            acl::has_entry(dir, &first.sid, access).unwrap(),
+            "{} has the new container's entry",
+            dir.display()
+        );
+        assert!(
+            !acl::has_any_entry(dir, &e.old_sid).unwrap(),
+            "{} has none of the old container's",
+            dir.display()
+        );
+    }
+    let saved = Record::load(&e.data).unwrap();
+    assert_eq!(saved.profile, first.profile);
+    assert_eq!(saved.sid, first.sid_text);
+    assert!(
+        saved.entries.iter().any(|x| x.source == Source::User
+            && super::same_path(&x.path, e.toolchain.to_str().unwrap())),
+        "the administrator's grant is still recorded"
+    );
+    // The second start finds nothing to do.
+    let record_file = e.data.join("toolchain-acls.json");
+    let before = std::fs::read(&record_file).unwrap();
+    let second = super::prepare(&e.data, &paths).unwrap().unwrap();
+    assert_eq!(second.sid, first.sid);
+    assert_eq!(std::fs::read(&record_file).unwrap(), before);
+    delete_profile(&second.profile).unwrap();
+}
+
+/// REQ-CONF-008 (handoff 011o, D1): a move that was interrupted (the record still
+/// names the old container, the toolchain path holds both containers' entries)
+/// is finished by the next start.
+#[cfg(windows)]
+#[test]
+fn req_conf_008_an_interrupted_move_of_the_container_is_finished() {
+    use mimlys_exec::confine::windows::{acl, delete_profile, ensure_profile, profile_name};
+    let e = earlier_installation();
+    // The new container already holds the toolchain path's entry; the old one still does too.
+    let new_sid = ensure_profile(&profile_name(&e.data)).unwrap();
+    acl::grant(&e.toolchain, &new_sid, acl::Access::Read).unwrap();
+    assert!(acl::has_any_entry(&e.toolchain, &e.old_sid).unwrap());
+    let paths = super::RuntimePaths {
+        workspaces: &e.workspaces,
+        tmp: &e.tmp,
+        read: vec![e.interpreters.clone()],
+    };
+    let done = super::prepare(&e.data, &paths).unwrap().unwrap();
+    assert_eq!(done.sid, new_sid);
+    assert!(!acl::has_any_entry(&e.toolchain, &e.old_sid).unwrap());
+    assert!(acl::has_entry(&e.toolchain, &new_sid, acl::Access::Read).unwrap());
+    assert!(!acl::has_any_entry(&e.workspaces, &e.old_sid).unwrap());
+    delete_profile(&done.profile).unwrap();
+}

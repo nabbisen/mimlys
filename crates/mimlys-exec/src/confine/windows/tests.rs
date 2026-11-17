@@ -152,3 +152,56 @@ fn req_conf_006_a_failed_spawn_leaves_no_handle_open() {
     let after = handle_count();
     assert!(after < before + 20, "{before} before, {after} after");
 }
+
+/// REQ-CONF-008 (handoff 011o, D1), on the Windows job: every spelling of one
+/// data directory (another case, a trailing separator, the verbatim prefix, a
+/// `..` detour, a junction) is one container; another directory is another.
+/// The name is not the one 0.10 gave (the spelling's hash), which is how the
+/// migration finds the old container.
+#[test]
+fn req_conf_008_two_spellings_of_one_data_directory_give_one_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    std::fs::create_dir_all(data.join("sub")).unwrap();
+    let junction = root.path().join("link");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&data)
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "mklink: {}",
+        String::from_utf8_lossy(&made.stdout)
+    );
+    let text = data.to_string_lossy().into_owned();
+    let spellings: Vec<PathBuf> = vec![
+        data.clone(),
+        PathBuf::from(format!("{text}\\")),
+        PathBuf::from(text.to_uppercase()),
+        PathBuf::from(format!(r"\\?\{text}")),
+        data.join("sub").join(".."),
+        junction.clone(),
+    ];
+    let first = profile_name(&data);
+    for spelling in &spellings {
+        assert_eq!(
+            profile_name(spelling),
+            first,
+            "{} names another container",
+            spelling.display()
+        );
+    }
+    assert_ne!(profile_name(&data.join("sub")), first);
+    assert_ne!(legacy_profile_name(&data), first);
+    // 0.10's name differed between two of these spellings (the separator).
+    assert_ne!(
+        legacy_profile_name(&data),
+        legacy_profile_name(&PathBuf::from(format!("{text}\\")))
+    );
+    // A directory that does not exist has no identity: the old name stands in.
+    let missing = root.path().join("missing");
+    assert_eq!(profile_name(&missing), legacy_profile_name(&missing));
+    std::fs::remove_dir(&junction).unwrap();
+}

@@ -174,6 +174,32 @@ pub fn lock_name(volume_serial: u64, file_id: [u8; 16]) -> String {
     format!("Global\\mimlys-dacl-{volume_serial:016x}-{id}")
 }
 
+/// The AppContainer profile name for a data directory's identity (the
+/// volume's serial number and the directory's file id, from a handle to the
+/// directory itself): a fixed prefix and the first sixteen hex digits of the
+/// hash, so that every spelling of one directory (a different case, a trailing
+/// separator, a `..`, a junction, a `subst` drive, the verbatim prefix) is one
+/// container (handoff 011o, D1), and the name is valid wherever it goes.
+pub fn profile_name_for_identity(volume_serial: u64, file_id: [u8; 16]) -> String {
+    let id: String = file_id.iter().map(|b| format!("{b:02x}")).collect();
+    profile_hash(&format!("data-directory:{volume_serial:016x}:{id}"))
+}
+
+/// The profile name of 0.10 and earlier: the hash of the data directory's
+/// configured spelling, lower-cased. Kept to find the container an earlier
+/// release made (the migration of handoff 011o, D1); never used for a new one
+/// where the directory exists.
+pub fn profile_name_for_spelling(spelling: &str) -> String {
+    profile_hash(&spelling.to_lowercase())
+}
+
+fn profile_hash(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(text.as_bytes());
+    let hex: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("mimlys-{hex}")
+}
+
 /// `ERROR_INSUFFICIENT_BUFFER`: what a read of a security descriptor answers
 /// when the descriptor grew between the call that sized it and the call that
 /// read it (a write landing on the same file), seen on the Windows job as

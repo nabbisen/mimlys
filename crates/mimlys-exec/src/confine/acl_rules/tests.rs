@@ -213,3 +213,32 @@ fn req_ws_001_a_directory_of_another_owner_is_not_acceptable() {
     assert!(!owner_is_acceptable(&other, &user, &admins));
     assert!(!owner_is_acceptable(&[], &user, &admins));
 }
+
+/// REQ-CONF-008 (handoff 011o, D1): the container's name is a function of the
+/// directory's identity, valid as a profile name (letters, numbers and a
+/// hyphen, at most 64 characters), different for two directories and for two
+/// volumes, and not the name 0.10 gave, so that the migration finds the old
+/// container by it.
+#[test]
+fn req_conf_008_the_profile_name_follows_the_identity_not_the_spelling() {
+    let id = [7u8; 16];
+    let name = profile_name_for_identity(0xAB, id);
+    assert_eq!(name, profile_name_for_identity(0xAB, id));
+    assert!(name.starts_with("mimlys-") && name.len() == "mimlys-".len() + 16);
+    assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    let mut other = id;
+    other[15] = 8;
+    assert_ne!(name, profile_name_for_identity(0xAB, other));
+    assert_ne!(name, profile_name_for_identity(0xAC, id));
+    // 0.10's name hashed the spelling, lower-cased: two spellings that differed
+    // by case were one name, and by a trailing separator two.
+    assert_eq!(
+        profile_name_for_spelling(r"C:\Data\Mimlys"),
+        profile_name_for_spelling(r"c:\data\mimlys")
+    );
+    assert_ne!(
+        profile_name_for_spelling(r"C:\Data\Mimlys"),
+        profile_name_for_spelling("C:\\Data\\Mimlys\\")
+    );
+    assert_ne!(name, profile_name_for_spelling(r"C:\Data\Mimlys"));
+}

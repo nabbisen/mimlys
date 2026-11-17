@@ -747,6 +747,14 @@ pub fn ensure_entry(path: &Path, sid: &[u8], access: Access) -> Result<Ensured, 
     })
 }
 
+/// The identity of the directory (or file) `path` names, as the permission
+/// lock takes it: the volume's serial number and the file id, from a handle to
+/// the object itself (a link in the last component is resolved).
+pub fn identity_of(path: &Path) -> Result<(u64, [u8; 16]), String> {
+    let dir = Dir::open(path)?;
+    Ok((dir.identity.volume, dir.identity.file_id))
+}
+
 /// Adds the container's entry to the directory's DACL (in place of any entry
 /// the container held there).
 pub fn grant(path: &Path, sid: &[u8], access: Access) -> Result<(), AclError> {
