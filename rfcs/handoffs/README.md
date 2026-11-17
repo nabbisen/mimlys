@@ -90,6 +90,7 @@ The audit's remainder, in three phases (ROADMAP, "Release 0.11"). Each later han
 | 3 | [006c The workspace: restore verifies first, the walk sees everything, modes are kept](./006c-workspace-0.11/implementation-handoff.md) | RFC 006 | — |
 | 4 | [010f The start gate: a stop signal and an action's start are one step](./010f-start-gate/implementation-handoff.md) | RFC 010 | — |
 | 5 | [009i What reaches the model is bounded as a whole](./009i-what-reaches-the-model/implementation-handoff.md) | RFC 009 | — |
+| 6 | [011o Windows: a host tool reaches only its own task](./011o-windows-task-isolation/implementation-handoff.md) | RFC 011 | — |
 
 ## Milestone M5
 
