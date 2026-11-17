@@ -411,6 +411,9 @@ impl Runtime {
         if let Err(refused) = self.check_definitions_fit(task_id, &kinds) {
             // The workspace was made for this task alone and nothing refers to
             // it: it is not left behind, a copy of the scope for every refusal.
+            // The provider holds a handle on its tree (a directory with an open
+            // handle cannot be removed on Windows): it is let go first.
+            drop(tools);
             let _ = self
                 .deps
                 .workspaces
