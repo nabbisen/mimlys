@@ -1134,6 +1134,14 @@ fn req_cli_005_one_stop_signal_pauses_at_the_next_boundary() {
     // stalls for that second would make it the other case (the watchdog said so on
     // standard error): the test does not decide by that margin. Either way the
     // run exited, the task is paused, and one action ran, no further one began.
+    // What the process says is a statement of state: it says that the step was
+    // interrupted only when the step it is about ended so, so the line and the
+    // action's recorded end must agree. They did not on a slow arm runner (run
+    // 43784914996, handoff 010f item 3): the action had finished and only the
+    // store's writes were left when the grace passed, the watchdog's request met
+    // the next step at its boundary, and the line was said above an action that
+    // had `succeeded`; that was the product's, and is fixed (`Signals::step_begins`);
+    // this check is what found it, and stays.
     let expected = if stderr.contains("so it was interrupted") {
         "cancelled"
     } else {
