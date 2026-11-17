@@ -211,6 +211,15 @@ struct Interruption {
     undoable: Cancellation,
     /// Observed by an action that cannot be undone.
     anyway: Cancellation,
+    /// The task's start gate (REQ-CLI-005, external design §19.2): held by the
+    /// step across its last look at `no_new_action` and the durable record that
+    /// the action runs, and by a stop request across its making. A request is
+    /// then either seen by the check, and the action never begins, or made after
+    /// the action was recorded running, and the signal's look finds it. It
+    /// guards no data (`()`), so a holder that panicked leaves nothing to
+    /// distrust (see `Runtime::at_the_start_gate`). It outlives the clearing of
+    /// the requests: the same gate, whatever the tokens.
+    start: Arc<std::sync::Mutex<()>>,
 }
 
 /// An action in flight that cannot be undone (REQ-CLI-005).
@@ -328,8 +337,58 @@ impl Runtime {
     /// already running go on. The two stronger requests,
     /// [`Runtime::interrupt_step`] and [`Runtime::interrupt_step_anyway`],
     /// imply this one. Spent and cleared as they are.
+    ///
+    /// The request is made at the task's start gate (see
+    /// [`Runtime::at_the_start_gate`]), so that it waits for at most the
+    /// durable write of an action that is being recorded as running, and then
+    /// finds that action in the store: no request falls between an action's
+    /// check and its start (handoff 010f; audit A-33).
     pub fn start_no_new_action(&self, task_id: TaskId) {
-        self.interruption(task_id).no_new_action.cancel();
+        let interruption = self.interruption(task_id);
+        Self::request_at_the_gate(&interruption, |i| i.no_new_action.cancel());
+    }
+
+    /// Runs `f`, the one place where an action's last look at the weakest
+    /// request and the durable record that it runs are made, with the task's
+    /// start gate held (REQ-CLI-005, external design §19.2: the check and the
+    /// start are one step). A stop request is made under the same gate
+    /// ([`Runtime::start_no_new_action`] and the two stronger requests), so
+    /// that either the request was made first and `f` sees it, or `f` ran
+    /// first and the action is recorded running before the request returns,
+    /// which is before the signal's handler looks at what is in flight.
+    ///
+    /// The gate is a `std::sync::Mutex`, not a `tokio` one: the section is
+    /// synchronous (a check and one store write, no `.await`), so a guard
+    /// cannot live across a suspension point (a closure cannot await, and the
+    /// future stays `Send`); the signal's handler is a synchronous function that
+    /// cannot `.await` a `tokio` lock, and `tokio`'s `blocking_lock` panics
+    /// inside the runtime. The handler waits for at most that one write, the
+    /// same write its own look at the store waits for. The gate is per task,
+    /// the registry's lock is held only to read the entry and never while
+    /// waiting for the gate, and nothing under the gate takes another gate:
+    /// the order is gate, then the registry's lock (the check reads it), then
+    /// the store's own lock; no path takes them the other way round.
+    ///
+    /// A panic in `f` drops the guard while unwinding and poisons the mutex; a
+    /// poisoned gate is used as it is (it guards no data), so that a panicked
+    /// start can neither wedge the signal's handler nor the exit (LIM-O1). The
+    /// guard is dropped at the end of `f` or when `f` unwinds; there is no
+    /// path that leaks it.
+    pub(crate) fn at_the_start_gate<R>(&self, task_id: TaskId, f: impl FnOnce() -> R) -> R {
+        let gate = self.interruption(task_id).start;
+        let _held = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f()
+    }
+
+    /// Makes a stop request with the interruption's start gate held.
+    fn request_at_the_gate(interruption: &Interruption, request: impl FnOnce(&Interruption)) {
+        let _held = interruption
+            .start
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        request(interruption);
     }
 
     /// Asks the task's current step to stop what can be undone, and to start
@@ -353,8 +412,10 @@ impl Runtime {
     /// ends otherwise, with no transition, stays for the next step.
     pub fn interrupt_step(&self, task_id: TaskId) {
         let interruption = self.interruption(task_id);
-        interruption.no_new_action.cancel();
-        interruption.undoable.cancel();
+        Self::request_at_the_gate(&interruption, |i| {
+            i.no_new_action.cancel();
+            i.undoable.cancel();
+        });
     }
 
     /// As [`Runtime::interrupt_step`], and also for an action that cannot be
@@ -364,9 +425,11 @@ impl Runtime {
     /// as [`Runtime::interrupt_step`] is.
     pub fn interrupt_step_anyway(&self, task_id: TaskId) {
         let interruption = self.interruption(task_id);
-        interruption.no_new_action.cancel();
-        interruption.undoable.cancel();
-        interruption.anyway.cancel();
+        Self::request_at_the_gate(&interruption, |i| {
+            i.no_new_action.cancel();
+            i.undoable.cancel();
+            i.anyway.cancel();
+        });
     }
 
     /// The action of the task now running that cannot be undone, if any: the
@@ -398,7 +461,12 @@ impl Runtime {
             .expect("interruption registry")
             .get_mut(&task_id)
         {
-            *interruption = Interruption::default();
+            // The tokens are fresh; the start gate is the same one, so that a
+            // holder of it and a request made after the clearing still meet.
+            *interruption = Interruption {
+                start: Arc::clone(&interruption.start),
+                ..Interruption::default()
+            };
         }
     }
 

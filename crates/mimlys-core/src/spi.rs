@@ -1554,7 +1554,13 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakePersistence {
         inner: Mutex<FakeInner>,
+        /// Run by the write method of that name before it writes, outside the
+        /// fake's own lock (a test's stop signal that falls at the start of an action).
+        before_write: Mutex<std::collections::HashMap<&'static str, WriteHook>>,
     }
+
+    /// A test's hook run before a write method of the fake writes.
+    type WriteHook = Arc<dyn Fn() + Send + Sync>;
 
     #[derive(Default)]
     struct FakeInner {
@@ -1578,6 +1584,19 @@ pub mod fake {
     }
 
     impl FakePersistence {
+        /// From now on the write method `name` (`"authorized"`, `"running"`, ...)
+        /// runs `hook` first, before it writes: the place where a test raises a
+        /// stop signal just before an action's check (`"authorized"`) or inside the
+        /// durable record of its start (`"running"`). The hook runs outside the
+        /// fake's own lock, so it may read the store, from this thread or from
+        /// another.
+        pub fn before_write(&self, name: &'static str, hook: Arc<dyn Fn() + Send + Sync>) {
+            self.before_write
+                .lock()
+                .expect("fake lock")
+                .insert(name, hook);
+        }
+
         /// The write methods called so far, in order.
         pub fn writes(&self) -> Vec<&'static str> {
             self.inner.lock().expect("fake lock").writes.clone()
@@ -1603,6 +1622,15 @@ pub mod fake {
             name: &'static str,
             f: impl FnOnce(&mut FakeInner) -> Result<R, PersistenceError>,
         ) -> Result<R, PersistenceError> {
+            let hook = self
+                .before_write
+                .lock()
+                .expect("fake lock")
+                .get(name)
+                .cloned();
+            if let Some(hook) = hook {
+                hook();
+            }
             let mut inner = self.inner.lock().expect("fake lock");
             let r = f(&mut inner)?;
             inner.writes.push(name);
