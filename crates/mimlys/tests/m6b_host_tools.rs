@@ -1665,3 +1665,50 @@ fn req_tool_006_a_slow_tree_kill_after_the_deadline_still_records_deadline() {
         "the worker answered; it was not ended:\n{log}"
     );
 }
+
+/// REQ-CONF-006, REQ-CONF-008 (handoff 011o, D5), on the Windows job: each of the
+/// runtime's own directories (`workspaces`, `tmp`, `interpreters`) replaced by a
+/// junction stops the start, naming it; the container's permissions and a tool's
+/// writes would otherwise land where the junction points.
+#[test]
+fn req_conf_006_a_junction_in_place_of_a_runtime_directory_stops_the_start() {
+    for name in ["workspaces", "tmp", "interpreters"] {
+        let env = Env::new(&[], "").ready();
+        let data = env.data.path().join("data");
+        let elsewhere = env.data.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let dir = data.join(name);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let made = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&dir)
+            .arg(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(
+            made.status.success(),
+            "mklink: {}",
+            String::from_utf8_lossy(&made.stdout)
+        );
+        let (code, out, log) = env.run(&[
+            "--json",
+            "toolchain",
+            "grant",
+            &plain(env.tools.path()),
+            "--yes",
+        ]);
+        assert_ne!(code, 0, "{name}: the start went on:\n{out}\n{log}");
+        let shown = format!("{out}{log}");
+        assert!(
+            shown.contains("is a link") && shown.contains(name),
+            "{name}: the refusal names it:\n{shown}"
+        );
+        // Nothing was written through the junction.
+        assert_eq!(
+            std::fs::read_dir(&elsewhere).unwrap().count(),
+            0,
+            "{name}: nothing reached the junction's target"
+        );
+        std::fs::remove_dir(&dir).unwrap();
+    }
+}
