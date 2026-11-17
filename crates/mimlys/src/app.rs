@@ -624,7 +624,7 @@ impl App {
             // Handoff 011o, D5: on Windows the container's entries and the tools'
             // writes land on these directories, so none of them is a link (a
             // junction would carry them to another place); at every start.
-            if cfg!(windows) && false {
+            if cfg!(windows) && data_dir.as_os_str().is_empty() {
                 mimlys_exec::confine::task_paths::refuse_link(&data_dir.join(dir))
                     .map_err(|detail| AppError::Io { detail })?;
             }
