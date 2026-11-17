@@ -240,6 +240,10 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
     let sid = ensure_profile(&profile).map_err(|e| AppError::Io {
         detail: format!("cannot prepare the AppContainer {profile}: {e}"),
     })?;
+    // D1 (handoff 011o): an installation of 0.10 or earlier has its container
+    // under the name of the configured spelling. The entries move to the
+    // container of the directory's identity, once, before the record says so.
+    let mut changed = move_container(&mut record, &profile, &sid, paths)?;
     record.profile = profile.clone();
     record.sid = sid_string(&sid);
     let mut wanted: Vec<(PathBuf, Access)> = vec![
@@ -247,7 +251,6 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
         (paths.tmp.to_path_buf(), Access::Write),
     ];
     wanted.extend(paths.read.iter().map(|p| (p.clone(), Access::Read)));
-    let mut changed = false;
     for (path, access) in wanted {
         if !path.exists() {
             continue;
@@ -280,6 +283,67 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
         sid,
         record,
     }))
+}
+
+/// D1 (handoff 011o): the record names the container an earlier release made
+/// (the hash of the configured spelling of the data directory). When it is not
+/// the container of the directory's identity, every entry the old container
+/// holds on the directories named in the record, and on mimlys's own
+/// directories, is removed; the administrator's granted paths (the record's
+/// `user` entries) are given to the new container first. mimlys's own
+/// directories are given theirs by the ordinary start that follows. The old
+/// profile is then deleted. Nothing is recorded here: the record still names
+/// the old container until the whole start has finished, so an interrupted
+/// move is repeated, and every step of it is state-based (an entry that is not
+/// there is not removed again). Returns whether anything was done.
+#[cfg(windows)]
+fn move_container(
+    record: &mut Record,
+    new_profile: &str,
+    new_sid: &[u8],
+    paths: &RuntimePaths<'_>,
+) -> Result<bool, AppError> {
+    use mimlys_exec::confine::windows::{acl, delete_profile, derive_sid};
+    let old = record.profile.clone();
+    if old.is_empty() || old == new_profile {
+        return Ok(false);
+    }
+    let old_sid = derive_sid(&old).map_err(|e| AppError::Io {
+        detail: format!("cannot derive the earlier container {old}: {e}"),
+    })?;
+    tracing::info!(
+        "moving the container's permissions from {old} (named after the spelling of the data directory) to {new_profile} (named after the directory itself); this happens once"
+    );
+    let mut places: Vec<PathBuf> = vec![paths.workspaces.to_path_buf(), paths.tmp.to_path_buf()];
+    places.extend(paths.read.iter().cloned());
+    places.extend(record.entries.iter().map(|e| PathBuf::from(&e.path)));
+    let mut done: Vec<String> = Vec::new();
+    for place in places {
+        let key = normalized(&place);
+        if done.iter().any(|d| same_path(d, &key)) || !place.exists() {
+            continue;
+        }
+        done.push(key.clone());
+        if !acl::has_any_entry(&place, &old_sid).map_err(|detail| AppError::Io { detail })? {
+            continue;
+        }
+        if let Some(granted) = record
+            .entries
+            .iter()
+            .find(|e| e.source == Source::User && same_path(&e.path, &key))
+        {
+            let mode = match granted.access {
+                Access::Read => acl::Access::Read,
+                Access::Write => acl::Access::Write,
+            };
+            acl::ensure_entry(&place, new_sid, mode).map_err(acl_error)?;
+        }
+        acl::revoke(&place, &old_sid).map_err(acl_error)?;
+    }
+    if let Err(e) = delete_profile(&old) {
+        tracing::warn!("the earlier container {old} could not be deleted: {e}");
+    }
+    Ok(true)
 }
 
 /// The container as `toolchain list` and `status` show it, for a command that
