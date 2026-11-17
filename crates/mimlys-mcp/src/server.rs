@@ -534,11 +534,22 @@ impl Server {
     /// `notifications/cancelled` and, after LIM-O2, kills the process. The
     /// call waits for no other request of the server.
     ///
+    /// Two tokens, for the two moments (REQ-CLI-005, external design §19.2).
+    /// Before anything is sent, the call may wait for the server to be started
+    /// again (it died since the pin check, or the start of another call is in
+    /// flight): that wait ends when `start_gate`, the weakest stop request, is
+    /// requested, with a [`ServerError`] for which
+    /// [`ServerError::was_cancelled`] holds, and nothing was sent. Once the
+    /// request is sent, `cancel` governs, as it always did: for an action that
+    /// cannot be undone it is the second signal's, not the first's. The caller
+    /// passes the runtime's two tokens, the second implying the first.
+    ///
     /// `pinned` is the hash the tool was pinned with, when it is pinned. It is
     /// compared with the list of the very connection the call is sent on, so that
     /// a restart between the pin check and the call, which may bring a changed
     /// definition, is seen: the call is then not sent
     /// ([`CallOutcome::DefinitionChanged`]).
+    #[allow(clippy::too_many_arguments)]
     pub async fn call(
         &self,
         task: TaskId,
@@ -546,9 +557,12 @@ impl Server {
         arguments: Map<String, Value>,
         pinned: Option<&Hash>,
         deadline_ms: i64,
+        start_gate: &Cancellation,
         cancel: &Cancellation,
     ) -> Result<CallOutcome, ServerError> {
-        let live = self.ensure_started(Some(task), Some(cancel)).await?;
+        // The wait before the send observes the weakest request only: `cancel`
+        // is observed from the send on, below.
+        let live = self.ensure_started(Some(task), Some(start_gate)).await?;
         if let Some(pinned) = pinned
             && live.current.lock().expect("current lock").hashes.get(tool) != Some(pinned)
         {

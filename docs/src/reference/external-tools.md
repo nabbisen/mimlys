@@ -179,8 +179,9 @@ unavailable, with the reason in `status`, rather than half imported.
 - **Every request has a deadline and ends at the stop signal.** The listing of
   a server's tools, each page of it, and the start of the server are bounded
   by the server's `startup_ms` (LIM-O6, 15 000 ms unless you set it); a stop
-  signal ends them sooner. The check of a tool's definition just before a call
-  ends at the **first** Ctrl-C, whatever the tool does: nothing has been sent,
+  signal ends them sooner. The check of a tool's definition just before a call,
+  and the wait for a server that died since that check to be started again,
+  end at the **first** Ctrl-C, whatever the tool does: nothing has been sent,
   so the action is closed as not begun (`cancelled`, with the notice
   `stopped_before_start`), nothing is unknown and the task pauses, never
   halts as `tool_unavailable`. Nothing waits behind a listing: a call, another

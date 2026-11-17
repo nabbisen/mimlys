@@ -868,6 +868,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 json!({"ms": 60_000}).as_object().unwrap().clone(),
                 None,
                 120_000,
+                &Cancellation::new(),
                 &cancel,
             )
             .await
@@ -889,6 +890,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 None,
                 300,
                 &Cancellation::new(),
+                &Cancellation::new(),
             )
             .await
             .unwrap();
@@ -907,6 +909,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                     None,
                     30_000,
                     &Cancellation::new(),
+                    &Cancellation::new(),
                 )
                 .await;
             assert!(
@@ -920,6 +923,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                     Default::default(),
                     None,
                     30_000,
+                    &Cancellation::new(),
                     &Cancellation::new(),
                 )
                 .await
@@ -937,6 +941,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 None,
                 30_000,
                 &Cancellation::new(),
+                &Cancellation::new(),
             )
             .await;
         let exhausted = server
@@ -946,6 +951,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 Default::default(),
                 None,
                 30_000,
+                &Cancellation::new(),
                 &Cancellation::new(),
             )
             .await;
@@ -991,6 +997,7 @@ fn m5_cancellation_deadline_death_and_restarts() {
                 json!({"ms": 60_000}).as_object().unwrap().clone(),
                 None,
                 120_000,
+                &Cancellation::new(),
                 &cancel,
             )
             .await
@@ -1258,6 +1265,7 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
                     Default::default(),
                     None,
                     30_000,
+                    &Cancellation::new(),
                     &Cancellation::new(),
                 )
                 .await;
@@ -1556,6 +1564,7 @@ fn req_mcp_007_a_killed_server_is_gone() {
                 json!({"ms": 60000}).as_object().unwrap().clone(),
                 None,
                 120_000,
+                &Cancellation::new(),
                 &cancel,
             )
             .await
@@ -1936,6 +1945,7 @@ async fn change_and_wait(server: &Server) {
             None,
             30_000,
             &Cancellation::new(),
+            &Cancellation::new(),
         )
         .await
         .unwrap();
@@ -2090,6 +2100,7 @@ async fn kill_server(server: &Server) {
             Default::default(),
             None,
             30_000,
+            &Cancellation::new(),
             &Cancellation::new(),
         )
         .await;
@@ -2347,6 +2358,7 @@ fn req_mcp_007_a_call_and_the_shutdown_never_queue_behind_a_listing() {
                 Default::default(),
                 None,
                 30_000,
+                &Cancellation::new(),
                 &Cancellation::new(),
             ),
         )
@@ -2665,6 +2677,7 @@ fn req_mcp_001_a_servers_standard_error_is_bounded_by_line_and_by_rate() {
                     None,
                     60_000,
                     &Cancellation::new(),
+                    &Cancellation::new(),
                 )
                 .await;
             assert!(
@@ -2760,6 +2773,7 @@ fn req_mcp_002_a_definition_changed_by_a_restart_between_the_check_and_the_call_
                 Some(&pinned),
                 30_000,
                 &Cancellation::new(),
+                &Cancellation::new(),
             )
             .await;
         assert!(
@@ -2790,6 +2804,7 @@ fn req_mcp_002_a_definition_changed_by_a_restart_between_the_check_and_the_call_
                 Some(&now),
                 30_000,
                 &Cancellation::new(),
+                &Cancellation::new(),
             )
             .await;
         assert!(matches!(sent, Ok(CallOutcome::Result { .. })), "{sent:?}");
@@ -2819,6 +2834,7 @@ fn req_mcp_002_a_list_changed_during_a_listing_is_not_lost() {
                 Default::default(),
                 None,
                 30_000,
+                &Cancellation::new(),
                 &Cancellation::new(),
             )
             .await;
@@ -3009,6 +3025,7 @@ fn req_mcp_001_a_server_runs_in_a_session_of_its_own() {
                 None,
                 30_000,
                 &Cancellation::new(),
+                &Cancellation::new(),
             )
             .await
             .unwrap();
@@ -3078,5 +3095,185 @@ fn req_mcp_007_an_unanswering_server_costs_one_wait_in_a_step() {
             wall < 500,
             "the action waited {wall} ms for a server the boundary found unanswering: {search}"
         );
+    }
+}
+
+// Handoff 010f-4, item 2: the wait for a server to be started again, made by
+// `Server::call` before anything is sent, observes the first stop request. The
+// CLI cannot reach it by state: the server must die between the pin check and
+// the call, a window of microseconds that nothing outside the product sets, so
+// it is reached here, at the server and at the provider, the way the test of the
+// changed definition reaches it (the pin check, the death, the call).
+
+/// The stand-in as a server whose restart hangs: it answers its first listing
+/// and, once the file `hang` exists, reads every later listing without answering
+/// it. The logs are `lists.log` and `tools.log` of `dir`.
+fn restart_hangs(dir: &std::path::Path) -> (Server, PathBuf) {
+    let hang = dir.join("hang");
+    let server = knob_server(
+        120_000,
+        &[
+            (
+                "MIMLYS_TESTSERVER_HANG_LIST_FILE",
+                hang.to_string_lossy().into_owned(),
+            ),
+            list_log_knob(&dir.join("lists.log")),
+            (
+                "MIMLYS_TESTSERVER_TOOL_LOG",
+                dir.join("tools.log").to_string_lossy().into_owned(),
+            ),
+        ],
+    );
+    (server, hang)
+}
+
+/// The tools the stand-in was called for, as lines.
+fn tools_called(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("tools.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// REQ-CLI-005, REQ-MCP-007 (handoff 010f-4, item 2): the call's wait for a server
+/// that died since the pin check, and whose restart never answers its listing,
+/// ends at the first stop request (`start_gate`), with the reason of a wait that
+/// was cancelled, and nothing is sent: the server is never called. Before the
+/// send the strong token (`cancel`) is not what the wait observes: with it
+/// requested and `start_gate` not, the restart is still waited for, which the
+/// state shows (its listing reached the server while the call was pending).
+#[test]
+fn req_cli_005_the_wait_for_a_restart_before_a_call_ends_at_the_first_stop_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("lists.log");
+    let rt = multi_thread_runtime();
+    rt.block_on(async {
+        let (server, hang) = restart_hangs(dir.path());
+        let task = a_task();
+        // The pin check lists the server (listing 1 of its first process).
+        server
+            .current_hash(task, "web_search", &Cancellation::new())
+            .await
+            .unwrap()
+            .expect("listed");
+        // It dies between the check and the call, and its restart hangs.
+        kill_server(&server).await;
+        std::fs::write(&hang, b"hang").unwrap();
+        assert_eq!(tools_called(dir.path()), ["die"]);
+        let (start_gate, cancel) = (Cancellation::new(), Cancellation::new());
+        // The strong token alone: it does not end the wait before the send.
+        cancel.cancel();
+        let args: serde_json::Map<String, Value> =
+            json!({"query": "x"}).as_object().unwrap().clone();
+        let call = server.call(task, "web_search", args, None, 30_000, &start_gate, &cancel);
+        tokio::pin!(call);
+        tokio::select! {
+            ended = &mut call => panic!("the strong token ended the wait: {ended:?}"),
+            () = await_list_requests(&log, 2) => {}
+        }
+        // The first stop request ends it.
+        start_gate.cancel();
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(60), call)
+            .await
+            .expect("the first stop request ends the wait");
+        let error = ended.expect_err("the wait was cancelled, no call was made");
+        assert!(error.was_cancelled(), "{error:?}");
+        assert_eq!(
+            tools_called(dir.path()),
+            ["die"],
+            "nothing was sent to the restarted server"
+        );
+        server.shutdown().await;
+    });
+}
+
+/// REQ-CLI-005, REQ-MCP-007, REQ-TOOL-009 (handoff 010f-4, item 2): at the
+/// provider, the same wait ends with the action not begun
+/// (`ExecutionOutcome::not_started`: no failure, no termination of a call), for
+/// an external write, an external read that is not idempotent and an idempotent
+/// read, never as `tool_unavailable` (which halts a task whose action is not
+/// idempotent) and never as a cancellation of a call. The tool is one the
+/// provider did not import, so that its call has no pin check before the wait.
+#[test]
+fn req_cli_005_the_providers_wait_for_a_restart_ends_not_started_for_every_effect_class() {
+    use mimlys_core::action::{EffectKind, EffectView};
+    use mimlys_core::path::PlatformRules;
+    use mimlys_core::spi::{ExecutionContext, ToolProvider};
+    use mimlys_core::validate::permissive::PermissiveHooks;
+    use mimlys_core::validate::{Outcome, ValidationContext, validate};
+    for (kind, idempotent) in [
+        (EffectKind::ExternalWrite, false),
+        (EffectKind::ExternalRead, false),
+        (EffectKind::ExternalRead, true),
+    ] {
+        let name = format!("{kind:?}, idempotent {idempotent}");
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("lists.log");
+        let rt = multi_thread_runtime();
+        rt.block_on(async {
+            let (server, hang) = restart_hangs(dir.path());
+            let servers = std::sync::Arc::new(mimlys_mcp::tools::Servers::new(vec![server]));
+            let server = std::sync::Arc::clone(&servers.all()[0]);
+            let task = a_task();
+            let provider =
+                mimlys_mcp::tools::McpTools::open(task, std::sync::Arc::clone(&servers)).await;
+            let mut definition = provider
+                .definitions()
+                .into_iter()
+                .find(|d| d.name == "t.web_search")
+                .expect("imported");
+            definition.name = "t.ghost".into();
+            definition.effect = EffectView {
+                kind,
+                reversible: false,
+                idempotent,
+            };
+            let hooks = PermissiveHooks;
+            let definitions = [definition];
+            let context = ValidationContext {
+                task_running: true,
+                pending_user_item: false,
+                tools: &definitions,
+                rules: PlatformRules::current(),
+                grants: &hooks,
+                effects: &hooks,
+                budgets: &hooks,
+            };
+            let raw = serde_json::to_vec(
+                &json!({"decision": "act", "tool": "t.ghost", "arguments": {"query": "x"}}),
+            )
+            .unwrap();
+            let Outcome::Authorized(action) = validate(&context, &raw) else {
+                panic!("{name}: not authorized");
+            };
+            kill_server(&server).await;
+            std::fs::write(&hang, b"hang").unwrap();
+            let (start_gate, cancel) = (Cancellation::new(), Cancellation::new());
+            let execution = provider.execute(
+                &action,
+                ExecutionContext {
+                    deadline_ms: 30_000,
+                    cancel: cancel.clone(),
+                    start_gate: start_gate.clone(),
+                    redactor: Default::default(),
+                },
+            );
+            // The first request only: the strong token is not requested.
+            let first = async {
+                await_list_requests(&log, 2).await;
+                start_gate.cancel();
+            };
+            let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                tokio::join!(execution, first)
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{name}: the first stop request ends the wait"));
+            assert!(outcome.is_not_started(), "{name}: {outcome:?}");
+            assert_eq!(outcome.failure, None, "{name}: not tool_unavailable");
+            assert!(!cancel.is_cancelled(), "{name}");
+            assert_eq!(tools_called(dir.path()), ["die"], "{name}: nothing sent");
+            server.shutdown().await;
+        });
     }
 }

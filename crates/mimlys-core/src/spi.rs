@@ -258,7 +258,8 @@ pub struct ExecutionContext {
     /// The start gate's token (REQ-CLI-005, external design §19.2): the weakest
     /// stop request, which the two stronger ones imply, so a first stop signal
     /// sets it. For a wait made **before anything is sent** (an MCP server's pin
-    /// check): a provider that stops at it has made no call, and reports it with
+    /// check, and the wait for its server to be started again before the call):
+    /// a provider that stops at it has made no call, and reports it with
     /// [`ExecutionOutcome::not_started`], which the loop records as the action
     /// not begun, never as a failure of the tool or an unknown outcome. A wait
     /// made after a request was sent observes `cancel`, not this.

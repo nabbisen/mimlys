@@ -711,10 +711,22 @@ impl ToolProvider for McpTools {
                     action.arguments().clone(),
                     pinned.as_ref(),
                     context.deadline_ms,
+                    &context.start_gate,
                     &context.cancel,
                 )
                 .await;
             let wall_ms = started.elapsed().as_millis() as i64;
+            // The wait for the server to be started again, made before the
+            // request is sent, ended at the first stop request: nothing was
+            // sent, so the action is not begun and the task pauses, as for the
+            // pin check above. Not `tool_unavailable`, which halts a task whose
+            // action is not idempotent (external design §7.5, §19.2).
+            if let Err(error) = &outcome
+                && error.was_cancelled()
+                && context.start_gate.is_cancelled()
+            {
+                return ExecutionOutcome::not_started(wall_ms);
+            }
             if matches!(outcome, Ok(CallOutcome::DefinitionChanged)) {
                 return self.definition_changed(&name, started);
             }

@@ -115,7 +115,8 @@ Ctrl-C (and SIGTERM on Unix) once asks for a pause. Three things follow at once:
   waits for it or interrupts it by its kind, as described below. The signal
   itself never waits.
   A wait made before anything is sent (the check of an external tool's
-  definition just before its call) ends at this first signal too: the action
+  definition just before its call, and the wait for its server to be started
+  again if it died since that check) ends at this first signal too: the action
   is closed as not begun, `cancelled` with the same observation, whatever the
   tool does. Nothing was sent, so nothing is unknown, and the task pauses (it
   never halts as `tool_unavailable`).

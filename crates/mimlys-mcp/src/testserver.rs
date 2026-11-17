@@ -39,6 +39,9 @@
 //! (`change_definition` creates the file; a test may create it to stand for an
 //! upgrade or another configuration); `MIMLYS_TESTSERVER_FAIL_LIST_FILE=<path>`
 //! answers every `tools/list` with an error while that file exists;
+//! `MIMLYS_TESTSERVER_HANG_LIST_FILE=<path>` reads every `tools/list` request
+//! without ever answering it while that file exists (a server whose restart
+//! hangs: the file is made after its first start);
 //! `MIMLYS_TESTSERVER_HANG_LIST_AFTER=<n>` answers the first `n` `tools/list`
 //! requests and reads every later one without ever answering it (a server
 //! that listed once and then stops answering the listing; its calls and pings
@@ -556,10 +559,13 @@ pub fn main() {
                     );
                     std::thread::sleep(Duration::from_millis(ms));
                 }
-                if std::env::var("MIMLYS_TESTSERVER_HANG_LIST_AFTER")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .is_some_and(|n| seen >= n)
+                let hang_file = std::env::var_os("MIMLYS_TESTSERVER_HANG_LIST_FILE")
+                    .is_some_and(|p| std::path::Path::new(&p).exists());
+                if hang_file
+                    || std::env::var("MIMLYS_TESTSERVER_HANG_LIST_AFTER")
+                        .ok()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .is_some_and(|n| seen >= n)
                 {
                     // Never answered; the loop goes on reading.
                     continue;
