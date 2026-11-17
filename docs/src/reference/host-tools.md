@@ -343,7 +343,12 @@ credentials); declare the subdirectory the tool needs, for example
 ```
 
 It refuses a filesystem root, the home directory and its ancestors the same
-way, and any directory that directly holds a name from the credential list
+way, and the data directory, a path inside it and an ancestor of it (such as
+`~/.local/share` or `%LOCALAPPDATA%`): the tasks' trees and the store lie in
+the data directory, so a tool could read every task's files through such a
+path (**upgrade: read this**: a configuration that has one no longer loads; the
+message names the entry and the data directory, and a toolchain's own
+directories lie outside it). It refuses any directory that directly holds a name from the credential list
 (`credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/`,
 and the secret patterns of the workspace exclusions: `.env`, `*.pem`, `*.key`,
 `id_*`, `.ssh/`, `.aws/`, `.gnupg/`). Landlock has no deny rule, so the check
@@ -455,9 +460,11 @@ mimlys toolchain grant %USERPROFILE%\.rustup
 Each asks before adding one inheritable read entry for the container to the
 directory, records it under the data directory, and refuses the directories
 that [the read set refuses](#what-a-host-tool-can-read) (a root, the home
-directory, one that holds credentials such as `%USERPROFILE%\.cargo` with its
-`credentials.toml`), and `mimlys toolchain
-revoke <path>` removes exactly that entry. Until a declared path carries its
+directory, the data directory or a path that covers it, one that holds
+credentials such as `%USERPROFILE%\.cargo` with its `credentials.toml`), and
+`mimlys toolchain revoke <path>` removes exactly that entry (a directory on
+which the container holds no entry is left untouched, and the command says
+so). Until a declared path carries its
 entry the tool is unavailable: `status` and `toolchain list` say
 `acl_not_applied: <path>` with the command to run, and a `host_tool` grant
 for it is refused with the same reason, so nothing is granted that changes
@@ -489,7 +496,8 @@ renaming and replacing files (a rename needs `DELETE` on its source). It does
 owner (`WRITE_OWNER`), so a tool cannot, for example, open the files of a task
 to another local account; nor `GENERIC_ALL`, which holds both. A task whose
 entries cannot be written is not made: the creation fails with
-`acl_not_applied` and the reason.
+`acl_not_applied` and the reason, as the error kind `unavailable` with
+`detail.component` `"permissions"` (see the two reasons below).
 
 **Upgrading from 0.10: read this.** The first start of this release moves the
 installation, once, and records it in `toolchain-acls.json`:
