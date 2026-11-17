@@ -289,7 +289,6 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
     // then is it recorded; until it is, every start repeats what is left.
     if !record.task_entries_migrated {
         migrate_to_task_entries(&sid, paths, &mut record)?;
-        record.task_entries_migrated = true;
         changed = true;
     }
     if changed || !data_dir.join(RECORD_FILE).exists() {
