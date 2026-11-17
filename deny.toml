@@ -3,6 +3,14 @@
 [advisories]
 version = 2
 yanked = "deny"
+# Accepted exceptions, each with its reason and the condition that ends it (threat register,
+# "Residual risks, accepted"; THR-12). Review at every upgrade of the crate that pulls it in.
+ignore = [
+  # chrono is unmaintained (2026-11-17), not vulnerable. It is a required dependency of rmcp
+  # (3.9.0, and 3.10.0 too), the pinned MCP SDK (REQ-ARCH-007), and no version without it exists.
+  # mimlys does not use chrono itself. Remove when rmcp no longer depends on it.
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; required by rmcp, no release without it; not a vulnerability" },
+]
 
 [licenses]
 version = 2
