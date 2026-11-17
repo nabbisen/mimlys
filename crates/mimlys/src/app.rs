@@ -79,7 +79,11 @@ impl AppError {
         match self {
             AppError::Config(_) => "invalid_request",
             AppError::Runtime(e) => e.kind(),
-            AppError::Permissions(_) | AppError::Download(_) => "unavailable",
+            AppError::Permissions(_)
+            | AppError::Download(_)
+            | AppError::Workspace(mimlys_core::spi::WorkspaceError::PermissionsNotApplied {
+                ..
+            }) => "unavailable",
             AppError::Persistence(_) | AppError::Io { .. } | AppError::Partial { .. } => "internal",
             AppError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { .. }
@@ -107,7 +111,13 @@ impl AppError {
         }
         let detail = match self {
             AppError::Config(e) => serde_json::json!({ "parameter": e.key }),
-            AppError::Permissions(_) => serde_json::json!({ "component": "permissions" }),
+            AppError::Permissions(_)
+            | AppError::Workspace(mimlys_core::spi::WorkspaceError::PermissionsNotApplied {
+                ..
+            })
+            | AppError::Runtime(RuntimeError::Workspace(
+                mimlys_core::spi::WorkspaceError::PermissionsNotApplied { .. },
+            )) => serde_json::json!({ "component": "permissions" }),
             AppError::Download(e) => serde_json::json!({
                 "component": "download",
                 "url": e.url,

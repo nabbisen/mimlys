@@ -722,15 +722,18 @@ fn host_tool_reaches_only_its_own_task(test: &str, knobs: &[(&str, &str)]) {
     assert!(!b_tree.join("a-was-here.txt").exists());
 }
 
-/// Handoff 011o-4, item 1, the demonstration (before the refusal exists): a
-/// read path that is the data directory, or the directory above it, lets the
-/// tool of one task read the file of another. The administrator's
-/// declaration is all it takes; nothing else is relaxed.
+/// REQ-CONF-006, A-06 (handoff 011o-4, item 1): a read path that is the data
+/// directory, or the directory above it, would let the tool of one task read
+/// the file of another (the commit before this one showed it: the same
+/// declaration, `read b-owned.txt` from task A, read it). It is refused where
+/// the configuration is read: `check` and every command fail with the reason,
+/// and no task is made; the same declaration of a sibling directory loads and
+/// runs.
 #[test]
-fn req_conf_006_a_read_path_over_the_data_directory_reaches_another_tasks_file() {
-    let test = "req_conf_006_a_read_path_over_the_data_directory_reaches_another_tasks_file";
+fn req_conf_006_a_read_path_over_the_data_directory_is_refused() {
+    let test = "req_conf_006_a_read_path_over_the_data_directory_is_refused";
     for covering in ["data", "above"] {
-        let env = Env::new(&[probe(&["write", "b-owned.txt"]), complete()], "");
+        let env = Env::new(&[probe(&["ok"]), complete()], "");
         let data_dir = env.data_dir();
         let covers = match covering {
             "data" => data_dir.clone(),
@@ -738,38 +741,57 @@ fn req_conf_006_a_read_path_over_the_data_directory_reaches_another_tasks_file()
         };
         std::fs::create_dir_all(&data_dir).unwrap();
         let env = env.with_probe_read_path(&covers);
-        let (tier, table) = clauses(&env);
-        if tier != "full" {
-            common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
-            return;
-        }
-        let scope = env.scope();
-        let run = |goal: &str| -> String {
-            let (code, value) = env.json(&[
-                "run",
-                goal,
-                "--scope",
-                scope.to_str().unwrap(),
-                "--grant",
-                "host_tool:probe",
-            ]);
-            assert_eq!(code, 0, "{value}");
-            assert_eq!(value["task"]["state"], "completed", "{value}");
-            value["task"]["task_id"].as_str().unwrap().to_owned()
-        };
-        let b = run("b");
-        let b_file = env.tree(&b).join("b-owned.txt");
-        assert!(b_file.is_file(), "task B's own write");
-        env.set_script(&[probe(&["read", b_file.to_str().unwrap()]), complete()]);
-        let a = run("a");
-        let obs = env.observations(&a);
-        println!("{covering}: {}", stdout_of(&obs[0]).trim());
+        let (code, _, stderr) = env.run(&["check"]);
+        assert_ne!(code, 0, "{covering}: check accepted it: {stderr}");
         assert!(
-            stdout_of(&obs[0]).contains("read "),
-            "{covering}: the tool of task A read task B's file: {}",
-            stdout_of(&obs[0])
+            stderr.contains("host_tools.probe.read_paths")
+                && stderr.contains("the data directory")
+                && stderr.contains(&data_dir.to_string_lossy().into_owned()),
+            "{covering}: {stderr}"
+        );
+        let scope = env.scope();
+        let (code, _, stderr) = env.run(&[
+            "run",
+            "a",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ]);
+        assert_ne!(code, 0, "{covering}: run went on: {stderr}");
+        assert!(stderr.contains("the data directory"), "{stderr}");
+        assert!(
+            !data_dir.join("workspaces").exists()
+                || std::fs::read_dir(data_dir.join("workspaces"))
+                    .unwrap()
+                    .next()
+                    .is_none(),
+            "{covering}: a task was made"
         );
     }
+    // The sibling of the data directory loads and runs.
+    let env = Env::new(&[probe(&["ok"]), complete()], "");
+    let sibling = env.data.path().join("toolchain-elsewhere");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let env = env.with_probe_read_path(&sibling);
+    let (code, _, stderr) = env.run(&["check"]);
+    assert_eq!(code, 0, "{stderr}");
+    let (tier, table) = clauses(&env);
+    if tier != "full" {
+        common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+        return;
+    }
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "a",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
 }
 
 /// REQ-SEC-003: a worker whose own report of its confinement lacks a mandatory

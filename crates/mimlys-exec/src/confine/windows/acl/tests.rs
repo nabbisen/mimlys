@@ -1,5 +1,6 @@
 use super::*;
 use crate::confine::acl_rules::{GENERIC_ALL, WRITE_MASK};
+use windows_sys::Win32::Security::GetSecurityDescriptorLength;
 
 /// A SID that no one else uses: the container SID of a name made for the
 /// test (derived from the name; no profile is created).
@@ -235,6 +236,80 @@ fn req_conf_008_the_write_entry_has_the_stated_mask_and_the_old_one_is_replaced(
         EntryState::Absent
     );
     assert_eq!(counts(&opened), (before_total, before_inherited));
+}
+
+/// The descriptor of the object as the system holds it, read back (the DACL
+/// and what goes with it), byte for byte.
+fn descriptor_bytes(dir: &Dir) -> Vec<u8> {
+    let dacl = read_dacl(dir).expect("the DACL reads");
+    // SAFETY: the descriptor is a valid self-relative descriptor owned by `dacl`.
+    let len = unsafe { GetSecurityDescriptorLength(dacl.descriptor) } as usize;
+    // SAFETY: a self-relative descriptor is one block of `len` bytes.
+    unsafe { std::slice::from_raw_parts(dacl.descriptor as *const u8, len) }.to_vec()
+}
+
+/// The descriptors this thread has written so far.
+fn dacl_writes() -> u32 {
+    DACL_WRITES.with(|writes| writes.get())
+}
+
+/// REQ-CONF-008 (handoff 011o-4, item 3): `revoke` of a path on which the SID
+/// holds no entry of its own writes nothing: the descriptor of the directory
+/// and of what lies beneath it are the same bytes when read back, and no
+/// descriptor was written (a rewrite makes the system walk and rewrite every
+/// file beneath). An entry the directory only inherits is not its own, and is
+/// left. A path that held an entry has it removed, in one write, and a second
+/// `revoke` writes nothing again.
+#[test]
+fn req_conf_008_a_revoke_of_a_path_without_an_entry_writes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("toolchain");
+    let inner = dir.join("bin");
+    std::fs::create_dir_all(&inner).unwrap();
+    let file = inner.join("tool.exe");
+    std::fs::write(&file, "x").unwrap();
+    let sid = test_sid("noentry");
+    let opened = Dir::open(&dir).unwrap();
+    let opened_file = Dir::open(&file).unwrap();
+
+    // No entry anywhere: nothing is written, nothing changes.
+    let (dir_before, file_before) = (descriptor_bytes(&opened), descriptor_bytes(&opened_file));
+    let writes = dacl_writes();
+    assert_eq!(revoke(&dir, &sid).unwrap(), Revoked::NoEntry);
+    assert_eq!(revoke(&file, &sid).unwrap(), Revoked::NoEntry);
+    assert_eq!(dacl_writes(), writes, "no descriptor was written");
+    assert_eq!(descriptor_bytes(&opened), dir_before);
+    assert_eq!(descriptor_bytes(&opened_file), file_before);
+
+    // An entry the path only inherits is not its own: left as it is.
+    grant(&dir, &sid, Access::Read).unwrap();
+    assert!(has_entry(&dir, &sid, Access::Read).unwrap());
+    let inner_opened = Dir::open(&inner).unwrap();
+    assert_eq!(entries(&inner, &sid).len(), 1, "inherited by the child");
+    let inner_before = descriptor_bytes(&inner_opened);
+    let file_before = descriptor_bytes(&opened_file);
+    let writes = dacl_writes();
+    assert_eq!(revoke(&inner, &sid).unwrap(), Revoked::NoEntry);
+    assert_eq!(revoke(&file, &sid).unwrap(), Revoked::NoEntry);
+    assert_eq!(dacl_writes(), writes, "an inherited entry is not removed");
+    assert_eq!(descriptor_bytes(&inner_opened), inner_before);
+    assert_eq!(descriptor_bytes(&opened_file), file_before);
+    assert_eq!(entries(&inner, &sid).len(), 1, "still inherited");
+
+    // A path with an entry of its own: removed in one write; then none again.
+    let writes = dacl_writes();
+    assert_eq!(revoke(&dir, &sid).unwrap(), Revoked::Removed);
+    assert_eq!(dacl_writes(), writes + 1, "one write");
+    assert_eq!(
+        entry_state(&dir, &sid, Access::Read).unwrap(),
+        EntryState::Absent
+    );
+    assert!(entries(&inner, &sid).is_empty(), "nor beneath it any more");
+    let after = descriptor_bytes(&opened);
+    let writes = dacl_writes();
+    assert_eq!(revoke(&dir, &sid).unwrap(), Revoked::NoEntry);
+    assert_eq!(dacl_writes(), writes, "nothing to remove the second time");
+    assert_eq!(descriptor_bytes(&opened), after);
 }
 
 /// REQ-CONF-008: a read entry of an earlier release stays applied, one with

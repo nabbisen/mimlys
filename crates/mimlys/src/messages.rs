@@ -502,6 +502,10 @@ pub fn toolchain_granted(path: &str) -> String {
 pub fn toolchain_revoked(path: &str) -> String {
     format!("permission removed from {path}")
 }
+/// `toolchain revoke` of a path that holds no permission of the container.
+pub fn toolchain_revoke_held_nothing(path: &str) -> String {
+    format!("the container held no permission on {path}; nothing was changed there")
+}
 /// `toolchain revoke` of a directory mimlys itself needs.
 pub fn toolchain_revoke_runtime_path(path: &str) -> String {
     format!(

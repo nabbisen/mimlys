@@ -723,6 +723,98 @@ fn m6b_toolchain_permissions_are_reversible_and_gate_tools() {
     assert_eq!(code, 1, "{refused}");
 }
 
+/// What `icacls` prints of a path, exactly (the `(I)` marker too: a write sets it).
+fn icacls_exact(path: &str) -> String {
+    let out = Command::new("icacls").arg(path).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// REQ-CONF-006, A-06 (handoff 011o-4, item 1): `toolchain grant` refuses the
+/// data directory, a path inside it and an ancestor of it, naming the entry
+/// and the data directory, and writes nothing to them; a sibling of the data
+/// directory is granted.
+#[test]
+fn req_conf_006_toolchain_grant_refuses_the_data_directory_and_what_covers_it() {
+    let env = Env::new(&[probe(&["ok"]), complete()], "");
+    let sibling = env.data.path().join("toolchain-beside-the-data");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let sibling_text = plain(&sibling);
+    // The sibling is accepted (and opens the application, which makes the data directory).
+    let (code, granted) = env.json(&["toolchain", "grant", &sibling_text, "--yes"]);
+    assert_eq!(code, 0, "{granted}");
+    assert_eq!(granted["applied"], true, "{granted}");
+    let data = env.data.path().join("data");
+    std::fs::create_dir_all(data.join("workspaces")).unwrap();
+    let data_text = plain(&data);
+    for (path, words) in [
+        (data.clone(), "is the data directory"),
+        (data.join("workspaces"), "is inside the data directory"),
+        (env.data.path().to_path_buf(), "contains the data directory"),
+    ] {
+        let text = plain(&path);
+        let before = icacls_exact(&text);
+        let (code, refused) = env.json(&["toolchain", "grant", &text, "--yes"]);
+        assert_eq!(code, 1, "{refused}");
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert!(message.contains(words), "{message}");
+        assert!(
+            message.contains(&data_text),
+            "the data directory: {message}"
+        );
+        assert_eq!(icacls_exact(&text), before, "nothing was written to {text}");
+    }
+    // And through a different spelling of the same directory.
+    let upper = data_text.to_uppercase();
+    let (code, refused) = env.json(&["toolchain", "grant", &upper, "--yes"]);
+    assert_eq!(code, 1, "{refused}");
+    // The sibling is revoked again: the directory is as it was.
+    let (code, revoked) = env.json(&["toolchain", "revoke", &sibling_text, "--yes"]);
+    assert_eq!(code, 0, "{revoked}");
+    assert_eq!(revoked["applied"], true, "{revoked}");
+}
+
+/// REQ-CONF-008 (handoff 011o-4, item 3): `toolchain revoke` of a directory
+/// on which the container holds no entry says so (`applied: false`, reason
+/// `no_entry`) and leaves the directory's permissions exactly as they were,
+/// the inherited marker included (the descriptor was not written); after a
+/// grant it removes the entry, as before.
+#[test]
+fn req_conf_008_toolchain_revoke_of_a_path_without_an_entry_says_it_held_none() {
+    let env = Env::new(&[probe(&["ok"]), complete()], "");
+    let dir = env.data.path().join("never-granted");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("bin").join("tool.txt"), "x").unwrap();
+    let text = plain(&dir);
+    let before = icacls_exact(&text);
+    let before_file = icacls_exact(&plain(&dir.join("bin").join("tool.txt")));
+    let (code, value) = env.json(&["toolchain", "revoke", &text, "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["applied"], false, "{value}");
+    assert_eq!(value["reason"], "no_entry", "{value}");
+    let (code, stdout, _) = env.run(&["toolchain", "revoke", &text, "--yes"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("held no permission"), "{stdout}");
+    assert_eq!(
+        icacls_exact(&text),
+        before,
+        "the directory is exactly as it was"
+    );
+    assert_eq!(
+        icacls_exact(&plain(&dir.join("bin").join("tool.txt"))),
+        before_file,
+        "what lies beneath is exactly as it was"
+    );
+    let (code, granted) = env.json(&["toolchain", "grant", &text, "--yes"]);
+    assert_eq!(code, 0, "{granted}");
+    let (code, revoked) = env.json(&["toolchain", "revoke", &text, "--yes"]);
+    assert_eq!(code, 0, "{revoked}");
+    assert_eq!(revoked["applied"], true, "{revoked}");
+    // And once more: nothing left to remove.
+    let (code, again) = env.json(&["toolchain", "revoke", &text, "--yes"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(again["reason"], "no_entry", "{again}");
+}
+
 /// External design §23, M6b: `cargo test --offline` of a native project,
 /// with a path dependency, under every mandatory clause; the model fixes
 /// the failing test and the completion check verifies it. Runs when a

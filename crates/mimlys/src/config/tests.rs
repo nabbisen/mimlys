@@ -328,24 +328,114 @@ fn req_conf_011_one_function_decides_for_grant_and_declaration() {
     std::fs::create_dir_all(cargo.join("bin")).unwrap();
     std::fs::write(cargo.join("credentials.toml"), "x").unwrap();
     let shown = cargo.to_string_lossy().into_owned();
-    let refused = crate::toolchain::read_path_refusal_with(&shown, Some(&home)).unwrap();
+    let refused = crate::toolchain::read_path_refusal_with(&shown, Some(&home), None).unwrap();
     assert!(
         refused.contains("credentials.toml") && refused.contains("/bin"),
         "{refused}"
     );
     assert!(
-        crate::toolchain::read_path_refusal_with(&cargo.join("bin").to_string_lossy(), Some(&home))
-            .is_none()
+        crate::toolchain::read_path_refusal_with(
+            &cargo.join("bin").to_string_lossy(),
+            Some(&home),
+            None
+        )
+        .is_none()
     );
     assert!(
-        crate::toolchain::read_path_refusal_with(&home.to_string_lossy(), Some(&home))
+        crate::toolchain::read_path_refusal_with(&home.to_string_lossy(), Some(&home), None)
             .unwrap()
             .contains("home directory")
     );
     assert!(
-        crate::toolchain::read_path_refusal_with(&root.path().to_string_lossy(), Some(&home))
+        crate::toolchain::read_path_refusal_with(&root.path().to_string_lossy(), Some(&home), None)
             .unwrap()
             .contains("contains the home directory")
+    );
+}
+
+/// REQ-CONF-006, A-06 (handoff 011o-4): a declared read path that is the data
+/// directory, lies inside it, or contains it is a configuration error at
+/// load (so `check` refuses it too), on every platform, naming the
+/// declaration, the entry as written and the data directory; a sibling loads.
+/// The data directory does not exist yet in the first three: the comparison
+/// does not wait for it.
+#[test]
+fn req_conf_006_a_read_path_over_the_data_directory_is_refused_at_load() {
+    let root = tempfile::tempdir().unwrap();
+    let share = root.path().join("share");
+    let data = share.join("mimlys");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::create_dir_all(root.path().join("toolchain/bin")).unwrap();
+    let declare = |path: &Path| {
+        Config::parse(&format!(
+            "config_version = 1\n[runtime]\ndata_dir = {data:?}\n[host_tools.tool]\ncommand = \"/bin/true\"\neffect = \"workspace_write\"\nread_paths = [{path:?}]\n",
+            data = data.to_string_lossy(),
+            path = path.to_string_lossy(),
+        ))
+        .unwrap()
+        .validate()
+    };
+    for (path, words) in [
+        (data.clone(), "is the data directory"),
+        (
+            data.join("workspaces/t/tree"),
+            "is inside the data directory",
+        ),
+        (share.clone(), "contains the data directory"),
+        (root.path().to_path_buf(), "contains the data directory"),
+    ] {
+        let err = declare(&path).unwrap_err();
+        assert_eq!(err.key, "host_tools.tool.read_paths", "{path:?}");
+        assert!(err.reason.contains(words), "{path:?}: {err}");
+        assert!(
+            err.reason.contains(&path.to_string_lossy().into_owned()),
+            "the entry is named: {err}"
+        );
+        assert!(
+            err.reason.contains(&data.to_string_lossy().into_owned()),
+            "the data directory is named: {err}"
+        );
+        assert!(err.reason.contains("A-06"), "{err}");
+    }
+    // A sibling of the data directory, and one that shares its prefix, load.
+    declare(&share.join("other")).unwrap();
+    declare(&share.join("mimlys2")).unwrap();
+    declare(&root.path().join("toolchain/bin")).unwrap();
+    // With the data directory made, nothing changes.
+    std::fs::create_dir_all(data.join("workspaces")).unwrap();
+    assert!(declare(&data).is_err() && declare(&share).is_err());
+    declare(&share.join("mimlys2")).unwrap();
+}
+
+/// REQ-CONF-006: a link to the data directory's parent is the parent: the
+/// comparison is on what the paths resolve to, whether or not the data
+/// directory exists yet.
+#[cfg(unix)]
+#[test]
+fn req_conf_006_a_link_to_a_directory_over_the_data_directory_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let share = root.path().join("share");
+    std::fs::create_dir_all(&share).unwrap();
+    let link = root.path().join("to-share");
+    std::os::unix::fs::symlink(&share, &link).unwrap();
+    let data = share.join("mimlys");
+    let refused =
+        crate::toolchain::read_path_refusal_with(&link.to_string_lossy(), None, Some(&data))
+            .expect("refused");
+    assert!(refused.contains("contains the data directory"), "{refused}");
+    // The data directory given through a link too.
+    let through = link.join("mimlys");
+    let refused =
+        crate::toolchain::read_path_refusal_with(&share.to_string_lossy(), None, Some(&through))
+            .expect("refused");
+    assert!(refused.contains("contains the data directory"), "{refused}");
+    assert!(
+        crate::toolchain::read_path_refusal_with(
+            &root.path().join("elsewhere").to_string_lossy(),
+            None,
+            Some(&data)
+        )
+        .is_none()
     );
 }
 
