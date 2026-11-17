@@ -82,6 +82,34 @@ fn req_conf_006_a_workspace_is_made_with_its_tasks_entries() {
     assert!(!acl::has_any_entry(&dir.join("tree").join("src"), &mine).unwrap());
 }
 
+/// REQ-CONF-006 (handoff 011o; Windows): when the task's entries cannot be
+/// written the creation fails with `acl_not_applied` and the reason, and the
+/// task's directory is not left behind, never a task whose tools cannot write.
+/// (Made to fail here by a task directory without its `tree`.)
+#[cfg(windows)]
+#[test]
+fn req_conf_006_a_workspace_whose_entries_cannot_be_written_is_not_made() {
+    let data = tempfile::tempdir().unwrap();
+    let ids = ScriptedIds::default();
+    let task = TaskId::new(&ids);
+    let p = provider(data.path());
+    let dir = data.path().join("workspaces").join(task.to_string());
+    std::fs::create_dir_all(dir.join("tmp")).unwrap();
+    let error = p.give_task_entries(task).unwrap_err();
+    match error {
+        WorkspaceError::Storage { detail } => assert!(
+            detail.starts_with("acl_not_applied: "),
+            "the reason is the permission's: {detail}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(!dir.exists(), "the half-made task directory is removed");
+    // The message `toolchain::task_entries` gives, on its own.
+    let missing = data.path().join("missing");
+    let reason = crate::toolchain::task_entries("t", &missing, &missing).unwrap_err();
+    assert!(reason.starts_with("acl_not_applied: "), "{reason}");
+}
+
 /// REQ-WS-002 / REQ-WS-003: the copy has the project files and none of the
 /// LIM-W4 or LIM-W5 entries; the measured numbers count what was copied.
 #[test]
