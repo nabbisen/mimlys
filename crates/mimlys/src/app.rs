@@ -621,6 +621,13 @@ impl App {
         let host_tools = config.host_tools();
         // The write set is the workspaces and `<data>/tmp`, on every platform.
         for dir in ["workspaces", "tmp", "interpreters"] {
+            // Handoff 011o, D5: on Windows the container's entries and the tools'
+            // writes land on these directories, so none of them is a link (a
+            // junction would carry them to another place); at every start.
+            if cfg!(windows) {
+                mimlys_exec::confine::task_paths::refuse_link(&data_dir.join(dir))
+                    .map_err(|detail| AppError::Io { detail })?;
+            }
             mimlys_exec::confine::create_private_subdir(&data_dir.join(dir)).map_err(|e| {
                 AppError::Io {
                     detail: format!(

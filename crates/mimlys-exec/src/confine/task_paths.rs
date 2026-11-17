@@ -82,8 +82,10 @@ pub fn plain_components_beneath(data_dir: &Path, path: &Path) -> Result<Vec<OsSt
 }
 
 /// What a task's two paths must be, as names below the data directory (pure):
-/// the tree is `workspaces/<task>/tree`, the temporary directory is inside
-/// `workspaces/<task>/`. Anything else is refused, never widened.
+/// the tree is `workspaces/<task>/tree`, the temporary directory is
+/// `workspaces/<task>/tmp` or inside it (an execution's directory). Anything
+/// else is refused, never widened: the task's directory itself holds the
+/// workspace record, which no tool may write (handoff 011o, D7).
 pub fn task_names(
     data_dir: &Path,
     tree: &Path,
@@ -94,7 +96,7 @@ pub fn task_names(
         return Err(format!("{} is not the tree of a task", tree.display()));
     }
     let tmp_names = plain_components_beneath(data_dir, tmp)?;
-    if tmp_names.len() < 3 || tmp_names[..2] != tree_names[..2] {
+    if tmp_names.len() < 3 || tmp_names[..2] != tree_names[..2] || tmp_names[2] != "tmp" {
         return Err(format!(
             "{} and {} do not belong to one task",
             tree.display(),
@@ -102,6 +104,39 @@ pub fn task_names(
         ));
     }
     Ok((tree_names, tmp_names))
+}
+
+/// Whether `path` is a link: a symbolic link on every platform, and on Windows
+/// a junction or any other reparse point. A path that does not exist is none.
+pub fn is_link(path: &Path) -> std::io::Result<bool> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    Ok(meta.file_type().is_symlink() || reparse)
+}
+
+/// The runtime's own directories (`workspaces`, `tmp`, `interpreters`) are
+/// never links (handoff 011o, D5): a link there would carry the container's
+/// permissions, or the tools' writes, to another place. `Err` names the path
+/// and the remedy. Checked at creation and at every start.
+pub fn refuse_link(path: &Path) -> Result<(), String> {
+    match is_link(path) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(format!(
+            "{} is a link (a symbolic link or a junction), and mimlys's own directories are never links: remove the link, and move what it points to into place as an ordinary directory",
+            path.display()
+        )),
+        Err(e) => Err(format!("cannot look at {}: {e}", path.display())),
+    }
 }
 
 /// Opens a task's tree and temporary directory without following a link at any
