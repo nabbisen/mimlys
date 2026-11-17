@@ -676,11 +676,21 @@ impl ToolProvider for McpTools {
             // against the task (LIM-X3).
             let pinned = self.imported.get(&name).map(|i| i.record.hash.clone());
             if let Some(record) = self.imported.get(&name).map(|i| &i.record) {
+                // Nothing has been sent yet, so this wait observes the first stop
+                // request (`start_gate`), not the token of a call in flight: the
+                // second signal's token, for an action that cannot be undone.
                 let current = match server
-                    .current_hash(self.task_id, tool, &context.cancel)
+                    .current_hash(self.task_id, tool, &context.start_gate)
                     .await
                 {
                     Ok(current) => current,
+                    // The first stop request ended the wait: nothing was sent, so
+                    // the action is not begun and the task pauses. Not
+                    // `tool_unavailable`, which halts a task whose action is not
+                    // idempotent (external design §7.5, §19.2).
+                    Err(error) if error.was_cancelled() && context.start_gate.is_cancelled() => {
+                        return ExecutionOutcome::not_started(started.elapsed().as_millis() as i64);
+                    }
                     // The server cannot serve (it could not start, or its restart
                     // limit is reached for this task): the call is not made, and
                     // the tool is not unpinned for a definition that did not change.

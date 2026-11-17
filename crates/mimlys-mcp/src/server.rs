@@ -152,6 +152,17 @@ pub enum ServerError {
 }
 
 impl ServerError {
+    /// Whether the wait ended because the token it was given was requested (a
+    /// listing or a start that was asked to stop: `list:cancelled`,
+    /// `startup_cancelled`), and not because the server could not serve.
+    pub fn was_cancelled(&self) -> bool {
+        matches!(
+            self,
+            ServerError::Unavailable { reason, .. }
+                if reason == "list:cancelled" || reason == "startup_cancelled"
+        )
+    }
+
     /// The reason word `status` and the payload of `tool_unavailable` give: the
     /// start's own reason, or `restart_limit_reached`, which keeps the reason of the
     /// last start when that one failed (`restart_limit_reached (last: list:protocol)`).

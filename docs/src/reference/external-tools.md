@@ -179,7 +179,11 @@ unavailable, with the reason in `status`, rather than half imported.
 - **Every request has a deadline and ends at the stop signal.** The listing of
   a server's tools, each page of it, and the start of the server are bounded
   by the server's `startup_ms` (LIM-O6, 15 000 ms unless you set it); a stop
-  signal ends them sooner. Nothing waits behind a listing: a call, another
+  signal ends them sooner. The check of a tool's definition just before a call
+  ends at the **first** Ctrl-C, whatever the tool does: nothing has been sent,
+  so the action is closed as not begun (`cancelled`, with the notice
+  `stopped_before_start`), nothing is unknown and the task pauses, never
+  halts as `tool_unavailable`. Nothing waits behind a listing: a call, another
   task's pin check and the shutdown never queue behind one. A listing stops at
   16 pages (LIM-I11) and 256 tools (LIM-I12). When a server cannot be reached
   at a step boundary its tools **stay pinned**, and a call to one is

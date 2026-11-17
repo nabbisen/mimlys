@@ -461,3 +461,32 @@ fn req_mcp_002_a_call_not_sent_for_a_changed_definition_is_definition_changed() 
         })
     );
 }
+
+/// REQ-CLI-005 (handoff 010f, item 2): only a wait that ended because its token
+/// was requested is "cancelled"; a server that cannot serve, a listing that timed
+/// out and a restart limit are not, and stay `tool_unavailable`.
+#[test]
+fn req_cli_005_only_a_wait_ended_by_its_token_is_cancelled() {
+    use crate::server::ServerError;
+    let unavailable = |reason: &str| ServerError::Unavailable {
+        server: "s".into(),
+        reason: reason.into(),
+    };
+    assert!(unavailable("list:cancelled").was_cancelled());
+    assert!(unavailable("startup_cancelled").was_cancelled());
+    for reason in [
+        "list:timeout",
+        "startup_timeout",
+        "list:protocol",
+        "list:closed",
+    ] {
+        assert!(!unavailable(reason).was_cancelled(), "{reason}");
+    }
+    assert!(
+        !ServerError::RestartLimitReached {
+            server: "s".into(),
+            last: Some("list:cancelled".into()),
+        }
+        .was_cancelled()
+    );
+}

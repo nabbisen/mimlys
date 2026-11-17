@@ -1006,6 +1006,7 @@ fn fs_symlinks(name: &str, c: Symlinks) -> Result<(), String> {
                 ExecutionContext {
                     deadline_ms: action.deadline_ms(),
                     cancel: mimlys_core::spi::Cancellation::new(),
+                    start_gate: mimlys_core::spi::Cancellation::new(),
                     redactor: Default::default(),
                 },
             ));

@@ -754,7 +754,7 @@ impl Persistence for Store {
             });
         }
         self.transaction("not_started", |tx| {
-            expect_status(tx, action.action_id, &["authorized"], "not_started")?;
+            expect_status(tx, action.action_id, &["authorized", "running"], "not_started")?;
             upsert_action(tx, action)?;
             tx.execute(
                 "INSERT INTO observations (observation_id, action_id, created_at, record, record_version) VALUES (?1, ?2, ?3, ?4, ?5)",
