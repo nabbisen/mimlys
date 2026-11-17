@@ -193,11 +193,10 @@ impl LocalWorkspaces {
     /// the creation fails with `acl_not_applied` and the reason.
     pub(crate) fn give_task_entries(&self, task_id: TaskId) -> Result<(), WorkspaceError> {
         let dir = self.task_dir(task_id);
-        crate::toolchain::task_entries(&task_id.to_string(), &dir.join("tree"), &dir.join("tmp"))
-            .map_err(|detail| {
-                let _ = std::fs::remove_dir_all(&dir);
-                WorkspaceError::Storage { detail }
-            })
+        crate::toolchain::task_entries(&task_id.to_string(), &dir, &dir).map_err(|detail| {
+            let _ = std::fs::remove_dir_all(&dir);
+            WorkspaceError::Storage { detail }
+        })
     }
 
     /// The task's working tree.

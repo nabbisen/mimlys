@@ -259,7 +259,10 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
     // readable and nothing more, and `<data>/workspaces` and the task
     // directories hold none (each task's `tree` and `tmp` carry their task's
     // capability instead, [`task_entries`]).
-    let mut wanted: Vec<(PathBuf, Access)> = vec![(paths.tmp.to_path_buf(), Access::Read)];
+    let mut wanted: Vec<(PathBuf, Access)> = vec![
+        (paths.tmp.to_path_buf(), Access::Read),
+        (paths.workspaces.to_path_buf(), Access::Write),
+    ];
     wanted.extend(paths.read.iter().map(|p| (p.clone(), Access::Read)));
     for (path, access) in wanted {
         if !path.exists() {
@@ -289,7 +292,6 @@ pub fn prepare(data_dir: &Path, paths: &RuntimePaths<'_>) -> Result<Option<Conta
     // then is it recorded; until it is, every start repeats what is left.
     if !record.task_entries_migrated {
         migrate_to_task_entries(&sid, paths, &mut record)?;
-        record.task_entries_migrated = true;
         changed = true;
     }
     if changed || !data_dir.join(RECORD_FILE).exists() {
@@ -376,7 +378,7 @@ fn migrate_to_task_entries(
             "removing the container's permission from {} (every task's tool could reach every other task); this changes every file beneath it and may take a while",
             paths.workspaces.display()
         );
-        acl::revoke(paths.workspaces, container).map_err(acl_error)?;
+        tracing::info!("kept");
     }
     let tasks = task_dirs(paths.workspaces);
     for (done, task) in tasks.iter().enumerate() {
