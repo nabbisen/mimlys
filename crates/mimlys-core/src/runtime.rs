@@ -305,9 +305,11 @@ impl Runtime {
         self.interruption(task_id).no_new_action.is_cancelled()
     }
 
-    /// The token a wait at a step boundary observes (a listing of a server's
-    /// tools): the request to start no new action, which the two stronger
-    /// requests imply.
+    /// The token a wait made before anything is sent observes: at a step
+    /// boundary (a listing of a server's tools) and inside an action's
+    /// execution before its call (the pin check; `ExecutionContext::start_gate`).
+    /// The request to start no new action, which the two stronger requests
+    /// imply.
     pub(crate) fn boundary_interruption(&self, task_id: TaskId) -> Cancellation {
         self.interruption(task_id).no_new_action
     }

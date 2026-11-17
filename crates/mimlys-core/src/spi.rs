@@ -252,8 +252,17 @@ pub struct BackendDescriptor {
 pub struct ExecutionContext {
     /// Effective deadline in milliseconds (REQ-TOOL-006).
     pub deadline_ms: i64,
-    /// Cancellation flag (REQ-TOOL-007).
+    /// Cancellation flag (REQ-TOOL-007). For an action that cannot be undone it
+    /// is the second stop signal's token: it is not set by the first.
     pub cancel: Cancellation,
+    /// The start gate's token (REQ-CLI-005, external design §19.2): the weakest
+    /// stop request, which the two stronger ones imply, so a first stop signal
+    /// sets it. For a wait made **before anything is sent** (an MCP server's pin
+    /// check): a provider that stops at it has made no call, and reports it with
+    /// [`ExecutionOutcome::not_started`], which the loop records as the action
+    /// not begun, never as a failure of the tool or an unknown outcome. A wait
+    /// made after a request was sent observes `cancel`, not this.
+    pub start_gate: Cancellation,
     /// The runtime's redactor (REQ-CTX-007). A provider that cuts text redacts
     /// the whole text first, so that no part of a secret is left across the cut;
     /// the runtime redacts what the provider returns all the same.
@@ -345,6 +354,28 @@ impl ExecutionOutcome {
                 ..ExecutionMetrics::default()
             },
         }
+    }
+
+    /// An outcome that stopped at the start gate's token
+    /// ([`ExecutionContext::start_gate`]) in a wait made before anything was
+    /// sent: nothing was sent, so nothing is unknown and nothing failed. The
+    /// loop records the action as it records one that never began
+    /// (`stopped_before_start`) and the step ends `cancelled`, which the caller
+    /// turns into a pause. It is a cancelled outcome carrying the notice, so
+    /// that [`ExecutionOutcome::is_not_started`] is the one place that tells it
+    /// from a cancellation of a call that was sent.
+    pub fn not_started(wall_ms: i64) -> Self {
+        Self {
+            notices: vec![Notice::StoppedBeforeStart],
+            ..Self::cancelled(wall_ms)
+        }
+    }
+
+    /// Whether this outcome says that nothing was sent ([`ExecutionOutcome::not_started`]).
+    pub fn is_not_started(&self) -> bool {
+        self.termination == Termination::Cancelled
+            && self.failure.is_none()
+            && self.notices.contains(&Notice::StoppedBeforeStart)
     }
 
     /// An outcome that was cancelled.
@@ -2188,7 +2219,7 @@ pub mod fake {
             event: &EventRecord,
         ) -> Result<(), PersistenceError> {
             self.write("not_started", |i| {
-                expect_status(i, action, &["authorized"], "not_started")?;
+                expect_status(i, action, &["authorized", "running"], "not_started")?;
                 upsert(&mut i.actions, action, |a| a.action_id == action.action_id);
                 i.observations.push(observation.clone());
                 i.events.push(event.clone());
@@ -2662,7 +2693,10 @@ pub trait Persistence: PersistenceRead {
     /// An authorized action closed `cancelled` without starting, because the
     /// user's stop signal came before it began (REQ-CLI-005): the terminal
     /// status, the observation that says so and the event, in one write. There
-    /// is no execution: nothing ran.
+    /// is no execution: nothing ran. The action is `authorized`, or `running`
+    /// when it was recorded as begun and then stopped at a wait made before
+    /// anything was sent (handoff 010f: the MCP pin check): its `action.started`
+    /// stands, and it has no execution record either.
     fn record_not_started(
         &self,
         action: &Action,

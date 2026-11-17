@@ -1227,6 +1227,49 @@ impl Runtime {
         }
     }
 
+    /// Closes an action that was not begun, or was recorded begun and stopped
+    /// before anything was sent, `cancelled`: the terminal status, the
+    /// observation that says the stop signal came before it began
+    /// (`stopped_before_start`) and the event, in one write, and no execution:
+    /// nothing ran, so nothing is unknown and nothing failed (REQ-CLI-005,
+    /// external design §19.2). The step ends `cancelled` and the caller pauses.
+    fn close_not_started(
+        &self,
+        task: &Task,
+        step: &mut Step,
+        action: &Action,
+        authorized: &AuthorizedAction,
+        now: Instant,
+    ) -> Result<(), RuntimeError> {
+        let cancelled = action
+            .transition(ActionInput::Cancel, now)
+            .map_err(ordering)?;
+        let mut observation = Observation::stopped_before_start(
+            ObservationId::new(self.deps.ids.as_ref()),
+            action.action_id,
+            authorized.tool(),
+            now,
+        );
+        observation.redact(&self.redactor);
+        step.observation_id = Some(observation.observation_id);
+        self.deps.persistence.record_not_started(
+            &cancelled,
+            &observation,
+            &self.event(
+                Actor::Runtime,
+                Some(task.task_id),
+                Some(step.step_id),
+                Some(action.action_id),
+                Event::ActionFinished {
+                    status: cancelled.status.name().to_owned(),
+                    cause: None,
+                },
+            ),
+        )?;
+        step.phase = StepPhase::Evaluate;
+        Ok(())
+    }
+
     /// Lines 5–7 with runtime retries (REQ-TOOL-009). Returns the step, the
     /// action's outcome (`None` only when the execution was cancelled) and
     /// the task, halted when the disposition says so.
@@ -1280,36 +1323,10 @@ impl Runtime {
                 Ok::<_, RuntimeError>(Some(running))
             })?;
             let Some(running) = begun else {
-                // The action is closed `cancelled`: nothing ran, so the record
-                // is exact, and the observation says the stop came before it
-                // began. It is made outside the gate: the request is not taken
-                // back by anything but a task transition.
-                let cancelled = action
-                    .transition(ActionInput::Cancel, now)
-                    .map_err(ordering)?;
-                let mut observation = Observation::stopped_before_start(
-                    ObservationId::new(self.deps.ids.as_ref()),
-                    action.action_id,
-                    authorized.tool(),
-                    now,
-                );
-                observation.redact(&self.redactor);
-                step.observation_id = Some(observation.observation_id);
-                persistence.record_not_started(
-                    &cancelled,
-                    &observation,
-                    &self.event(
-                        Actor::Runtime,
-                        Some(task.task_id),
-                        Some(step.step_id),
-                        Some(action.action_id),
-                        Event::ActionFinished {
-                            status: cancelled.status.name().to_owned(),
-                            cause: None,
-                        },
-                    ),
-                )?;
-                step.phase = StepPhase::Evaluate;
+                // The action is closed `cancelled` without starting: nothing
+                // ran, so the record is exact. Made outside the gate: the
+                // request is not taken back by anything but a task transition.
+                self.close_not_started(&task, &mut step, &action, authorized, now)?;
                 return Ok((step, None, task));
             };
             action = running;
@@ -1326,6 +1343,10 @@ impl Runtime {
                             // An action that cannot be undone is interrupted
                             // only by the second request (REQ-CLI-005).
                             cancel: self.execution_interruption(task.task_id, authorized.effect()),
+                            // The weakest request, for a wait made before
+                            // anything is sent: a first signal ends it, and the
+                            // action is then not begun (handoff 010f).
+                            start_gate: self.boundary_interruption(task.task_id),
                             redactor: self.redactor.clone(),
                         },
                     )
@@ -1343,6 +1364,16 @@ impl Runtime {
                     )
                 }
             };
+            // A provider that stopped at the start gate's token in a wait made
+            // before anything was sent has made no call: the action is closed
+            // as one that never began, not as a cancellation of a call (which
+            // would leave an action that cannot be undone `unknown` and halt the
+            // task) and not as a failure of the tool (`tool_unavailable` halts a
+            // task whose action is not idempotent). The first signal pauses.
+            if outcome.is_not_started() {
+                self.close_not_started(&task, &mut step, &action, authorized, now)?;
+                return Ok((step, None, task));
+            }
             let ended = self.deps.clock.now();
             step.phase = StepPhase::Observe;
             let (status, cause) = match (&outcome.failure, &outcome.termination) {

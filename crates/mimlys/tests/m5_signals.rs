@@ -693,3 +693,204 @@ fn req_mcp_007_a_stop_signal_ends_the_wait_for_a_listing_within_lim_o1() {
         "the search was not called: its pin check would have listed again"
     );
 }
+
+impl Env {
+    /// The test server as `rypsok` with `web_search` declared `effect`
+    /// (idempotent or not as given), the model proposing it once and then
+    /// completing. The server announces a changed list with every listing
+    /// (`MIMLYS_TESTSERVER_NOTIFY_DURING_LIST_MS`), so the list is stale again
+    /// after the step's boundary, and answers its first three listings (the
+    /// import and the step's boundary make them) and never a fourth: the fourth is the pin check's,
+    /// made inside the action's execution before anything is sent. Its deadline is
+    /// the longest LIM-O6 allows, 120 s, so that nothing but the stop signal can
+    /// end the wait. The server's logs are `lists.log` and `tools.log` in the data
+    /// directory.
+    fn pin_check_hangs(effect: &str, idempotent: bool) -> Self {
+        let data = tempfile::tempdir().unwrap();
+        let config = data.path().join("config.toml");
+        let script = [
+            json!({"decision": "act", "tool": "rypsok.web_search", "arguments": {"query": "x"}}),
+            json!({"decision": "complete", "summary": "done"}),
+        ];
+        let script_path = data.path().join("script.json");
+        std::fs::write(&script_path, serde_json::to_string(&script).unwrap()).unwrap();
+        let text = format!(
+            r#"config_version = 1
+[runtime]
+data_dir = {data:?}
+[backend]
+kind = "fake"
+script = {script:?}
+[policy.profiles.workspace]
+tools = [{builtin}, "rypsok.web_search"]
+[servers.rypsok]
+command = {server:?}
+env_allow = ["PATH", "MIMLYS_TESTSERVER_HANG_LIST_AFTER", "MIMLYS_TESTSERVER_LIST_LOG", "MIMLYS_TESTSERVER_NOTIFY_DURING_LIST_MS", "MIMLYS_TESTSERVER_TOOL_LOG"]
+startup_ms = 120000
+[servers.rypsok.tools.web_search]
+effect = {effect:?}
+idempotent = {idempotent}
+"#,
+            data = data.path().join("data").to_string_lossy(),
+            script = script_path.to_string_lossy(),
+            builtin = BUILTIN,
+            server = testserver().to_string_lossy(),
+        );
+        std::fs::write(&config, text).unwrap();
+        Self { data, config }
+    }
+
+    /// A command of this environment that follows, with the server's knobs set.
+    fn pin_check_command(&self, args: &[&str]) -> Command {
+        let mut command = self.command(args);
+        command
+            .env("MIMLYS_TESTSERVER_HANG_LIST_AFTER", "3")
+            .env("MIMLYS_TESTSERVER_NOTIFY_DURING_LIST_MS", "1")
+            .env(
+                "MIMLYS_TESTSERVER_LIST_LOG",
+                self.data.path().join("lists.log"),
+            )
+            .env(
+                "MIMLYS_TESTSERVER_TOOL_LOG",
+                self.data.path().join("tools.log"),
+            );
+        command
+    }
+
+    /// Whether the server has read the listing request numbered `n` of one of its
+    /// processes (a log line `tools/list <n>`).
+    fn listing_numbered(&self, n: usize) -> bool {
+        std::fs::read_to_string(self.data.path().join("lists.log"))
+            .is_ok_and(|t| t.lines().any(|l| l == format!("tools/list {n}")))
+    }
+
+    /// The tools the server was called for.
+    fn tool_calls(&self) -> usize {
+        std::fs::read_to_string(self.data.path().join("tools.log")).map_or(0, |t| t.lines().count())
+    }
+}
+
+/// One first stop signal while the MCP pin check of `web_search` hangs (the
+/// server never answers its listing, whose deadline is 120 s): the process exits
+/// within LIM-O1, the action ends not begun (`cancelled`, observation
+/// `stopped_before_start`, nothing sent to the server, no execution), the task is
+/// `paused` and never halted (`tool_unavailable` would halt a task whose action is
+/// not idempotent; an unknown outcome would halt an action that cannot be
+/// undone), and nothing is unknown. Judged by state; the one timed assertion is
+/// LIM-O1's own, and the wait it bounds would take 120 s.
+fn pin_check_ended_by_the_first_signal(effect: &str, idempotent: bool, needs_approval: bool) {
+    let env = Env::pin_check_hangs(effect, idempotent);
+    let scope = env.scope();
+    let out_path = env.data.path().join("pin.stdout");
+    let err_path = env.data.path().join("pin.stderr");
+    let (id, mut command) = if needs_approval {
+        // `run` stops at the approval (there is no terminal); `approve` goes on.
+        let id = env.create();
+        (
+            Some(id.clone()),
+            env.pin_check_command(&["--json", "approve", &id]),
+        )
+    } else {
+        (
+            None,
+            env.pin_check_command(&[
+                "--json",
+                "run",
+                "look it up",
+                "--scope",
+                scope.to_str().unwrap(),
+            ]),
+        )
+    };
+    command
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(std::fs::File::create(&err_path).unwrap());
+    let mut run = Followed {
+        run: command.spawn().unwrap(),
+        out_path,
+        err_path,
+    };
+    run.await_state(&env, "the action never began", || {
+        count_events(env.data.path(), "action.started") >= 1
+    });
+    run.await_state(&env, "the pin check never asked for its listing", || {
+        env.listing_numbered(4)
+    });
+    let signalled = std::time::Instant::now();
+    run.interrupt();
+    let status = run.exit(&env);
+    let took = signalled.elapsed();
+    assert!(
+        took < Duration::from_millis(mimlys_core::limits::LIM_O1_STOP_MS as u64),
+        "the process took {took:?} to exit after the signal: {status:?} {}",
+        run.stderr()
+    );
+    let id = id.unwrap_or_else(|| run.stdout()["task"]["task_id"].as_str().unwrap().to_owned());
+    let task = env.task(&id);
+    assert_eq!(task["task"]["state"], "paused", "{task} {}", run.stderr());
+    assert_eq!(
+        env.finished(&id),
+        ["cancelled"],
+        "the action ended not begun: {}",
+        run.stderr()
+    );
+    let observations = env.observations(&id);
+    assert_eq!(observations.len(), 1, "{observations:?}");
+    assert_eq!(
+        observations[0]["status"], "cancelled",
+        "{}",
+        observations[0]
+    );
+    assert_eq!(
+        observations[0]["notices"],
+        json!([{"code": "stopped_before_start"}]),
+        "{}",
+        observations[0]
+    );
+    // The first signal ended the wait itself: the grace passed to no one, so the
+    // process never said that it interrupted the step (the watchdog does, at the
+    // grace, for a wait that only the stronger request ends).
+    assert!(
+        !run.stderr().contains("so it was interrupted"),
+        "the first signal ended the wait, not the watchdog at the grace: {}",
+        run.stderr()
+    );
+    assert_eq!(env.tool_calls(), 0, "nothing was sent to the server");
+    let conn = rusqlite::Connection::open(env.data.path().join("data/mimlys.db")).unwrap();
+    let executions: i64 = conn
+        .query_row("select count(*) from executions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(executions, 0, "nothing ran, so there is no execution");
+    assert!(
+        task["unknown_actions"].as_array().unwrap().is_empty(),
+        "nothing was sent, so nothing is unknown: {task}"
+    );
+    for reason in ["tool_unavailable", "unknown_outcome"] {
+        assert_eq!(env.halts(&id, reason), 0, "never halted {reason}");
+    }
+    assert!(
+        !env.events(&id)
+            .iter()
+            .any(|e| e["event"] == "tool.unpinned"),
+        "nothing was unpinned"
+    );
+}
+
+/// REQ-CLI-005, REQ-MCP-007, LIM-O1 (handoff 010f, item 2): an external write.
+#[test]
+fn req_cli_005_a_first_signal_ends_the_pin_check_of_an_external_write_not_begun() {
+    pin_check_ended_by_the_first_signal("external_write", false, true);
+}
+
+/// REQ-CLI-005, REQ-MCP-007, LIM-O1 (handoff 010f, item 2): an external read that
+/// is not idempotent (it cannot be undone either).
+#[test]
+fn req_cli_005_a_first_signal_ends_the_pin_check_of_a_non_idempotent_read_not_begun() {
+    pin_check_ended_by_the_first_signal("external_read", false, false);
+}
+
+/// REQ-CLI-005, REQ-MCP-007, LIM-O1 (handoff 010f, item 2): an idempotent read.
+#[test]
+fn req_cli_005_a_first_signal_ends_the_pin_check_of_an_idempotent_read_not_begun() {
+    pin_check_ended_by_the_first_signal("external_read", true, false);
+}

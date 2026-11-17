@@ -10,6 +10,7 @@ use crate::observation::{Notice, ObservationStatus};
 use crate::spi::{BackendDescriptor, BoxFuture, Cancellation, GenerateRequest, ModelBackend};
 use std::sync::Mutex;
 
+mod not_started;
 mod start_gate;
 
 /// What the provider asks of the runtime while its action runs.
@@ -39,6 +40,11 @@ struct Asking {
     ask_at_definitions: Mutex<Ask>,
     /// Per execution: whether the token it was given was cancelled when it looked.
     saw_cancelled: Mutex<Vec<bool>>,
+    /// Per execution: whether the start gate's token was cancelled when it looked.
+    saw_start_gate: Mutex<Vec<bool>>,
+    /// Whether the provider stops at the start gate's token, as a wait made before
+    /// anything is sent does (the MCP pin check): it then reports "not started".
+    stop_at_start_gate: Mutex<bool>,
     /// The task's state and the actions' statuses right after `cancel_task`.
     after_cancel_task: Mutex<Option<(TaskState, Vec<ActionStatus>)>>,
     /// What the next action does to the world while it runs (a test's own effect), once.
@@ -88,6 +94,11 @@ impl crate::spi::ToolProvider for Asking {
             }
             if let Some(effect) = self.effect.lock().unwrap().take() {
                 effect();
+            }
+            let start_gate = context.start_gate.is_cancelled();
+            self.saw_start_gate.lock().unwrap().push(start_gate);
+            if start_gate && *self.stop_at_start_gate.lock().unwrap() {
+                return ExecutionOutcome::not_started(1);
             }
             let cancelled = context.cancel.is_cancelled();
             self.saw_cancelled.lock().unwrap().push(cancelled);
@@ -232,6 +243,8 @@ impl Rig {
             ask: Mutex::new(Ask::Nothing),
             ask_at_definitions: Mutex::new(Ask::Nothing),
             saw_cancelled: Mutex::new(Vec::new()),
+            saw_start_gate: Mutex::new(Vec::new()),
+            stop_at_start_gate: Mutex::new(false),
             after_cancel_task: Mutex::new(None),
             effect: Mutex::new(None),
         });

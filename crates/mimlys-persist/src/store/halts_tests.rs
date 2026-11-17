@@ -330,3 +330,38 @@ fn req_obs_001_a_failed_restore_is_counted_by_the_metrics() {
         Some(("halted".to_owned(), Some(HaltReason::UnknownOutcome)))
     );
 }
+
+/// REQ-CLI-005 (handoff 010f, item 2): an action recorded `running` that the
+/// provider ended before anything was sent (the MCP pin check stopped by the first
+/// signal) is one consistent write over the real store: the row is `cancelled`
+/// (the store takes the close from `running`), there is no execution, the
+/// observation says the stop came before it began, `action.started` stands and
+/// there is no `execution.finished`; the task is not halted.
+#[test]
+fn req_cli_005_an_action_stopped_before_anything_was_sent_is_one_consistent_write() {
+    let run = Run::new(
+        tool("an_idempotent_read", EffectKind::ExternalRead, true),
+        ExecutionOutcome::not_started(1),
+    );
+    let result = run.step();
+    assert_eq!(result.outcome, StepOutcome::Cancelled);
+    assert_eq!(result.state, TaskState::Running);
+    let actions = run.store.load_actions(run.task).unwrap();
+    assert_eq!(actions[0].status, ActionStatus::Cancelled);
+    assert!(
+        run.store
+            .load_executions(actions[0].action_id)
+            .unwrap()
+            .is_empty()
+    );
+    let observations = run.store.load_observations(run.task).unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].status, ObservationStatus::Cancelled);
+    assert_eq!(observations[0].notices, [Notice::StoppedBeforeStart]);
+    let metrics = run.store.metrics(Some(run.task)).unwrap();
+    assert_eq!(metrics.events_by_name.get("action.started"), Some(&1));
+    assert_eq!(metrics.events_by_name.get("execution.finished"), None);
+    assert_eq!(metrics.actions_by_status.get("cancelled"), Some(&1));
+    assert_eq!(metrics.actions_by_status.get("unknown"), None);
+    assert!(metrics.halts_by_reason.is_empty());
+}

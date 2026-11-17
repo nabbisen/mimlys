@@ -112,6 +112,11 @@ Ctrl-C (and SIGTERM on Unix) once asks for a pause. Three things follow at once:
   recorded as running when the process looks at what is in flight, and the
   process then waits for it or interrupts it by its kind, as described below.
   The signal may wait for one write of the store (a moment) to be sure of that.
+  A wait made before anything is sent (the check of an external tool's
+  definition just before its call) ends at this first signal too: the action
+  is closed as not begun, `cancelled` with the same observation, whatever the
+  tool does. Nothing was sent, so nothing is unknown, and the task pauses (it
+  never halts as `tool_unavailable`).
 - **No new step begins.** A step that would begin after the signal ends at once,
   without a model request, and the task pauses.
 - The task pauses when what is in flight has finished.

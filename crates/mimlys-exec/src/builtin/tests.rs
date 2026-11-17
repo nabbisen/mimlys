@@ -59,6 +59,7 @@ impl Fixture {
                         ExecutionContext {
                             deadline_ms: action.deadline_ms(),
                             cancel: Cancellation::new(),
+                            start_gate: Cancellation::new(),
                             redactor: Default::default(),
                         },
                     )
@@ -390,6 +391,7 @@ async fn req_tool_006_007_deadline_and_cancellation() {
             ExecutionContext {
                 deadline_ms: 30_000,
                 cancel,
+                start_gate: Cancellation::new(),
                 redactor: Default::default(),
             },
         )
@@ -407,6 +409,7 @@ async fn req_tool_006_007_deadline_and_cancellation() {
             ExecutionContext {
                 deadline_ms: 1,
                 cancel: Cancellation::new(),
+                start_gate: Cancellation::new(),
                 redactor: Default::default(),
             },
         )
