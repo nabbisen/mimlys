@@ -550,6 +550,96 @@ fn req_ctx_007_a_secret_a_server_echoes_is_redacted_in_the_cause_the_keys_and_th
     );
 }
 
+/// REQ-CTX-005 (handoff 009i, item 2; audit A-32), end to end: a server's tool
+/// of eight parameters of eight nested fields is unavailable at import with
+/// `definition_too_large`, in the task's import record and in `status`; a profile
+/// whose tools together exceed LIM-I1 refuses `task new`, naming the tool; and
+/// the command line's `grant` of a tool that would make the definitions exceed
+/// LIM-I1 is refused, naming the tool and the sizes, and leaves the grants as they
+/// were.
+#[test]
+fn req_ctx_005_oversize_definitions_are_unavailable_and_a_grant_past_lim_i1_is_refused() {
+    let env = Env::new(
+        &[complete()],
+        "",
+        &[
+            "rypsok.big_a",
+            "rypsok.big_b",
+            "rypsok.big_c",
+            "rypsok.big_d",
+        ],
+    )
+    .env("MIMLYS_TESTSERVER_BIG_TOOLS", "1");
+    let_the_server_see(&env, "MIMLYS_TESTSERVER_BIG_TOOLS");
+    let scope = env.scope();
+    let scope = scope.to_str().unwrap();
+    // The default profile holds all four: the task is refused, and not made.
+    let (code, refused) = env.json(&["task", "new", "g", "--scope", scope, "--hold"]);
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["error"]["kind"], "denied", "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("rypsok.big_") && message.contains("LIM-I1") && message.contains("8000"),
+        "{message}"
+    );
+    // The workspace that was made for it is not left behind.
+    let workspaces = env.data.path().join("data/workspaces");
+    let left = std::fs::read_dir(&workspaces)
+        .map(|d| d.flatten().count())
+        .unwrap_or(0);
+    assert_eq!(
+        left, 0,
+        "a refused task leaves no workspace in {workspaces:?}"
+    );
+    // The read-only profile holds three built-in tools: the task is made.
+    let (code, made) = env.json(&[
+        "task",
+        "new",
+        "g",
+        "--scope",
+        scope,
+        "--hold",
+        "--profile",
+        "read_only",
+    ]);
+    assert_eq!(code, 0, "{made}");
+    let id = made["task"]["task_id"].as_str().unwrap().to_owned();
+    let imports = &made["task"]["versions"]["tool_imports"];
+    for big in [
+        "rypsok.big_a",
+        "rypsok.big_b",
+        "rypsok.big_c",
+        "rypsok.big_d",
+    ] {
+        assert_eq!(imports[big]["unavailable"], Value::Null, "{big}");
+    }
+    let reason = imports["rypsok.huge"]["unavailable"].as_str().unwrap();
+    assert!(reason.starts_with("definition_too_large:"), "{reason}");
+    let (_, status) = env.json(&["status"]);
+    let unavailable = status["servers"][0]["unavailable"].as_array().unwrap();
+    assert!(
+        unavailable
+            .iter()
+            .any(|u| u[0] == "rypsok.huge" && u[1] == reason),
+        "{unavailable:?}"
+    );
+    // Three big tools fit beside the three built-in ones; the fourth does not.
+    for big in ["rypsok.big_a", "rypsok.big_b", "rypsok.big_c"] {
+        let (code, granted) = env.json(&["grant", &id, "tool", big]);
+        assert_eq!(code, 0, "{big}: {granted}");
+    }
+    let (code, denied) = env.json(&["grant", &id, "tool", "rypsok.big_d"]);
+    assert_eq!(code, 1, "{denied}");
+    assert_eq!(denied["error"]["kind"], "denied", "{denied}");
+    let message = denied["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("rypsok.big_d") && message.contains("LIM-I1") && message.contains("8000"),
+        "{message}"
+    );
+    let (_, shown) = env.json(&["task", "show", &id]);
+    assert_eq!(shown["grants"].as_array().unwrap().len(), 6, "{shown}");
+}
+
 /// REQ-CLI-005, REQ-CTX-008 (handoff 009g, item 6): a server whose name and
 /// version carry a clear-screen and a window-title sequence, and a tool whose
 /// name does: `status` prints them cleaned, in its text and in its JSON, with no

@@ -11,11 +11,13 @@ use mimlys_core::action::EffectView;
 use mimlys_core::hash::{Hash, hash_canonical};
 use mimlys_core::limits::{
     LIM_D4_TEXT_CHARS, LIM_I2_TOOL_DESCRIPTION_CHARS, LIM_I3_TOOL_PARAMETERS, LIM_I7_ENTRIES,
+    PROPOSED_ENUM_VALUES, PROPOSED_TOOL_DEFINITION_CHARS,
 };
 use mimlys_core::observation::sanitize;
 use mimlys_core::schema::OutputSchema;
 use mimlys_core::tool::{
     ImportRecord, Param, ParamSchema, ParamType, Provider, ResourceProfile, ToolDefinition,
+    rendered_chars,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -165,6 +167,22 @@ pub fn import(
     };
     if let Err(e) = definition.check() {
         unavailable(&mut record, format!("definition_invalid:{e}"));
+        return Imported {
+            name,
+            definition: None,
+            output,
+            record,
+        };
+    }
+    // One tool's rendering alone is bounded (handoff 009i, A-32): a tool that
+    // would take more than its share of LIM-I1 is not offered, so that it can
+    // never be the reason a step fails for the size of the definitions.
+    let chars = rendered_chars(std::slice::from_ref(&definition));
+    if chars > PROPOSED_TOOL_DEFINITION_CHARS {
+        unavailable(
+            &mut record,
+            format!("definition_too_large:{chars}>{PROPOSED_TOOL_DEFINITION_CHARS}"),
+        );
         return Imported {
             name,
             definition: None,
@@ -325,9 +343,19 @@ fn convert_param(prop: &Value, name: &str, at: &str, depth: usize) -> Result<Par
     Ok(match ty_name.as_str() {
         "string" => {
             if let Some(values) = map.get("enum") {
-                let values: Vec<String> = values
+                let values = values
                     .as_array()
-                    .ok_or_else(|| format!("schema_unsupported:{name}:non-array enum"))?
+                    .ok_or_else(|| format!("schema_unsupported:{name}:non-array enum"))?;
+                // Counted before any value is read (handoff 009i, A-32): the
+                // work of cleaning them, and their share of the definition, are
+                // bounded by it.
+                if values.len() > PROPOSED_ENUM_VALUES {
+                    return Err(format!(
+                        "too_many_enum_values:{name}:{}>{PROPOSED_ENUM_VALUES}",
+                        values.len()
+                    ));
+                }
+                let values: Vec<String> = values
                     .iter()
                     .map(|v| {
                         v.as_str().map(clean_enum_value).ok_or_else(|| {

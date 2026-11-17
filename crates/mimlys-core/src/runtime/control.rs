@@ -404,8 +404,28 @@ impl Runtime {
                 .collect(),
             None => self.deps.policy.initial_grants(&profile),
         };
+        let kinds: Vec<GrantKind> = inherited.into_iter().chain(request.grants).collect();
+        // The tools these grants make visible must fit LIM-I1 together: the
+        // profile, a fork's inherited grants and the request's are judged as one
+        // set, before anything is recorded (handoff 009i, audit A-32).
+        if let Err(refused) = self.check_definitions_fit(task_id, &kinds) {
+            // The workspace was made for this task alone and nothing refers to
+            // it: it is not left behind, a copy of the scope for every refusal.
+            let _ = self
+                .deps
+                .workspaces
+                .delete_files(task_id, &crate::spi::DeletedRows::default());
+            let _ = self.deps.persistence.record_workspace_state(
+                task_id,
+                WorkspaceState::Deleted,
+                None,
+            );
+            // The servers started for the import are on the record all the same.
+            let _ = self.append_provider_events(provider_events);
+            return Err(refused);
+        }
         let mut grants = Vec::new();
-        for kind in inherited.into_iter().chain(request.grants) {
+        for kind in kinds {
             grants.push(Grant::issue(
                 GrantId::new(self.deps.ids.as_ref()),
                 task_id,
@@ -1118,6 +1138,19 @@ impl Runtime {
                 detail: e.to_string(),
             })?;
         let now = self.deps.clock.now();
+        // A grant that would make the visible definitions exceed LIM-I1 is
+        // refused, naming the tool and the sizes, so that no step ever fails for
+        // their size (handoff 009i, audit A-32).
+        let mut kinds: Vec<GrantKind> = self
+            .deps
+            .persistence
+            .load_grants(task_id)?
+            .into_iter()
+            .filter(|g| g.is_active(now))
+            .map(|g| g.kind().clone())
+            .collect();
+        kinds.push(kind.clone());
+        self.check_definitions_fit(task_id, &kinds)?;
         let grant = Grant::issue(
             GrantId::new(self.deps.ids.as_ref()),
             task_id,
@@ -1151,6 +1184,44 @@ impl Runtime {
             now,
         )?;
         Ok(grant)
+    }
+
+    /// Refuses the grants `kinds` (in order) when the definitions of the tools
+    /// they make visible would exceed LIM-I1: `denied`, naming the tool whose
+    /// grant crosses the limit and the sizes. A tool the provider does not know
+    /// has no definition to show and counts for nothing.
+    fn check_definitions_fit(
+        &self,
+        task_id: TaskId,
+        kinds: &[GrantKind],
+    ) -> Result<(), RuntimeError> {
+        let mut names: Vec<&str> = Vec::new();
+        for kind in kinds {
+            let name = match kind {
+                GrantKind::Tool { name } => name.as_str(),
+                // A host tool is offered through the gateway (external design 9.1).
+                GrantKind::HostTool { .. } => crate::host_tool::RUN_HOST_TOOL,
+                _ => continue,
+            };
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        if names.is_empty() {
+            return Ok(());
+        }
+        let tools = self.deps.workspaces.tools(task_id)?;
+        let defined = self.guard(PROVIDER, || tools.definitions())?;
+        let granted: Vec<crate::tool::ToolDefinition> = names
+            .iter()
+            .filter_map(|n| defined.iter().find(|d| d.name == *n).cloned())
+            .collect();
+        match crate::tool::first_exceeding_definitions(&granted) {
+            Some(exceeds) => Err(RuntimeError::Denied {
+                detail: exceeds.to_string(),
+            }),
+            None => Ok(()),
+        }
     }
 
     /// Revokes a grant at once (REQ-CAP-005). An approval requested under

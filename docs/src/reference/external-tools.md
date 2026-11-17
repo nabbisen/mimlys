@@ -205,6 +205,26 @@ unavailable, with the reason in `status`, rather than half imported.
   and cut like a description, and so are a server's name, version, revision, a
   tool's name and the reason of an unavailable tool before `status` or an
   event shows them.
+- **One tool's definition, and an enumeration, are bounded.** The model is
+  shown every tool you grant, and all of them together may take 8 000
+  characters (LIM-I1). A tool of a server is rendered alone when it is imported,
+  and **one that renders to more than 2 000 characters is unavailable**
+  (`definition_too_large:<size>><bound>`; eight parameters of eight nested fields
+  is far over it), and so is one with an enumeration of **more than 128 values**
+  (`too_many_enum_values:<parameter>:<count>><bound>`). Both numbers are
+  proposals that await registration as limits. Rypsok's `web_search` renders to
+  about 650 characters, and the built-in tools take about 4 200 of the 8 000.
+- **A grant cannot make the definitions too large.** `mimlys grant <task> tool
+  <name>`, and the tools of a profile when a task is made (with the grants of a
+  fork and of the request, judged as one set), are refused as `denied` when the
+  definitions of the tools they make visible would pass 8 000 characters; the
+  message names the tool that crosses the limit and gives its size, the size of
+  the tools granted before it and the total. Nothing is recorded: the task is not
+  made, the grant is not issued. Revoke a grant, or give the task a smaller
+  profile, and try again. A task made before this check existed and found over
+  the limit at a step is halted once as `definitions_too_large` (a halt reason
+  that awaits registration), where an earlier release failed that step, and every
+  step after it, with the task left `running`; revoke a tool grant, then resume.
 - **An output schema is checked for cost.** A schema over 1 024 nodes
   (LIM-I13), a list of more than 128 entries (LIM-I14), or alternatives that
   cost more than 64 visits per value (LIM-I15) make the tool unavailable. A

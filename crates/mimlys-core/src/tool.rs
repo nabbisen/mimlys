@@ -498,10 +498,50 @@ pub struct DefinitionsTooLarge {
     pub limit: usize,
 }
 
-/// Renders the model-facing definitions as compact JSON within LIM-I1
-/// (REQ-CTX-005). Names, descriptions and parameters only; effects and
-/// deadlines are the runtime's business.
-pub fn render_definitions(tools: &[ToolDefinition]) -> Result<String, DefinitionsTooLarge> {
+/// A grant that would make the visible definitions exceed LIM-I1 (handoff 009i,
+/// audit A-32): the tool that crosses the limit, and the sizes.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "tool {tool} cannot be granted: its definition is {alone} characters and the tools granted before it are {others}, so the definitions shown to the model would be {total} characters, above LIM-I1 ({limit}); revoke a tool grant first"
+)]
+pub struct GrantExceedsDefinitions {
+    /// The tool whose grant crosses the limit.
+    pub tool: String,
+    /// Its definition rendered alone.
+    pub alone: usize,
+    /// The tools granted before it, rendered together.
+    pub others: usize,
+    /// All of them with it.
+    pub total: usize,
+    /// LIM-I1.
+    pub limit: usize,
+}
+
+/// The first tool, in grant order, whose definition makes the definitions of
+/// the tools up to it exceed LIM-I1; `None` when all of them fit.
+pub fn first_exceeding_definitions(granted: &[ToolDefinition]) -> Option<GrantExceedsDefinitions> {
+    for end in 1..=granted.len() {
+        let total = rendered_chars(&granted[..end]);
+        if total > LIM_I1_TOOL_DEFINITIONS_CHARS {
+            let tool = &granted[end - 1];
+            return Some(GrantExceedsDefinitions {
+                tool: tool.name.clone(),
+                alone: rendered_chars(std::slice::from_ref(tool)),
+                others: if end == 1 {
+                    0
+                } else {
+                    rendered_chars(&granted[..end - 1])
+                },
+                total,
+                limit: LIM_I1_TOOL_DEFINITIONS_CHARS,
+            });
+        }
+    }
+    None
+}
+
+/// The model-facing definitions as compact JSON, whatever their size.
+fn render_text(tools: &[ToolDefinition]) -> String {
     let rendered: Vec<Value> = tools
         .iter()
         .map(|t| {
@@ -512,7 +552,21 @@ pub fn render_definitions(tools: &[ToolDefinition]) -> Result<String, Definition
             })
         })
         .collect();
-    let text = serde_json::to_string(&rendered).expect("definitions always serialize");
+    serde_json::to_string(&rendered).expect("definitions always serialize")
+}
+
+/// The size in characters of `tools` as they are rendered for the model, with
+/// no bound applied: what [`render_definitions`] measures against LIM-I1, and
+/// what one tool is measured by alone at import (handoff 009i).
+pub fn rendered_chars(tools: &[ToolDefinition]) -> usize {
+    render_text(tools).chars().count()
+}
+
+/// Renders the model-facing definitions as compact JSON within LIM-I1
+/// (REQ-CTX-005). Names, descriptions and parameters only; effects and
+/// deadlines are the runtime's business.
+pub fn render_definitions(tools: &[ToolDefinition]) -> Result<String, DefinitionsTooLarge> {
+    let text = render_text(tools);
     let chars = text.chars().count();
     if chars > LIM_I1_TOOL_DEFINITIONS_CHARS {
         return Err(DefinitionsTooLarge {

@@ -292,6 +292,40 @@ fn tool_list(changed: bool) -> Vec<Value> {
             "inputSchema": {"type": "object", "additionalProperties": false},
         }));
     }
+    if env_flag("MIMLYS_TESTSERVER_BIG_TOOLS") {
+        // Four tools that are each within the per-tool bound and together over
+        // LIM-I1 beside the built-in ones, and one that is over the bound
+        // alone: eight parameters of eight nested fields (handoff 009i).
+        let params = |n: usize| {
+            let mut props = Map::new();
+            for i in 0..n {
+                props.insert(
+                    format!("p{i}"),
+                    json!({"type": "string", "description": "x".repeat(200)}),
+                );
+            }
+            props
+        };
+        for name in ["big_a", "big_b", "big_c", "big_d"] {
+            tools.push(json!({
+                "name": name,
+                "description": "d".repeat(400),
+                "inputSchema": {"type": "object", "properties": params(5)},
+            }));
+        }
+        let mut nested = Map::new();
+        for i in 0..8 {
+            nested.insert(
+                format!("o{i}"),
+                json!({"type": "object", "properties": params(8)}),
+            );
+        }
+        tools.push(json!({
+            "name": "huge",
+            "description": "Eight parameters of eight nested fields.",
+            "inputSchema": {"type": "object", "properties": nested},
+        }));
+    }
     if env_flag("MIMLYS_TESTSERVER_WIDE") {
         let mut props = Map::new();
         for i in 0..9 {

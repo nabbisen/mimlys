@@ -629,3 +629,5 @@ fn req_mcp_008_import_deadline_floor() {
     assert_eq!(deadline(Some(&declared), Some(5_000)), 10_000);
     assert_eq!(deadline(None, Some(5_000)), lim_o5);
 }
+
+mod bounds;
