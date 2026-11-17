@@ -57,8 +57,7 @@ pub enum HaltReason {
     /// The definitions of the tools the task may use do not fit LIM-I1 (handoff
     /// 009i, audit A-32). A grant that would make them exceed it is refused, so
     /// this is the last guard: it is reached only by a task made before the
-    /// refusal existed, or whose tools changed under it. PROPOSED: the
-    /// architect registers the reason.
+    /// refusal existed, or whose tools changed under it.
     DefinitionsTooLarge,
 }
 

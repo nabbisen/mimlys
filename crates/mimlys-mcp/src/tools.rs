@@ -13,7 +13,7 @@ use mimlys_core::action::{ExecutionMetrics, FailureCause, HostFaultDetail, Termi
 use mimlys_core::context::Redactor;
 use mimlys_core::event::Event;
 use mimlys_core::ids::TaskId;
-use mimlys_core::limits::{LIM_I5_MESSAGE_CHARS, LIM_S4_OUTPUT_BYTES, PROPOSED_RESULT_TOTAL_CHARS};
+use mimlys_core::limits::{LIM_I5_MESSAGE_CHARS, LIM_I19_RESULT_TOTAL_CHARS, LIM_S4_OUTPUT_BYTES};
 use mimlys_core::observation::Notice;
 use mimlys_core::spi::{BoxFuture, Cancellation, ExecutionContext, ExecutionOutcome, ToolProvider};
 use mimlys_core::tool::{ImportRecord, ToolDefinition};
@@ -507,7 +507,7 @@ impl McpTools {
 /// for the user, within LIM-S4 (REQ-PERS-005), and never shown to the model.
 /// What is cut is cut after the output schema was checked.
 fn bounded(payload: Value, notices: &mut Vec<Notice>) -> (Value, Option<Value>) {
-    let Some(cut) = bound::bound(&payload, PROPOSED_RESULT_TOTAL_CHARS, Unit::Chars, true) else {
+    let Some(cut) = bound::bound(&payload, LIM_I19_RESULT_TOTAL_CHARS, Unit::Chars, true) else {
         return (payload, None);
     };
     notices.push(Notice::ContentTruncated {

@@ -15,9 +15,7 @@
 //!
 //! Lines stay at the level `info`, where an operator reads a server's errors.
 //!
-//! The three values are proposals from the review request of handoff 009h and
-//! await registration as limits; until they are registered they are named here
-//! and nowhere else.
+//! The three values are LIM-I17, LIM-I18 and LIM-O18 (handoff 009h).
 
 use mimlys_core::log_span::ReaderSpan;
 use std::time::Duration;

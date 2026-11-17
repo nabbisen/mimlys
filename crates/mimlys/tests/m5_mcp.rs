@@ -578,7 +578,7 @@ fn req_mcp_006_a_flood_is_bounded_in_total_after_its_schema_and_kept_whole_for_t
     let payload = &observation["payload"];
     let text = serde_json::to_string(payload).unwrap();
     assert!(
-        text.chars().count() <= mimlys_core::limits::PROPOSED_RESULT_TOTAL_CHARS,
+        text.chars().count() <= mimlys_core::limits::LIM_I19_RESULT_TOTAL_CHARS,
         "{} characters",
         text.chars().count()
     );

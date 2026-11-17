@@ -11,7 +11,7 @@ Boundaries B1 to B9 are defined in requirements §3. Every threat names its cont
 | THR-03 | Unauthorized filesystem access through an action: traversal, symbolic links, case tricks, reserved names, existence probing | B3 | Read or write outside scope; information leak | REQ-DEC-007, REQ-TOOL-004, REQ-WS-011, REQ-DEC-008 | REQ-TEST-005 |
 | THR-04 | Infinite or excessive computation in generated code | B5 | CPU exhaustion; a stuck task | REQ-SBX-002, REQ-TASK-009 | REQ-TEST-008 |
 | THR-05 | Memory exhaustion in generated code | B5 | Host instability | REQ-SBX-002, REQ-SCHED-003 | REQ-TEST-008 |
-| THR-06 | Output flood | B4, B5 | Context and storage exhaustion | REQ-SBX-005, REQ-TOOL-008, REQ-PERS-005 | REQ-TEST-008 |
+| THR-06 | Output flood | B4, B5 | Context and storage exhaustion | REQ-SBX-005, REQ-TOOL-008, REQ-PERS-005, REQ-MCP-006 (a result bounded in total, LIM-I19) | REQ-TEST-008 |
 | THR-07 | Self-correction pollution: a failed attempt damages unrelated files | B8 | Unrecoverable workspace | REQ-TOOL-010, REQ-WS-004, REQ-WS-006 | REQ-TEST-009 |
 | THR-08 | Replay of an irreversible action after a crash | B7 | Duplicate external effect | REQ-PERS-004, REQ-PERS-007, REQ-PERS-008 | REQ-TEST-007 |
 | THR-09 | Capability escalation through model text, plan revision or tool chaining | B2 | Broader permissions | REQ-CAP-001, REQ-CAP-006, REQ-SEC-002 | REQ-TEST-006, REQ-TEST-017 |

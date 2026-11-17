@@ -2,7 +2,7 @@
 //! (handoff 009i, item 2a; audit A-32; REQ-CTX-005).
 
 use super::*;
-use mimlys_core::limits::{PROPOSED_ENUM_VALUES, PROPOSED_TOOL_DEFINITION_CHARS};
+use mimlys_core::limits::{LIM_I20_TOOL_DEFINITION_CHARS, LIM_I21_ENUM_VALUES};
 
 /// A tool of `n` string parameters, each with a description of 190 characters.
 fn wide_tool(n: usize) -> Listed {
@@ -38,7 +38,7 @@ fn req_ctx_005_a_tool_over_the_per_tool_bound_is_unavailable_with_the_reason() {
     for n in 1..=LIM_I3_TOOL_PARAMETERS {
         let imported = import("s", &wide_tool(n), Some(&declared()), None);
         if imported.definition.is_some() {
-            assert!(rendered(&imported) <= PROPOSED_TOOL_DEFINITION_CHARS);
+            assert!(rendered(&imported) <= LIM_I20_TOOL_DEFINITION_CHARS);
             last_fit = Some(n);
         } else {
             // From here on every tool is over the bound.
@@ -48,7 +48,7 @@ fn req_ctx_005_a_tool_over_the_per_tool_bound_is_unavailable_with_the_reason() {
                 "{n} parameters: {reason}"
             );
             assert!(
-                reason.ends_with(&format!(">{PROPOSED_TOOL_DEFINITION_CHARS}")),
+                reason.ends_with(&format!(">{LIM_I20_TOOL_DEFINITION_CHARS}")),
                 "{reason}"
             );
         }
@@ -69,7 +69,7 @@ fn req_ctx_005_a_tool_over_the_per_tool_bound_is_unavailable_with_the_reason() {
         .unwrap()
         .parse()
         .unwrap();
-    assert!(size > PROPOSED_TOOL_DEFINITION_CHARS && size < PROPOSED_TOOL_DEFINITION_CHARS + 400);
+    assert!(size > LIM_I20_TOOL_DEFINITION_CHARS && size < LIM_I20_TOOL_DEFINITION_CHARS + 400);
 }
 
 /// REQ-CTX-005, REQ-MCP-003 (handoff 009i, item 2a; audit A-32): the case the
@@ -125,22 +125,17 @@ fn req_ctx_005_an_enumeration_over_its_bound_is_unavailable_with_the_reason() {
             None,
         )
     };
-    let at = import("s", &tool(PROPOSED_ENUM_VALUES), Some(&declared()), None);
+    let at = import("s", &tool(LIM_I21_ENUM_VALUES), Some(&declared()), None);
     assert!(at.definition.is_some(), "{:?}", at.record.unavailable);
-    assert!(rendered(&at) <= PROPOSED_TOOL_DEFINITION_CHARS);
-    let over = import(
-        "s",
-        &tool(PROPOSED_ENUM_VALUES + 1),
-        Some(&declared()),
-        None,
-    );
+    assert!(rendered(&at) <= LIM_I20_TOOL_DEFINITION_CHARS);
+    let over = import("s", &tool(LIM_I21_ENUM_VALUES + 1), Some(&declared()), None);
     assert!(over.definition.is_none());
     assert_eq!(
         over.record.unavailable.as_deref(),
         Some(
             format!(
-                "too_many_enum_values:kind:{}>{PROPOSED_ENUM_VALUES}",
-                PROPOSED_ENUM_VALUES + 1
+                "too_many_enum_values:kind:{}>{LIM_I21_ENUM_VALUES}",
+                LIM_I21_ENUM_VALUES + 1
             )
             .as_str()
         )

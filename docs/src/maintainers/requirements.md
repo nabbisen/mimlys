@@ -149,7 +149,7 @@ A task shall be in exactly one of `created`, `running`, `waiting_user`, `paused`
 `cancel_task` shall be valid from every non-terminal state, shall abort a model request in flight, terminate an execution in flight and its process tree within LIM-O2, apply the workspace rule of REQ-WS-010, persist, and end in `cancelled`. An interrupted action that cannot be undone (as in REQ-CLI-005) is recorded with its outcome unknown, and the command's result names it. Cancellation shall never be an advisory flag. (ED §26 of the draft)
 
 ### REQ-TASK-007 Halt reasons — M1 · T
-A halt shall carry one reason from: `budget_steps`, `budget_rejections`, `budget_failures`, `budget_deadline`, `convergence`, `approval_rejected`, `approval_expired`, `question_expired`, `recovered`, `unknown_outcome`, `workspace_quota`, `backend_unavailable`, `tool_unavailable`, `policy`. The reason is persisted and shown to the user. (A-10)
+A halt shall carry one reason from: `budget_steps`, `budget_rejections`, `budget_failures`, `budget_deadline`, `convergence`, `approval_rejected`, `approval_expired`, `question_expired`, `recovered`, `unknown_outcome`, `workspace_quota`, `workspace_unreadable`, `definitions_too_large`, `backend_unavailable`, `tool_unavailable`, `policy`. The reason is persisted and shown to the user. (A-10; `workspace_unreadable` added by handoff 002e, `definitions_too_large` by handoff 009i, 0.11)
 
 ### REQ-TASK-008 Budgets — M1 · T
 Each task shall carry the budgets LIM-T1 to LIM-T6 as durable counters and limits. Counters survive restarts; rolled-back executions count; only REQ-TASK-005 may raise a limit. (M-20)
@@ -463,7 +463,7 @@ Compression shall be rule-based: truncation to head and tail, collapsing of repe
 Tool definitions shall be generated from the visible tools, bounded by LIM-I1 in total, pinned per task, and sanitized per REQ-MCP-003 for external tools. One imported tool's rendering, and the values of one enumeration, shall be bounded at import (the tool is unavailable with the reason otherwise), and a grant that would make the visible definitions exceed LIM-I1 shall be refused, naming the tool, so that no step fails for the size of the definitions (amended 2026-11-16: audit A-32).
 
 ### REQ-CTX-006 Observation excerpts — M1 · T
-Observations shall carry excerpts per LIM-C2 with truncation notices; full bounded outputs are stored as blobs for the user, not shown to the model.
+Observations shall carry excerpts per LIM-C2 with truncation notices; full bounded outputs are stored for the user, not shown to the model: an external tool's whole result as the observation's `full_payload`, bounded by LIM-S4; an output stream as a blob per REQ-PERS-005 (amended 2026-11-17: handoff 009i).
 
 ### REQ-CTX-007 Secrets never enter the context — M1 · T
 Configured secret values and LIM-W5 content shall be redacted from observations before they enter the context. (REQ-PRIV-002)

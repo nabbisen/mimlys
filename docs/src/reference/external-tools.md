@@ -211,8 +211,8 @@ unavailable, with the reason in `status`, rather than half imported.
   and **one that renders to more than 2 000 characters is unavailable**
   (`definition_too_large:<size>><bound>`; eight parameters of eight nested fields
   is far over it), and so is one with an enumeration of **more than 128 values**
-  (`too_many_enum_values:<parameter>:<count>><bound>`). Both numbers are
-  proposals that await registration as limits. Rypsok's `web_search` renders to
+  (`too_many_enum_values:<parameter>:<count>><bound>`); these are LIM-I20 and
+  LIM-I21. Rypsok's `web_search` renders to
   about 650 characters, and the built-in tools take about 4 200 of the 8 000.
 - **A grant cannot make the definitions too large.** `mimlys grant <task> tool
   <name>`, and the tools of a profile when a task is made (with the grants of a
@@ -222,8 +222,7 @@ unavailable, with the reason in `status`, rather than half imported.
   the tools granted before it and the total. Nothing is recorded: the task is not
   made, the grant is not issued. Revoke a grant, or give the task a smaller
   profile, and try again. A task made before this check existed and found over
-  the limit at a step is halted once as `definitions_too_large` (a halt reason
-  that awaits registration), where an earlier release failed that step, and every
+  the limit at a step is halted once as `definitions_too_large`, where an earlier release failed that step, and every
   step after it, with the task left `running`; revoke a tool grant, then resume.
 - **An output schema is checked for cost.** A schema over 1 024 nodes
   (LIM-I13), a list of more than 128 entries (LIM-I14), or alternatives that
@@ -243,11 +242,9 @@ unavailable, with the reason in `status`, rather than half imported.
   read and thrown away, so a server that writes one line that never ends costs
   one log line and no memory. At most 50 lines are logged in each second; the
   lines past that are counted, and when the second ends one line says how many
-  (`N lines dropped`). The three numbers are proposals that await registration
-  as limits.
+  (`N lines dropped`). These are LIM-I17, LIM-I18 and LIM-O18.
 - **A result is bounded as a whole.** What the model reads of a tool's result
-  is at most 8 000 characters of JSON in total (a proposed limit that awaits
-  registration), however many strings, keys and levels the server sends. The
+  is at most 8 000 characters of JSON in total (LIM-I19), however many strings, keys and levels the server sends. The
   result is first cleaned (invisible characters removed, secrets redacted), then
   checked against the tool's output schema, and only then bounded, so a cut is
   never the reason for `output_invalid`: a string that must be 20 000 characters

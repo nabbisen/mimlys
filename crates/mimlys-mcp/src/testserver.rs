@@ -506,7 +506,7 @@ fn call(name: &str, arguments: &Map<String, Value>) -> Value {
             let probe = json!({"text": "a".repeat(76_000)});
             let cut = crate::bound::bound(
                 &probe,
-                mimlys_core::limits::PROPOSED_RESULT_TOTAL_CHARS,
+                mimlys_core::limits::LIM_I19_RESULT_TOTAL_CHARS,
                 crate::bound::Unit::Chars,
                 true,
             )

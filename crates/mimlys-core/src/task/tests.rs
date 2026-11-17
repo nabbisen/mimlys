@@ -462,7 +462,7 @@ fn req_task_007_halt_reasons_are_the_fourteen_of_ed_5_2() {
             "backend_unavailable",
             "tool_unavailable",
             "policy",
-            // Proposed by handoff 009i, awaiting registration in §5.2.
+            // Added by handoff 009i.
             "definitions_too_large"
         ]
     );

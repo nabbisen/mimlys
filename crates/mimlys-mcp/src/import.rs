@@ -11,7 +11,7 @@ use mimlys_core::action::EffectView;
 use mimlys_core::hash::{Hash, hash_canonical};
 use mimlys_core::limits::{
     LIM_D4_TEXT_CHARS, LIM_I2_TOOL_DESCRIPTION_CHARS, LIM_I3_TOOL_PARAMETERS, LIM_I7_ENTRIES,
-    PROPOSED_ENUM_VALUES, PROPOSED_TOOL_DEFINITION_CHARS,
+    LIM_I20_TOOL_DEFINITION_CHARS, LIM_I21_ENUM_VALUES,
 };
 use mimlys_core::observation::sanitize;
 use mimlys_core::schema::OutputSchema;
@@ -178,10 +178,10 @@ pub fn import(
     // would take more than its share of LIM-I1 is not offered, so that it can
     // never be the reason a step fails for the size of the definitions.
     let chars = rendered_chars(std::slice::from_ref(&definition));
-    if chars > PROPOSED_TOOL_DEFINITION_CHARS {
+    if chars > LIM_I20_TOOL_DEFINITION_CHARS {
         unavailable(
             &mut record,
-            format!("definition_too_large:{chars}>{PROPOSED_TOOL_DEFINITION_CHARS}"),
+            format!("definition_too_large:{chars}>{LIM_I20_TOOL_DEFINITION_CHARS}"),
         );
         return Imported {
             name,
@@ -349,9 +349,9 @@ fn convert_param(prop: &Value, name: &str, at: &str, depth: usize) -> Result<Par
                 // Counted before any value is read (handoff 009i, A-32): the
                 // work of cleaning them, and their share of the definition, are
                 // bounded by it.
-                if values.len() > PROPOSED_ENUM_VALUES {
+                if values.len() > LIM_I21_ENUM_VALUES {
                     return Err(format!(
-                        "too_many_enum_values:{name}:{}>{PROPOSED_ENUM_VALUES}",
+                        "too_many_enum_values:{name}:{}>{LIM_I21_ENUM_VALUES}",
                         values.len()
                     ));
                 }

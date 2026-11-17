@@ -4,7 +4,7 @@ use super::*;
 use serde_json::Map;
 
 fn bound_chars() -> usize {
-    mimlys_core::limits::PROPOSED_RESULT_TOTAL_CHARS
+    mimlys_core::limits::LIM_I19_RESULT_TOTAL_CHARS
 }
 
 fn size_of(value: &Value) -> usize {
