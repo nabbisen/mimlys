@@ -82,14 +82,15 @@ fn req_cli_005_a_first_signal_raised_inside_the_record_of_the_start_finds_the_ac
         {
             let seen = seen.clone();
             rig.effect(move || {
-                let begun = std::time::Instant::now();
-                while seen.lock().unwrap().is_none() {
-                    assert!(
-                        begun.elapsed() < std::time::Duration::from_secs(60),
-                        "the handler never looked"
-                    );
-                    std::thread::yield_now();
+                // Far longer than a look takes (60 s at the most), counted in
+                // sleeps, not read from a clock (REQ-ARCH-006).
+                for _ in 0..60_000 {
+                    if seen.lock().unwrap().is_some() {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
+                panic!("the handler never looked");
             });
         }
         let result = rig.execute_the_action();
