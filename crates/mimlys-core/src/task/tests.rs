@@ -431,7 +431,8 @@ fn req_task_005_extension_rules() {
     }
 }
 
-/// REQ-TASK-007: the fourteen halt reasons with their snake_case names.
+/// REQ-TASK-007: the halt reasons of §5.2 with their snake_case names, and the one
+/// handoff 009i proposes (`definitions_too_large`).
 #[test]
 fn req_task_007_halt_reasons_are_the_fourteen_of_ed_5_2() {
     let names: Vec<String> = HaltReason::ALL
@@ -460,7 +461,9 @@ fn req_task_007_halt_reasons_are_the_fourteen_of_ed_5_2() {
             "workspace_unreadable",
             "backend_unavailable",
             "tool_unavailable",
-            "policy"
+            "policy",
+            // Proposed by handoff 009i, awaiting registration in §5.2.
+            "definitions_too_large"
         ]
     );
 }

@@ -54,11 +54,17 @@ pub enum HaltReason {
     ToolUnavailable,
     /// Policy stopped the task.
     Policy,
+    /// The definitions of the tools the task may use do not fit LIM-I1 (handoff
+    /// 009i, audit A-32). A grant that would make them exceed it is refused, so
+    /// this is the last guard: it is reached only by a task made before the
+    /// refusal existed, or whose tools changed under it. PROPOSED: the
+    /// architect registers the reason.
+    DefinitionsTooLarge,
 }
 
 impl HaltReason {
     /// Every reason, in the order of external design §5.2.
-    pub const ALL: [HaltReason; 15] = [
+    pub const ALL: [HaltReason; 16] = [
         HaltReason::BudgetSteps,
         HaltReason::BudgetRejections,
         HaltReason::BudgetFailures,
@@ -74,6 +80,7 @@ impl HaltReason {
         HaltReason::BackendUnavailable,
         HaltReason::ToolUnavailable,
         HaltReason::Policy,
+        HaltReason::DefinitionsTooLarge,
     ];
 }
 

@@ -56,6 +56,20 @@ pub const LIM_I5_MESSAGE_CHARS: usize = 200;
 /// (external design 15): 8 000 leaves the worst case within the budget by 6 300
 /// for the other steps' summaries and the request.
 pub const PROPOSED_RESULT_TOTAL_CHARS: usize = 8000;
+/// PROPOSED (handoff 009i, audit A-32; the architect registers the limit at
+/// review): one imported tool's rendering to the model, alone, in characters;
+/// past it the tool is unavailable (`definition_too_large`). A quarter of LIM-I1
+/// (8 000): the eight built-in tools render to about 4 200 (measured: 2 797 for
+/// the six file tools, 756 for `run_script`, 636 for `run_wasm`), which leaves
+/// about 3 800 for external tools, so two tools at the bound are the most that
+/// can be granted beside them; rypsok's `web_search` is 647.
+pub const PROPOSED_TOOL_DEFINITION_CHARS: usize = 2000;
+/// PROPOSED (handoff 009i, audit A-32; the architect registers the limit at
+/// review): values of one enumeration in an imported tool's input schema; past
+/// it the tool is unavailable (`too_many_enum_values`). LIM-I14's bound for the
+/// lists of an output schema (128), so that one number bounds both; the
+/// rendering bound above is what limits the values' size.
+pub const PROPOSED_ENUM_VALUES: usize = 128;
 /// LIM-I6: rendered approval request, in characters.
 pub const LIM_I6_APPROVAL_CHARS: usize = 4000;
 /// LIM-I7: entries returned by `list_dir` or `search_files`.

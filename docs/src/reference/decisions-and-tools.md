@@ -191,6 +191,12 @@ line ends `the workspace was not rolled back`, the halt's event
 has `rollback_failed: true`. (`unknown_outcome` without that clause is the halt
 of an action that cannot be undone.)
 
+If the definitions of the tools granted to a task do not fit the 8 000
+characters the model is shown (LIM-I1), which a grant is refused for when it
+would make them so, the task halts once as `definitions_too_large` (a halt
+reason that awaits registration) and says to revoke a tool grant, then resume;
+it is never left `running` with every step failing.
+
 If a part of the task's workspace cannot be read (an action made a directory
 unreadable, or the tree could not be walked), the task halts
 `workspace_unreadable`: the halt names the path and, when the cause is a

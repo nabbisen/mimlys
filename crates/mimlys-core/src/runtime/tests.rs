@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 mod approval_card;
+mod definitions_bound;
 mod interrupt;
 mod native;
 mod native_context;

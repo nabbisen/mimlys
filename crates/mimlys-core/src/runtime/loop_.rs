@@ -213,7 +213,26 @@ impl Runtime {
         // every task ends in one stated outcome, with its state change
         // recorded (CLR-4). `guard` is the only source of this component.
         let env = match self.step_env(&task, now) {
-            Ok(env) => env,
+            Ok(Ok(env)) => env,
+            // The last guard (handoff 009i, audit A-32): the tools this task may
+            // use do not fit LIM-I1. A grant that would make them exceed it is
+            // refused, so this is a task made before that, or whose tools
+            // changed under it. It halts once, with the reason that says so;
+            // it never fails every step with the task left `running`.
+            Ok(Err(too_large)) => {
+                tracing::warn!(
+                    target: "mimlys_core",
+                    task = %task_id,
+                    "{too_large}: the task is halted; revoke a tool grant and resume"
+                );
+                let halted =
+                    task.transition(TaskInput::Halt(HaltReason::DefinitionsTooLarge), now)?;
+                self.persist_task(&task, &halted)?;
+                return Ok(StepResultView {
+                    outcome: StepOutcome::Halted,
+                    state: halted.state,
+                });
+            }
             Err(RuntimeError::Unavailable { component }) if component == PROVIDER => {
                 let halted = task.transition(TaskInput::Halt(HaltReason::ToolUnavailable), now)?;
                 self.persist_task(&task, &halted)?;
@@ -238,7 +257,13 @@ impl Runtime {
         self.new_step(task, &env, now).await
     }
 
-    fn step_env(&self, task: &Task, now: Instant) -> Result<StepEnv, RuntimeError> {
+    /// The environment of one step; the inner error is the visible definitions
+    /// not fitting LIM-I1, which the caller turns into a halt.
+    fn step_env(
+        &self,
+        task: &Task,
+        now: Instant,
+    ) -> Result<Result<StepEnv, crate::tool::DefinitionsTooLarge>, RuntimeError> {
         let persistence = &self.deps.persistence;
         let mut grants = GrantSet::new();
         for g in persistence.load_grants(task.task_id)? {
@@ -272,11 +297,12 @@ impl Runtime {
             .into_iter()
             .filter(|d| names.contains(&d.name))
             .collect();
-        let definitions = render_definitions(&visible).map_err(|e| RuntimeError::Denied {
-            detail: e.to_string(),
-        })?;
+        let definitions = match render_definitions(&visible) {
+            Ok(definitions) => definitions,
+            Err(too_large) => return Ok(Err(too_large)),
+        };
         let info = self.deps.workspaces.open(task.task_id)?;
-        Ok(StepEnv {
+        Ok(Ok(StepEnv {
             grants,
             profile: self.profile_of(task)?,
             case: info.case_mode,
@@ -286,7 +312,7 @@ impl Runtime {
             workspace_root: info.root,
             workspace_remaining_bytes: self.deps.workspaces.remaining_bytes(task.task_id)?,
             unavailable,
-        })
+        }))
     }
 
     /// Records `tool.unpinned` once per changed tool and the provider's

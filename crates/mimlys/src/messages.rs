@@ -147,6 +147,9 @@ pub fn halt_text(reason: HaltReason) -> &'static str {
         }
         HaltReason::ToolUnavailable => "a tool could not be reached; resume to try again",
         HaltReason::Policy => "the policy did not allow the completion check to run",
+        HaltReason::DefinitionsTooLarge => {
+            "the definitions of the tools granted to this task are too large to show the model; revoke a tool grant with `mimlys revoke`, then resume"
+        }
     }
 }
 /// Why a task halted when its workspace was to be rolled back and could not be: the line says so
