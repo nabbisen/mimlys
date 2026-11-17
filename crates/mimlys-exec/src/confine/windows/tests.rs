@@ -22,6 +22,7 @@ fn run(line: &str, stdin: Stdin, job: Option<&Job>) -> Result<RawChild, String> 
         env: &[("SystemRoot".to_owned(), root)],
         current_dir: None,
         container: None,
+        capabilities: &[],
         job,
         restricted_token: false,
         stdin,
@@ -204,4 +205,22 @@ fn req_conf_008_two_spellings_of_one_data_directory_give_one_profile() {
     let missing = root.path().join("missing");
     assert_eq!(profile_name(&missing), legacy_profile_name(&missing));
     std::fs::remove_dir(&junction).unwrap();
+}
+
+/// REQ-CONF-006 (handoff 011o), on the Windows job: a task's capability is the
+/// same SID for the same task whenever it is derived, another SID for another
+/// task, and a capability SID (`S-1-15-3-1024-...`), which is what a token
+/// carries as a capability and what an entry names.
+#[test]
+fn req_conf_006_a_tasks_capability_is_derived_from_its_identifier() {
+    let a = task_capability("0198a7c2-5d6e-7000-8000-000000000001").unwrap();
+    let again = task_capability("0198a7c2-5d6e-7000-8000-000000000001").unwrap();
+    let b = task_capability("0198a7c2-5d6e-7000-8000-000000000002").unwrap();
+    assert_eq!(a, again);
+    assert_ne!(a, b);
+    assert!(
+        sid_string(&a).starts_with("S-1-15-3-1024-"),
+        "{}",
+        sid_string(&a)
+    );
 }

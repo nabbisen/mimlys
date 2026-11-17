@@ -209,3 +209,35 @@ fn req_conf_006_the_opened_directories_are_the_tasks_own() {
     assert!(same(&opened.tmp.fd, &ws.join("a/tmp")));
     assert!(!same(&opened.tree.fd, &ws.join("b/tree")));
 }
+
+/// REQ-CONF-006 (handoff 011o), on every job: the task a specification is
+/// narrowed to is the one whose tree its write set holds; a specification that
+/// holds the workspaces and the temporary directory whole, or a path that is
+/// not a task's tree, is for no task, so its worker carries no capability.
+#[test]
+fn req_conf_006_a_narrowed_specification_names_its_task() {
+    let (_root, data) = data_dir();
+    let ws = data.join("workspaces");
+    let narrowed = task_spec(&spec(&data), &ws.join("a/tree"), &ws.join("a/tmp")).unwrap();
+    assert_eq!(
+        task_of(&data, &narrowed.write_paths),
+        Some("a".to_owned()),
+        "{:?}",
+        narrowed.write_paths
+    );
+    let other = task_spec(&spec(&data), &ws.join("b/tree"), &ws.join("b/tmp")).unwrap();
+    assert_eq!(task_of(&data, &other.write_paths), Some("b".to_owned()));
+    // The whole write set of the runtime is for no task.
+    assert_eq!(task_of(&data, &spec(&data).write_paths), None);
+    // A tree that is not one, a path outside, a detour.
+    for paths in [
+        vec![ws.join("a/tmp")],
+        vec![ws.join("a")],
+        vec![ws.join("a/tree/deeper")],
+        vec![ws.join("..").join("a/tree")],
+        vec![data.parent().unwrap().join("workspaces/a/tree")],
+        vec![],
+    ] {
+        assert_eq!(task_of(&data, &paths), None, "{paths:?}");
+    }
+}

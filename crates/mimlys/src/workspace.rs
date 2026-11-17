@@ -187,6 +187,19 @@ impl LocalWorkspaces {
         self.data_dir.join("workspaces").join(task_id.to_string())
     }
 
+    /// Gives the task's `tree` and `tmp` the entry of its capability (Windows;
+    /// [`crate::toolchain::task_entries`]), before anything is copied into them.
+    /// When it fails the task's directory is removed (it holds nothing yet) and
+    /// the creation fails with `acl_not_applied` and the reason.
+    pub(crate) fn give_task_entries(&self, task_id: TaskId) -> Result<(), WorkspaceError> {
+        let dir = self.task_dir(task_id);
+        crate::toolchain::task_entries(&task_id.to_string(), &dir.join("tree"), &dir.join("tmp"))
+            .map_err(|detail| {
+                let _ = std::fs::remove_dir_all(&dir);
+                WorkspaceError::Storage { detail }
+            })
+    }
+
     /// The task's working tree.
     pub fn tree_path(&self, task_id: TaskId) -> PathBuf {
         self.task_dir(task_id).join("tree")
@@ -502,6 +515,9 @@ impl WorkspaceProvider for LocalWorkspaces {
         let task_dir = self.task_dir(task_id);
         std::fs::create_dir_all(task_dir.join("tree")).map_err(Self::storage("create_dir"))?;
         std::fs::create_dir_all(task_dir.join("tmp")).map_err(Self::storage("create_dir"))?;
+        // Windows (handoff 011o): the task's entries, while its directories are
+        // empty; a failure is the task not made, never a task whose tools cannot write.
+        self.give_task_entries(task_id)?;
         let dst = Dir::open_ambient_dir(task_dir.join("tree"), ambient_authority())
             .map_err(Self::storage("open"))?;
         let case_mode = Self::probe_case(&dst)?;

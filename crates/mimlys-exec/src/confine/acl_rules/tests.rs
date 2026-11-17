@@ -214,6 +214,59 @@ fn req_ws_001_a_directory_of_another_owner_is_not_acceptable() {
     assert!(!owner_is_acceptable(&[], &user, &admins));
 }
 
+/// REQ-CONF-006 (handoff 011o): `<data>/tmp` is readable to the container and
+/// nothing more. A read entry that holds a write right is not the read entry
+/// (the entry of 0.10 and earlier was a write one, and is replaced), and the
+/// entries of an earlier release's read stay applied.
+#[test]
+fn req_conf_006_a_read_entry_holds_no_right_to_write() {
+    assert_eq!(
+        classify(Access::Read, &[ace(READ_MASK)]),
+        EntryState::Applied
+    );
+    // The earlier release's read entry (generic rights) is the same entry.
+    assert_eq!(
+        classify(Access::Read, &[ace(GENERIC_READ | GENERIC_EXECUTE)]),
+        EntryState::Applied
+    );
+    // The write entry, and each right that writes, on its own.
+    assert!(matches!(
+        classify(Access::Read, &[ace(WRITE_MASK)]),
+        EntryState::Wrong { .. }
+    ));
+    for right in [0x2, 0x4, 0x10, 0x40, 0x100, DELETE] {
+        assert!(
+            matches!(
+                classify(Access::Read, &[ace(READ_MASK | right)]),
+                EntryState::Wrong { .. }
+            ),
+            "{right:#x}"
+        );
+    }
+    // The write entry still means what it did, and the read mask has no write right.
+    assert_eq!(
+        classify(Access::Write, &[ace(WRITE_MASK)]),
+        EntryState::Applied
+    );
+    assert_eq!(READ_MASK & WRITE_RIGHTS, 0);
+}
+
+/// REQ-CONF-006 (handoff 011o): the capability's name is the task's identifier
+/// under a prefix, so two tasks never share one and one task keeps its own.
+#[test]
+fn req_conf_006_a_tasks_capability_is_named_by_its_identifier() {
+    let a = task_capability_name("0198a7c2-5d6e-7000-8000-000000000001");
+    assert_eq!(a, "mimlys-task-0198a7c2-5d6e-7000-8000-000000000001");
+    assert_eq!(
+        a,
+        task_capability_name("0198a7c2-5d6e-7000-8000-000000000001")
+    );
+    assert_ne!(
+        a,
+        task_capability_name("0198a7c2-5d6e-7000-8000-000000000002")
+    );
+}
+
 /// REQ-CONF-008 (handoff 011o, D1): the container's name is a function of the
 /// directory's identity, valid as a profile name (letters, numbers and a
 /// hyphen, at most 64 characters), different for two directories and for two

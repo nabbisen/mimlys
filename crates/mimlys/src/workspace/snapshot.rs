@@ -694,6 +694,8 @@ impl LocalWorkspaces {
         let task_dir = self.task_dir(task_id);
         std::fs::create_dir_all(task_dir.join("tree")).map_err(storage("create_dir"))?;
         std::fs::create_dir_all(task_dir.join("tmp")).map_err(storage("create_dir"))?;
+        // Windows (handoff 011o): the task's entries before anything is restored into it.
+        self.give_task_entries(task_id)?;
         let dir = Dir::open_ambient_dir(task_dir.join("tree"), ambient_authority())
             .map_err(storage("open"))?;
         let case_mode = Self::probe_case(&dir)?;

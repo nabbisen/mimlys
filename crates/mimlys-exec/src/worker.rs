@@ -176,7 +176,7 @@ impl Worker {
             probe_cache: Mutex::new(None),
             require: Mutex::new(None),
             per_task: std::sync::atomic::AtomicBool::new(
-                cfg!(target_os = "macos")
+                cfg!(any(target_os = "macos", windows))
                     || (cfg!(debug_assertions)
                         && std::env::var_os("MIMLYS_PROBE_WORKER_PER_TASK").is_some()),
             ),
@@ -576,11 +576,11 @@ impl Worker {
 
     /// Whether a worker is made for one task (REQ-CONF-006): where the
     /// platform lets a process apply its confinement once and for its tools
-    /// too (macOS: one Seatbelt profile, no second one), the write set of that
-    /// confinement is one task's workspace, so a worker serves one task at a
-    /// time and is replaced when another task's execution comes. Elsewhere
-    /// (Linux: a layer made for each tool; Windows: not yet) one worker serves
-    /// every task. Test builds can choose it on any platform with
+    /// too (macOS: one Seatbelt profile, no second one; Windows: the token the
+    /// tools inherit, which carries the task's capability), the write set of
+    /// that confinement is one task's workspace, so a worker serves one task at
+    /// a time and is replaced when another task's execution comes. Elsewhere
+    /// (Linux: a layer made for each tool) one worker serves every task. Test builds can choose it on any platform with
     /// `MIMLYS_PROBE_WORKER_PER_TASK`, and a test can ask for it on a handle
     /// ([`Worker::bind_to_task`]).
     fn per_task(&self) -> bool {

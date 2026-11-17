@@ -18,6 +18,10 @@ struct Status<'a> {
     /// macOS: `xcrun`'s cache file, when it is missing and could not be made.
     #[serde(skip_serializing_if = "Option::is_none")]
     xcrun_cache_missing: Option<String>,
+    /// Windows: the one-time migration of 0.11 (the container, the per-task
+    /// entries) has not finished; shown only then.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    permissions_migration_pending: bool,
     config: Option<String>,
     /// What recovery did at startup: always empty here, because `status` recovers
     /// nothing (REQ-PERS-013); the field stays so that the JSON shape does.
@@ -209,6 +213,10 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             out.line(messages::server_undeclared(tool));
         }
     }
+    let migration_pending = app.container.as_ref().is_some_and(|c| c.migration_pending);
+    if migration_pending {
+        out.line(messages::MIGRATION_PENDING);
+    }
     let extra = app.dependency_step_read_set_extra();
     if !extra.is_empty() {
         out.line(messages::dependency_step_reads(&extra));
@@ -223,6 +231,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         data_dir_in_temporary_directory: data_dir_in_temp,
         xcrun_cache_missing: xcrun_missing,
+        permissions_migration_pending: migration_pending,
         config: app
             .loaded
             .path

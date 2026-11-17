@@ -42,6 +42,7 @@ fn record(entries: Vec<Entry>) -> Record {
         profile: "mimlys-test".into(),
         sid: "S-1-15-2-1".into(),
         entries,
+        task_entries_migrated: false,
     }
 }
 
@@ -151,6 +152,10 @@ fn req_conf_008_outcome_json_has_the_documented_shape() {
         )],
         profile_deleted: false,
         record_deleted: false,
+        tasks: super::TaskRevoke {
+            removed: 2,
+            failed: vec![("/t/tree".into(), "denied".into())],
+        },
     };
     let v = outcome.to_json();
     assert_eq!(
@@ -160,6 +165,10 @@ fn req_conf_008_outcome_json_has_the_documented_shape() {
             "failed": [{"path": "/b", "reason": "denied"}],
             "profile_deleted": false,
             "record_deleted": false,
+            "per_task_entries": {
+                "removed": 2,
+                "failed": [{"path": "/t/tree", "reason": "denied"}],
+            },
         })
     );
 }
@@ -217,6 +226,31 @@ fn req_conf_008_a_corrupt_record_stops_the_start_and_is_never_rewritten() {
     ]);
     good.save(dir.path()).unwrap();
     assert_eq!(Record::load(dir.path()).unwrap(), good);
+}
+
+/// REQ-CONF-008 (handoff 011o): the record of an earlier release has no flag
+/// for the migration and reads as not migrated; the flag round-trips; a record
+/// that is not migrated is the one that `status` reports as pending.
+#[test]
+fn req_conf_008_a_record_of_an_earlier_release_reads_as_not_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("toolchain-acls.json");
+    std::fs::write(
+        &file,
+        r#"{"profile": "mimlys-0123456789abcdef", "sid": "S-1-15-2-1", "entries": []}"#,
+    )
+    .unwrap();
+    let old = Record::load(dir.path()).unwrap();
+    assert!(!old.task_entries_migrated);
+    assert_eq!(old.profile, "mimlys-0123456789abcdef");
+    let done = Record {
+        task_entries_migrated: true,
+        ..old
+    };
+    done.save(dir.path()).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("\"task_entries_migrated\": true"), "{text}");
+    assert!(Record::load(dir.path()).unwrap().task_entries_migrated);
 }
 
 /// REQ-CONF-008 (A-23): the record is written by a replace. The new content
@@ -312,6 +346,7 @@ fn earlier_installation() -> Earlier {
             },
             entry(&super::normalized(&toolchain), Source::User),
         ],
+        task_entries_migrated: false,
     }
     .save(&data)
     .unwrap();
@@ -348,8 +383,7 @@ fn req_conf_008_the_earlier_container_moves_to_the_directory_identity_once() {
     assert_ne!(first.profile, e.legacy, "another container");
     assert_ne!(first.sid, e.old_sid);
     for (dir, access) in [
-        (&e.workspaces, acl::Access::Write),
-        (&e.tmp, acl::Access::Write),
+        (&e.tmp, acl::Access::Read),
         (&e.interpreters, acl::Access::Read),
         (&e.toolchain, acl::Access::Read),
     ] {
@@ -403,5 +437,6 @@ fn req_conf_008_an_interrupted_move_of_the_container_is_finished() {
     assert!(!acl::has_any_entry(&e.toolchain, &e.old_sid).unwrap());
     assert!(acl::has_entry(&e.toolchain, &new_sid, acl::Access::Read).unwrap());
     assert!(!acl::has_any_entry(&e.workspaces, &e.old_sid).unwrap());
+    assert!(!acl::has_any_entry(&e.workspaces, &done.sid).unwrap());
     delete_profile(&done.profile).unwrap();
 }

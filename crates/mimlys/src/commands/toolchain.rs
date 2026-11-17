@@ -17,6 +17,9 @@ pub fn list(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     let container = app.container.clone();
     if let Some(c) = &container {
         out.line(messages::container_line(&c.profile, &c.sid_text));
+        if let Some(count) = crate::toolchain::task_entry_count(&app.data_dir) {
+            out.line(messages::task_entries_summary(count));
+        }
     }
     for p in &read_set {
         out.line(messages::read_set_line(p, app.path_applied(p)));
@@ -45,6 +48,8 @@ pub fn list(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         "container": container.as_ref().map(|c| serde_json::json!({
             "profile": c.profile, "sid": c.sid_text,
             "entries": c.record.entries,
+            "per_task_entries": crate::toolchain::task_entry_count(&app.data_dir),
+            "migration_pending": c.migration_pending,
         })),
     }));
     Ok(())
@@ -167,6 +172,7 @@ pub fn revoke_all(
     let plan = crate::toolchain::plan_revoke_all(&container.record, &candidates, |p| {
         crate::toolchain::entry_in_force(container, Path::new(p)) == Some(true)
     });
+    let task_entries = crate::toolchain::task_entry_count(&app.data_dir);
     let rows: Vec<(String, &str, &str)> = plan
         .iter()
         .map(|p| {
@@ -174,14 +180,14 @@ pub fn revoke_all(
             (p.path.clone(), source, found)
         })
         .collect();
-    for line in messages::toolchain_revoke_all_plan(&container.profile, &rows) {
+    for line in messages::toolchain_revoke_all_plan(&container.profile, &rows, task_entries) {
         out.line(line);
     }
     let confirmed = yes
         || (interaction.interactive()
             && !out.json()
             && interaction.confirm(&messages::toolchain_revoke_all_confirm(
-                plan.len(),
+                plan.len() + task_entries.unwrap_or(0),
                 &container.profile,
             )));
     if !confirmed {
@@ -198,8 +204,16 @@ pub fn revoke_all(
     for p in &outcome.removed {
         out.line(messages::toolchain_revoke_all_removed(&p.path));
     }
+    if outcome.tasks.removed > 0 {
+        out.line(messages::toolchain_revoke_all_tasks_removed(
+            outcome.tasks.removed,
+        ));
+    }
     for (p, reason) in &outcome.failed {
         out.line(messages::toolchain_revoke_all_failed(&p.path, reason));
+    }
+    for (path, reason) in &outcome.tasks.failed {
+        out.line(messages::toolchain_revoke_all_failed(path, reason));
     }
     out.line(messages::toolchain_revoke_all_profile(
         outcome.profile_deleted,
@@ -212,7 +226,7 @@ pub fn revoke_all(
         Err(AppError::Partial {
             message: format!(
                 "{} permission(s) could not be removed; run `mimlys toolchain revoke --all` again to retry exactly those",
-                outcome.failed.len()
+                outcome.failed.len() + outcome.tasks.failed.len()
             ),
             report: outcome.to_json(),
         })

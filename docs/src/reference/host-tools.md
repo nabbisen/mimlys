@@ -441,10 +441,11 @@ On Windows the worker runs in an AppContainer named after the data
 directory, inside a Job Object with the memory and process limits, under a
 restricted low-integrity token where the system accepts one with the
 container. A container reaches only what its SID is allowed to: mimlys
-grants it the workspaces, its temporary directory, the interpreters directory,
-and the worker binary and each interpreter module as files at startup (one
-entry on each file, which nothing inherits: the folder that holds the worker
-is not written), and you grant the toolchain:
+grants it read on its temporary directory and the interpreters directory, and
+the worker binary and each interpreter module as files at startup (one entry
+on each file, which nothing inherits: the folder that holds the worker is not
+written), and you grant the toolchain. The workspaces are not granted to the
+container at all: [each task has its own](#what-a-tool-may-do-in-the-workspaces):
 
 ```text
 mimlys toolchain grant %USERPROFILE%\.cargo\bin
@@ -465,21 +466,57 @@ a directory that merely inherits the container's permission from a parent you
 granted reads `acl_not_applied` too, and `mimlys toolchain grant <path>` adds
 the entry it lacks.
 
-**What a tool may do in the workspaces.** The container holds, on the
-workspaces and on `<data>/tmp`, read, write, execute and delete, and nothing
-more: `FILE_GENERIC_READ`, `FILE_GENERIC_WRITE`, `FILE_GENERIC_EXECUTE` and
-`DELETE` (the shell's "Modify"). Each is there for something a build does:
-reading sources and listing directories; creating files and directories,
-writing, appending and clearing a read-only attribute before replacing a file;
-running the programs a build produces and entering directories; and removing,
+**What a tool may do in the workspaces.** A host tool reaches **only its own
+task's workspace**. The worker is made for one task (the first execution of
+another task replaces it, as on macOS), and its token carries one capability
+derived from that task's identifier, which the tools it starts inherit. The
+task's `tree` and `tmp` (never the task's directory, which holds its workspace
+record) each carry one inheritable entry for that capability, written when the
+workspace is made, while the directories are empty. So a tool of one task opens
+no other task's tree or temporary directory, to read, write or list, cannot list
+`<data>/workspaces` (it learns no other task's identifier), cannot list its own
+task's directory or write its workspace record, and reads and writes its own
+tree. `<data>/tmp` is readable and not writable. Nothing is needed from you.
+
+The entry is read, write, execute and delete, and nothing more:
+`FILE_GENERIC_READ`, `FILE_GENERIC_WRITE`, `FILE_GENERIC_EXECUTE` and `DELETE`
+(the shell's "Modify"). Each is there for something a build does: reading
+sources and listing directories; creating files and directories, writing,
+appending and clearing a read-only attribute before replacing a file; running
+the programs a build produces and entering directories; and removing,
 renaming and replacing files (a rename needs `DELETE` on its source). It does
 **not** hold the right to change a file's permissions (`WRITE_DAC`) or its
 owner (`WRITE_OWNER`), so a tool cannot, for example, open the files of a task
-to another local account; nor `GENERIC_ALL`, which holds both. If you upgraded
-from 0.10 or earlier, the first start replaces the old, wider entry on those
-two directories, once, and says so in the log (`replacing the container's
-permissions on …`); the write reaches every file below them, so that start can
-take several seconds on a large workspace.
+to another local account; nor `GENERIC_ALL`, which holds both. A task whose
+entries cannot be written is not made: the creation fails with
+`acl_not_applied` and the reason.
+
+**Upgrading from 0.10: read this.** The first start of this release moves the
+installation, once, and records it in `toolchain-acls.json`:
+
+- the container is renamed after the data directory itself, not how it was
+  spelled, so every spelling of one directory is one container (the container's
+  SID changes once; the entries you granted with `toolchain grant` move to it,
+  and the old container and its entries are removed);
+- the container's entry on `<data>/workspaces` is removed, which rewrites the
+  permissions of every file in every task's tree;
+- each existing task's `tree` and `tmp` receive their task's entry, a task at a
+  time;
+- `<data>/tmp` becomes read-only to the container (the old, wider entry is
+  replaced and said so in the log, `replacing the container's permissions on
+  …`).
+
+It was measured at under two seconds for 20 tasks of 1 000 files each (20 000
+files, on a CI runner's disk), and it grows with the number of files, so **the first start can take a while on a data directory with many
+tasks**. Until it has finished, `status` says one line
+(`permissions     not yet moved to this release's layout …`), and a start that
+is interrupted finishes it at the next start, from where the directories are.
+It repeats and changes nothing once it has finished. `mimlys toolchain list`
+shows `per-task entries on N task(s)` (one line, not one per task), and
+`mimlys toolchain revoke --all` removes them with everything else (it finds the
+tasks on disk, since the record holds none); the next start gives them back. A
+link or a junction in place of `workspaces`, `tmp` or `interpreters` is refused
+at every start, naming the path: those directories are never links.
 
 **A permission record that cannot be used.** The record of what `grant`
 added, `<data>/toolchain-acls.json`, is what lets `revoke` leave a directory

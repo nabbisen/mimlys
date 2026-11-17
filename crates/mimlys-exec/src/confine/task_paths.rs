@@ -104,6 +104,22 @@ pub fn task_names(
     Ok((tree_names, tmp_names))
 }
 
+/// The task a narrowed specification is for ([`crate::confine::task_spec`]): the
+/// name of the task directory whose `tree` the write set holds, when one of its
+/// entries is `<data>/workspaces/<task>/tree` with every component a plain
+/// name. `None` for a specification that is not narrowed to one task. The
+/// Windows backend gives the worker that task's capability (handoff 011o).
+pub fn task_of(data_dir: &Path, write_paths: &[PathBuf]) -> Option<String> {
+    write_paths.iter().find_map(|path| {
+        let names = plain_components_beneath(data_dir, path).ok()?;
+        if names.len() == 3 && names[0] == "workspaces" && names[2] == "tree" {
+            names[1].to_str().map(str::to_owned)
+        } else {
+            None
+        }
+    })
+}
+
 /// Opens a task's tree and temporary directory without following a link at any
 /// level below the data directory (see the module's documentation). The paths
 /// are checked first ([`task_names`]); both directories must exist.
