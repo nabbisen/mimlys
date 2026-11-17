@@ -126,3 +126,22 @@ fn req_ctx_008_cleaning_removes_and_counts_and_cuts_nothing() {
     assert_eq!(value["ab#2"], "xy");
     assert_eq!(value["n"][0], "q");
 }
+
+/// REQ-MCP-006 (architect's review of 009i): strings of every length near a
+/// probed cap are bounded. A cut that drops only a few more characters than its
+/// marker holds is longer serialized than the text it replaced; the size of a
+/// probe must still be computed, not underflow.
+#[test]
+fn req_mcp_006_a_cut_longer_serialized_than_its_text_is_counted() {
+    let value = Value::Array((1..=600).map(|n| Value::String("a".repeat(n))).collect());
+    for unit in [Unit::Chars, Unit::Bytes] {
+        for limit in [50_000, 100_000, 150_000] {
+            let cut = bound(&value, limit, unit, true).expect("over the bound");
+            assert!(
+                serialized_size(&cut.value, unit) <= limit,
+                "{unit:?} {limit}"
+            );
+            assert!(cut.value.is_array(), "the strings are cut, not replaced");
+        }
+    }
+}

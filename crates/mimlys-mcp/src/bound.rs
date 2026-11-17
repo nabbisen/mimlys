@@ -224,7 +224,10 @@ fn size_with_cap(size: usize, strings: &[&str], cap: usize, unit: Unit) -> usize
     let mut size = size;
     for s in strings {
         if let Some(cut) = cut_string(s, cap) {
-            size -= string_size(s, unit) - string_size(&cut, unit);
+            // A short cut can be longer serialized than what it replaced (the
+            // marker's newlines are escaped, its `…` is three bytes), so the cut
+            // is added before the string is taken away: `size` still holds `s`.
+            size = size + string_size(&cut, unit) - string_size(s, unit);
         }
     }
     size

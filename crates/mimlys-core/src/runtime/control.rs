@@ -418,11 +418,8 @@ impl Runtime {
                 .deps
                 .workspaces
                 .delete_files(task_id, &crate::spi::DeletedRows::default());
-            let _ = self.deps.persistence.record_workspace_state(
-                task_id,
-                WorkspaceState::Deleted,
-                None,
-            );
+            // No workspace state is recorded: the task has no row, and the
+            // workspace's row refers to it.
             // The servers started for the import are on the record all the same.
             let _ = self.append_provider_events(provider_events);
             return Err(refused);

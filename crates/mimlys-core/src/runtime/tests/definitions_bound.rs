@@ -301,3 +301,51 @@ fn req_ctx_005_a_built_in_step_is_never_denied_for_the_size_of_a_tool_it_is_not_
     let first = &h.backend.requests()[0].messages[0].content;
     assert!(first.contains("read_file") && !first.contains("big_a"));
 }
+
+/// REQ-CTX-005, REQ-TASK-004 (architect's review of 009i): a fork is judged on
+/// the grants it inherits and the grants of its request as one set. A source
+/// whose own grants fit, and a request whose grants fit alone, together refuse
+/// the fork, naming the tool that crosses LIM-I1; no task is made. The fork of
+/// the same source without that grant is made.
+#[test]
+fn req_ctx_005_a_fork_is_judged_on_its_inherited_grants_with_its_request() {
+    let h = harness(
+        policy(),
+        vec![json!({"decision": "complete", "summary": "done"})],
+    );
+    let source = h.create_with(|r| r.profile = Some("read_only".into()));
+    grant_tool(&h, source, "big_a").unwrap();
+    grant_tool(&h, source, "big_b").unwrap();
+    assert_eq!(h.step(source).outcome, StepOutcome::Completed);
+    let fork = |grants: Vec<GrantKind>| crate::runtime::CreateTask {
+        goal: "continue".into(),
+        scope: ScopeSpec {
+            root: "/home/u/project".into(),
+            include: vec![],
+        },
+        profile: None,
+        grants,
+        budgets: None,
+        deadline_ms: None,
+        completion_check: None,
+        hold: true,
+        from_task: Some(source),
+        from_snapshot: None,
+    };
+    let tasks = h.persistence.list_tasks().unwrap().len();
+    let big_c = vec![GrantKind::Tool {
+        name: "big_c".into(),
+    }];
+    let refused = h.runtime.create_task(&h.session, fork(big_c)).unwrap_err();
+    assert!(
+        matches!(&refused, RuntimeError::Denied { detail } if detail.contains("big_c") && detail.contains("LIM-I1")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        h.persistence.list_tasks().unwrap().len(),
+        tasks,
+        "no task is made"
+    );
+    let made = h.runtime.create_task(&h.session, fork(vec![])).unwrap();
+    assert_eq!(made.forked_from, Some(source));
+}
