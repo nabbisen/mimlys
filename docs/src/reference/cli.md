@@ -133,6 +133,11 @@ the step was still running 4 seconds after the stop signal, so it was interrupte
 When the step had written changes that were rolled back, the line says it:
 `..., so it was interrupted, and its workspace changes were rolled back; the task is paused`.
 
+The line is said only when the step it is about ended interrupted. A step that
+finished by itself while the grace passed (its action was done and only the
+store's writes were left, on a slow disk) is not said interrupted: nothing of
+it was, the task pauses at the next boundary, and the action is `succeeded`.
+
 An action that cannot be undone is never interrupted by the first signal: an
 external write, a host write, an external read that is not repeatable. The
 runtime undoes none of them, so an interruption would leave what they did

@@ -320,6 +320,17 @@ impl Signals {
         self.waiting_said.load(Ordering::SeqCst)
     }
 
+    /// A step is about to begin. The watchdog's interruption belongs to the step
+    /// that was in flight when it was made: one made before this step began (the
+    /// step ended by itself, with its action done, as the grace passed, and the
+    /// request stayed for this step's boundary) interrupted nothing that this
+    /// step or the one before it did, so it is forgotten and never said
+    /// (external design §19.2: said once the step has ended so, never otherwise;
+    /// handoff 010f, item 3).
+    fn step_begins(&self) {
+        self.interrupted.store(false, Ordering::SeqCst);
+    }
+
     /// The step has ended `cancelled` and the pause is taken: if the watchdog
     /// interrupted it at the grace, says so, with the rollback only when the
     /// step wrote one. Said once.
@@ -424,6 +435,8 @@ pub async fn drive(
                     }
                     _ => {}
                 }
+                // What the watchdog did before this step began did not touch it.
+                signals.step_begins();
                 let result = runtime.run_step(task_id).await?;
                 let printed = print_new(&runtime, task_id, &mut position, out)?;
                 if result.outcome == StepOutcome::Cancelled && result.state == TaskState::Running {
@@ -885,6 +898,47 @@ mod tests {
                 interrupted[0]
             );
         }
+    }
+
+    /// REQ-CLI-005, handoff 010f item 3 (the arm failure of run 43784914996): the
+    /// watchdog fires while the step is in flight, but the step ends by itself
+    /// (its action finished; only its writes were left) and the request it left
+    /// makes the next step end `cancelled` at its boundary, having done nothing.
+    /// Nothing was interrupted, so nothing is said: the line says that the step
+    /// was interrupted only when the step it is about ended so. Before the fix the
+    /// next step's cancellation was taken for the interrupted one's, and the line
+    /// was said above an action that had `succeeded`.
+    #[tokio::test(start_paused = true)]
+    async fn req_cli_005_a_step_that_ended_by_itself_after_the_grace_is_not_said_interrupted() {
+        let signals = Arc::new(Signals::new());
+        let (fake, step) = step();
+        // The step in flight begins, then the first signal, then the grace.
+        signals.step_begins();
+        signals.stopped(&step, grace());
+        settle().await;
+        tokio::time::advance(grace() + std::time::Duration::from_millis(50)).await;
+        settle().await;
+        assert_eq!(fake.interrupted(), 1, "the watchdog fired mid-step");
+        // The step ended `continued`; `drive` pauses, applies the pause and begins
+        // the next step, which ends `cancelled` at its boundary.
+        signals.applied();
+        signals.step_begins();
+        signals.report_interruption(false);
+        assert!(
+            !said_interrupted(&signals),
+            "nothing was interrupted: {:?}",
+            signals.lines()
+        );
+        // The step that the watchdog did interrupt is still said.
+        let signals = Arc::new(Signals::new());
+        let (_, second) = self::step();
+        signals.step_begins();
+        signals.stopped(&second, grace());
+        settle().await;
+        tokio::time::advance(grace() + std::time::Duration::from_millis(50)).await;
+        settle().await;
+        signals.report_interruption(false);
+        assert!(said_interrupted(&signals), "{:?}", signals.lines());
     }
 
     /// REQ-CLI-005: the second signal interrupts anyway at once, and a pause applied
