@@ -107,11 +107,13 @@ Ctrl-C (and SIGTERM on Unix) once asks for a pause. Three things follow at once:
   (nothing ran, so the record is exact), its observation says that your stop
   signal came before it began, and the task pauses. This holds for every action,
   also for one that needs no approval.
-  The check and the start are one step: a signal never falls between them. An
-  action is either not begun, and then it never begins, or it is already
-  recorded as running when the process looks at what is in flight, and the
-  process then waits for it or interrupts it by its kind, as described below.
-  The signal may wait for one write of the store (a moment) to be sure of that.
+  The check and the start are safe against a signal: the step looks at the
+  request, records the action as running, and looks again before the call. An
+  action is either not begun (a signal that came before the record is seen by
+  the second look, and the action is closed without a call) or it is recorded as
+  running when the process looks at what is in flight, and the process then
+  waits for it or interrupts it by its kind, as described below. The signal
+  itself never waits.
   A wait made before anything is sent (the check of an external tool's
   definition just before its call) ends at this first signal too: the action
   is closed as not begun, `cancelled` with the same observation, whatever the

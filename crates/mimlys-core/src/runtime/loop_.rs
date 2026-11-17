@@ -1293,43 +1293,42 @@ impl Runtime {
             let mut unreadable_after: Option<(String, Option<String>)> = None;
             step.phase = StepPhase::Execute;
             // The step in flight starts no new action once a stop signal has
-            // come (REQ-CLI-005, external design §19.2): read here, before the
-            // running intent is recorded, so that the call is never made. The
-            // check and the record that the action runs are one step, taken at
-            // the task's start gate: a stop signal's request is made at the same
-            // gate, so that it either comes first and is seen here (the action
-            // is never begun), or comes after the action was recorded running
-            // and the signal's look at what is in flight finds it (handoff
-            // 010f; audit A-33). The stronger requests imply the weakest, so a
-            // request of either kind already set when an execution would begin
-            // is met here too.
-            let begun = self.at_the_start_gate(task.task_id, || {
-                if self.no_new_action_requested(task.task_id) {
-                    return Ok(None);
-                }
-                let running = action
-                    .transition(ActionInput::Start, now)
-                    .map_err(ordering)?;
-                persistence.record_running(
-                    &running,
-                    &self.event(
-                        Actor::Runtime,
-                        Some(task.task_id),
-                        Some(step.step_id),
-                        Some(action.action_id),
-                        Event::ActionStarted,
-                    ),
-                )?; // 5
-                Ok::<_, RuntimeError>(Some(running))
-            })?;
-            let Some(running) = begun else {
-                // The action is closed `cancelled` without starting: nothing
-                // ran, so the record is exact. Made outside the gate: the
-                // request is not taken back by anything but a task transition.
+            // come (REQ-CLI-005, external design §19.2): check, record running,
+            // check again (handoff 010f-4; audit A-33). The first look keeps the
+            // common case, a request already set, from writing `running` at
+            // all; the action is closed `cancelled` without starting: nothing
+            // ran, so the record is exact. The stronger requests imply the
+            // weakest, so a request of either kind is met here too.
+            if self.no_new_action_requested(task.task_id) {
                 self.close_not_started(&task, &mut step, &action, authorized, now)?;
                 return Ok((step, None, task));
-            };
-            action = running;
+            }
+            action = action
+                .transition(ActionInput::Start, now)
+                .map_err(ordering)?;
+            persistence.record_running(
+                &action,
+                &self.event(
+                    Actor::Runtime,
+                    Some(task.task_id),
+                    Some(step.step_id),
+                    Some(action.action_id),
+                    Event::ActionStarted,
+                ),
+            )?; // 5
+            // The second look, after the record and before the call. The signal's
+            // handler makes its request and then looks at the store for the
+            // action in flight. If its look found no action running, the request
+            // came before `record_running`, so this look sees it; otherwise its
+            // look found the action `running` and the handler waits for it or
+            // interrupts it by its kind. No call is made after a request the
+            // handler's look did not account for. The action was recorded begun
+            // (`action.started` stands) and is closed as one that never began,
+            // from `running`, with no execution recorded.
+            if self.no_new_action_requested(task.task_id) {
+                self.close_not_started(&task, &mut step, &action, authorized, now)?;
+                return Ok((step, None, task));
+            }
             let started = self.deps.clock.now();
             // A panic in the provider is contained here (REQ-SEC-011): that
             // execution is `host_fault{unavailable}`, like a worker that

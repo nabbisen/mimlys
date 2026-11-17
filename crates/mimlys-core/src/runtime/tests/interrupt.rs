@@ -11,7 +11,7 @@ use crate::spi::{BackendDescriptor, BoxFuture, Cancellation, GenerateRequest, Mo
 use std::sync::Mutex;
 
 mod not_started;
-mod start_gate;
+mod second_check;
 
 /// What the provider asks of the runtime while its action runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
