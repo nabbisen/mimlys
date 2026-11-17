@@ -356,6 +356,26 @@ pub enum ReadPathRefusal {
         /// The entry found.
         entry: String,
     },
+    /// The runtime's data directory, a path inside it, or an ancestor of it:
+    /// every task's tree and the store would be readable to every task's tool
+    /// (handoff 011o-4, A-06's read half).
+    DataDirectory {
+        /// How the entry relates to the data directory.
+        relation: DataDirRelation,
+        /// The data directory, as the runtime resolved it.
+        data_dir: String,
+    },
+}
+
+/// How a read path lies against the data directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataDirRelation {
+    /// The data directory itself.
+    Is,
+    /// A path inside the data directory.
+    Inside,
+    /// An ancestor of the data directory.
+    Contains,
 }
 
 /// Decides whether a declared read path (REQ-CONF-011, LIM-H5) may join the
@@ -363,10 +383,14 @@ pub enum ReadPathRefusal {
 /// caller (`~` expanded, links followed), `entries` are the names directly
 /// inside `path` (empty when it is a file or does not exist). Landlock has
 /// no deny rule and a container ACL covers a whole directory, so the check
-/// is on the declaration, before anything is granted.
+/// is on the declaration, before anything is granted. `data_dir` is the
+/// runtime's data directory (resolved the same way), which a read path may
+/// not be, lie inside, or contain: the worker's write set is narrowed to one
+/// task, but its read set keeps every declared read path.
 pub fn check_read_path(
     path: &std::path::Path,
     home: Option<&std::path::Path>,
+    data_dir: Option<&std::path::Path>,
     entries: &[String],
     case_insensitive: bool,
 ) -> Result<(), ReadPathRefusal> {
@@ -400,6 +424,24 @@ pub fn check_read_path(
         }
         if home.len() > wanted.len() && home[..wanted.len()] == wanted[..] {
             return Err(ReadPathRefusal::AncestorOfHome);
+        }
+    }
+    if let Some(data_dir) = data_dir {
+        let data = parts(data_dir);
+        let relation = if wanted == data {
+            Some(DataDirRelation::Is)
+        } else if wanted.len() > data.len() && wanted[..data.len()] == data[..] {
+            Some(DataDirRelation::Inside)
+        } else if data.len() > wanted.len() && data[..wanted.len()] == wanted[..] {
+            Some(DataDirRelation::Contains)
+        } else {
+            None
+        };
+        if let Some(relation) = relation {
+            return Err(ReadPathRefusal::DataDirectory {
+                relation,
+                data_dir: data_dir.to_string_lossy().into_owned(),
+            });
         }
     }
     let mut builder = globset::GlobSetBuilder::new();
@@ -437,6 +479,9 @@ impl ReadPathRefusal {
                 "declare the subdirectory the tool needs, for example \"{}/bin\"",
                 shown.trim_end_matches(['/', '\\'])
             ),
+            ReadPathRefusal::DataDirectory { .. } => {
+                "declare the toolchain's own directories, which lie outside the data directory, for example \"~/.cargo/bin\" and \"~/.rustup\"".to_owned()
+            }
             _ => "declare the toolchain's own directories, for example \"~/.cargo/bin\" and \"~/.rustup\"".to_owned(),
         };
         let found = match self {
@@ -446,7 +491,21 @@ impl ReadPathRefusal {
             ReadPathRefusal::HoldsCredentials { entry } => {
                 format!("directly holds \"{entry}\"")
             }
+            ReadPathRefusal::DataDirectory { relation, data_dir } => match relation {
+                DataDirRelation::Is => format!("is the data directory \"{data_dir}\""),
+                DataDirRelation::Inside => {
+                    format!("is inside the data directory \"{data_dir}\"")
+                }
+                DataDirRelation::Contains => {
+                    format!("contains the data directory \"{data_dir}\"")
+                }
+            },
         };
+        if let ReadPathRefusal::DataDirectory { .. } = self {
+            return format!(
+                "\"{shown}\" {found} (REQ-CONF-006, A-06: a read path must not reach the tasks' trees or the store); {narrower}"
+            );
+        }
         format!(
             "\"{shown}\" {found} (REQ-CONF-011, LIM-H5: a read path must not expose credentials); {narrower}"
         )

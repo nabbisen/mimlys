@@ -190,14 +190,24 @@ impl LocalWorkspaces {
     /// Gives the task's `tree` and `tmp` the entry of its capability (Windows;
     /// [`crate::toolchain::task_entries`]), before anything is copied into them.
     /// When it fails the task's directory is removed (it holds nothing yet) and
-    /// the creation fails with `acl_not_applied` and the reason.
+    /// the creation fails with [`WorkspaceError::PermissionsNotApplied`]
+    /// (`acl_not_applied` and the reason: the error kind `unavailable`).
     pub(crate) fn give_task_entries(&self, task_id: TaskId) -> Result<(), WorkspaceError> {
+        self.give_task_entries_with(task_id, crate::toolchain::task_entries)
+    }
+
+    /// [`Self::give_task_entries`] with the writer of the entries given
+    /// (`task`, `tree`, `tmp`), so that a refusal is tested on every platform.
+    pub(crate) fn give_task_entries_with(
+        &self,
+        task_id: TaskId,
+        give: impl FnOnce(&str, &Path, &Path) -> Result<(), String>,
+    ) -> Result<(), WorkspaceError> {
         let dir = self.task_dir(task_id);
-        crate::toolchain::task_entries(&task_id.to_string(), &dir.join("tree"), &dir.join("tmp"))
-            .map_err(|detail| {
-                let _ = std::fs::remove_dir_all(&dir);
-                WorkspaceError::Storage { detail }
-            })
+        give(&task_id.to_string(), &dir.join("tree"), &dir.join("tmp")).map_err(|reason| {
+            let _ = std::fs::remove_dir_all(&dir);
+            WorkspaceError::PermissionsNotApplied { reason }
+        })
     }
 
     /// The task's working tree.

@@ -72,7 +72,7 @@ pub fn grant(
     let dir = existing_dir(path)?;
     // REQ-CONF-011: the same refusal as a declaration's `read_paths`; an
     // entry for the container covers the whole directory.
-    if let Some(reason) = crate::toolchain::read_path_refusal(&dir) {
+    if let Some(reason) = crate::toolchain::read_path_refusal(&dir, Some(&app.data_dir)) {
         return Err(AppError::Io { detail: reason });
     }
     if !yes && !interaction.confirm(&messages::toolchain_grant_confirm(&dir, &container.profile)) {
@@ -122,11 +122,32 @@ pub fn revoke(
         out.value(&serde_json::json!({"applied": false, "reason": "not_confirmed"}));
         return Ok(());
     }
-    crate::toolchain::revoke(container, &app.data_dir, Path::new(&dir))?;
-    out.line(messages::toolchain_revoked(&dir));
-    out.value(&serde_json::json!({"applied": true, "path": dir}));
+    let held = crate::toolchain::revoke(container, &app.data_dir, Path::new(&dir))?;
+    let (line, value) = revoke_report(&dir, held);
+    out.line(line);
+    out.value(&value);
     Ok(())
 }
+
+/// What `toolchain revoke` says of a path: removed, or (handoff 011o-4, item
+/// 3) that the path held no entry of the container and nothing was written to
+/// it, so that the command does not look as if it had done something.
+fn revoke_report(dir: &str, held: bool) -> (String, serde_json::Value) {
+    if held {
+        (
+            messages::toolchain_revoked(dir),
+            serde_json::json!({"applied": true, "path": dir}),
+        )
+    } else {
+        (
+            messages::toolchain_revoke_held_nothing(dir),
+            serde_json::json!({"applied": false, "reason": "no_entry", "path": dir}),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests;
 
 /// `toolchain revoke --all [--yes]` (REQ-CONF-008, handoff 011e): removes every
 /// permission the container holds on mimlys's own directories and the

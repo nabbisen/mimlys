@@ -319,24 +319,24 @@ fn req_conf_011_root_home_and_ancestors_are_refused() {
     use std::path::Path;
     let home = Path::new("/home/me");
     assert_eq!(
-        check_read_path(Path::new("/"), Some(home), &[], false),
+        check_read_path(Path::new("/"), Some(home), None, &[], false),
         Err(ReadPathRefusal::Root)
     );
     assert_eq!(
-        check_read_path(Path::new("/home/me"), Some(home), &[], false),
+        check_read_path(Path::new("/home/me"), Some(home), None, &[], false),
         Err(ReadPathRefusal::Home)
     );
     assert_eq!(
-        check_read_path(Path::new("/home/me/"), Some(home), &[], false),
+        check_read_path(Path::new("/home/me/"), Some(home), None, &[], false),
         Err(ReadPathRefusal::Home)
     );
     assert_eq!(
-        check_read_path(Path::new("/home"), Some(home), &[], false),
+        check_read_path(Path::new("/home"), Some(home), None, &[], false),
         Err(ReadPathRefusal::AncestorOfHome)
     );
     // A sibling that merely shares a prefix is not an ancestor.
     assert_eq!(
-        check_read_path(Path::new("/home/me2"), Some(home), &[], false),
+        check_read_path(Path::new("/home/me2"), Some(home), None, &[], false),
         Ok(())
     );
     let text = ReadPathRefusal::Home.reason("~");
@@ -367,7 +367,7 @@ fn req_conf_011_directory_holding_credentials_is_refused() {
         ".aws",
         ".gnupg",
     ] {
-        let found = check_read_path(cargo, Some(home), &names(&["bin", name]), false);
+        let found = check_read_path(cargo, Some(home), None, &names(&["bin", name]), false);
         assert_eq!(
             found,
             Err(ReadPathRefusal::HoldsCredentials {
@@ -379,6 +379,7 @@ fn req_conf_011_directory_holding_credentials_is_refused() {
     let err = check_read_path(
         cargo,
         Some(home),
+        None,
         &names(&["bin", "credentials.toml"]),
         false,
     )
@@ -390,6 +391,7 @@ fn req_conf_011_directory_holding_credentials_is_refused() {
         check_read_path(
             Path::new("/home/me/.cargo/bin"),
             Some(home),
+            None,
             &names(&["cargo", "rustc", "rustup"]),
             false
         ),
@@ -399,6 +401,7 @@ fn req_conf_011_directory_holding_credentials_is_refused() {
         check_read_path(
             Path::new("/home/me/.rustup"),
             Some(home),
+            None,
             &names(&[
                 "downloads",
                 "settings.toml",
@@ -412,7 +415,7 @@ fn req_conf_011_directory_holding_credentials_is_refused() {
     );
     // Only direct entries count: the check receives depth one, by design.
     assert_eq!(
-        check_read_path(cargo, Some(home), &names(&["registry", "git"]), false),
+        check_read_path(cargo, Some(home), None, &names(&["registry", "git"]), false),
         Ok(())
     );
 }
@@ -424,13 +427,14 @@ fn req_conf_011_case_insensitive_comparison() {
     use std::path::Path;
     let home = Path::new("C:\\Users\\Me");
     assert_eq!(
-        check_read_path(Path::new("c:\\users\\me"), Some(home), &[], true),
+        check_read_path(Path::new("c:\\users\\me"), Some(home), None, &[], true),
         Err(ReadPathRefusal::Home)
     );
     assert_eq!(
         check_read_path(
             Path::new("c:\\users\\me\\.cargo"),
             Some(home),
+            None,
             &names(&["Credentials.TOML"]),
             true
         ),
@@ -439,7 +443,122 @@ fn req_conf_011_case_insensitive_comparison() {
         })
     );
     assert_eq!(
-        check_read_path(Path::new("/x"), None, &names(&["Credentials.toml"]), false),
+        check_read_path(
+            Path::new("/x"),
+            None,
+            None,
+            &names(&["Credentials.toml"]),
+            false
+        ),
+        Ok(())
+    );
+}
+
+/// REQ-CONF-006, A-06 (handoff 011o-4): a read path that is the data
+/// directory, lies inside it, or contains it is refused, naming the entry and
+/// the data directory; a sibling that merely shares a prefix is not. The
+/// reason is the same on every platform; only the comparison's case differs.
+#[test]
+fn req_conf_006_a_read_path_over_the_data_directory_is_refused() {
+    use std::path::Path;
+    let home = Some(Path::new("/home/me"));
+    let data = Some(Path::new("/home/me/.local/share/mimlys"));
+    let relation = |path: &str| match check_read_path(Path::new(path), home, data, &[], false) {
+        Err(ReadPathRefusal::DataDirectory { relation, .. }) => Some(relation),
+        other => {
+            assert_eq!(other, Ok(()), "{path}");
+            None
+        }
+    };
+    assert_eq!(
+        relation("/home/me/.local/share/mimlys"),
+        Some(DataDirRelation::Is)
+    );
+    assert_eq!(
+        relation("/home/me/.local/share/mimlys/"),
+        Some(DataDirRelation::Is)
+    );
+    assert_eq!(
+        relation("/home/me/.local/share/mimlys/workspaces/t/tree"),
+        Some(DataDirRelation::Inside)
+    );
+    assert_eq!(
+        relation("/home/me/.local/share"),
+        Some(DataDirRelation::Contains)
+    );
+    assert_eq!(relation("/home/me/.local"), Some(DataDirRelation::Contains));
+    // A sibling, a name that shares a prefix, and a toolchain are not.
+    assert_eq!(relation("/home/me/.local/share/mimlys2"), None);
+    assert_eq!(relation("/home/me/.local/share/other"), None);
+    assert_eq!(relation("/home/me/.cargo/bin"), None);
+    // No data directory known: nothing to compare.
+    assert_eq!(
+        check_read_path(Path::new("/home/me/.local/share"), home, None, &[], false),
+        Ok(())
+    );
+    // The reason names the entry as written, the data directory, and what to declare.
+    let text = check_read_path(Path::new("/home/me/.local/share"), home, data, &[], false)
+        .unwrap_err()
+        .reason("~/.local/share");
+    assert!(text.contains("\"~/.local/share\""), "{text}");
+    assert!(
+        text.contains("contains the data directory \"/home/me/.local/share/mimlys\""),
+        "{text}"
+    );
+    assert!(text.contains("~/.cargo/bin"), "{text}");
+    for (path, words) in [
+        ("/home/me/.local/share/mimlys", "is the data directory"),
+        (
+            "/home/me/.local/share/mimlys/tmp",
+            "is inside the data directory",
+        ),
+    ] {
+        let text = check_read_path(Path::new(path), home, data, &[], false)
+            .unwrap_err()
+            .reason(path);
+        assert!(text.contains(words), "{text}");
+    }
+}
+
+/// REQ-CONF-006: the comparison with the data directory is without regard to
+/// case on Windows and macOS (`case_insensitive`), as the home directory's is.
+#[test]
+fn req_conf_006_the_data_directory_comparison_follows_the_case_rule() {
+    use std::path::Path;
+    let data = Some(Path::new("/Users/Me/Library/Application Support/mimlys"));
+    for path in [
+        "/users/me/library/application support/mimlys",
+        "/USERS/ME/LIBRARY",
+        "/users/me/library/application support/MIMLYS/workspaces",
+    ] {
+        assert!(
+            matches!(
+                check_read_path(Path::new(path), None, data, &[], true),
+                Err(ReadPathRefusal::DataDirectory { .. })
+            ),
+            "{path}"
+        );
+    }
+    // Case-sensitive: the same names in another case are other directories.
+    assert_eq!(
+        check_read_path(
+            Path::new("/users/me/library/application support/mimlys"),
+            None,
+            data,
+            &[],
+            false
+        ),
+        Ok(())
+    );
+    // A sibling of the data directory is accepted.
+    assert_eq!(
+        check_read_path(
+            Path::new("/users/me/library/application support/mimlys-tools"),
+            None,
+            data,
+            &[],
+            true
+        ),
         Ok(())
     );
 }

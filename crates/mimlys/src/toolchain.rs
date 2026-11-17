@@ -22,10 +22,7 @@ use std::path::{Path, PathBuf};
 /// prefix. A path that cannot be canonicalized is kept as given.
 pub fn normalized(path: &Path) -> String {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let text = canonical.to_string_lossy();
-    text.strip_prefix(r"\\?\UNC\")
-        .map(|rest| format!(r"\\{rest}"))
-        .unwrap_or_else(|| text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned())
+    strip_verbatim(&canonical.to_string_lossy())
 }
 
 /// Whether two names denote one directory: compared normalized, and without
@@ -668,17 +665,21 @@ pub fn grant(container: &mut Container, data_dir: &Path, path: &Path) -> Result<
     container.record.save(data_dir)
 }
 
-/// Removes the container's entries from a path and the record (`toolchain revoke`).
+/// Removes the container's entries from a path and the record (`toolchain
+/// revoke`). Returns whether the path held an entry of the container: when it
+/// held none, nothing is written to it (`acl::revoke`), and the record, if it
+/// listed the path, no longer does.
 #[cfg(windows)]
-pub fn revoke(container: &mut Container, data_dir: &Path, path: &Path) -> Result<(), AppError> {
+pub fn revoke(container: &mut Container, data_dir: &Path, path: &Path) -> Result<bool, AppError> {
     use mimlys_exec::confine::windows::acl;
-    acl::revoke(path, &container.sid).map_err(acl_error)?;
+    let held = acl::revoke(path, &container.sid).map_err(acl_error)? == acl::Revoked::Removed;
     let text = normalized(path);
     container
         .record
         .entries
         .retain(|e| !same_path(&e.path, &text));
-    container.record.save(data_dir)
+    container.record.save(data_dir)?;
+    Ok(held)
 }
 
 /// Nothing to apply on this platform.
@@ -689,8 +690,12 @@ pub fn grant(_container: &mut Container, _data_dir: &Path, _path: &Path) -> Resu
 
 /// Nothing to remove on this platform.
 #[cfg(not(windows))]
-pub fn revoke(_container: &mut Container, _data_dir: &Path, _path: &Path) -> Result<(), AppError> {
-    Ok(())
+pub fn revoke(
+    _container: &mut Container,
+    _data_dir: &Path,
+    _path: &Path,
+) -> Result<bool, AppError> {
+    Ok(false)
 }
 
 /// How an entry reached the list of `toolchain revoke --all`.
@@ -852,7 +857,7 @@ pub fn revoke_all(container: &Container, data_dir: &Path, plan: &[Planned]) -> O
             continue;
         }
         match acl::revoke(path, &container.sid) {
-            Ok(()) => outcome.removed.push(planned.clone()),
+            Ok(_) => outcome.removed.push(planned.clone()),
             Err(reason) => outcome.failed.push((planned.clone(), reason.to_string())),
         }
     }
@@ -894,20 +899,29 @@ pub fn unavailable_reason(
 }
 
 /// Whether a declared read path (`read_paths`, `toolchain grant`) may join
-/// the read set (REQ-CONF-011, LIM-H5): `None` when it may, else the reason,
-/// naming the path as written, what was found and the narrower path to
-/// declare. The one decision is `mimlys_core::host_tool::check_read_path`
-/// (pure); this lists the directory's entries (depth one) and resolves the
-/// path and the home directory the way the commands show them.
-pub fn read_path_refusal(written: &str) -> Option<String> {
+/// the read set (REQ-CONF-011, LIM-H5, REQ-CONF-006): `None` when it may,
+/// else the reason, naming the path as written, what was found and the
+/// narrower path to declare. The one decision is
+/// `mimlys_core::host_tool::check_read_path` (pure); this lists the
+/// directory's entries (depth one) and resolves the path, the home directory
+/// and the data directory the way the commands show them. `data_dir` is the
+/// data directory the runtime uses: a read path may not cover it (A-06).
+pub fn read_path_refusal(written: &str, data_dir: Option<&Path>) -> Option<String> {
     let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
-    read_path_refusal_with(written, home.as_deref())
+    read_path_refusal_with(written, home.as_deref(), data_dir)
 }
 
 /// As [`read_path_refusal`], with the home directory given (tests).
-pub fn read_path_refusal_with(written: &str, home: Option<&Path>) -> Option<String> {
-    let path = PathBuf::from(normalized(Path::new(&crate::config::expand_home(written))));
+pub fn read_path_refusal_with(
+    written: &str,
+    home: Option<&Path>,
+    data_dir: Option<&Path>,
+) -> Option<String> {
+    let path = resolved(Path::new(&crate::config::expand_home(written)));
     let home = home.map(|h| PathBuf::from(normalized(h)));
+    // Both by their longest existing ancestor, so that a data directory not
+    // made yet, or a link on the way to it, does not hide the overlap.
+    let data_dir = data_dir.map(resolved);
     let entries: Vec<String> = std::fs::read_dir(&path)
         .map(|dir| {
             dir.flatten()
@@ -918,11 +932,27 @@ pub fn read_path_refusal_with(written: &str, home: Option<&Path>) -> Option<Stri
     mimlys_core::host_tool::check_read_path(
         &path,
         home.as_deref(),
+        data_dir.as_deref(),
         &entries,
         cfg!(any(windows, target_os = "macos")),
     )
     .err()
     .map(|refusal| refusal.reason(written))
+}
+
+/// The path as the filesystem sees it: absolute, its links followed as far as
+/// it exists, without the verbatim prefix of Windows.
+fn resolved(path: &Path) -> PathBuf {
+    PathBuf::from(strip_verbatim(
+        &crate::config::canonical_lenient(path).to_string_lossy(),
+    ))
+}
+
+/// The text without Windows' verbatim prefix (`\\?\`, `\\?\UNC\`).
+fn strip_verbatim(text: &str) -> String {
+    text.strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .unwrap_or_else(|| text.strip_prefix(r"\\?\").unwrap_or(text).to_owned())
 }
 
 /// Whether a host tool's `command` may join the read set (REQ-CONF-011,

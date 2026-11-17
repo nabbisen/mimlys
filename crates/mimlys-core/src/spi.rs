@@ -516,6 +516,17 @@ pub enum WorkspaceError {
         /// A fixed-vocabulary detail.
         detail: String,
     },
+    /// The task's directories could not be given the permissions its tools
+    /// need (Windows: the entry of the task's capability on its `tree` and
+    /// `tmp`, handoff 011o). The workspace was not made. `reason` is the
+    /// refusal's own text, beginning `acl_not_applied:`, as every other
+    /// refusal of a permission write has; the error kind is `unavailable`
+    /// with the component `permissions` (external design §18).
+    #[error("{reason}")]
+    PermissionsNotApplied {
+        /// The refusal, `acl_not_applied: <cause>`.
+        reason: String,
+    },
     /// No such snapshot or promotion for the task.
     #[error("no such {what} for the task")]
     NotFound {

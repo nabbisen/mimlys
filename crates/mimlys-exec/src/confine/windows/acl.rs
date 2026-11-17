@@ -601,9 +601,18 @@ fn state_of(dir: &Dir, sid: &[u8], access: Access) -> Result<EntryState, String>
     Ok(acl_rules::classify(access, &entries_of(dacl.acl, sid)?))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many descriptors this thread has written (tests: a `revoke` that
+    /// finds nothing to remove writes none).
+    static DACL_WRITES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// Writes `new_acl` as the object's DACL through a handle that may.
 fn write_dacl(dir: &Dir, new_acl: *mut ACL, protection: u32) -> Result<(), String> {
     let handle = dir.writer()?;
+    #[cfg(test)]
+    DACL_WRITES.with(|writes| writes.set(writes.get() + 1));
     // SAFETY: the handle is valid and was opened with WRITE_DAC; only the DACL is replaced, with the ACL given.
     let err = unsafe {
         SetSecurityInfo(
@@ -761,9 +770,28 @@ pub fn grant(path: &Path, sid: &[u8], access: Access) -> Result<(), AclError> {
     set_entry(path, sid, access, GRANT_ACCESS)
 }
 
-/// Removes every entry of the container SID from the directory's DACL.
-pub fn revoke(path: &Path, sid: &[u8]) -> Result<(), AclError> {
-    set_entry(path, sid, Access::Read, REVOKE_ACCESS)
+/// What [`revoke`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Revoked {
+    /// The SID held entries of its own on the path, and they were removed.
+    Removed,
+    /// The SID held none: **nothing was written** (a rewrite of a directory's
+    /// descriptor makes the system walk and rewrite every file beneath it).
+    NoEntry,
+}
+
+/// Removes every entry of the container SID from the directory's DACL. When
+/// the path holds no entry of its own for the SID, **nothing is written**
+/// (handoff 011o-4, item 3): the state is read under the same lock the write
+/// would hold, so it cannot change between the two.
+pub fn revoke(path: &Path, sid: &[u8]) -> Result<Revoked, AclError> {
+    let dir = Dir::open(path)?;
+    let _lock = DaclLock::acquire(&dir)?;
+    if state_of(&dir, sid, Access::Read)? == EntryState::Absent {
+        return Ok(Revoked::NoEntry);
+    }
+    merge_entry(&dir, sid, wanted_mask(Access::Read), REVOKE_ACCESS)?;
+    Ok(Revoked::Removed)
 }
 
 /// What the directory's entries for the SID amount to for `access`, read

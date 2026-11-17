@@ -168,7 +168,11 @@ impl RuntimeError {
             RuntimeError::State(_) => "state",
             RuntimeError::Denied { .. } => "denied",
             RuntimeError::Conflict { .. } => "conflict",
-            RuntimeError::Unavailable { .. } | RuntimeError::Backend(_) => "unavailable",
+            RuntimeError::Unavailable { .. }
+            | RuntimeError::Backend(_)
+            | RuntimeError::Workspace(WorkspaceError::PermissionsNotApplied { .. }) => {
+                "unavailable"
+            }
             RuntimeError::Workspace(
                 WorkspaceError::Conflict { .. }
                 | WorkspaceError::Unlisted { .. }

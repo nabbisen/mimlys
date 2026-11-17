@@ -82,6 +82,70 @@ fn req_conf_006_a_workspace_is_made_with_its_tasks_entries() {
     assert!(!acl::has_any_entry(&dir.join("tree").join("src"), &mine).unwrap());
 }
 
+/// REQ-CONF-006 (handoff 011o-4, item 2; every platform, the writer of the
+/// entries a fake that refuses): a workspace whose entries cannot be written
+/// is refused with its own error, not a storage failure: the error kind is
+/// `unavailable` with the component `permissions` and the message is the
+/// refusal's own `acl_not_applied: ...`, as every other refusal of a
+/// permission write; nothing of the task is left behind.
+#[test]
+fn req_conf_006_a_workspace_whose_entries_cannot_be_written_is_unavailable_permissions() {
+    let data = tempfile::tempdir().unwrap();
+    let ids = ScriptedIds::default();
+    let task = TaskId::new(&ids);
+    let p = provider(data.path());
+    let dir = data.path().join("workspaces").join(task.to_string());
+    std::fs::create_dir_all(dir.join("tree")).unwrap();
+    std::fs::create_dir_all(dir.join("tmp")).unwrap();
+    let mut seen = Vec::new();
+    let error = p
+        .give_task_entries_with(task, |name, tree, tmp| {
+            seen.push((name.to_owned(), tree.to_path_buf(), tmp.to_path_buf()));
+            Err("acl_not_applied: the permissions of the tree cannot be written".to_owned())
+        })
+        .unwrap_err();
+    assert_eq!(
+        seen,
+        vec![(task.to_string(), dir.join("tree"), dir.join("tmp"))],
+        "the writer is given the task and its two directories"
+    );
+    assert_eq!(
+        error,
+        WorkspaceError::PermissionsNotApplied {
+            reason: "acl_not_applied: the permissions of the tree cannot be written".to_owned()
+        }
+    );
+    assert!(!dir.exists(), "the half-made task directory is removed");
+    // The error kind and the detail, from the workspace and through the runtime.
+    let direct = crate::app::AppError::Workspace(error.clone());
+    let through =
+        crate::app::AppError::Runtime(mimlys_core::runtime::RuntimeError::Workspace(error.clone()));
+    for app_error in [direct, through] {
+        assert_eq!(app_error.kind(), "unavailable", "{app_error:?}");
+        let json = app_error.to_json();
+        assert_eq!(json["error"]["kind"], "unavailable", "{json}");
+        assert_eq!(
+            json["error"]["detail"]["component"], "permissions",
+            "{json}"
+        );
+        assert_eq!(
+            json["error"]["message"],
+            "acl_not_applied: the permissions of the tree cannot be written",
+            "{json}"
+        );
+    }
+    assert_eq!(
+        mimlys_core::runtime::RuntimeError::Workspace(error).kind(),
+        "unavailable"
+    );
+    // A storage failure stays what it was.
+    let storage = crate::app::AppError::Workspace(WorkspaceError::Storage {
+        detail: "write".to_owned(),
+    });
+    assert_eq!(storage.kind(), "internal");
+    assert_eq!(storage.to_json()["error"]["detail"], serde_json::json!({}));
+}
+
 /// REQ-CONF-006 (handoff 011o; Windows): when the task's entries cannot be
 /// written the creation fails with `acl_not_applied` and the reason, and the
 /// task's directory is not left behind, never a task whose tools cannot write.
@@ -97,13 +161,20 @@ fn req_conf_006_a_workspace_whose_entries_cannot_be_written_is_not_made() {
     std::fs::create_dir_all(dir.join("tmp")).unwrap();
     let error = p.give_task_entries(task).unwrap_err();
     match error {
-        WorkspaceError::Storage { detail } => assert!(
-            detail.starts_with("acl_not_applied: "),
-            "the reason is the permission's: {detail}"
+        WorkspaceError::PermissionsNotApplied { reason } => assert!(
+            reason.starts_with("acl_not_applied: "),
+            "the reason is the permission's: {reason}"
         ),
         other => panic!("{other:?}"),
     }
     assert!(!dir.exists(), "the half-made task directory is removed");
+    // The same through the runtime's and the application's error kinds.
+    let error = p.give_task_entries(task).unwrap_err();
+    assert_eq!(
+        mimlys_core::runtime::RuntimeError::Workspace(error.clone()).kind(),
+        "unavailable"
+    );
+    assert_eq!(crate::app::AppError::Workspace(error).kind(), "unavailable");
     // The message `toolchain::task_entries` gives, on its own.
     let missing = data.path().join("missing");
     let reason = crate::toolchain::task_entries("t", &missing, &missing).unwrap_err();

@@ -1281,9 +1281,14 @@ impl Config {
         }
         // REQ-CONF-011: a read path that would expose credentials is refused
         // at load, as written, with the narrower path to declare.
+        // A read path never covers the data directory either (REQ-CONF-006,
+        // A-06): the tasks' trees and the store lie in it.
+        let data_dir = self.data_dir().ok();
         for (name, s) in &self.host_tools {
             for written in &s.read_paths {
-                if let Some(reason) = crate::toolchain::read_path_refusal(written) {
+                if let Some(reason) =
+                    crate::toolchain::read_path_refusal(written, data_dir.as_deref())
+                {
                     return Err(ConfigError::new(
                         &format!("host_tools.{name}.read_paths"),
                         reason,
@@ -1378,7 +1383,7 @@ impl Config {
 /// The path made absolute and canonical; a path that does not exist yet is
 /// canonical up to its longest existing ancestor, followed by the rest with
 /// its `..` resolved by name (nothing that does not exist can be a link).
-fn canonical_lenient(path: &Path) -> PathBuf {
+pub(crate) fn canonical_lenient(path: &Path) -> PathBuf {
     use std::path::Component;
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let components: Vec<Component<'_>> = absolute.components().collect();
