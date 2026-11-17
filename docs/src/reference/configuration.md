@@ -88,7 +88,7 @@ arg_pattern = "[A-Za-z0-9_:]+"  # what any other added argument must match (a te
 max_args = 2
 effect = "workspace_write"      # the tool writes only inside the workspace (reversible); `external_read` exactly when network = true; host writes are a later release
 timeout_ms = 600000             # LIM-H1, 10000–3600000
-read_paths = ["~/.cargo/bin", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read; a directory holding credentials (`~/.cargo` holds `credentials.toml`) is refused
+read_paths = ["~/.cargo/bin", "~/.rustup"]   # the toolchain; the only paths outside the system's the tool can read; a directory holding credentials (`~/.cargo` holds `credentials.toml`), and the data directory or a path that covers it, is refused
 env = { RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }
 # env_allow = ["RUSTFLAGS"]     copied from mimlys's environment
 # allow_paths = true            admit arguments that name paths outside the workspace (a `..` component, or a start with `/`, `\`, `~` or a drive such as `C:`); no argument may otherwise, whatever arg_pattern admits; `check` and `status` show it
