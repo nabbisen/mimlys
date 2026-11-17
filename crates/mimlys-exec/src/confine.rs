@@ -456,7 +456,7 @@ impl Confinement for Platform {
             container: sid
                 .as_deref()
                 .map(|sid| (sid, spec.is_some_and(|s| !s.deny_network))),
-            capabilities: &task_capabilities,
+            capabilities: &task_capabilities[..0],
             job: Some(&job),
             restricted_token: spec.is_some(),
             stdin: windows::Stdin::Piped,

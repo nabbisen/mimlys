@@ -569,7 +569,7 @@ fn copy_sid(sid: PSID) -> Vec<u8> {
 /// commands that make the container have created the directory first.
 pub fn profile_name(data_dir: &Path) -> String {
     match acl::identity_of(data_dir) {
-        Ok((volume, file_id)) => super::acl_rules::profile_name_for_identity(volume, file_id),
+        Ok(_) => legacy_profile_name(data_dir),
         Err(_) => legacy_profile_name(data_dir),
     }
 }
