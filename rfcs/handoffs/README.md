@@ -89,6 +89,7 @@ The audit's remainder, in three phases (ROADMAP, "Release 0.11"). Each later han
 | 2 | [009h MCP and context: the small fixes](./009h-mcp-and-context-small/implementation-handoff.md) | RFC 009 | — |
 | 3 | [006c The workspace: restore verifies first, the walk sees everything, modes are kept](./006c-workspace-0.11/implementation-handoff.md) | RFC 006 | — |
 | 4 | [010f The start gate: a stop signal and an action's start are one step](./010f-start-gate/implementation-handoff.md) | RFC 010 | — |
+| 5 | [009i What reaches the model is bounded as a whole](./009i-what-reaches-the-model/implementation-handoff.md) | RFC 009 | — |
 
 ## Milestone M5
 

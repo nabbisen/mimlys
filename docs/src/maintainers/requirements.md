@@ -460,7 +460,7 @@ The context shall not exceed LIM-C1, counted over everything sent, the `tools` a
 Compression shall be rule-based: truncation to head and tail, collapsing of repeated lines, fixed summaries built from structured fields. No model is called for it. (D-12, THR-33)
 
 ### REQ-CTX-005 Tool definitions — M1 · T
-Tool definitions shall be generated from the visible tools, bounded by LIM-I1 in total, pinned per task, and sanitized per REQ-MCP-003 for external tools.
+Tool definitions shall be generated from the visible tools, bounded by LIM-I1 in total, pinned per task, and sanitized per REQ-MCP-003 for external tools. One imported tool's rendering, and the values of one enumeration, shall be bounded at import (the tool is unavailable with the reason otherwise), and a grant that would make the visible definitions exceed LIM-I1 shall be refused, naming the tool, so that no step fails for the size of the definitions (amended 2026-11-16: audit A-32).
 
 ### REQ-CTX-006 Observation excerpts — M1 · T
 Observations shall carry excerpts per LIM-C2 with truncation notices; full bounded outputs are stored as blobs for the user, not shown to the model.
@@ -719,7 +719,7 @@ The administrator declares, per external tool, the effect, `idempotent`, destina
 Destination arguments shall be validated against the task's `network` grants (scheme, domain, port) before the call and again on a `redirected` result; a destination is a string, and any other value is refused (amended 2026-11-14: audit A-11); a destination whose parse does not serialize back to the same text, or that holds user information, is refused (amended 2026-11-16: audit A-12). Only `https` destinations are admitted. An `http` destination is refused with the reason `scheme_not_https`, whose hint says to propose its `https` form (rypsok reads an `http` URL over `https` in any case). (K-02; amended 2026-11-11. An earlier wording of the same day assumed that mimlys admitted `http`; it never did, as handoff 009d found.)
 
 ### REQ-MCP-006 Results — M5 · T
-Structured content is validated against the declared output schema; `isError` becomes the cause `tool_error`; content is bounded and labelled external. (K-10)
+Structured content is validated against the declared output schema; `isError` becomes the cause `tool_error`; content is bounded, each string and the result as a whole, and labelled external; a cut keeps the result valid JSON and is said once per kind in the observation (amended 2026-11-16: audit A-26). (K-10)
 
 ### REQ-MCP-007 Cancellation — M5 · T
 `notifications/cancelled` shall be sent and the call abandoned within LIM-O2.
