@@ -716,9 +716,10 @@ fn m6b_toolchain_permissions_are_reversible_and_gate_tools() {
         String::from_utf8_lossy(&after).replace("(I)", ""),
         "revoke leaves the permissions as they were"
     );
-    // mimlys's own directories cannot be revoked here.
-    let workspaces = env.data.path().join("data/workspaces");
-    let (code, refused) = env.json(&["toolchain", "revoke", workspaces.to_str().unwrap(), "--yes"]);
+    // mimlys's own directories cannot be revoked here (the temporary directory
+    // carries the container's read entry; the workspaces carry none of it).
+    let tmp = env.data.path().join("data/tmp");
+    let (code, refused) = env.json(&["toolchain", "revoke", tmp.to_str().unwrap(), "--yes"]);
     assert_eq!(code, 1, "{refused}");
 }
 
@@ -1695,26 +1696,66 @@ fn req_conf_006_a_host_tool_reaches_only_its_own_task() {
     assert!(a_tmp.join("secret-tmp.txt").exists());
     let workspaces = a_dir.parent().unwrap().to_path_buf();
     let text = |p: &std::path::Path| p.to_string_lossy().into_owned();
-    let denied_reads = [
-        probe(&["read", &text(&a_tree.join("secret.txt"))]),
-        probe(&["write", &text(&a_tree.join("planted.txt"))]),
-        probe(&["list", &text(&a_tree)]),
-        probe(&["read", &text(&a_tmp.join("secret-tmp.txt"))]),
-        probe(&["write", &text(&a_tmp.join("planted.txt"))]),
-        probe(&["list", &text(&a_tmp)]),
-        probe(&["list", &text(&workspaces)]),
-        probe(&["list", &text(&a_dir)]),
-        // Its own task's record, and its own task's directory.
-        probe(&["write", "..\\workspace.json"]),
-        probe(&["list", ".."]),
+    // Each step: what it tries, the action, and whether the permission refuses it.
+    // A refused step is followed by one that works now and then: a task whose
+    // actions keep failing is halted, and the test is about the files.
+    let steps: Vec<(&str, Value, bool)> = vec![
+        (
+            "read A's file",
+            probe(&["read", &text(&a_tree.join("secret.txt"))]),
+            true,
+        ),
+        (
+            "write A's tree",
+            probe(&["write", &text(&a_tree.join("planted.txt"))]),
+            true,
+        ),
+        ("write its tree", probe(&["write", "own.txt"]), false),
+        ("list A's tree", probe(&["list", &text(&a_tree)]), true),
+        (
+            "read A's temporary file",
+            probe(&["read", &text(&a_tmp.join("secret-tmp.txt"))]),
+            true,
+        ),
+        ("read its tree", probe(&["read", "own.txt"]), false),
+        (
+            "write A's temporary directory",
+            probe(&["write", &text(&a_tmp.join("planted.txt"))]),
+            true,
+        ),
+        (
+            "list A's temporary directory",
+            probe(&["list", &text(&a_tmp)]),
+            true,
+        ),
+        (
+            "write its temporary directory",
+            probe(&["write", "..\\tmp\\own-tmp.txt"]),
+            false,
+        ),
+        (
+            "list the workspaces",
+            probe(&["list", &text(&workspaces)]),
+            true,
+        ),
+        (
+            "list A's task directory",
+            probe(&["list", &text(&a_dir)]),
+            true,
+        ),
+        ("keep going", probe(&["ok"]), false),
+        (
+            "write its own task's record",
+            probe(&["write", "..\\workspace.json"]),
+            true,
+        ),
+        (
+            "list its own task's directory",
+            probe(&["list", ".."]),
+            true,
+        ),
     ];
-    let allowed = [
-        probe(&["write", "own.txt"]),
-        probe(&["read", "own.txt"]),
-        probe(&["write", "..\\tmp\\own-tmp.txt"]),
-    ];
-    let mut script: Vec<Value> = denied_reads.to_vec();
-    script.extend(allowed.iter().cloned());
+    let mut script: Vec<Value> = steps.iter().map(|(_, action, _)| action.clone()).collect();
     script.push(complete());
     std::fs::write(
         env.data.path().join("script.json"),
@@ -1733,44 +1774,20 @@ fn req_conf_006_a_host_tool_reaches_only_its_own_task() {
     let b_id = value["task"]["task_id"].as_str().unwrap().to_owned();
     assert_ne!(a_id, b_id);
     let obs = env.observations(&b_id);
-    assert_eq!(obs.len(), script.len() - 1, "{}", account(&obs));
-    for (index, what) in [
-        "read A's file",
-        "write A's tree",
-        "list A's tree",
-        "read A's temporary file",
-        "write A's temporary directory",
-        "list A's temporary directory",
-        "list the workspaces",
-        "list A's task directory",
-        "write its own task's record",
-        "list its own task's directory",
-    ]
-    .iter()
-    .enumerate()
-    {
-        assert_eq!(exit_code_of(&obs[index]), 3, "{what}: {}", account(&obs));
-        assert!(
-            stdout_of(&obs[index]).contains("PermissionDenied"),
-            "{what} is refused by the permission: {}",
-            account(&obs)
-        );
+    assert_eq!(obs.len(), steps.len(), "{}", account(&obs));
+    for ((what, _, refused), observation) in steps.iter().zip(&obs) {
+        if *refused {
+            assert_eq!(exit_code_of(observation), 3, "{what}: {}", account(&obs));
+            assert!(
+                stdout_of(observation).contains("permission denied"),
+                "{what} is refused by the permission: {}",
+                account(&obs)
+            );
+        } else {
+            assert_eq!(exit_code_of(observation), 0, "{what}: {}", account(&obs));
+        }
     }
-    for (offset, what) in [
-        "write its tree",
-        "read its tree",
-        "write its temporary directory",
-    ]
-    .iter()
-    .enumerate()
-    {
-        assert_eq!(
-            exit_code_of(&obs[denied_reads.len() + offset]),
-            0,
-            "{what}: {}",
-            account(&obs)
-        );
-    }
+
     // Nothing of the first task changed, and the second task's record is its own.
     assert!(!a_tree.join("planted.txt").exists());
     assert!(!a_tmp.join("planted.txt").exists());
