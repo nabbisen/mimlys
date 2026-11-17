@@ -75,6 +75,23 @@ fn req_cli_005_a_first_signal_raised_inside_the_record_of_the_start_finds_the_ac
                 }),
             );
         }
+        // The action is held in its execution until the handler has looked: a
+        // fake action ends in microseconds, and a look that comes after it has
+        // ended finds nothing, rightly. What is decided is what the look finds
+        // while the action is in flight.
+        {
+            let seen = seen.clone();
+            rig.effect(move || {
+                let begun = std::time::Instant::now();
+                while seen.lock().unwrap().is_none() {
+                    assert!(
+                        begun.elapsed() < std::time::Duration::from_secs(60),
+                        "the handler never looked"
+                    );
+                    std::thread::yield_now();
+                }
+            });
+        }
         let result = rig.execute_the_action();
         handler.join();
         let found = seen.lock().unwrap().take().expect("the handler looked");
