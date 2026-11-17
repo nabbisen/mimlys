@@ -47,3 +47,20 @@ The lines below are as found on `main` at `70ab081`; check them on today's `main
 - CHANGELOG: Fixed.
 
 Return: `.git-exclude/review-requests/010f-start-gate/README.md`.
+
+## After review (2026-11-17): 010f-4
+
+010f-1 to 010f-3 are landed. Two changes follow.
+
+1. **Check, record running, check again, instead of the lock** (your question 1: accepted). Replace the start gate with a second look at the weakest request after `record_running` and before the call. If it is set, close the action as not begun by the path item 2 made (`close_not_started` from `running`).
+   - **The proof:** the handler makes its request and then looks. If its look found nothing, the request came before `record_running`, so the second check sees it. Otherwise the look found the action `running`.
+   - **What goes:** `at_the_start_gate`, `request_at_the_gate`, the gate field, the poison handling, and the library note that a stop request "may block".
+   - **What stays:** the tests, asserting the same states. Re-run your mutations against the new shape, the second check removed among them.
+2. **`Server::call`'s restart wait observes the first stop request too** (your question 3). Today `ensure_started` waits for a server that died between the pin check and the call with the call's strong token. Give it the start gate's token, so that a first signal ends that wait with the action not begun.
+
+**Your other questions:**
+- **2, the waiting line before a pin check that ends not begun:** accepted. It is true when said.
+- **4, a seam for `drive`:** not wanted. Reading, plus your local reproduction, is accepted.
+- **5:** §8's clause is written.
+
+Return: `.git-exclude/review-requests/010f-4-start-gate/README.md`.
