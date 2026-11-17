@@ -119,6 +119,24 @@ network = true
         }
     }
 
+    /// Adds a read path to the first declared tool (`probe`), as an administrator's
+    /// mistake would.
+    fn with_probe_read_path(self, path: &Path) -> Self {
+        let text = std::fs::read_to_string(&self.config).unwrap();
+        let text = text.replacen(
+            "read_paths = [",
+            &format!("read_paths = [{:?}, ", path.to_string_lossy()),
+            1,
+        );
+        std::fs::write(&self.config, text).unwrap();
+        self
+    }
+
+    /// The data directory the configuration names.
+    fn data_dir(&self) -> PathBuf {
+        self.data.path().join("data")
+    }
+
     /// Replaces the backend's script, for the next task of the same data directory.
     fn set_script(&self, script: &[Value]) {
         std::fs::write(
@@ -702,6 +720,56 @@ fn host_tool_reaches_only_its_own_task(test: &str, knobs: &[(&str, &str)]) {
         );
     }
     assert!(!b_tree.join("a-was-here.txt").exists());
+}
+
+/// Handoff 011o-4, item 1, the demonstration (before the refusal exists): a
+/// read path that is the data directory, or the directory above it, lets the
+/// tool of one task read the file of another. The administrator's
+/// declaration is all it takes; nothing else is relaxed.
+#[test]
+fn req_conf_006_a_read_path_over_the_data_directory_reaches_another_tasks_file() {
+    let test = "req_conf_006_a_read_path_over_the_data_directory_reaches_another_tasks_file";
+    for covering in ["data", "above"] {
+        let env = Env::new(&[probe(&["write", "b-owned.txt"]), complete()], "");
+        let data_dir = env.data_dir();
+        let covers = match covering {
+            "data" => data_dir.clone(),
+            _ => data_dir.parent().unwrap().to_path_buf(),
+        };
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let env = env.with_probe_read_path(&covers);
+        let (tier, table) = clauses(&env);
+        if tier != "full" {
+            common::skip(test, &format!("this machine is tier {tier} ({table:?})"));
+            return;
+        }
+        let scope = env.scope();
+        let run = |goal: &str| -> String {
+            let (code, value) = env.json(&[
+                "run",
+                goal,
+                "--scope",
+                scope.to_str().unwrap(),
+                "--grant",
+                "host_tool:probe",
+            ]);
+            assert_eq!(code, 0, "{value}");
+            assert_eq!(value["task"]["state"], "completed", "{value}");
+            value["task"]["task_id"].as_str().unwrap().to_owned()
+        };
+        let b = run("b");
+        let b_file = env.tree(&b).join("b-owned.txt");
+        assert!(b_file.is_file(), "task B's own write");
+        env.set_script(&[probe(&["read", b_file.to_str().unwrap()]), complete()]);
+        let a = run("a");
+        let obs = env.observations(&a);
+        println!("{covering}: {}", stdout_of(&obs[0]).trim());
+        assert!(
+            stdout_of(&obs[0]).contains("read "),
+            "{covering}: the tool of task A read task B's file: {}",
+            stdout_of(&obs[0])
+        );
+    }
 }
 
 /// REQ-SEC-003: a worker whose own report of its confinement lacks a mandatory
