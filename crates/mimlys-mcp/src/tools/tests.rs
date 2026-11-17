@@ -274,18 +274,26 @@ fn redactor() -> Redactor {
     Redactor::new(&[("servers.t.env.TOKEN".into(), SECRET.into())])
 }
 
-/// REQ-CTX-007 (handoff 009g, item 5): the whole text is redacted before it is
-/// cut to the ceiling, so that no part of a secret that lies across the cut
-/// survives, at the end of the head or at the start of the tail; the notices say
-/// which secret was found, and that the text was cut.
+/// REQ-CTX-007 (handoff 009g, item 5; handoff 009i): the whole text is redacted
+/// before it is cut to the bound, so that no part of a secret that lies across the
+/// cut survives, at the end of the head or at the start of the tail; the notices
+/// say which secret was found, and that the text was cut. The head and the tail
+/// are read off the cut of a text of the same size.
 #[test]
 fn req_ctx_007_a_secret_across_the_cut_of_a_string_leaves_no_part_of_itself() {
-    let ceiling = mimlys_core::limits::LIM_C2_EXCERPT_CEILING_CHARS;
-    let head = ceiling * 3 / 4;
-    let tail = ceiling / 4;
+    let total = 70_000;
+    let probe = maps(
+        &provider(),
+        "t.x",
+        result_of(json!({"text": "a".repeat(total)})),
+    );
+    let cut = probe.payload["text"].as_str().unwrap();
+    let head = cut.find('\n').unwrap();
+    let tail = cut.rsplit('\n').next().unwrap().chars().count();
+    assert!(head > 1000 && tail > 300, "{head} {tail}");
     let filler = |n: usize| "a".repeat(n);
-    let across_head = format!("{}{SECRET}{}", filler(head - 4), filler(ceiling));
-    let across_tail = format!("{}{SECRET}{}", filler(ceiling), filler(tail - 4));
+    let across_head = format!("{}{SECRET}{}", filler(head - 4), filler(total - head));
+    let across_tail = format!("{}{SECRET}{}", filler(total - tail - 4), filler(tail));
     for text in [across_head, across_tail] {
         let outcome = maps_with(
             &provider(),
@@ -298,6 +306,8 @@ fn req_ctx_007_a_secret_across_the_cut_of_a_string_leaves_no_part_of_itself() {
         for part in [&SECRET[..4], &SECRET[SECRET.len() - 4..]] {
             assert!(!payload.contains(part), "{part} is in the payload");
         }
+        let full = outcome.full_payload.as_ref().unwrap().to_string();
+        assert!(!full.contains(&SECRET[..4]), "nor in the user's copy");
         assert!(outcome.notices.contains(&Notice::SecretRedacted {
             name: "servers.t.env.TOKEN".into()
         }));
@@ -490,3 +500,5 @@ fn req_cli_005_only_a_wait_ended_by_its_token_is_cancelled() {
         .was_cancelled()
     );
 }
+
+mod bounded;

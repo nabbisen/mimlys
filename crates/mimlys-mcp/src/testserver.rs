@@ -292,6 +292,23 @@ fn tool_list(changed: bool) -> Vec<Value> {
             "inputSchema": {"type": "object", "additionalProperties": false},
         }));
     }
+    if env_flag("MIMLYS_TESTSERVER_FLOOD") {
+        // Many medium strings, each longer than its schema's `minLength` would
+        // allow once it is cut, and many keys (handoff 009i).
+        tools.push(json!({
+            "name": "flood",
+            "description": "Returns many medium strings and many keys.",
+            "inputSchema": {"type": "object", "additionalProperties": false},
+            "outputSchema": {
+                "type": "object", "required": ["items", "short"],
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "string", "minLength": 2000}},
+                    "short": {"type": "string"},
+                    "keys": {"type": "object", "additionalProperties": {"type": "string"}},
+                },
+            },
+        }));
+    }
     if env_flag("MIMLYS_TESTSERVER_WIDE") {
         let mut props = Map::new();
         for i in 0..9 {
@@ -426,11 +443,43 @@ fn call(name: &str, arguments: &Map<String, Value>) -> Value {
                 "isError": true,
             })
         }
+        "flood" => {
+            // 60 strings of 3 000 characters, one invisible character in each;
+            // 40 keys of 60 characters; and one short string that must stay.
+            let items: Vec<Value> = (0..60)
+                .map(|i| {
+                    let mut text = format!("item{i:02}-\u{200B}");
+                    let fill = 3000 - text.chars().count() + 1;
+                    text.push_str(&"x".repeat(fill));
+                    Value::String(text)
+                })
+                .collect();
+            let keys: Map<String, Value> = (0..40)
+                .map(|i| (format!("{i:02}{}", "k".repeat(58)), json!(format!("v{i}"))))
+                .collect();
+            json!({
+                "content": [{"type": "text", "text": "flood"}],
+                "structuredContent": {"items": items, "short": "keep me", "keys": keys},
+            })
+        }
         "leak_long" => {
-            // The answer is cut to its head and its tail at 64 000 characters
-            // (LIM-C2): the value starts four characters before the head ends.
+            // The answer is cut to its head and its tail at the result's bound
+            // (handoff 009i): the value starts four characters before the head
+            // ends. The head is read off the cut of a probe of the same size
+            // (the head depends only on the digits of the size).
             let value = leak_value().unwrap_or_default();
-            let head = 64_000 * 3 / 4;
+            let probe = json!({"text": "a".repeat(76_000)});
+            let cut = crate::bound::bound(
+                &probe,
+                mimlys_core::limits::PROPOSED_RESULT_TOTAL_CHARS,
+                crate::bound::Unit::Chars,
+                true,
+            )
+            .expect("the probe is over the bound");
+            let head = cut.value["text"]
+                .as_str()
+                .and_then(|t| t.find('\n'))
+                .expect("a marker");
             let mut text = "a".repeat(head - 4);
             text.push_str(&value);
             text.push_str(&"b".repeat(70_000));

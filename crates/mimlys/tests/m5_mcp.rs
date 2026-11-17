@@ -550,6 +550,61 @@ fn req_ctx_007_a_secret_a_server_echoes_is_redacted_in_the_cause_the_keys_and_th
     );
 }
 
+/// REQ-MCP-006, REQ-CTX-006, REQ-CTX-009 (handoff 009i, item 1; audit A-26), end
+/// to end: a tool that returns many medium strings and many keys, whose output
+/// schema asks each string for more characters than the bound leaves it. The
+/// call succeeds (the bound is applied after the schema is checked, so a cut is
+/// never `output_invalid`); the observation, which is what the model reads, is
+/// within the bound and is valid JSON; the short string stays whole; each kind
+/// of change is said once, with its total; and the user's stored copy holds
+/// every string whole.
+#[test]
+fn req_mcp_006_a_flood_is_bounded_in_total_after_its_schema_and_kept_whole_for_the_user() {
+    let env = Env::new(
+        &[act("rypsok.flood", json!({})), complete()],
+        "[servers.rypsok.tools.flood]\neffect = \"external_read\"\nidempotent = true\n",
+        &["rypsok.flood"],
+    )
+    .env("MIMLYS_TESTSERVER_FLOOD", "1");
+    let_the_server_see(&env, "MIMLYS_TESTSERVER_FLOOD");
+    let scope = env.scope();
+    let (code, value) = env.json(&["run", "flood", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let observation = read_observation(&env.data.path().join("data/mimlys.db"), &id);
+    assert_eq!(observation["status"], "succeeded", "{observation}");
+    assert!(observation.get("cause").is_none() || observation["cause"].is_null());
+    // What the model reads.
+    let payload = &observation["payload"];
+    let text = serde_json::to_string(payload).unwrap();
+    assert!(
+        text.chars().count() <= mimlys_core::limits::PROPOSED_RESULT_TOTAL_CHARS,
+        "{} characters",
+        text.chars().count()
+    );
+    assert_eq!(payload["short"], "keep me", "the short string is whole");
+    assert_eq!(payload["items"].as_array().unwrap().len(), 60);
+    assert_eq!(payload["keys"].as_object().unwrap().len(), 40);
+    let notices = observation["notices"].as_array().unwrap();
+    let of = |code: &str| -> Vec<&Value> { notices.iter().filter(|n| n["code"] == code).collect() };
+    assert_eq!(of("characters_removed").len(), 1, "{notices:?}");
+    assert_eq!(of("characters_removed")[0]["count"], 60);
+    assert_eq!(of("content_truncated").len(), 1, "{notices:?}");
+    // The total is what was cut: the 60 strings of 3 000 characters.
+    assert_eq!(of("content_truncated")[0]["total_chars"], 60 * 3000);
+    // What the user keeps.
+    let full = &observation["full_payload"];
+    let items = full["items"].as_array().expect("the whole result is kept");
+    assert_eq!(items.len(), 60);
+    for (i, item) in items.iter().enumerate() {
+        let item = item.as_str().unwrap();
+        assert_eq!(item.chars().count(), 3000, "item {i}");
+        assert!(item.starts_with(&format!("item{i:02}-x")), "{item:.20}");
+    }
+    assert_eq!(full["keys"].as_object().unwrap().len(), 40);
+    assert_eq!(full["short"], "keep me");
+}
+
 /// REQ-CLI-005, REQ-CTX-008 (handoff 009g, item 6): a server whose name and
 /// version carry a clear-screen and a window-title sequence, and a tool whose
 /// name does: `status` prints them cleaned, in its text and in its JSON, with no

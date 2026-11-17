@@ -5,6 +5,7 @@
 //! content bounded, sanitized and validated against the pinned output
 //! schema.
 
+use crate::bound::{self, Cleaned, Unit};
 use crate::client::CallOutcome;
 use crate::import::{Imported, import};
 use crate::server::{Server, ServerError, ServerInfo};
@@ -12,8 +13,8 @@ use mimlys_core::action::{ExecutionMetrics, FailureCause, HostFaultDetail, Termi
 use mimlys_core::context::Redactor;
 use mimlys_core::event::Event;
 use mimlys_core::ids::TaskId;
-use mimlys_core::limits::{LIM_C2_EXCERPT_CEILING_CHARS, LIM_I5_MESSAGE_CHARS};
-use mimlys_core::observation::{Notice, excerpt, sanitize};
+use mimlys_core::limits::{LIM_I5_MESSAGE_CHARS, LIM_S4_OUTPUT_BYTES, PROPOSED_RESULT_TOTAL_CHARS};
+use mimlys_core::observation::Notice;
 use mimlys_core::spi::{BoxFuture, Cancellation, ExecutionContext, ExecutionOutcome, ToolProvider};
 use mimlys_core::tool::{ImportRecord, ToolDefinition};
 use mimlys_core::validate::AuthorizedAction;
@@ -192,6 +193,7 @@ fn unavailable(reason: &str, metrics: ExecutionMetrics) -> ExecutionOutcome {
         },
         failure: Some(FailureCause::ToolUnavailable),
         payload: json!({ "reason": reason }),
+        full_payload: None,
         stdout: Vec::new(),
         stderr: Vec::new(),
         notices: vec![],
@@ -273,16 +275,19 @@ impl McpTools {
             wall_ms,
             ..ExecutionMetrics::default()
         };
-        let failed =
-            |failure: FailureCause, payload: Value, notices: Vec<Notice>| ExecutionOutcome {
+        let failed = |failure: FailureCause, payload: Value, mut notices: Vec<Notice>| {
+            let (payload, full_payload) = bounded(payload, &mut notices);
+            ExecutionOutcome {
                 termination: Termination::Exited { exit_code: 1 },
                 failure: Some(failure),
                 payload,
+                full_payload,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
                 notices,
                 metrics: metrics.clone(),
-            };
+            }
+        };
         match outcome {
             CallOutcome::Timeout => self.map_outcome_timeout(metrics),
             // Nothing was sent (the pin check answers this before the result is
@@ -296,6 +301,7 @@ impl McpTools {
                 termination: Termination::Cancelled,
                 failure: None,
                 payload: Value::Null,
+                full_payload: None,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
                 notices: vec![],
@@ -333,6 +339,7 @@ impl McpTools {
                         detail: HostFaultDetail::WorkerDied,
                     }),
                     payload: Value::Null,
+                    full_payload: None,
                     stdout: Vec::new(),
                     stderr: Vec::new(),
                     notices: vec![],
@@ -381,9 +388,16 @@ impl McpTools {
                         count: omitted_blocks as u64,
                     });
                 }
-                let mut found = Vec::new();
-                bound_strings(&mut payload, &mut notices, redactor, &mut found);
-                mimlys_core::observation::add_secret_notices(&mut notices, found);
+                // Cleaned whole, validated, and only then bounded: a cut never
+                // makes a result `output_invalid` (handoff 009i, A-26).
+                let mut cleaned = Cleaned::default();
+                bound::clean(&mut payload, redactor, &mut cleaned);
+                if cleaned.removed > 0 {
+                    notices.push(Notice::CharactersRemoved {
+                        count: cleaned.removed,
+                    });
+                }
+                mimlys_core::observation::add_secret_notices(&mut notices, cleaned.found);
                 if is_error {
                     let kind: String = payload
                         .pointer("/error/kind")
@@ -439,10 +453,12 @@ impl McpTools {
                         Err(_) => return self.map_outcome_timeout(metrics),
                     }
                 }
+                let (payload, full_payload) = bounded(payload, &mut notices);
                 ExecutionOutcome {
                     termination: Termination::Exited { exit_code: 0 },
                     failure: None,
                     payload,
+                    full_payload,
                     stdout: Vec::new(),
                     stderr: Vec::new(),
                     notices,
@@ -475,6 +491,7 @@ impl McpTools {
             termination: Termination::Deadline,
             failure: Some(FailureCause::Timeout),
             payload: Value::Null,
+            full_payload: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
             notices: vec![],
@@ -483,90 +500,24 @@ impl McpTools {
     }
 }
 
-/// Sanitizes, redacts and bounds every string of a payload, and every key of
-/// its objects (REQ-MCP-006, REQ-TOOL-008, REQ-CTX-007). The whole text is
-/// redacted before it is cut, so that no part of a secret that lies across the
-/// cut is left; the names of the secrets found are added to `found`.
-fn bound_strings(
-    value: &mut Value,
-    notices: &mut Vec<Notice>,
-    redactor: &Redactor,
-    found: &mut Vec<String>,
-) {
-    match value {
-        Value::String(s) => {
-            let (clean, removed) = sanitize(s);
-            if removed > 0 {
-                notices.push(Notice::CharactersRemoved {
-                    count: removed as u64,
-                });
-            }
-            let (clean, names) = redactor.redact(&clean);
-            let redacted = !names.is_empty();
-            found.extend(names);
-            let total = clean.chars().count();
-            if total > LIM_C2_EXCERPT_CEILING_CHARS {
-                let (cut, _) = excerpt(
-                    &clean,
-                    LIM_C2_EXCERPT_CEILING_CHARS * 3 / 4,
-                    LIM_C2_EXCERPT_CEILING_CHARS / 4,
-                );
-                notices.push(Notice::ContentTruncated {
-                    total_chars: total as u64,
-                });
-                *s = cut;
-            } else if removed > 0 || redacted {
-                *s = clean;
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                bound_strings(item, notices, redactor, found);
-            }
-        }
-        Value::Object(map) => {
-            let entries = std::mem::take(map);
-            for (key, mut item) in entries {
-                bound_strings(&mut item, notices, redactor, found);
-                let mut key = bound_key(&key, notices, redactor, found);
-                // Two keys that clean to one text keep both values.
-                let mut n = 1;
-                while map.contains_key(&key) {
-                    n += 1;
-                    key = format!("{key}#{n}");
-                }
-                map.insert(key, item);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// A key of an object in a payload, as the model reads it: sanitized,
-/// redacted and cut to the bound of a message (LIM-I5).
-fn bound_key(
-    key: &str,
-    notices: &mut Vec<Notice>,
-    redactor: &Redactor,
-    found: &mut Vec<String>,
-) -> String {
-    let (clean, removed) = sanitize(key);
-    if removed > 0 {
-        notices.push(Notice::CharactersRemoved {
-            count: removed as u64,
-        });
-    }
-    let (clean, names) = redactor.redact(&clean);
-    found.extend(names);
-    let total = clean.chars().count();
-    if total > LIM_I5_MESSAGE_CHARS {
-        notices.push(Notice::ContentTruncated {
-            total_chars: total as u64,
-        });
-        clean.chars().take(LIM_I5_MESSAGE_CHARS).collect()
-    } else {
-        clean
-    }
+/// A payload as the model reads it, and the whole result when that is a cut of
+/// it (handoff 009i, A-26; REQ-MCP-006, REQ-CTX-006): the serialized payload is
+/// bounded in total by cutting its longest strings first, and the cuts are said
+/// once, in one `content_truncated` with its total. The whole result is kept
+/// for the user, within LIM-S4 (REQ-PERS-005), and never shown to the model.
+/// What is cut is cut after the output schema was checked.
+fn bounded(payload: Value, notices: &mut Vec<Notice>) -> (Value, Option<Value>) {
+    let Some(cut) = bound::bound(&payload, PROPOSED_RESULT_TOTAL_CHARS, Unit::Chars, true) else {
+        return (payload, None);
+    };
+    notices.push(Notice::ContentTruncated {
+        total_chars: cut.total_chars,
+    });
+    let full = match bound::bound(&payload, LIM_S4_OUTPUT_BYTES as usize, Unit::Bytes, false) {
+        Some(whole) => whole.value,
+        None => payload,
+    };
+    (cut.value, Some(full))
 }
 
 impl ToolProvider for McpTools {

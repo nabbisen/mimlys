@@ -196,6 +196,7 @@ impl ToolProvider for BuiltinTools {
                         detail: mimlys_core::action::HostFaultDetail::WorkerDied,
                     }),
                     payload: Value::Null,
+                    full_payload: None,
                     stdout: Vec::new(),
                     stderr: Vec::new(),
                     notices: Vec::new(),

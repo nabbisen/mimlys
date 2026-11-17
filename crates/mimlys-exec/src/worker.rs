@@ -840,6 +840,7 @@ fn run_one(
                         termination,
                         failure,
                         payload,
+                        full_payload: None,
                         stdout,
                         stderr,
                         notices,
@@ -972,6 +973,7 @@ fn deadline_fault(started: Instant, note: &str) -> ExecutionOutcome {
         failure: FailureCause::from_termination(&Termination::Deadline),
         // The payload a worker's own record of a deadline carries.
         payload: serde_json::json!({ "termination": "deadline" }),
+        full_payload: None,
         stdout: Vec::new(),
         stderr: Vec::new(),
         notices: Vec::new(),
@@ -990,6 +992,7 @@ fn fault(detail: HostFaultDetail, started: Instant, note: Option<&str>) -> Execu
         termination: Termination::HostFault { detail },
         failure: Some(FailureCause::SandboxFault { detail }),
         payload: serde_json::Value::Null,
+        full_payload: None,
         stdout: Vec::new(),
         stderr: Vec::new(),
         notices: Vec::new(),
