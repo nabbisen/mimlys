@@ -160,8 +160,13 @@ pub struct Observation {
     pub cause: Option<FailureCause>,
     /// Whether the effects were rolled back (REQ-TOOL-010).
     pub rolled_back: bool,
-    /// The tool's structured result, validated against its output schema.
+    /// The tool's structured result, validated against its output schema, as
+    /// the model reads it: bounded in total (handoff 009i).
     pub payload: Value,
+    /// The whole result, when `payload` is a cut of it: kept for the user, never
+    /// shown to the model (REQ-CTX-006). Absent when nothing was cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_payload: Option<Value>,
     /// Standard output excerpt.
     pub stdout: String,
     /// Standard error excerpt.
@@ -207,6 +212,7 @@ impl Observation {
             cause,
             rolled_back,
             payload: outcome.payload.clone(),
+            full_payload: outcome.full_payload.clone(),
             stdout,
             stderr,
             notices,
@@ -234,6 +240,7 @@ impl Observation {
             cause: None,
             rolled_back: false,
             payload: Value::Null,
+            full_payload: None,
             stdout: String::new(),
             stderr: String::new(),
             notices: vec![Notice::StoppedBeforeStart],
@@ -250,6 +257,9 @@ impl Observation {
             return;
         }
         let mut names = redactor.redact_value(&mut self.payload);
+        if let Some(full) = &mut self.full_payload {
+            names.extend(redactor.redact_value(full));
+        }
         if let Some(cause) = &mut self.cause {
             names.extend(redactor.redact_cause(cause));
         }

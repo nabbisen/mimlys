@@ -8,6 +8,7 @@
 //! Behaviour is specified in `docs/src/maintainers/requirements.md` §21
 //! (REQ-MCP) and `docs/src/maintainers/external-design.md` §11.1.
 
+pub mod bound;
 pub mod client;
 pub mod import;
 pub mod server;

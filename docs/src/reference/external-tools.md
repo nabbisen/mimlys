@@ -225,6 +225,24 @@ unavailable, with the reason in `status`, rather than half imported.
   lines past that are counted, and when the second ends one line says how many
   (`N lines dropped`). The three numbers are proposals that await registration
   as limits.
+- **A result is bounded as a whole.** What the model reads of a tool's result
+  is at most 8 000 characters of JSON in total (a proposed limit that awaits
+  registration), however many strings, keys and levels the server sends. The
+  result is first cleaned (invisible characters removed, secrets redacted), then
+  checked against the tool's output schema, and only then bounded, so a cut is
+  never the reason for `output_invalid`: a string that must be 20 000 characters
+  long by the schema is cut after the check. The longest strings are cut first,
+  all to one length, with the usual `[… N characters omitted …]` marker, so the
+  result stays valid JSON and a short string is kept whole; a key longer than 200
+  characters is cut. A result that is nothing but structure past the bound (a
+  hundred thousand short keys) is replaced by a small object that says how long
+  it was. The observation says each kind of change **once**: one
+  `characters_removed` with the number of characters removed, one
+  `content_truncated` with the number of characters of everything cut, however
+  many strings it came from. The whole result, cleaned and within 1 MiB (LIM-S4),
+  is kept in the task's record with the observation, as `full_payload`, for you
+  to read there, and is never shown to the model. An error from a tool and a result that is not valid are bounded the
+  same way.
 - **Content that is not passed on is said.** When a tool answers without
   `structuredContent`, only its first text block is the result; any other
   content block (an image, a second text) is not passed on, and the

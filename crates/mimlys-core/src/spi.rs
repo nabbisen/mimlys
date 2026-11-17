@@ -278,8 +278,13 @@ pub struct ExecutionOutcome {
     /// The failure the provider itself classified, if any; otherwise the
     /// loop derives it from the termination.
     pub failure: Option<FailureCause>,
-    /// The structured result.
+    /// The structured result, as the model reads it.
     pub payload: Value,
+    /// The whole result, when `payload` is a cut of it (handoff 009i: a result
+    /// is bounded in total for the model, and kept whole, within its other
+    /// bounds, for the user). It is kept in the observation and never shown to
+    /// the model. `None` when nothing was cut: the payload is then the whole.
+    pub full_payload: Option<Value>,
     /// Raw standard output.
     pub stdout: Vec<u8>,
     /// Raw standard error.
@@ -297,6 +302,7 @@ impl ExecutionOutcome {
             termination: Termination::Exited { exit_code: 0 },
             failure: None,
             payload,
+            full_payload: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
             notices: Vec::new(),
@@ -315,6 +321,7 @@ impl ExecutionOutcome {
                 detail: detail.to_owned(),
             }),
             payload,
+            full_payload: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
             notices: Vec::new(),
@@ -331,6 +338,7 @@ impl ExecutionOutcome {
             termination: Termination::Deadline,
             failure: Some(FailureCause::Timeout),
             payload: Value::Null,
+            full_payload: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
             notices: Vec::new(),
@@ -347,6 +355,7 @@ impl ExecutionOutcome {
             termination: Termination::HostFault { detail },
             failure: None,
             payload: Value::Null,
+            full_payload: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
             notices: Vec::new(),
@@ -385,6 +394,7 @@ impl ExecutionOutcome {
             termination: Termination::Cancelled,
             failure: None,
             payload: Value::Null,
+            full_payload: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
             notices: Vec::new(),

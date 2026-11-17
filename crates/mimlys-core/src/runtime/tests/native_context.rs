@@ -568,3 +568,50 @@ fn req_ctx_001_the_envelope_request_is_unchanged() {
     assert!(m.last().unwrap().content.contains("decision_request"));
     assert!(requests[1].functions.is_empty());
 }
+
+/// REQ-CTX-006, REQ-CTX-009 (handoff 009i, item 1): the whole result a provider
+/// keeps for the user is stored with the observation and is never a part of any
+/// request: not in the envelope transport, not in the `tool_calls` transport.
+#[test]
+fn req_ctx_006_the_whole_result_kept_for_the_user_never_reaches_the_model() {
+    for native in [false, true] {
+        let decisions = vec![
+            act("read_file", "a.rs"),
+            json!({"decision": "complete", "summary": "done"}),
+        ];
+        let h = if native {
+            native_harness(decisions)
+        } else {
+            Harness::new(decisions)
+        };
+        h.tools.script(
+            "read_file",
+            ExecutionOutcome {
+                full_payload: Some(json!({"content": "WHOLE-RESULT-MARKER"})),
+                ..ExecutionOutcome::succeeded(json!({"content": "cut"}), 1)
+            },
+        );
+        let id = h.create();
+        h.step(id);
+        h.step(id);
+        let stored = h.persistence.load_observations(id).unwrap();
+        let full = stored[0].full_payload.as_ref().expect("stored");
+        assert_eq!(full["content"], "WHOLE-RESULT-MARKER");
+        for request in h.backend.requests() {
+            for message in &request.messages {
+                assert!(
+                    !message.content.contains("WHOLE-RESULT-MARKER"),
+                    "native {native}: {}",
+                    message.content
+                );
+            }
+        }
+        assert!(
+            h.backend
+                .requests()
+                .iter()
+                .any(|r| r.messages.iter().any(|m| m.content.contains("\"cut\""))),
+            "the payload the model reads is the cut one"
+        );
+    }
+}

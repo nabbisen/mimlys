@@ -47,6 +47,15 @@ pub const LIM_I3_TOOL_PARAMETERS: usize = 8;
 pub const LIM_I4_SCHEMA_DEPTH: usize = 2;
 /// LIM-I5: length of a notice, hint or error message, in characters.
 pub const LIM_I5_MESSAGE_CHARS: usize = 200;
+/// PROPOSED (handoff 009i, audit A-26; the architect registers the limit at
+/// review, under a name of the register's choosing): an external tool's result,
+/// serialized, as the model reads it, in characters. LIM-C1 (32 000) less LIM-I1
+/// (8 000) leaves 24 000 for everything else; the instructions and capabilities
+/// take about 1 700, a goal up to LIM-D4 (4 000) and a plan up to LIM-D3 (20 x
+/// 200 = 4 000), so 9 700 at worst, and the latest step is never compressed
+/// (external design 15): 8 000 leaves the worst case within the budget by 6 300
+/// for the other steps' summaries and the request.
+pub const PROPOSED_RESULT_TOTAL_CHARS: usize = 8000;
 /// LIM-I6: rendered approval request, in characters.
 pub const LIM_I6_APPROVAL_CHARS: usize = 4000;
 /// LIM-I7: entries returned by `list_dir` or `search_files`.
