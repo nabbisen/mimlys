@@ -103,3 +103,20 @@ Each of these must be killed:
 - the PRs and their CI runs;
 - the mutations;
 - the design questions.
+
+## After review: 011o-4
+
+The review of 2026-11-18 (`.git-exclude/reviewed/handoff-011o/README.md`) approved stages 1 and 2 and landed them. Three small changes follow, as one PR on `main`.
+
+1. **A read path never covers the data directory,** on every platform.
+   - **Today:** `check_read_path` refuses a root, the home directory and an ancestor of it, but not the data directory, a path inside it, or an ancestor of it. `task_spec` keeps the declared read paths. So a declaration's `read_paths` of `~/.local/share` (Linux), or a `toolchain grant` of `%LOCALAPPDATA%` (Windows), lets every task's tool read every other task's tree and the store. That undoes A-06's read half by a mistake in a configuration.
+   - **The change:** refuse such an entry wherever a read path is refused today (`check`, the load, `toolchain grant`), naming the entry and the data directory, with a new refusal reason. Compare after normalizing, and case-insensitively on Windows and macOS, as `check_read_path` already does.
+   - **Tests by state:** the data directory, a path inside it and an ancestor of it are each refused at load, with the reason, on every job; `toolchain grant` refuses them on the Windows job; a sibling of the data directory is accepted. First show, on the Linux job, a tool of one task reading another task's file through such a read path, with the refusal removed.
+2. **A workspace whose entries cannot be written is `unavailable`,** with component `permissions`, as every other `acl_not_applied` is (your question 1). Today it is `internal` (`workspace storage failure: …`). Give `WorkspaceError` its own variant, not a prefix to parse.
+3. **`acl::revoke` writes nothing when the SID holds no entry on the path** (your question 6), so a `revoke` of a path without one does not rewrite every file beneath it. Tests: the descriptor is unchanged, read back; the `toolchain revoke` of such a path says it held no entry.
+
+**Mutations:** each of the three changes undone must be killed by its test.
+
+**CHANGELOG:** Fixed (2, 3); Changed (1, with an **upgrade: read this** note: a configuration with such a read path no longer loads, and the message names a narrower path).
+
+**Return:** `.git-exclude/review-requests/011o-4-windows-task-isolation/README.md`.
