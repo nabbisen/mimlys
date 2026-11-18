@@ -49,6 +49,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 mod sys;
 
+pub mod outside;
 pub mod xcrun;
 
 #[cfg(all(target_os = "macos", feature = "probe-syscalls"))]

@@ -619,6 +619,71 @@ fn main() {
             }
         }
         #[cfg(target_os = "macos")]
+        Some("kill-worker") => {
+            // A hostile tool (audit A-21): `kill-worker <secs> <file>`. Leaves a
+            // tree behind (a sleeper of `secs` seconds, an orphan sleeper of
+            // `secs + 1` re-parented to launchd, and a writer that appends to
+            // `<file>` in the working directory every 50 ms), waits until the
+            // writer has written, then kills the worker's other children (its
+            // sweeper) and the worker itself, and sleeps. Whatever of this tree
+            // is left is the runtime's to sweep.
+            let secs: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
+            let file = args.get(2).cloned().unwrap_or_else(|| "writer.log".into());
+            let sleeper = std::process::Command::new("/bin/sleep")
+                .arg(secs.to_string())
+                .spawn();
+            let orphan = mimlys_exec::confine::macos::probe::spawn_in_new_session(
+                "/bin/sh",
+                &["-c", &format!("/bin/sleep {} >/dev/null 2>&1 &", secs + 1)],
+            )
+            .and_then(|mut shell| shell.wait());
+            let writer = std::process::Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    &format!("while :; do echo x >> {file}; /bin/sleep 0.05; done"),
+                ])
+                .spawn();
+            if sleeper.is_err() || orphan.is_err() || writer.is_err() {
+                println!("spawn failed");
+                3
+            } else {
+                // The writer has written at least three times: a state.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while std::time::Instant::now() < deadline
+                    && std::fs::metadata(&file).map_or(0, |m| m.len()) < 6
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                let signalled = mimlys_exec::confine::macos::probe::kill_siblings_and_parent();
+                println!("signalled {signalled} sibling(s) and the worker");
+                let _ = std::io::stdout().flush();
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+                0
+            }
+        }
+        #[cfg(target_os = "macos")]
+        Some("allow-all") => {
+            // A sandboxed process whose profile allows everything, as many system
+            // processes are (spike M1): `allow-all <secs>`. Run outside any
+            // confinement, it becomes a sandboxed outsider that the sweep from
+            // outside must never take for a member.
+            let secs: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
+            match mimlys_exec::confine::macos::probe::apply_further_profile(
+                "(version 1)\n(allow default)\n",
+            ) {
+                Ok(()) => {
+                    println!("sandboxed, allows everything");
+                    let _ = std::io::stdout().flush();
+                    std::thread::sleep(std::time::Duration::from_secs(secs));
+                    0
+                }
+                Err(e) => {
+                    println!("sandbox_init failed: {e}");
+                    3
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
         Some("visible") => {
             // The two-workers test: `visible <secs>`. Starts a sleeper in a
             // session of its own, writes `mine.txt` (this tool's pid and the
@@ -873,7 +938,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: mimlys-probe-tool <ok|cwd|read|list|write|write-env|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|detach|fork|alloc|alloc-touch|orphan|proclist|sandbox-nested|visible|poll-time|sweeper-demo|uring-socket|uring-connect|vm-read|hold|read-proc> …"
+                "usage: mimlys-probe-tool <ok|cwd|read|list|write|write-env|connect|connect-name|getaddrinfo|unix-socket|unix-connect|unix-pair|unix-abstract-connect|id|sudo-id|procargs|procinfo|signal0|env|sleep|setsid-sleep|detach|fork|alloc|alloc-touch|orphan|proclist|sandbox-nested|visible|poll-time|sweeper-demo|kill-worker|allow-all|uring-socket|uring-connect|vm-read|hold|read-proc> …"
             );
             2
         }

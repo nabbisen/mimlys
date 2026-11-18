@@ -154,6 +154,15 @@ pub enum ConfineError {
 pub struct ConfinedChild {
     proc: Proc,
     tree: Tree,
+    /// macOS (handoff 011p): the marker of the worker's profile, from its
+    /// specification; with it the runtime finds the worker's members from
+    /// outside the sandbox.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    marker: Option<String>,
+    /// The runtime has verified that it can (`arm_outside_sweep`); a sweep
+    /// from outside the sandbox runs once, when the worker ends, and disarms this.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    outside_armed: bool,
 }
 
 /// The process behind a confined child: the standard library's on POSIX,
@@ -257,8 +266,66 @@ impl ConfinedChild {
             Tree::Job(j) => j.kill(),
         }
         self.kill_process();
+        self.sweep_outside();
         tracing::debug!(target: "mimlys_worker", "the tree of {pid} is ended");
     }
+
+    /// The marker of the worker's profile (macOS), when its specification had one.
+    pub fn marker(&self) -> Option<&str> {
+        self.marker.as_deref()
+    }
+
+    /// Arms the sweep from outside the sandbox: the runtime has verified, with
+    /// this worker as the known member, that `sandbox_check` tells the worker's
+    /// members from everything else (handoff 011p, item 4). Until it is armed,
+    /// or where the specification had no marker, nothing is signalled from
+    /// outside and the worker's own sweeper alone runs, as in 0.10.
+    pub fn arm_outside_sweep(&mut self) {
+        self.outside_armed = self.marker.is_some();
+    }
+
+    /// The sweep from outside the sandbox (handoff 011p, items 2 and 3; audit
+    /// A-21): every member of the worker's sandbox, the tool's tree and what it
+    /// re-parented, ends within LIM-O2, however the worker ended, and a member
+    /// that survives is `tree_kill_incomplete`, logged at `warn`. It runs once.
+    #[cfg(target_os = "macos")]
+    fn sweep_outside(&mut self) {
+        if !self.outside_armed {
+            return;
+        }
+        self.outside_armed = false;
+        let Some(marker) = self.marker.clone() else {
+            return;
+        };
+        let grace = Duration::from_millis(mimlys_core::limits::LIM_O2_CANCEL_MS);
+        match macos::outside::sweep(&marker, grace) {
+            Ok(report) if report.sweep.complete => {
+                if report.sweep.killed > 0 {
+                    tracing::debug!(
+                        target: "mimlys_worker",
+                        "swept {} member(s) of the worker's sandbox from outside, {} round(s)",
+                        report.sweep.killed,
+                        report.sweep.rounds
+                    );
+                }
+            }
+            Ok(report) => tracing::warn!(
+                target: "mimlys_worker",
+                "tree_kill_incomplete: members of the worker's sandbox remained after the sweep from outside ({} signal(s), {} round(s), {} skipped)",
+                report.sweep.killed,
+                report.sweep.rounds,
+                report.skipped
+            ),
+            Err(why) => tracing::warn!(
+                target: "mimlys_worker",
+                "tree_kill_incomplete: the sweep from outside the sandbox could not run: {why}"
+            ),
+        }
+    }
+
+    /// Nothing from outside the sandbox on this platform.
+    #[cfg(not(target_os = "macos"))]
+    fn sweep_outside(&mut self) {}
 
     /// Waits up to `timeout` for the child to exit; `false` when it is still running.
     pub fn wait_within(&mut self, timeout: Duration) -> bool {
@@ -302,6 +369,10 @@ impl Drop for ConfinedChild {
     fn drop(&mut self) {
         if matches!(self.try_wait(), Ok(None)) {
             self.kill_tree();
+        } else {
+            // The worker ended by itself (a shutdown, a crash): what it left
+            // in its sandbox is swept all the same.
+            self.sweep_outside();
         }
     }
 }
@@ -392,7 +463,7 @@ impl Confinement for Platform {
     fn spawn(
         &self,
         command: &WorkerCommand,
-        _spec: Option<&ConfinementSpec>,
+        spec: Option<&ConfinementSpec>,
     ) -> Result<ConfinedChild, ConfineError> {
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args)
@@ -408,6 +479,8 @@ impl Confinement for Platform {
         Ok(ConfinedChild {
             proc: Proc::Std(child),
             tree: Tree::ProcessGroup(group),
+            marker: spec.and_then(|s| s.marker.clone()),
+            outside_armed: false,
         })
     }
 
@@ -472,6 +545,8 @@ impl Confinement for Platform {
         Ok(ConfinedChild {
             proc: Proc::Raw(child),
             tree: Tree::Job(job),
+            marker: None,
+            outside_armed: false,
         })
     }
 }

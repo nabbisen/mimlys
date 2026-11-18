@@ -126,3 +126,45 @@ pub fn apply_further_profile(profile: &str) -> Result<(), String> {
         super::sys::resolve_sandbox_init().ok_or_else(|| "sandbox_init is missing".to_owned())?;
     super::sys::apply(init, profile)
 }
+
+/// The parent of `pid` (`proc_pidinfo`), when the profile lets this process read it.
+pub fn parent_of(pid: i32) -> Option<i32> {
+    // SAFETY: an all-zero `proc_bsdinfo` is a valid value of a plain C struct of integers.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is `size` bytes long and `size` says so.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::addr_of_mut!(info).cast(),
+            size,
+        )
+    };
+    (written == size).then_some(info.pbi_ppid as i32)
+}
+
+/// What a hostile tool does to the worker's cleanup (audit A-21): kills every
+/// other child of its parent (the worker's sweeper is one) and then its parent,
+/// the worker, with `SIGKILL`. A tool may signal the members of its own sandbox,
+/// and the worker and its sweeper are members. Returns how many siblings it
+/// signalled.
+pub fn kill_siblings_and_parent() -> usize {
+    let own = std::process::id() as i32;
+    let parent = std::os::unix::process::parent_id() as i32;
+    let mut signalled = 0;
+    for pid in super::sys::list_pids().unwrap_or_default() {
+        if pid <= 1 || pid == own || pid == parent {
+            continue;
+        }
+        if matches!(super::sys::see(pid), super::Seen::Alive { .. })
+            && parent_of(pid) == Some(parent)
+        {
+            super::sys::kill_pid(pid);
+            signalled += 1;
+        }
+    }
+    super::sys::kill_pid(parent);
+    signalled
+}

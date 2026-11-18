@@ -199,8 +199,10 @@ pub fn can_signal(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-/// `SIGKILL` to `pid`. The profile lets it reach members only; the kernel
-/// refuses anything else (a reused pid of an outsider included).
+/// `SIGKILL` to `pid`. Inside the worker the profile lets it reach members
+/// only and the kernel refuses anything else (a reused pid of an outsider
+/// included). The runtime's sweep from outside the sandbox has no such
+/// refusal and signals only through the guard of `outside::guarded_signal`.
 pub fn kill_pid(pid: i32) {
     // SAFETY: `kill` takes two integers; the result (a refusal, or a process
     // that ended already) is ignored on purpose: the next listing shows what is left.
@@ -284,4 +286,103 @@ pub fn translated_by_rosetta() -> bool {
         )
     };
     rc == 0 && value == 1
+}
+
+/// `int sandbox_check(pid_t pid, const char *operation, enum sandbox_filter_type type, ...)`:
+/// the private call that answers, for another process, what its sandbox allows
+/// (handoff 011p, spike M1). For an operation, 0 is allowed, a positive number
+/// is denied and a negative one is an error; without an operation it is the
+/// question whether the process is in a sandbox (see [`check_sandboxed`]).
+pub type CheckFn = unsafe extern "C" fn(c_int, *const c_char, c_int, ...) -> c_int;
+
+/// `SANDBOX_FILTER_NONE`.
+const FILTER_NONE: c_int = 0;
+/// `SANDBOX_FILTER_GLOBAL_NAME`: the argument is a mach service name.
+const FILTER_GLOBAL_NAME: c_int = 2;
+/// `SANDBOX_CHECK_NO_REPORT`: a denial is not written to the system log (a
+/// sweep asks about every process of the machine).
+const CHECK_NO_REPORT: c_int = 0x4000_0000;
+
+/// `sandbox_check`, when this macOS has it: found in the process's own image
+/// and libraries, else in `libsystem_sandbox.dylib`; never linked, so a macOS
+/// that removes it is a reported state.
+pub fn resolve_sandbox_check() -> Option<CheckFn> {
+    let mut symbol = lookup(c"sandbox_check");
+    if symbol.is_null() {
+        // SAFETY: `dlopen` of a NUL-terminated constant path; the handle is only used for `dlsym`.
+        let handle = unsafe {
+            libc::dlopen(
+                c"/usr/lib/system/libsystem_sandbox.dylib".as_ptr(),
+                libc::RTLD_NOW,
+            )
+        };
+        if !handle.is_null() {
+            // SAFETY: `dlsym` on that handle with a NUL-terminated constant name.
+            symbol = unsafe { libc::dlsym(handle, c"sandbox_check".as_ptr()) };
+        }
+    }
+    if symbol.is_null() {
+        return None;
+    }
+    // SAFETY: the symbol is `sandbox_check`, whose C signature (variadic) `CheckFn` states; same-size pointers.
+    Some(unsafe { std::mem::transmute::<*mut c_void, CheckFn>(symbol) })
+}
+
+/// Whether `pid` is in a sandbox: `sandbox_check` without an operation
+/// answers a positive number for a sandboxed process and 0 for any other.
+pub fn check_sandboxed(check: CheckFn, pid: i32) -> super::outside::Check {
+    // SAFETY: a null operation with `SANDBOX_FILTER_NONE` takes no further argument.
+    let rc = unsafe { check(pid, std::ptr::null(), FILTER_NONE | CHECK_NO_REPORT) };
+    match rc {
+        r if r > 0 => super::outside::Check::Yes,
+        0 => super::outside::Check::No,
+        _ => super::outside::Check::Failed,
+    }
+}
+
+/// Whether the sandbox of `pid` allows the lookup of the mach service `name`:
+/// `Yes` for allowed (0), `No` for denied, `Failed` for an error.
+pub fn check_lookup(check: CheckFn, pid: i32, name: &str) -> super::outside::Check {
+    let Ok(name) = CString::new(name) else {
+        return super::outside::Check::Failed;
+    };
+    // SAFETY: `name` is a NUL-terminated string that outlives the call; the one variadic
+    // argument is the `const char *` that `SANDBOX_FILTER_GLOBAL_NAME` takes.
+    let rc = unsafe {
+        check(
+            pid,
+            c"mach-lookup".as_ptr(),
+            FILTER_GLOBAL_NAME | CHECK_NO_REPORT,
+            name.as_ptr(),
+        )
+    };
+    match rc {
+        0 => super::outside::Check::Yes,
+        r if r > 0 => super::outside::Check::No,
+        _ => super::outside::Check::Failed,
+    }
+}
+
+/// When `pid` started (`proc_pidinfo`), or `None` when the system will not
+/// say or the process has ended and waits to be reaped (nothing can signal it).
+pub fn start_time(pid: i32) -> Option<super::outside::StartTime> {
+    /// `SZOMB` of `<sys/proc.h>`.
+    const SZOMB: u32 = 5;
+    // SAFETY: an all-zero `proc_bsdinfo` is a valid value of a plain C struct of integers.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is `size` bytes long and `size` says so.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::addr_of_mut!(info).cast(),
+            size,
+        )
+    };
+    (written == size && info.pbi_status != SZOMB).then_some(super::outside::StartTime {
+        sec: info.pbi_start_tvsec,
+        usec: info.pbi_start_tvusec,
+    })
 }

@@ -108,6 +108,20 @@ fn start_time_of(pid: u32) -> Option<u64> {
     after.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// Whether the runtime can sweep a worker's members from outside the sandbox
+/// (macOS; handoff 011p, item 4), as the last verification found.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum OutsideSweep {
+    /// No worker has been verified (none was started, or this platform has no such sweep).
+    #[default]
+    NotChecked,
+    /// The test told the worker's own process from the runtime: the sweep runs.
+    Verified,
+    /// It did not; the reason. Nothing is signalled from outside, and the
+    /// worker's own sweeper alone runs, as in 0.10.
+    Unavailable(String),
+}
+
 /// What the worker reported at start.
 #[derive(Clone, Debug, Default)]
 pub struct WorkerFacts {
@@ -170,6 +184,11 @@ pub struct Worker {
     /// Each worker's specification carries a marker of its own (see
     /// [`Worker::with_marker`]): on macOS, where the profile names it.
     markers: std::sync::atomic::AtomicBool,
+    /// What the last verification of the sweep from outside the sandbox found.
+    outside: Mutex<OutsideSweep>,
+    /// A test makes the known member's answer wrong (the verification fails).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    verify_wrong: std::sync::atomic::AtomicBool,
     restarts: Mutex<BTreeMap<TaskId, u32>>,
     facts: Mutex<WorkerFacts>,
     /// The execution in flight, for the span of the log thread's lines.
@@ -190,6 +209,8 @@ impl Worker {
                         && std::env::var_os("MIMLYS_PROBE_WORKER_PER_TASK").is_some()),
             ),
             markers: std::sync::atomic::AtomicBool::new(cfg!(target_os = "macos")),
+            outside: Mutex::new(OutsideSweep::NotChecked),
+            verify_wrong: std::sync::atomic::AtomicBool::new(false),
             restarts: Mutex::new(BTreeMap::new()),
             facts: Mutex::new(WorkerFacts::default()),
             reader_span: mimlys_core::log_span::ReaderSpan::new(),
@@ -481,6 +502,7 @@ impl Worker {
                     interpreter_errors,
                 };
                 *self.facts.lock().expect("facts") = live.facts.clone();
+                self.verify_outside(&mut live);
                 self.write_record(&live);
                 Ok(live)
             }
@@ -617,6 +639,52 @@ impl Worker {
         }
         Ok(Some(spec))
     }
+
+    /// What the last verification of the sweep from outside the sandbox found
+    /// (macOS; handoff 011p, item 4): `status` says so when it is unavailable.
+    pub fn outside_sweep(&self) -> OutsideSweep {
+        self.outside.lock().expect("outside").clone()
+    }
+
+    /// Makes the verification of the sweep from outside fail, by making the
+    /// known member's answer wrong; for tests (macOS).
+    pub fn fail_outside_verification_for_test(&self, on: bool) {
+        self.verify_wrong
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The verification at each start (handoff 011p, item 4): with the worker
+    /// just started as the known member and the runtime as the known outsider,
+    /// the test must tell them apart before the runtime relies on it. If it
+    /// does, the worker's end is followed by the sweep from outside; if not,
+    /// the reason is kept for `status`, a line is logged at `warn`, and the
+    /// worker's own sweeper alone runs, as in 0.10. Neither case changes the tier.
+    #[cfg(target_os = "macos")]
+    fn verify_outside(&self, live: &mut Live) {
+        let Some(marker) = live.marker.clone() else {
+            return;
+        };
+        let seam = crate::confine::macos::outside::Seam {
+            wrong_member: self.verify_wrong.load(std::sync::atomic::Ordering::Relaxed),
+        };
+        match crate::confine::macos::outside::verify(live.child.id() as i32, &marker, seam) {
+            Ok(()) => {
+                live.child.arm_outside_sweep();
+                *self.outside.lock().expect("outside") = OutsideSweep::Verified;
+            }
+            Err(reason) => {
+                tracing::warn!(
+                    target: "mimlys_worker",
+                    "the sweep outside the sandbox is unavailable: {reason}"
+                );
+                *self.outside.lock().expect("outside") = OutsideSweep::Unavailable(reason);
+            }
+        }
+    }
+
+    /// No sweep from outside the sandbox on this platform.
+    #[cfg(not(target_os = "macos"))]
+    fn verify_outside(&self, _live: &mut Live) {}
 
     /// Makes each worker's specification carry a marker, or not (it does on
     /// macOS); for tests, which can ask for it on any platform.
