@@ -303,6 +303,7 @@ fn req_pers_013_read_commands_run_no_recovery_and_change_nothing() {
     for args in [
         vec!["task", "list"],
         vec!["task", "show", id.as_str()],
+        vec!["task", "output", id.as_str()],
         vec!["events"],
         vec!["events", id.as_str()],
         vec!["metrics"],
@@ -310,10 +311,14 @@ fn req_pers_013_read_commands_run_no_recovery_and_change_nothing() {
         vec!["promote", id.as_str(), "--patch"],
     ] {
         let (code, stdout, stderr) = env.run(&args);
-        // A task `running` cannot be promoted (it may be changing); every other command answers.
+        // A task `running` cannot be promoted (it may be changing), and a task that ran no
+        // action has no output to show; every other command answers.
         if args[0] == "promote" {
             assert_eq!(code, 1, "{args:?}: {stdout}\n{stderr}");
             assert!(stderr.contains("promote_workspace"), "{stderr}");
+        } else if args.starts_with(&["task", "output"]) {
+            assert_eq!(code, 1, "{args:?}: {stdout}\n{stderr}");
+            assert!(stderr.contains("no action that ran"), "{stderr}");
         } else {
             assert_eq!(code, 0, "{args:?}: {stdout}\n{stderr}");
         }
@@ -355,6 +360,7 @@ fn req_pers_013_a_reader_refuses_a_newer_schema_and_does_not_migrate() {
     for command in [
         vec!["status"],
         vec!["task", "list"],
+        vec!["task", "output", "aaaa"],
         vec!["events"],
         vec!["metrics"],
     ] {

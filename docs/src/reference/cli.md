@@ -4,8 +4,8 @@
 user as the identity recorded on every decision. A command that writes locks
 the data directory while it runs (a second one waits one second and then says
 `store locked by another runtime`). The commands that only read (`status`,
-`events`, `metrics`, `task list`, `task show`, `toolchain list`, `check` and
-`promote --patch`) do not take the lock: they open the store as a reader, so
+`events`, `metrics`, `task list`, `task show`, `task output`, `toolchain list`,
+`check` and `promote --patch`) do not take the lock: they open the store as a reader, so
 they answer while another process runs a task, say so and never say "locked",
 and they change nothing, not even a file: no recovery, no reaping of a leftover
 worker, no migration, no `runtime.started` event. They show what is committed.
