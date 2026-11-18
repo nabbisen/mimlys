@@ -7,7 +7,9 @@
 //! `host_fault`, never as a process failure (REQ-SBX-012).
 
 use crate::interpreters::{Configured, load_verified};
-use crate::protocol::{ClauseState, FrameError, Request, Response, read_frame, write_frame};
+use crate::protocol::{
+    ClauseState, FrameError, Request, Response, frame_limit, read_frame, write_frame,
+};
 use crate::sandbox::{
     ENGINE_VERSION, Interrupt, InterruptReason, Limits, Request as RunRequest, Sandbox,
 };
@@ -467,13 +469,15 @@ fn build_state(
 }
 
 fn serve(state: State) {
+    // The same limit as the runtime's, from the same bound it passed (`--output-bytes`).
+    let limit = frame_limit(state.limits.output_bytes);
     let state = Arc::new(state);
     let (tx, rx): (std::sync::mpsc::Sender<Incoming>, Receiver<Incoming>) = channel();
     let reader_tx = tx.clone();
     std::thread::spawn(move || {
         let mut stdin = std::io::stdin().lock();
         loop {
-            let frame = read_frame::<Request>(&mut stdin);
+            let frame = read_frame::<Request>(&mut stdin, limit);
             let eof = matches!(frame, Err(FrameError::Eof));
             if reader_tx.send(Incoming::Frame(frame)).is_err() || eof {
                 return;
@@ -491,6 +495,14 @@ fn serve(state: State) {
                 }
                 return;
             }
+            Incoming::Frame(Err(FrameError::Version(theirs))) => {
+                // A runtime of another build: refused by name, before any work is taken.
+                eprintln!(
+                    "worker: the runtime speaks protocol version {theirs}, this worker {}; the runtime and the worker must be of the same build",
+                    crate::protocol::PROTOCOL_VERSION
+                );
+                std::process::exit(2);
+            }
             Incoming::Frame(Err(e)) => {
                 eprintln!("worker: protocol error: {e}");
                 std::process::exit(2);
@@ -507,7 +519,7 @@ fn serve(state: State) {
                         .collect(),
                     interpreter_errors: state.interpreter_errors.clone(),
                 };
-                send(&stdout, &response);
+                send(&stdout, &response, limit);
             }
             Incoming::Frame(Ok(Request::Cancel { execution_id })) => {
                 if let Some((id, interrupt)) = &in_flight
@@ -539,6 +551,7 @@ fn serve(state: State) {
                         &Response::Error {
                             detail: "an execution is already in flight (LIM-X2)".into(),
                         },
+                        limit,
                     );
                     continue;
                 }
@@ -592,7 +605,7 @@ fn serve(state: State) {
             }
             Incoming::Done(response) => {
                 in_flight = None;
-                send(&stdout, &response);
+                send(&stdout, &response, limit);
                 if let Response::ExecutionRecord { execution_id, .. } = &*response {
                     crate::trace::line(|| format!("execution {execution_id}: record sent"));
                 }
@@ -604,9 +617,9 @@ fn serve(state: State) {
     }
 }
 
-fn send(stdout: &Arc<Mutex<std::io::Stdout>>, response: &Response) {
+fn send(stdout: &Arc<Mutex<std::io::Stdout>>, response: &Response, limit: usize) {
     let mut out = stdout.lock().expect("stdout");
-    if let Err(e) = write_frame(&mut *out, response) {
+    if let Err(e) = write_frame(&mut *out, response, limit) {
         eprintln!("worker: cannot write a frame: {e}");
         std::process::exit(2);
     }

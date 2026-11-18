@@ -6,7 +6,9 @@
 
 use crate::confine::{ConfinedChild, Confinement, WorkerCommand};
 use crate::interpreters::Configured;
-use crate::protocol::{FrameError, Replay, Request, Response, read_frame, write_frame};
+use crate::protocol::{
+    FrameError, Replay, Request, Response, frame_limit, read_frame, write_frame,
+};
 use mimlys_core::action::{
     EffectView, ExecutionMetrics, FailureCause, HostFaultDetail, Termination,
 };
@@ -213,6 +215,8 @@ struct Live {
     child: ConfinedChild,
     stdin: Box<dyn std::io::Write + Send>,
     frames: Receiver<Result<Response, FrameError>>,
+    /// The largest frame either side accepts, from the bounds in force ([`frame_limit`]).
+    frame_limit: usize,
     facts: WorkerFacts,
     /// The worker's own cgroup, recorded for a later runtime and removed at its end.
     cgroup: Option<PathBuf>,
@@ -493,12 +497,13 @@ impl Worker {
         let stdout = child.take_stdout().ok_or("worker stdout")?;
         let stderr = child.take_stderr().ok_or("worker stderr")?;
         let (tx, frames) = channel();
+        let limit = frame_limit(self.config.limits.output_bytes);
         std::thread::Builder::new()
             .name("mimlys-worker-frames".into())
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
-                    let frame = read_frame::<Response>(&mut reader);
+                    let frame = read_frame::<Response>(&mut reader, limit);
                     let eof = matches!(frame, Err(FrameError::Eof));
                     if tx.send(frame).is_err() || eof {
                         return;
@@ -534,6 +539,7 @@ impl Worker {
             child,
             stdin,
             frames,
+            frame_limit: limit,
             facts: WorkerFacts::default(),
             cgroup: None,
             task: task.map(|e| e.task_id),
@@ -541,7 +547,7 @@ impl Worker {
         };
         tracing::debug!(target: "mimlys_worker", "worker {} started, probing", live.child.id());
         let probing = Instant::now();
-        write_frame(&mut live.stdin, &Request::Probe).map_err(|e| e.to_string())?;
+        write_frame(&mut live.stdin, &Request::Probe, limit).map_err(|e| e.to_string())?;
         match live
             .frames
             .recv_timeout(Duration::from_millis(LIM_X4_WORKER_START_MS))
@@ -596,6 +602,14 @@ impl Worker {
                     .map(|a| format!("; {a}"))
                     .unwrap_or_default();
                 live.child.kill_tree();
+                // A worker of another build is named as that (handoff 004d-4): the runtime
+                // and the worker must speak the same protocol version, and are one install.
+                if let Ok(Err(FrameError::Version(theirs))) = &other {
+                    return Err(format!(
+                        "the worker speaks protocol version {theirs}, this runtime {}; the worker and the runtime must be of the same build",
+                        crate::protocol::PROTOCOL_VERSION
+                    ));
+                }
                 Err(format!("worker probe failed: {other:?}{activity}"))
             }
         }
@@ -675,7 +689,7 @@ impl Worker {
     /// Ends a live worker: a shutdown request, the tree terminated if it does
     /// not end within LIM-O2, its record and its cgroup removed.
     fn end_live(&self, mut l: Live) {
-        let _ = write_frame(&mut l.stdin, &Request::Shutdown);
+        let _ = write_frame(&mut l.stdin, &Request::Shutdown, l.frame_limit);
         if !l.child.wait_within(Duration::from_millis(LIM_O2_CANCEL_MS)) {
             l.child.kill_tree();
         }
@@ -955,7 +969,7 @@ fn run_one(
         read_only: execution.read_only,
         replay: execution.replay.clone(),
     };
-    if write_frame(&mut live.stdin, &request).is_err() {
+    if write_frame(&mut live.stdin, &request, live.frame_limit).is_err() {
         return RunResult {
             outcome: fault(HostFaultDetail::WorkerDied, started, None),
             died: true,
@@ -979,6 +993,7 @@ fn run_one(
                 &Request::Cancel {
                     execution_id: execution.execution_id,
                 },
+                live.frame_limit,
             );
             cancel_sent_at = Some(Instant::now());
         }

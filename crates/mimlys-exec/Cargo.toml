@@ -17,6 +17,8 @@ regex.workspace = true
 globset.workspace = true
 tokio.workspace = true
 bytes = "1"
+# The streams of a record travel as base64 text (protocol version 2); already in the lock through reqwest.
+base64 = "0.22"
 thiserror.workspace = true
 tracing.workspace = true
 wasmtime.workspace = true

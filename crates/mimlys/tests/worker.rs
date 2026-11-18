@@ -70,6 +70,12 @@ struct Fx {
 }
 
 fn fx() -> Fx {
+    fx_with(mimlys_exec::sandbox::Limits::default())
+}
+
+/// The runtime side of a worker with these limits: `output_bytes` is LIM-S4 as configured, which
+/// both sides derive the frame limit from.
+fn fx_with(limits: mimlys_exec::sandbox::Limits) -> Fx {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().join("tree");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -78,7 +84,7 @@ fn fx() -> Fx {
         program: worker_bin(),
         interpreters: vec![],
         confinement: platform(),
-        limits: mimlys_exec::sandbox::Limits::default(),
+        limits,
         spec: None,
         host_tools: vec![],
         record: None,
@@ -591,10 +597,17 @@ struct RawWorker {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
     frames: std::sync::mpsc::Receiver<Result<mimlys_exec::protocol::Response, String>>,
+    /// The frame limit both sides derive from `--output-bytes`.
+    limit: usize,
 }
 
 impl RawWorker {
     fn start() -> Self {
+        Self::start_with(1_048_576)
+    }
+
+    /// A worker whose LIM-S4 is `output_bytes`, as the runtime passes it.
+    fn start_with(output_bytes: usize) -> Self {
         let mut cmd = std::process::Command::new(worker_bin());
         cmd.args([
             "--serve",
@@ -603,7 +616,7 @@ impl RawWorker {
             "--memory-bytes",
             "268435456",
             "--output-bytes",
-            "1048576",
+            &output_bytes.to_string(),
         ])
         .env_clear()
         .env("MIMLYS_WORKER", "1")
@@ -613,14 +626,15 @@ impl RawWorker {
         if let Some(root) = std::env::var_os("SystemRoot") {
             cmd.env("SystemRoot", root);
         }
+        let limit = mimlys_exec::protocol::frame_limit(output_bytes);
         let mut child = cmd.spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
         let mut stdout = child.stdout.take().unwrap();
         let (tx, frames) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             loop {
-                let frame =
-                    mimlys_exec::protocol::read_frame(&mut stdout).map_err(|e| e.to_string());
+                let frame = mimlys_exec::protocol::read_frame(&mut stdout, limit)
+                    .map_err(|e| e.to_string());
                 let end = frame.is_err();
                 if tx.send(frame).is_err() || end {
                     return;
@@ -631,11 +645,12 @@ impl RawWorker {
             child,
             stdin,
             frames,
+            limit,
         }
     }
 
     fn send(&mut self, request: &mimlys_exec::protocol::Request) {
-        mimlys_exec::protocol::write_frame(&mut self.stdin, request).unwrap();
+        mimlys_exec::protocol::write_frame(&mut self.stdin, request, self.limit).unwrap();
     }
 
     /// The next response; a bound far longer than anything it waits for.
@@ -735,4 +750,253 @@ fn req_sched_002_a_worker_refuses_a_second_execution_while_one_is_in_flight() {
         other => panic!("the third execution should have run: {other:?}"),
     }
     worker.send(&Request::Shutdown);
+}
+
+/// A module that writes `out_kib` KiB of `byte` (a WAT data escape: `x`, `\ff`) to standard
+/// output and `err_kib` to standard error, a KiB at a time: exactly what a bound is tested with.
+fn printing(out_kib: u32, err_kib: u32, byte: &str) -> String {
+    let chunk = byte.repeat(1024);
+    let writes = |fd: u32, count: u32| {
+        if count == 0 {
+            return String::new();
+        }
+        format!(
+            "(local.set $i (i32.const 0))
+             (block $done{fd} (loop $again{fd}
+                (br_if $done{fd} (i32.ge_u (local.get $i) (i32.const {count})))
+                (drop (call $fd_write (i32.const {fd}) (i32.const 2048) (i32.const 1) (i32.const 3000)))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $again{fd})))"
+        )
+    };
+    format!(
+        r#"(module
+        (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
+        (memory 1) (export "memory" (memory 0))
+        (data (i32.const 0) "{chunk}")
+        (func (export "_start") (local $i i32)
+            (i32.store (i32.const 2048) (i32.const 0)) (i32.store (i32.const 2052) (i32.const 1024))
+            {out} {err}))"#,
+        out = writes(1, out_kib),
+        err = writes(2, err_kib),
+    )
+}
+
+fn run_printing(
+    fx: &Fx,
+    out_kib: u32,
+    err_kib: u32,
+    byte: &str,
+) -> mimlys_core::spi::ExecutionOutcome {
+    write_module(fx, "print.wasm", &printing(out_kib, err_kib, byte));
+    fx.worker.execute(
+        execution(
+            fx,
+            "run_wasm",
+            serde_json::json!({"module": "print.wasm"}),
+            120_000,
+        ),
+        Cancellation::new(),
+    )
+}
+
+/// REQ-SBX-005, external design §13.1 (handoff 004d-4): through the real worker, a script that
+/// prints exactly its bound on both streams, at the default LIM-S4 and at a configured 4 MiB
+/// and 8 MiB, is carried whole: the record is not refused, nothing is cut, and no limit is
+/// reported. Version 1 of the protocol could not carry more than about 600 KB of text.
+#[test]
+fn req_sbx_005_a_script_that_prints_exactly_its_bound_is_carried_whole() {
+    for bound_kib in [1024u32, 4096, 8192] {
+        let fx = fx_with(mimlys_exec::sandbox::Limits {
+            output_bytes: bound_kib as usize * 1024,
+            ..Default::default()
+        });
+        let out = run_printing(&fx, bound_kib, bound_kib, "x");
+        assert_eq!(
+            out.termination,
+            Termination::Exited { exit_code: 0 },
+            "{bound_kib} KiB"
+        );
+        assert_eq!(out.stdout.len(), bound_kib as usize * 1024);
+        assert_eq!(out.stderr.len(), bound_kib as usize * 1024);
+        assert!(out.stdout.iter().chain(&out.stderr).all(|b| *b == b'x'));
+        assert!(out.notices.is_empty(), "nothing was cut: {:?}", out.notices);
+    }
+}
+
+/// The worker itself lives on after a record of its bound: the same process (not a restart)
+/// answers the next request, at the default and at a configured 4 MiB.
+#[test]
+fn req_sbx_005_the_worker_lives_on_after_a_record_of_its_bound() {
+    use mimlys_exec::protocol::{Request, Response};
+    for bound_kib in [1024u32, 4096] {
+        let fx = fx();
+        write_module(&fx, "print.wasm", &printing(bound_kib, bound_kib, "x"));
+        let e = execution(
+            &fx,
+            "run_wasm",
+            serde_json::json!({"module": "print.wasm"}),
+            120_000,
+        );
+        let mut worker = RawWorker::start_with(bound_kib as usize * 1024);
+        worker.send(&Request::Probe);
+        assert!(matches!(worker.next(), Response::ProbeResult { .. }));
+        let id = e.execution_id;
+        worker.send(&Request::Execute {
+            execution_id: id,
+            action_id: e.action_id,
+            tool: e.tool,
+            arguments: e.arguments,
+            effect: e.effect,
+            deadline_ms: e.deadline_ms,
+            workspace_root: e.workspace_root,
+            read_only: false,
+            replay: None,
+        });
+        match worker.next() {
+            Response::ExecutionRecord {
+                execution_id,
+                termination,
+                stdout,
+                stderr,
+                ..
+            } => {
+                assert_eq!(execution_id, id);
+                assert_eq!(termination, Termination::Exited { exit_code: 0 });
+                assert_eq!(stdout.len(), bound_kib as usize * 1024);
+                assert_eq!(stderr.len(), bound_kib as usize * 1024);
+            }
+            other => panic!("{bound_kib} KiB: the record was expected: {other:?}"),
+        }
+        worker.send(&Request::Probe);
+        assert!(
+            matches!(worker.next(), Response::ProbeResult { .. }),
+            "{bound_kib} KiB: the same worker answers again"
+        );
+        assert!(
+            worker.child.try_wait().unwrap().is_none(),
+            "{bound_kib} KiB: the worker did not exit"
+        );
+    }
+}
+
+/// Bytes that are no text travel as they are: the frame carries bytes, not characters.
+#[test]
+fn req_sbx_005_bytes_that_are_no_text_are_carried_exactly() {
+    let fx = fx();
+    let out = run_printing(&fx, 1024, 0, "\\ff");
+    assert_eq!(out.termination, Termination::Exited { exit_code: 0 });
+    assert_eq!(out.stdout, vec![0xffu8; 1024 * 1024]);
+}
+
+/// External design §13.1 (handoff 004d-4): a worker refuses a request of another protocol
+/// version by name and ends (status 2), before it takes any work; it does not answer in a
+/// version the runtime cannot read.
+#[test]
+fn ed_13_1_a_worker_refuses_a_request_of_another_protocol_version() {
+    use std::io::Write as _;
+    let mut cmd = std::process::Command::new(worker_bin());
+    cmd.args(["--serve"])
+        .env_clear()
+        .env("MIMLYS_WORKER", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", root);
+    }
+    let mut child = cmd.spawn().unwrap();
+    let body = br#"{"version":1,"request":"probe"}"#;
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+    stdin.write_all(body).unwrap();
+    stdin.flush().unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{:?}", out.status);
+    assert!(out.stdout.is_empty(), "it answers nothing");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("protocol version 1") && said.contains("same build"),
+        "{said}"
+    );
+}
+
+/// A script that stands for a worker, on Unix: it answers the probe (in `version`) and then does
+/// what `after` says. The runtime starts it as it starts the worker, with the same arguments,
+/// which it ignores.
+#[cfg(unix)]
+fn fake_worker(fx: &Fx, version: u32, after: &str) -> Arc<Worker> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let body = format!(
+        r#"{{"version":{version},"response":"probe_result","clauses":{{}},"engine_version":"fake","interpreters":{{}},"interpreter_errors":{{}}}}"#
+    );
+    let len = (body.len() as u32).to_be_bytes();
+    let script = format!(
+        "#!/bin/sh\nprintf '\\{:03o}\\{:03o}\\{:03o}\\{:03o}'\nprintf '%s' '{body}'\n{after}\n",
+        len[0], len[1], len[2], len[3]
+    );
+    let path = fx._dir.path().join(format!("fake-worker-{version}.sh"));
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let worker = Worker::new(WorkerConfig {
+        program: path,
+        interpreters: vec![],
+        confinement: platform(),
+        limits: mimlys_exec::sandbox::Limits::default(),
+        spec: None,
+        host_tools: vec![],
+        record: None,
+    });
+    worker.bind_to_task(false);
+    worker
+}
+
+/// External design §13.1 (handoff 004d-4): a frame the runtime refuses (here one that declares
+/// more than the limit in force) ends the execution as `host_fault{worker_died}`, as any broken
+/// frame does; the runtime does not wait for the deadline and does not hang. The test decides
+/// by the outcome: a wait to the deadline would be `deadline`, not `worker_died`.
+#[cfg(unix)]
+#[test]
+fn ed_13_1_a_frame_the_runtime_refuses_ends_as_worker_died() {
+    let fx = fx();
+    // After the probe: a frame that declares 0x7fffffff bytes, then nothing, and no exit.
+    let worker = fake_worker(&fx, 2, "printf '\\177\\377\\377\\377'\nexec sleep 600");
+    let out = worker.execute(
+        execution(
+            &fx,
+            "run_wasm",
+            serde_json::json!({"module": "hello.wasm"}),
+            600_000,
+        ),
+        Cancellation::new(),
+    );
+    assert_eq!(
+        out.termination,
+        Termination::HostFault {
+            detail: HostFaultDetail::WorkerDied
+        }
+    );
+    worker.shutdown();
+}
+
+/// External design §13.1 (handoff 004d-4): a worker of another protocol version is refused at
+/// the handshake, by name, before any work is sent to it: the start fails and says both versions
+/// and that the runtime and the worker must be of the same build.
+#[cfg(unix)]
+#[test]
+fn ed_13_1_a_worker_of_another_protocol_version_is_refused_at_the_handshake() {
+    let fx = fx();
+    let worker = fake_worker(&fx, 1, "exec sleep 600");
+    let error = worker
+        .start()
+        .expect_err("a worker of version 1 is refused");
+    assert!(
+        error.contains("protocol version 1") && error.contains("same build"),
+        "{error}"
+    );
+    assert!(
+        error.contains(&mimlys_exec::protocol::PROTOCOL_VERSION.to_string()),
+        "{error}"
+    );
+    worker.shutdown();
 }
