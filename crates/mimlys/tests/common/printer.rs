@@ -161,3 +161,47 @@ pub fn mimlys(data: &Path, args: &[&str]) -> (i32, String, String) {
     let out = run_bounded(&mut mimlys_command(data, args), data.parent().unwrap());
     (out.code(), out.stdout, out.stderr)
 }
+
+/// A module that writes `out_kib` KiB of `byte` (a WAT data escape: `x`, `\ff`) to standard
+/// output and `err_kib` KiB to standard error, a KiB at a time: the exact sizes a bound is tested
+/// with, which the text of `printer` cannot carry (a module's data is a few pages).
+pub fn printing(out_kib: u32, err_kib: u32, byte: &str) -> Vec<u8> {
+    let chunk = byte.repeat(1024);
+    let writes = |fd: u32, count: u32| {
+        if count == 0 {
+            return String::new();
+        }
+        format!(
+            "(local.set $i (i32.const 0))
+             (block $done{fd} (loop $again{fd}
+                (br_if $done{fd} (i32.ge_u (local.get $i) (i32.const {count})))
+                (drop (call $fd_write (i32.const {fd}) (i32.const 2048) (i32.const 1) (i32.const 3000)))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $again{fd})))"
+        )
+    };
+    let wat = format!(
+        r#"(module
+        (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
+        (memory 1) (export "memory" (memory 0))
+        (data (i32.const 0) "{chunk}")
+        (func (export "_start") (local $i i32)
+            (i32.store (i32.const 2048) (i32.const 0)) (i32.store (i32.const 2052) (i32.const 1024))
+            {out} {err}))"#,
+        out = writes(1, out_kib),
+        err = writes(2, err_kib),
+    );
+    wat::parse_str(wat).unwrap()
+}
+
+/// A scope that holds `printing(out_kib, err_kib, byte)` as the module `script` runs.
+pub fn scope_printing(out_kib: u32, err_kib: u32, byte: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("tools")).unwrap();
+    std::fs::write(
+        dir.path().join("tools/print.wasm"),
+        printing(out_kib, err_kib, byte),
+    )
+    .unwrap();
+    dir
+}

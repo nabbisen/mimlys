@@ -286,7 +286,10 @@ enum TaskCommand {
     /// The model reads a cut of a long result and of a long output; mimlys keeps the whole of
     /// each for you, and this command shows it. Without a flag it says what the action has (its
     /// result, its standard output, its standard error) with the size of each, whether the model
-    /// read a cut of it, and the flag that shows the whole. With a flag it prints that copy
+    /// read a cut of it, and the flag that shows the whole. A tool that printed more than mimlys
+    /// keeps (a script's `output_bytes`, 1 MiB by default; a host tool's 4 MiB) has a whole copy
+    /// that is itself a cut of what it printed, the first bytes: the index says so and says how
+    /// many it kept. With a flag it prints that copy
     /// alone, exactly as stored (the result as JSON), so that it can be piped; on a terminal a
     /// carriage return that ends no line is shown as `\r`, so that no text can hide what
     /// precedes it on its line, and the last line is ended. The action is the task's latest action that

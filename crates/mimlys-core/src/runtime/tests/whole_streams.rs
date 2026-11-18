@@ -4,7 +4,7 @@
 //! a stream that fits writes nothing; the blob is written before the execution's record.
 
 use super::*;
-use crate::limits::{LIM_H4_HOST_OUTPUT_BYTES, LIM_S4_OUTPUT_BYTES};
+use crate::limits::LIM_H4_HOST_OUTPUT_BYTES;
 use crate::observation::{Notice, WholeStreams, sanitize};
 
 const SECRET: &str = "sk-live-0123456789abcdef";
@@ -154,41 +154,86 @@ fn req_pers_005_a_blob_that_cannot_be_written_does_not_lose_the_execution() {
     assert_eq!(action.status, ActionStatus::Succeeded);
 }
 
-/// REQ-PERS-005: the bound is LIM-S4 for a script's stream and LIM-H4 for a host tool's: a text
-/// between the two is stored whole for the host tool, and cut at LIM-S4, on a character boundary,
-/// for a script (never refused: the step goes on).
+/// REQ-PERS-005 (handoff 004d-4): the bound of a stream's whole copy is the bound in force
+/// times three: LIM-S4 as configured for a script (not the constant), LIM-H4 for a host tool. A
+/// byte that is no UTF-8 becomes three bytes of U+FFFD, so the text of a capture that holds its
+/// bound fits, whole; one character more is cut at the bound, on a character boundary, never
+/// refused (the step goes on).
 #[test]
-fn req_pers_005_the_bound_is_lim_s4_for_a_script_and_lim_h4_for_a_host_tool() {
-    let h = harness();
-    let id = h.create();
-    // Three bytes a character: LIM-S4 is not a multiple of three, so the cut moves back.
-    let text = "€".repeat(LIM_S4_OUTPUT_BYTES as usize / 3 + 1000);
-    assert!(text.len() > LIM_S4_OUTPUT_BYTES as usize && text.len() < LIM_H4_HOST_OUTPUT_BYTES);
-    let whole = || WholeStreams {
-        stdout: Some(text.clone()),
-        stderr: None,
-    };
-
-    let (blob, _) = h
-        .runtime
-        .keep_whole_streams(id, crate::host_tool::RUN_HOST_TOOL, whole());
-    let stored = h
-        .persistence
-        .get_blob(blob.expect("a host tool's stream"))
-        .unwrap();
+fn req_pers_005_the_bound_is_three_times_the_capture_bound_in_force() {
+    const MIB: usize = 1024 * 1024;
+    let h3 = LIM_H4_HOST_OUTPUT_BYTES * 3;
+    assert_eq!(WholeStreams::bound_bytes("run_script", MIB), 3 * MIB);
+    assert_eq!(WholeStreams::bound_bytes("run_wasm", 4 * MIB), 12 * MIB);
     assert_eq!(
-        stored.len(),
-        text.len(),
-        "a host tool's stream is stored whole"
+        WholeStreams::bound_bytes(crate::host_tool::RUN_HOST_TOOL, MIB),
+        h3
     );
+    assert_eq!(
+        WholeStreams::bound_bytes(crate::host_tool::RUN_HOST_TOOL, 64 * MIB),
+        h3,
+        "a host tool's bound is LIM-H4, whatever LIM-S4 is"
+    );
+    for (tool, configured, capture) in [
+        ("run_script", MIB, MIB),
+        ("run_script", 4 * MIB, 4 * MIB),
+        (
+            crate::host_tool::RUN_HOST_TOOL,
+            MIB,
+            LIM_H4_HOST_OUTPUT_BYTES,
+        ),
+    ] {
+        let mut h = harness();
+        h.runtime.deps.output_bytes = configured;
+        let id = h.create();
+        // The text of a capture of `capture` bytes, every one of them replaced: three bytes each.
+        let whole = |chars: usize| WholeStreams {
+            stdout: Some("\u{FFFD}".repeat(chars)),
+            stderr: None,
+        };
+        let (blob, _) = h.runtime.keep_whole_streams(id, tool, whole(capture));
+        let stored = h
+            .persistence
+            .get_blob(blob.expect("a stream within its bound"))
+            .unwrap();
+        assert_eq!(stored.len(), 3 * capture, "{tool} at {configured}: whole");
+        // One character more is cut at the bound, and the cut is on a character boundary.
+        let (blob, _) = h.runtime.keep_whole_streams(id, tool, whole(capture + 1));
+        let stored = h.persistence.get_blob(blob.unwrap()).unwrap();
+        assert_eq!(stored.len(), 3 * capture, "{tool} at {configured}: cut");
+        assert!(String::from_utf8(stored).is_ok());
+    }
+}
 
-    let (blob, _) = h.runtime.keep_whole_streams(id, "run_script", whole());
-    let stored = h
-        .persistence
-        .get_blob(blob.expect("a script's stream"))
-        .unwrap();
-    assert!(stored.len() <= LIM_S4_OUTPUT_BYTES as usize);
-    assert!(stored.len() > LIM_S4_OUTPUT_BYTES as usize - 3);
-    let stored = String::from_utf8(stored).expect("cut on a character boundary");
-    assert!(text.starts_with(&stored));
+/// REQ-PERS-005 (handoff 004d-4): a capture of invalid bytes that holds its bound (here a script's
+/// 1 MiB, every byte U+FFFD as text, three times the bytes) is stored whole, through the whole
+/// path of an execution, and the notice that says the capture was cut is the observation's,
+/// naming the bytes kept.
+#[test]
+fn req_pers_005_invalid_bytes_up_to_the_bound_are_stored_whole() {
+    const MIB: usize = 1024 * 1024;
+    let mut outcome = ExecutionOutcome::succeeded(json!({}), 3);
+    outcome.stdout = vec![0xffu8; MIB];
+    outcome.notices = vec![Notice::OutputTruncated {
+        stream: crate::observation::Stream::Stdout,
+        total_bytes: MIB as u64,
+        captured_bytes: Some(MIB as u64),
+    }];
+    let (h, id) = run(outcome);
+    let execution = execution_of(&h, id);
+    let blob = execution.stdout_blob.expect("a blob");
+    let stored = h.persistence.get_blob(blob).unwrap();
+    assert_eq!(stored.len(), 3 * MIB, "the replaced text, whole");
+    assert!(
+        String::from_utf8(stored)
+            .unwrap()
+            .chars()
+            .all(|c| c == '\u{FFFD}')
+    );
+    let observation = h.persistence.load_observations(id).unwrap().remove(0);
+    assert!(observation.notices.contains(&Notice::OutputTruncated {
+        stream: crate::observation::Stream::Stdout,
+        total_bytes: MIB as u64,
+        captured_bytes: Some(MIB as u64),
+    }));
 }

@@ -361,6 +361,7 @@ impl Loop {
             probe: mimlys_core::confine::Probe::unavailable("no backend in tests"),
             secrets: vec![],
             context_chars: mimlys_core::limits::LIM_C1_CONTEXT_CHARS,
+            output_bytes: mimlys_core::limits::LIM_S4_OUTPUT_BYTES as usize,
         })
         .unwrap();
         Self {

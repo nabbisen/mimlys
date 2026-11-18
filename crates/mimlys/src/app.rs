@@ -894,6 +894,7 @@ impl App {
             probe: probe.clone(),
             secrets: loaded.secrets.clone(),
             context_chars: config.backend.context_chars,
+            output_bytes: config.sandbox.output_bytes as usize,
         })?;
         runtime.record_started()?;
         if orphans > 0 {

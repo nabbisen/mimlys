@@ -67,6 +67,11 @@ pub struct Outcome {
     pub stdout: Vec<u8>,
     /// Captured standard error, at most LIM-S4.
     pub stderr: Vec<u8>,
+    /// Whether the program wrote more to standard output than the capture holds (a stream of
+    /// exactly its bound is whole).
+    pub stdout_cut: bool,
+    /// The same for standard error.
+    pub stderr_cut: bool,
     /// Accounting (REQ-SBX-011).
     pub metrics: ExecutionMetrics,
 }
@@ -177,6 +182,8 @@ impl Sandbox {
             },
             stdout: out,
             stderr: errs,
+            stdout_cut: stdout.was_cut(),
+            stderr_cut: stderr.was_cut(),
         }
     }
 
@@ -367,6 +374,8 @@ fn host_fault(
         termination: Termination::HostFault { detail },
         stdout: stdout.contents(),
         stderr: stderr.contents(),
+        stdout_cut: stdout.was_cut(),
+        stderr_cut: stderr.was_cut(),
         metrics: ExecutionMetrics {
             wall_ms: started.elapsed().as_millis() as i64,
             fuel: None,

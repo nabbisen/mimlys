@@ -210,6 +210,28 @@ fn main() {
             eprintln!("done");
             0
         }
+        // `fill <bytes> <hex>`: writes exactly `bytes` bytes of the byte `hex` to standard
+        // output, and nothing else: what a bound is tested with (handoff 004d-4).
+        Some("fill") => {
+            use std::io::Write;
+            let want: usize = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+            let byte = args
+                .get(2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+                .unwrap_or(b'x');
+            let chunk = vec![byte; 8192];
+            let mut out = std::io::stdout().lock();
+            let mut written = 0usize;
+            while written < want {
+                let n = chunk.len().min(want - written);
+                if out.write_all(&chunk[..n]).is_err() {
+                    break;
+                }
+                written += n;
+            }
+            let _ = out.flush();
+            0
+        }
         Some("cwd") => {
             println!(
                 "{}",

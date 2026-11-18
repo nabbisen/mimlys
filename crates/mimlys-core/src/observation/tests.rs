@@ -64,7 +64,8 @@ fn ed_8_observation_from_outcome() {
     assert!(o.notices.contains(&Notice::EntriesTruncated { total: 900 }));
     assert!(o.notices.contains(&Notice::OutputTruncated {
         stream: Stream::Stdout,
-        total_bytes: big.len() as u64
+        total_bytes: big.len() as u64,
+        captured_bytes: None,
     }));
     assert!(o.notices.contains(&Notice::InvalidUtf8Replaced {
         stream: Stream::Stderr
@@ -389,4 +390,46 @@ fn req_pers_005_a_prefix_within_a_bound_ends_on_a_character_boundary() {
     assert_eq!(prefix_within_bytes("a€b", 4), "a€");
     assert_eq!(prefix_within_bytes("€", 2), "");
     assert_eq!(prefix_within_bytes("", 0), "");
+}
+
+/// Handoff 004d-4: the notice that says a tool printed more than the capture holds names the
+/// bytes kept (`captured_bytes`), and only that notice does: the notice of an excerpt's cut, and
+/// every notice a store of 0.11 holds, have none, and read as before.
+#[test]
+fn req_pers_005_the_capture_cut_notice_names_the_bytes_kept_and_old_records_read_as_before() {
+    let cut = Notice::OutputTruncated {
+        stream: Stream::Stdout,
+        total_bytes: 5_000_000,
+        captured_bytes: Some(4_194_304),
+    };
+    let json = serde_json::to_value(&cut).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"code": "output_truncated", "stream": "stdout",
+            "total_bytes": 5_000_000, "captured_bytes": 4_194_304})
+    );
+    let excerpt = Notice::OutputTruncated {
+        stream: Stream::Stdout,
+        total_bytes: 4_194_304,
+        captured_bytes: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&excerpt).unwrap(),
+        serde_json::json!({"code": "output_truncated", "stream": "stdout", "total_bytes": 4_194_304}),
+        "no field where nothing was cut by the capture"
+    );
+    let old: Notice = serde_json::from_value(
+        serde_json::json!({"code": "output_truncated", "stream": "stderr", "total_bytes": 52213}),
+    )
+    .unwrap();
+    assert_eq!(
+        old,
+        Notice::OutputTruncated {
+            stream: Stream::Stderr,
+            total_bytes: 52213,
+            captured_bytes: None
+        }
+    );
+    let back: Notice = serde_json::from_value(json).unwrap();
+    assert_eq!(back, cut);
 }

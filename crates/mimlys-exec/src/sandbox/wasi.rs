@@ -28,6 +28,7 @@ impl BoundedOutput {
         Self {
             captured: Arc::new(Captured {
                 bytes: std::sync::Mutex::new(Vec::new()),
+                cut: std::sync::atomic::AtomicBool::new(false),
             }),
             capacity,
             interrupt,
@@ -39,12 +40,21 @@ impl BoundedOutput {
         self.captured.bytes.lock().expect("capture lock").clone()
     }
 
+    /// Whether the program wrote more than the capture holds: a stream of exactly its bound is
+    /// whole, and is not cut.
+    pub fn was_cut(&self) -> bool {
+        self.captured.cut.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn push(&self, bytes: &[u8]) -> Result<(), ()> {
         let mut buf = self.captured.bytes.lock().expect("capture lock");
         let room = self.capacity.saturating_sub(buf.len());
         if bytes.len() > room {
             buf.extend_from_slice(&bytes[..room]);
             drop(buf);
+            self.captured
+                .cut
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             self.interrupt.fire(InterruptReason::OutputLimit);
             return Err(());
         }

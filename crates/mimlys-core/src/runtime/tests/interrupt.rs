@@ -277,6 +277,7 @@ impl Rig {
                 probe: crate::confine::Probe::unavailable("no backend in tests"),
                 secrets: vec![],
                 context_chars: crate::limits::LIM_C1_CONTEXT_CHARS,
+                output_bytes: crate::limits::LIM_S4_OUTPUT_BYTES as usize,
             })
             .unwrap(),
         );

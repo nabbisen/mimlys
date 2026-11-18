@@ -304,7 +304,7 @@ host tool printed to standard output or standard error (the first 3 000 and the 
 with the middle left out) and at most 8 000 characters of an external tool's result. mimlys
 keeps the whole of each for you: a stream's whole text as a file under `blobs/` (cleaned of
 invisible characters and with your configured secrets redacted, as the excerpt is, so no secret
-is on the disk through it; up to 1 MiB for a script's stream and 4 MiB for a host tool's), a
+is on the disk through it), a
 result's in the task's record. `mimlys task output` shows them, and none of this changes
 anything:
 
@@ -317,7 +317,7 @@ mimlys task output <task> --result
 Without a flag it says, for the task's latest action that ran (name another by its id or at
 least four characters of it), what it has: its result, its standard output and its standard
 error, each with its size, whether the model read a cut of it, and the flag that shows the
-whole. With `--stdout`, `--stderr` or `--result` it prints that copy alone, exactly as stored,
+whole. A tool prints more than mimlys keeps only when it prints past `[sandbox] output_bytes` (a script's stream; 1 MiB by default, and the script is ended) or 4 MiB (a host tool's; it is read to its end and the rest is dropped): what was kept is the first bytes it printed, and the index says that the tool printed more than mimlys keeps and how many bytes it kept (`capture_cut` and `captured_bytes` in JSON). With `--stdout`, `--stderr` or `--result` it prints that copy alone, exactly as stored,
 so that it can go through a pipe (`mimlys task output <task> --stdout | less`); the result is
 printed as JSON. On a terminal a carriage return that ends no line is shown as `\r`, so that no
 text can hide what precedes it on its line (a tool that prints `all is well\r` over a line

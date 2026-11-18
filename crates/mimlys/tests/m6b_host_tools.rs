@@ -96,7 +96,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tools_dir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle", "exit", "stdin-read", "list"]
+allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle", "exit", "stdin-read", "list", "fill"]
 arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
 allow_paths = true
 max_args = 3
@@ -2202,4 +2202,47 @@ fn req_conf_006_a_junction_in_place_of_a_runtime_directory_stops_the_start() {
         );
         std::fs::remove_dir(&dir).unwrap();
     }
+}
+
+/// REQ-PERS-005, LIM-H4 (handoff 004d-4), Windows: a host tool that prints exactly LIM-H4 (4 MiB) in
+/// the AppContainer and the job is carried whole by the worker (its frame follows the bounds in
+/// force): the execution ends `exited`, the task completes, and the one blob holds every byte.
+/// The worker that could not send more than about 600 KB of text ended the execution instead
+/// (0.11 and earlier).
+#[test]
+fn req_pers_005_a_host_tool_that_prints_exactly_its_bound_is_carried_whole() {
+    let bound = mimlys_core::limits::LIM_H4_HOST_OUTPUT_BYTES;
+    let env = Env::new(
+        &[probe(&["fill", &bound.to_string(), "78"]), complete()],
+        "",
+    )
+    .ready();
+    let (tier, _) = clauses(&env);
+    assert_eq!(tier, "full");
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "print its bound",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(
+        obs[0]["payload"]["termination"],
+        "exited",
+        "{}",
+        account(&obs[..1])
+    );
+    let blobs: Vec<_> = std::fs::read_dir(env.data.path().join("data/blobs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(blobs.len(), 1, "{blobs:?}");
+    let stored = std::fs::read(&blobs[0]).unwrap();
+    assert_eq!(stored.len(), bound);
+    assert!(stored.iter().all(|b| *b == b'x'));
 }

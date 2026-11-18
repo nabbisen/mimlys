@@ -220,4 +220,6 @@ impl ResourceLimiter for MemoryGuard {
 /// Shared bookkeeping of one execution's streams.
 pub(crate) struct Captured {
     pub(crate) bytes: Mutex<Vec<u8>>,
+    /// Whether a write was cut at the bound: the program wrote more than the capture holds.
+    pub(crate) cut: std::sync::atomic::AtomicBool,
 }
