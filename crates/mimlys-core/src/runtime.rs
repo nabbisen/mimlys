@@ -229,6 +229,14 @@ pub struct IrreversibleAction {
     pub effect: crate::action::EffectKind,
 }
 
+/// The component of `RuntimeError::Unavailable` and of the guarded calls into the model backend
+/// (REQ-SEC-011): the word the command line gives as `detail.component` of an `unavailable` error
+/// (handoff 004d).
+pub const MODEL_BACKEND: &str = "model_backend";
+
+/// The component of the guarded calls into the tool provider.
+pub const TOOL_PROVIDER: &str = "tool_provider";
+
 /// The runtime.
 pub struct Runtime {
     deps: RuntimeDeps,
@@ -482,7 +490,7 @@ impl Runtime {
 
     /// Records `runtime.started` with the tier (`core` in M1).
     pub fn record_started(&self) -> Result<(), RuntimeError> {
-        let backend = self.guard("model_backend", || self.deps.backend.describe())?;
+        let backend = self.guard(MODEL_BACKEND, || self.deps.backend.describe())?;
         self.deps.persistence.append_event(
             &self.event(
                 Actor::Runtime,
