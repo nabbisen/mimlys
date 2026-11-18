@@ -89,7 +89,10 @@ keep.
   (the audit) unless you ask for `--audit`; and the file does not shrink when
   rows go, because the freed space is reused by later rows. mimlys does not
   compact it.
-- **Blobs, temporary files and interpreters** are small beside the others.
+- **Blobs** exist only for a stream that printed more than 4 000 characters, one file
+  each, at most 1 MiB for a script's stream and 4 MiB for a host tool's; a task that runs a
+  noisy tool again and again holds one for each run. They go with the task, and
+  `status --storage` counts them. **Temporary files and interpreters** are small beside the others.
 
 ## Reclaiming space
 
