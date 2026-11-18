@@ -38,6 +38,8 @@ struct Side {
     worker: Arc<Worker>,
     name: &'static str,
     network: bool,
+    /// The live worker's record (`worker.json`): its pid and its marker.
+    record: PathBuf,
 }
 
 fn side(name: &'static str, network: bool) -> Side {
@@ -62,9 +64,10 @@ fn side(name: &'static str, network: bool) -> Side {
             "setsid-sleep".into(),
             "sleep".into(),
             "poll-time".into(),
+            "kill-worker".into(),
         ],
         arg_pattern: Some("[A-Za-z0-9_.-]+".into()),
-        max_args: 2,
+        max_args: 3,
         effect: if network {
             EffectKind::ExternalRead
         } else {
@@ -78,6 +81,7 @@ fn side(name: &'static str, network: bool) -> Side {
         network,
         allow_paths: false,
     };
+    let record = data.path().join("worker.json");
     let spec =
         mimlys::app::confinement_spec(&data_dir, &[], std::slice::from_ref(&declaration), !network);
     let worker = Worker::new(WorkerConfig {
@@ -87,7 +91,7 @@ fn side(name: &'static str, network: bool) -> Side {
         limits: mimlys_exec::sandbox::Limits::default(),
         spec: Some(spec),
         host_tools: vec![declaration],
-        record: None,
+        record: Some(record.clone()),
     });
     // The membership tests run workers on workspaces of their own, and compare
     // two workers of one specification: not workers made per task.
@@ -98,6 +102,7 @@ fn side(name: &'static str, network: bool) -> Side {
         worker,
         name,
         network,
+        record,
     }
 }
 
@@ -453,6 +458,341 @@ fn req_conf_001_the_worker_is_cheap_while_a_tool_sleeps() {
     assert!(
         (cpu1 - cpu0) / wall1.as_secs_f64() < 0.25,
         "the worker uses under a quarter of a core while it watches a tool"
+    );
+    side.worker.shutdown();
+}
+
+/// The live worker's process id and marker, from its record.
+fn record_of(side: &Side) -> (i32, String) {
+    let text = std::fs::read_to_string(&side.record).expect("the live worker's record");
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    (
+        value["pid"].as_i64().expect("pid") as i32,
+        value["marker"]
+            .as_str()
+            .expect("the record holds the worker's marker")
+            .to_owned(),
+    )
+}
+
+/// An outsider the test owns: a process of the user, killed when the test ends.
+struct Outsider(std::process::Child);
+
+impl Drop for Outsider {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn bystander(secs: &str) -> Outsider {
+    Outsider(
+        Command::new("/bin/sleep")
+            .arg(secs)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+/// A process in a sandbox of its own whose profile allows everything (as 25
+/// system processes of a runner do): started outside any confinement by the
+/// probe tool, awaited until `sandbox_check` says it is sandboxed.
+fn permissive_outsider(outside: &mimlys_exec::confine::macos::outside::Outside) -> Outsider {
+    use mimlys_exec::confine::macos::outside::Check;
+    let child = Command::new(probe_tool())
+        .args(["allow-all", "120"])
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let outsider = Outsider(child);
+    assert!(
+        wait_for(Duration::from_secs(60), || outside.sandboxed(pid)
+            == Check::Yes),
+        "the permissive outsider is in a sandbox"
+    );
+    outsider
+}
+
+/// REQ-CONF-009 / audit A-21 (handoff 011p, ROADMAP's "done when"): a tool that
+/// kills the worker's sweeper and then the worker leaves its tree (a child, a
+/// re-parented orphan and a writer of the workspace) alive in the sandbox, and
+/// the **runtime**, outside it, sweeps that tree when the worker ends, within
+/// LIM-O2 (the sweep runs inside `execute`, before it returns): afterwards
+/// nothing of the tool runs and the workspace receives no write. No outsider is
+/// touched: an unsandboxed process of the user, a sandboxed process that
+/// allows everything and another worker's member all survive. The mutation: the
+/// outside sweep not run leaves the tree, because the only thing that would
+/// have ended it, the sweeper, is dead.
+#[test]
+fn req_conf_009_the_runtime_sweeps_a_tree_whose_sweeper_and_worker_a_tool_killed() {
+    let test = "req_conf_009_the_runtime_sweeps_a_tree_whose_sweeper_and_worker_a_tool_killed";
+    use mimlys_exec::confine::macos::outside::{Outside, sweeps_run};
+    let main = side("main_tool", false);
+    if skip_without_seatbelt(test, &main) {
+        return;
+    }
+    let other = side("fetch_tool", true);
+    let (secs, orphan, other_secs) = ("2361", "2362", "2364");
+    for pattern in [
+        format!("^/bin/sleep {secs}$"),
+        format!("^/bin/sleep {orphan}$"),
+        format!("^/bin/sleep {other_secs}$"),
+        "echo x >> writer.log".to_owned(),
+    ] {
+        for pid in matching(&pattern) {
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+    }
+    main.worker.start().expect("the worker starts");
+    assert_eq!(
+        main.worker.outside_sweep(),
+        mimlys_exec::worker::OutsideSweep::Verified,
+        "the test tells a member from an outsider on this machine"
+    );
+    let (_, marker) = record_of(&main);
+    let outside = Outside::resolve().expect("sandbox_check");
+    let user_process = bystander("2363");
+    let permissive = permissive_outsider(&outside);
+    let cancel = Cancellation::new();
+    let other_run = other.run(&["setsid-sleep", other_secs], &cancel);
+    let other_sleeper = format!("^/bin/sleep {other_secs}$");
+    assert!(
+        wait_for(Duration::from_secs(60), || !matching(&other_sleeper)
+            .is_empty()),
+        "the other worker's tool runs"
+    );
+    let sleeper = format!("^/bin/sleep {secs}$");
+    let orphan_sleeper = format!("^/bin/sleep {orphan}$");
+    let writer = "echo x >> writer.log";
+    let run = main.run(&["kill-worker", secs, "writer.log"], &cancel);
+    let outcome = run.join().unwrap();
+    assert_eq!(
+        outcome.termination,
+        Termination::HostFault {
+            detail: HostFaultDetail::WorkerDied
+        },
+        "the tool killed its worker"
+    );
+    // Within LIM-O2 and the runtime's own grace (five times the limit): the sweep
+    // ran inside `execute`, so the tree is gone as soon as it returned.
+    let bound = Duration::from_millis(LIM_O2_CANCEL_MS + LIM_H6_TRACK_INTERVAL_MS + 250);
+    let gone = wait_for(bound * 5, || {
+        matching(&sleeper).is_empty()
+            && matching(&orphan_sleeper).is_empty()
+            && matching(writer).is_empty()
+            && matching("mimlys-probe-tool kill-worker").is_empty()
+    });
+    assert!(
+        gone,
+        "the tool's tree is left after its worker was killed: sleeper {:?}, orphan {:?}, writer {:?}, tool {:?}",
+        matching(&sleeper),
+        matching(&orphan_sleeper),
+        matching(writer),
+        matching("mimlys-probe-tool kill-worker")
+    );
+    assert!(
+        sweeps_run(&marker) >= 1,
+        "the runtime swept the worker's sandbox from outside"
+    );
+    // No write after the sweep: the writer is gone, so the file no longer grows.
+    let log = main.tree.join("writer.log");
+    let size = || std::fs::metadata(&log).map_or(0, |m| m.len());
+    let before = size();
+    assert!(
+        before >= 6,
+        "the writer wrote while the tool lived ({before})"
+    );
+    assert!(
+        !wait_for(Duration::from_millis(400), || size() != before),
+        "the workspace received a write after the sweep"
+    );
+    // Nobody else was touched.
+    assert!(
+        !matching(&other_sleeper).is_empty(),
+        "another worker's member survived the sweep"
+    );
+    for (what, outsider) in [
+        ("a process of the user", &user_process),
+        ("a sandboxed process that allows everything", &permissive),
+    ] {
+        assert!(
+            pid_alive(outsider.0.id() as i32),
+            "{what} was signalled by the sweep"
+        );
+    }
+    cancel.cancel();
+    let _ = other_run.join();
+    main.worker.shutdown();
+    other.worker.shutdown();
+}
+
+/// Whether a process is alive (signal 0).
+fn pid_alive(pid: i32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// REQ-CONF-009 (handoff 011p; the owner's condition): the test that finds a
+/// worker's members from outside fails if `sandbox_check` stops telling a member
+/// from an outsider. Two live workers, each with a marker of its own: a worker
+/// and a tool of its own are members of its sandbox and of no other's; the test
+/// process itself (the runtime) and a sandboxed process that allows every lookup
+/// (marker and canary both allowed: what the marker alone cannot tell, spike
+/// M1) are members of neither.
+#[test]
+fn req_conf_009_sandbox_check_tells_a_member_from_an_outsider() {
+    use mimlys_exec::confine::macos::outside::{Check, Outside};
+    let test = "req_conf_009_sandbox_check_tells_a_member_from_an_outsider";
+    let a = side("main_tool", false);
+    if skip_without_seatbelt(test, &a) {
+        return;
+    }
+    let b = side("fetch_tool", true);
+    a.worker.start().expect("worker A starts");
+    b.worker.start().expect("worker B starts");
+    let ((pid_a, marker_a), (pid_b, marker_b)) = (record_of(&a), record_of(&b));
+    assert_ne!(marker_a, marker_b, "each worker has a marker of its own");
+    let outside = Outside::resolve().expect("sandbox_check is in this macOS");
+    let own = std::process::id() as i32;
+    // The controls: the workers are in a sandbox, the test process is not.
+    assert_eq!(outside.sandboxed(pid_a), Check::Yes);
+    assert_eq!(outside.sandboxed(pid_b), Check::Yes);
+    assert_eq!(outside.sandboxed(own), Check::No);
+    // A member is a member of its own sandbox only.
+    assert!(outside.is_member(&marker_a, pid_a), "A's worker is A's");
+    assert!(outside.is_member(&marker_b, pid_b), "B's worker is B's");
+    assert!(
+        !outside.is_member(&marker_b, pid_a),
+        "A's worker is not B's"
+    );
+    assert!(
+        !outside.is_member(&marker_a, pid_b),
+        "B's worker is not A's"
+    );
+    // The runtime is no member of either.
+    assert!(!outside.is_member(&marker_a, own));
+    assert!(!outside.is_member(&marker_b, own));
+    // A tool of A, and the sleeper it leaves re-parented, are A's.
+    let secs = "2365";
+    let cancel = Cancellation::new();
+    let run = a.run(&["setsid-sleep", secs], &cancel);
+    let sleeper = format!("^/bin/sleep {secs}$");
+    let tool = format!("mimlys-probe-tool setsid-sleep {secs}$");
+    assert!(
+        wait_for(Duration::from_secs(60), || {
+            !matching(&sleeper).is_empty() && !matching(&tool).is_empty()
+        }),
+        "the tool and its sleeper run"
+    );
+    for pid in [matching(&sleeper)[0] as i32, matching(&tool)[0] as i32] {
+        assert!(outside.is_member(&marker_a, pid), "{pid} is A's");
+        assert!(!outside.is_member(&marker_b, pid), "{pid} is not B's");
+    }
+    // A sandboxed process that allows everything: marker and canary both allowed.
+    let permissive = permissive_outsider(&outside);
+    let pp = permissive.0.id() as i32;
+    assert_eq!(
+        outside.allows_lookup(pp, &marker_a),
+        Check::Yes,
+        "the control: its sandbox allows the marker"
+    );
+    assert_eq!(
+        outside.allows_lookup(pp, &mimlys_exec::confine::macos::canary_of(&marker_a)),
+        Check::Yes,
+        "the control: and the canary"
+    );
+    assert!(
+        !outside.is_member(&marker_a, pp) && !outside.is_member(&marker_b, pp),
+        "a sandbox that allows every lookup is no worker's"
+    );
+    cancel.cancel();
+    let _ = run.join();
+    a.worker.shutdown();
+    b.worker.shutdown();
+}
+
+/// REQ-CONF-009 (handoff 011p, item 4): the verification fails (the known
+/// member's answer is made wrong): `outside_sweep` says why, the tier is not
+/// touched, the worker's own sweeper still sweeps a worker that is killed, and
+/// the sweep from outside is never run for it. The mutation: the verification
+/// skipped, which would sweep from outside with a test nobody checked.
+#[test]
+fn req_conf_009_a_failed_verification_leaves_the_sweeper_alone_and_says_so() {
+    let test = "req_conf_009_a_failed_verification_leaves_the_sweeper_alone_and_says_so";
+    let side = side("main_tool", false);
+    if skip_without_seatbelt(test, &side) {
+        return;
+    }
+    side.worker.fail_outside_verification_for_test(true);
+    side.worker.start().expect("the worker starts all the same");
+    match side.worker.outside_sweep() {
+        mimlys_exec::worker::OutsideSweep::Unavailable(why) => {
+            assert!(why.contains("does not find the worker"), "{why}");
+        }
+        other => panic!("the verification should have failed: {other:?}"),
+    }
+    let (_, marker) = record_of(&side);
+    let secs = "2366";
+    for pid in matching(&format!("^/bin/sleep {secs}$")) {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+    let cancel = Cancellation::new();
+    let run = side.run(&["setsid-sleep", secs], &cancel);
+    let sleeper = format!("^/bin/sleep {secs}$");
+    let tool = format!("mimlys-probe-tool setsid-sleep {secs}$");
+    assert!(
+        wait_for(Duration::from_secs(60), || {
+            !matching(&sleeper).is_empty() && !matching(&tool).is_empty()
+        }),
+        "the tool and its sleeper run"
+    );
+    let tool_pid = matching(&tool)[0];
+    let worker_pid = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &tool_pid.to_string()])
+        .output()
+        .unwrap();
+    let worker_pid = String::from_utf8_lossy(&worker_pid.stdout)
+        .trim()
+        .to_owned();
+    assert!(
+        Command::new("kill")
+            .args(["-KILL", &worker_pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let outcome = run.join().unwrap();
+    assert_eq!(
+        outcome.termination,
+        Termination::HostFault {
+            detail: HostFaultDetail::WorkerDied
+        }
+    );
+    // The in-sandbox sweeper, the first layer, ends the tree, as in 0.10.
+    let bound = Duration::from_millis(LIM_O2_CANCEL_MS + LIM_H6_TRACK_INTERVAL_MS + 250);
+    assert!(
+        wait_for(bound * 5 + Duration::from_secs(30), || {
+            matching(&sleeper).is_empty() && matching(&tool).is_empty()
+        }),
+        "the worker's own sweeper did not end the tree"
+    );
+    assert_eq!(
+        mimlys_exec::confine::macos::outside::sweeps_run(&marker),
+        0,
+        "nothing was swept from outside with a test that did not hold"
     );
     side.worker.shutdown();
 }
