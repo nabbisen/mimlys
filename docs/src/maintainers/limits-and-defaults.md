@@ -53,16 +53,17 @@
 | LIM-I16 | Visits of one output validation | 100000 | fixed | Linear in the value once LIM-I15 holds; rypsok's largest answer takes a few hundred (handoff 009g) |
 | LIM-I17 | Bytes kept of one line a server writes on standard error | 1024 bytes | fixed | A server's usual line is a few hundred bytes; the rest is read and discarded to the newline (handoff 009h) |
 | LIM-I18 | Lines of a server's standard error logged in one LIM-O18 window | 50 | fixed | The log path costs about 3 µs per line; a flood writes at most about 60 KB/s, the rest counted in one line (handoff 009h) |
-| LIM-I19 | An external tool's result as the model reads it, serialized | 8000 characters | fixed | LIM-C1 less LIM-I1 leaves 24 000; the fixed segments, a goal and a plan take up to 9 700; the latest step is never compressed (handoff 009i) |
+| LIM-I19 | A tool's result as the model reads it, serialized: an external tool's, and since handoff 013c every built-in tool's, as the last bound of every observation | 8000 characters | fixed | LIM-C1 less LIM-I1 leaves 24 000; the fixed segments, a goal and a plan take up to 9 700; the latest step is never compressed (handoff 009i) |
 | LIM-I20 | One imported tool's rendering to the model, alone | 2000 characters | fixed | A quarter of LIM-I1; the built-in tools render to about 4 200, rypsok's `web_search` to 647 (handoff 009i) |
 | LIM-I21 | Values of one enumeration in an imported tool's input schema | 128 | fixed | LIM-I14's number, so one bound serves both; LIM-I20 bounds their size (handoff 009i) |
+| LIM-I22 | Bytes of one message a server writes on its standard output (one JSON-RPC line), read before it is parsed | 8 MiB | fixed | LIM-W3's size: a server may return what a file the runtime itself reads may hold; past it the message is never held whole, the server is stopped as a server that ended, and the log says why (handoff 013c) |
 
 ## Context
 
 | ID | Parameter | Default | Range | Basis |
 |---|---|---:|---|---|
 | LIM-C1 | Context budget per model request | 32000 characters | 4000 – 1000000 | Measured (M4 report §7, run B, 2026-11-10): at 3.35 characters per token in the `tool_calls` transport, about 9 600 tokens, which with LIM-M2 fits a 16 384-token engine context; the largest request measured was under 12 000 characters; per-backend override |
-| LIM-C2 | Observation excerpt (head + tail) | 4000 characters (3000 + 1000) | 500–64000 | Compiler errors cluster at the tail |
+| LIM-C2 | Observation excerpt (head + tail); also the most `read_file` returns at once (`max_chars`) | 4000 characters (3000 + 1000); `max_chars` at most LIM-I19 | 500–8000 | Compiler errors cluster at the tail; never above LIM-I19, so one excerpt cannot exceed what the model reads of a result (handoff 013c; the ceiling was 64 000, twice LIM-C1) |
 | LIM-C3 | Recent steps kept in full | 6 | 1–50 | Prefix stability |
 | LIM-C4 | Summary of a compressed step | 300 characters | fixed | Rule-based summaries (D-12) |
 | LIM-C5 | Steps of a forked task's history shown as context | 20 | 1–200 | REQ-TASK-004; the decision and outcome of each, no file content |

@@ -417,7 +417,7 @@ All paths are relative to the workspace root; absolute paths and `..` segments t
 
 | Tool | Input | Output | Effect | Milestone |
 |---|---|---|---|---|
-| `read_file` | `path`, `start_line?` (≥ 1), `max_chars?` (≤ LIM-C2 ceiling) | `content`, `truncated`, `total_chars`, `line_range`; `tool_error{line_out_of_range}` with `total_lines` when `start_line` is past the end | `workspace_read` | M1 |
+| `read_file` | `path`, `start_line?` (≥ 1), `max_chars?` (≤ LIM-I19) | `content`, `truncated`, `total_chars`, `line_range`; `tool_error{line_out_of_range}` with `total_lines` when `start_line` is past the end | `workspace_read` | M1 |
 | `write_file` | `path`, `content` (≤ LIM-W3) | `bytes_written`, `created`, `parents_created` (missing parent directories are created) | `workspace_write` | M1 |
 | `replace_in_file` | `path`, `find`, `replace`, `occurrences?` (default 1; 0 = all) | `replaced` | `workspace_write` | M1 |
 | `list_dir` | `path`, `depth?` (1–3) | `entries[]{path, type (file, dir, symlink), size}`, `truncated` (LIM-I7); links are listed without their target and never descended | `workspace_read` | M1 |
@@ -580,7 +580,7 @@ LIM-W1 (read from the latest snapshot at the step boundary), LIM-W2, LIM-W3. `al
 - the bytes by kind (working trees, snapshot objects exclusive and shared, blobs, interpreters, database and WAL, temporary), taken from the store's own records, with only `tmp/`, the interpreters and the database files measured on disk;
 - the tasks that hold the most, with their state and age.
 
-`mimlys task prune [--state …] [--older-than …] [--audit] [--yes]` lists the matching terminal tasks with their footprints, asks once, then deletes each as `task delete` does. It keeps a task whose promotion is still reversible (`kept: promotion reversible`), keeps audits unless `--audit`, and never touches a task that is not terminal.
+`mimlys task prune [--state …] [--older-than …] [--audit] [--yes]` lists the matching terminal tasks with their footprints, asks once, then deletes each as `task delete` does. It keeps a task whose promotion is still reversible (`kept: promotion reversible`), keeps audits unless `--audit`, and never touches a task that is not terminal. The plan also lists, as `no task: left by a refused creation`, each directory of `<data>/workspaces` that no task refers to (a plain name, not a link), with its footprint, and removes it under the same confirmation (handoff 013c).
 ---
 
 ## 15. Context assembly (REQ-CTX-001 to REQ-CTX-010)

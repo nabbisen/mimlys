@@ -131,7 +131,7 @@ The runtime shall run embedded in the client or served by a daemon of the user; 
 ## 5. Task lifecycle
 
 ### REQ-TASK-001 Creation — M1 · T
-`create_task` shall accept a goal of 1 to LIM-D4 characters, a project scope (an existing directory outside the runtime data directory, with optional include patterns), a profile (default from configuration), optional grants within the ceiling, optional budgets within the ceiling, and an optional completion check. It shall create the task in state `created` with a UUID (LIM-U5), record the policy hash, and materialize the workspace (REQ-WS-002). (D-09)
+`create_task` shall accept a goal of 1 to LIM-D4 characters, a project scope (an existing directory outside the runtime data directory, with optional include patterns), a profile (default from configuration), optional grants within the ceiling, optional budgets within the ceiling, and an optional completion check. It shall create the task in state `created` with a UUID (LIM-U5), record the policy hash, and materialize the workspace (REQ-WS-002). A request refused after the workspace was materialized leaves no workspace, whatever refused it (amended 2026-11-18: handoff 013c). (D-09)
 
 ### REQ-TASK-002 States and transitions — M1 · T
 A task shall be in exactly one of `created`, `running`, `waiting_user`, `paused`, `halted`, `recovering`, `completed`, `failed`, `cancelled`. Only the transitions of external design §5 shall be possible; any other request shall be refused with the error kind `state`. (D-02, C-01)
@@ -441,7 +441,7 @@ Everything on disk belongs to one task. `mimlys task delete` shall remove a term
 `mimlys status --storage` shall show the store's path, its filesystem and whether it reflinks, the bytes by kind (working trees, snapshot objects exclusive and shared, blobs, interpreters, database and WAL, temporary) and the tasks that hold the most with their state and age; read-only. (RFC 013)
 
 ### REQ-WS-014 Prune — M7a · T
-`mimlys task prune` shall list the terminal tasks matching `--state` and `--older-than` with their footprints, ask once, then delete each as `task delete` does; it never touches a task that is not terminal or a promotion's backup still needed for reversal (listed `kept: promotion reversible`); audits stay unless `--audit`. (RFC 013)
+`mimlys task prune` shall list the terminal tasks matching `--state` and `--older-than` with their footprints, ask once, then delete each as `task delete` does; it never touches a task that is not terminal or a promotion's backup still needed for reversal (listed `kept: promotion reversible`); audits stay unless `--audit`. It also lists, in the same plan and under the same confirmation, a workspace directory that no task refers to (one an earlier release left when a task was refused after its workspace was made), with its footprint, and removes it (amended 2026-11-18: handoff 013c). (RFC 013)
 
 ---
 
@@ -463,7 +463,7 @@ Compression shall be rule-based: truncation to head and tail, collapsing of repe
 Tool definitions shall be generated from the visible tools, bounded by LIM-I1 in total, pinned per task, and sanitized per REQ-MCP-003 for external tools. One imported tool's rendering, and the values of one enumeration, shall be bounded at import (the tool is unavailable with the reason otherwise), and a grant that would make the visible definitions exceed LIM-I1 shall be refused, naming the tool, so that no step fails for the size of the definitions (amended 2026-11-16: audit A-32).
 
 ### REQ-CTX-006 Observation excerpts — M1 · T
-Observations shall carry excerpts per LIM-C2 with truncation notices; full bounded outputs are stored for the user, not shown to the model: an external tool's whole result as the observation's `full_payload`, bounded by LIM-S4; an output stream as a blob per REQ-PERS-005 (amended 2026-11-17: handoff 009i).
+Observations shall carry excerpts per LIM-C2 with truncation notices; full bounded outputs are stored for the user, not shown to the model: an external tool's whole result as the observation's `full_payload`, bounded by LIM-S4; an output stream as a blob per REQ-PERS-005 (amended 2026-11-17: handoff 009i). Whatever the tool, built-in or external, no observation's payload exceeds LIM-I19 as the model reads it: each tool bounds its own result first, so that its cut says what it means (`read_file`'s `truncated` and `start_line`, a listing's `truncated`), and the runtime bounds every payload last (amended 2026-11-18: handoff 013c).
 
 ### REQ-CTX-007 Secrets never enter the context — M1 · T
 Configured secret values and LIM-W5 content shall be redacted from observations before they enter the context. (REQ-PRIV-002)
@@ -494,7 +494,7 @@ Every task, step, action, approval, question and grant transition and every even
 For every action the runtime shall persist, in order: the proposal with its hash; the validation result; the approval request and decision when required; the authorization with the pre-execution snapshot id (M3); the running intent; the execution record and observation; the terminal status; the step outcome and counters. Execution shall not start before the running intent is durable. (AO §17.1 of the draft)
 
 ### REQ-PERS-005 Blobs — M1 · T
-Outputs beyond LIM-C2 shall be stored as blobs referenced by id and bounded by LIM-S4 or LIM-H4.
+Outputs beyond LIM-C2 shall be stored as blobs referenced by id and bounded by LIM-S4 or LIM-H4. **Not met in 0.11:** the store's blob functions exist, but no output is written to them, so an output stream's excerpt is its only copy; and no command shows a result's `full_payload`. Scheduled for 0.12, with a command that shows the user both (ROADMAP).
 
 ### REQ-PERS-006 Integrity at startup — M1 · T
 At every start (LIM-P5) the runtime shall run the database integrity check and verify the consistency rules CONS-01 to CONS-08 of the external design; on failure it shall refuse to run tasks and name the failing rule. (M-09)
@@ -704,7 +704,7 @@ The core shall call a model only for the step decision. (D-12)
 ## 20. MCP client
 
 ### REQ-MCP-001 Servers as children — M5 · T
-MCP servers are configured by the administrator and spawned over stdio with an allow-listed environment and secrets by reference; they are terminated at runtime exit by closing their standard input and, after LIM-O16 (per server `shutdown_ms`), killing their process group; restarts are bounded by LIM-X3; startup by LIM-O6. (K-05; LIM-O16 from rypsok's letter of 2026-11-11)
+MCP servers are configured by the administrator and spawned over stdio with an allow-listed environment and secrets by reference; they are terminated at runtime exit by closing their standard input and, after LIM-O16 (per server `shutdown_ms`), killing their process group; restarts are bounded by LIM-X3; startup by LIM-O6. A message the server writes on its standard output is read up to LIM-I22 bytes and never held whole past it: the server is then stopped as a server that ended, with the reason in the log (amended 2026-11-18: handoff 013c). (K-05; LIM-O16 from rypsok's letter of 2026-11-11)
 
 ### REQ-MCP-002 Discovery and pinning — M5 · T
 Tool definitions shall be listed at task start, hashed and pinned on the task. A changed definition shall make the tool unavailable for that task with the event `tool.unpinned` until a new task pins it; the change is detected at the next step boundary and named to the model (RFC 009 §7). (R-08, THR-25)

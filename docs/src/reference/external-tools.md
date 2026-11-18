@@ -257,8 +257,8 @@ unavailable, with the reason in `status`, rather than half imported.
   `characters_removed` with the number of characters removed, one
   `content_truncated` with the number of characters of everything cut, however
   many strings it came from. The whole result, cleaned and within 1 MiB (LIM-S4),
-  is kept in the task's record with the observation, as `full_payload`, for you
-  to read there, and is never shown to the model. An error from a tool and a result that is not valid are bounded the
+  is kept in the task's record with the observation, as `full_payload`, and is
+  never shown to the model. No command shows it in 0.11; one comes in 0.12. An error from a tool and a result that is not valid are bounded the
   same way.
 - **Content that is not passed on is said.** When a tool answers without
   `structuredContent`, only its first text block is the result; any other

@@ -92,6 +92,7 @@ The audit's remainder, in three phases (ROADMAP, "Release 0.11"). Each later han
 | 5 | [009i What reaches the model is bounded as a whole](./009i-what-reaches-the-model/implementation-handoff.md) | RFC 009 | — |
 | 6 | [011o Windows: a host tool reaches only its own task](./011o-windows-task-isolation/implementation-handoff.md) | RFC 011 | — |
 | 7 | [011p macOS: the tree is swept from outside the sandbox](./011p-macos-sweep-outside/implementation-handoff.md) | RFC 011 | — |
+| 8 | [013c Release candidate 0.11.0 (part 1: four fixes; part 2: the candidate)](./013c-release-0.11.0/implementation-handoff.md) | — | 1 to 7 |
 
 ## Milestone M5
 
