@@ -38,6 +38,12 @@
 //! outside the sandbox can be neither inspected nor signalled
 //! ([`membership_check`]). Without the profile the same loop would find and
 //! kill every process of the user.
+//!
+//! The worker's own sweeper is a member of its sandbox, so a tool can signal
+//! it and then the worker (audit A-21). The runtime, which is outside every
+//! sandbox, therefore sweeps the worker's members itself whenever the worker
+//! ends and at the next start ([`outside`]): it finds them through the private
+//! `sandbox_check` against the worker's marker, a name only its profile allows.
 
 #[cfg(target_os = "macos")]
 use super::Applied;
@@ -535,8 +541,9 @@ pub struct SweepReport {
 /// members, `SIGKILL` each, repeat until a listing finds none or `grace`
 /// passes (LIM-O2). `list` is `None` when the listing itself fails. A fork
 /// storm converged in 0.16 s when measured; re-parenting cannot escape
-/// membership, and a reused pid of an outsider cannot be hit (the kernel
-/// refuses to signal it).
+/// membership, and, inside the sandbox, a reused pid of an outsider cannot be
+/// hit (the kernel refuses to signal it). The runtime, outside every sandbox,
+/// has no such refusal: its sweep ([`outside`]) signals through a guard.
 pub fn sweep_with(
     grace: std::time::Duration,
     mut list: impl FnMut() -> Option<Vec<Member>>,

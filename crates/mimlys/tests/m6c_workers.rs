@@ -620,12 +620,18 @@ fn req_conf_009_the_runtime_sweeps_a_tree_whose_sweeper_and_worker_a_tool_killed
         !matching(&other_sleeper).is_empty(),
         "another worker's member survived the sweep"
     );
+    // The outsiders are the test's children: one that was killed is a zombie that
+    // signal 0 still reaches, so the answer is the child's own status.
+    let (mut user_process, mut permissive) = (user_process, permissive);
     for (what, outsider) in [
-        ("a process of the user", &user_process),
-        ("a sandboxed process that allows everything", &permissive),
+        ("a process of the user", &mut user_process),
+        (
+            "a sandboxed process that allows everything",
+            &mut permissive,
+        ),
     ] {
         assert!(
-            pid_alive(outsider.0.id() as i32),
+            outsider.0.try_wait().unwrap().is_none(),
             "{what} was signalled by the sweep"
         );
     }
@@ -633,14 +639,6 @@ fn req_conf_009_the_runtime_sweeps_a_tree_whose_sweeper_and_worker_a_tool_killed
     let _ = other_run.join();
     main.worker.shutdown();
     other.worker.shutdown();
-}
-
-/// Whether a process is alive (signal 0).
-fn pid_alive(pid: i32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .is_ok_and(|s| s.success())
 }
 
 /// REQ-CONF-009 (handoff 011p; the owner's condition): the test that finds a
