@@ -82,7 +82,15 @@
 //! `MIMLYS_TESTSERVER_SESSION=1` lists a tool `session` that answers with the
 //! process's id, process group and session (Unix);
 //! `MIMLYS_TESTSERVER_TOOL_LOG=<path>` appends the name of every tool that is
-//! called (a `tools/call` that reaches the server) as a line of the file.
+//! called (a `tools/call` that reaches the server) as a line of the file;
+//! `MIMLYS_TESTSERVER_OVERSIZE=<bytes>` lists a tool `oversize` that answers with
+//! (and a tool `oversize_after`, that answers and then writes the same, as a
+//! notification, when no call is in flight)
+//! one message of `<bytes>` bytes (one line, with its newline, written as fast as
+//! the pipe takes it; the answer is valid: a text of that length), and then
+//! sleeps for an hour, as a server does that does not end when its output is
+//! closed on it, to see what a reader does with a message past LIM-I22 (handoff
+//! 013c).
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -289,6 +297,18 @@ fn tool_list(changed: bool) -> Vec<Value> {
         tools.push(json!({
             "name": "session",
             "description": "The process's id, process group and session.",
+            "inputSchema": {"type": "object", "additionalProperties": false},
+        }));
+    }
+    if std::env::var_os("MIMLYS_TESTSERVER_OVERSIZE").is_some() {
+        tools.push(json!({
+            "name": "oversize",
+            "description": "Answers with one message of the size the server was started with.",
+            "inputSchema": {"type": "object", "additionalProperties": false},
+        }));
+        tools.push(json!({
+            "name": "oversize_after",
+            "description": "Answers, and then writes one message of the size the server was started with.",
             "inputSchema": {"type": "object", "additionalProperties": false},
         }));
     }
@@ -730,6 +750,59 @@ pub fn main() {
                         }
                         let _ = stdout.lock().expect("stdout").flush();
                         std::process::exit(3);
+                    }
+                    "oversize" | "oversize_after"
+                        if std::env::var_os("MIMLYS_TESTSERVER_OVERSIZE").is_some() =>
+                    {
+                        // One message of the given size, written straight to the pipe: the
+                        // answer to this request, a text long enough to make the line (or,
+                        // for `oversize_after`, a notification written after a valid answer,
+                        // so that the call has ended when the message comes). When the client
+                        // stops reading, the write blocks until the process is killed.
+                        let after = name == "oversize_after";
+                        if after {
+                            reply(
+                                json!({"content": [{"type": "text", "text": "{}"}], "structuredContent": {}}),
+                            );
+                        }
+                        let total = std::env::var("MIMLYS_TESTSERVER_OVERSIZE")
+                            .ok()
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(1 << 20);
+                        let (head, tail) = if after {
+                            (
+                                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"data\":\""
+                                    .to_owned(),
+                                "\"}}",
+                            )
+                        } else {
+                            (
+                                format!(
+                                    "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"",
+                                    id.clone().unwrap_or(Value::Null)
+                                ),
+                                "\"}]}}",
+                            )
+                        };
+                        let filler = total.saturating_sub(head.len() + tail.len());
+                        let mut out = stdout.lock().expect("stdout");
+                        let _ = out.write_all(head.as_bytes());
+                        let chunk = vec![b'x'; 64 * 1024];
+                        let mut left = filler;
+                        while left > 0 {
+                            let n = left.min(chunk.len());
+                            if out.write_all(&chunk[..n]).is_err() {
+                                break;
+                            }
+                            left -= n;
+                        }
+                        let _ = out.write_all(tail.as_bytes());
+                        let _ = out.write_all(b"\n");
+                        let _ = out.flush();
+                        // A server that does not end when its output is closed on it: it is
+                        // stopped only by being killed.
+                        drop(out);
+                        std::thread::sleep(Duration::from_secs(3600));
                     }
                     "change_definition" => {
                         changed.store(true, Ordering::SeqCst);

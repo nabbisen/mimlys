@@ -5,7 +5,9 @@
 //! (`notifications/cancelled`, then the kill of the group), and shuts down
 //! by closing the transport and then killing.
 
+use crate::lines::{BoundedLines, LineState};
 use crate::server::{Listed, ServerConfig, ServerInfo};
+use mimlys_core::limits::LIM_I22_SERVER_MESSAGE_BYTES;
 use mimlys_core::spi::Cancellation;
 use rmcp::ClientHandler;
 use rmcp::model::{CallToolRequestParams, ClientRequest, PaginatedRequestParams, ServerResult};
@@ -159,6 +161,9 @@ pub struct Connection {
     dirty: Arc<AtomicBool>,
     /// The calls in flight, for the span of the standard-error reader's lines.
     reader_span: mimlys_core::log_span::ReaderSpan,
+    /// What the reader of the server's standard output knows: whether a message went past
+    /// LIM-I22 and ended the stream, and the most bytes of one message it passed on.
+    lines: Arc<LineState>,
 }
 
 impl Connection {
@@ -199,6 +204,9 @@ impl Connection {
         let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
             return Err("spawn:no_stdio".into());
         };
+        // What the server writes is read through a bound on one message (LIM-I22): past it the
+        // stream ends with an error, before the message is held whole.
+        let (stdout, lines) = BoundedLines::new(stdout, &config.name, LIM_I22_SERVER_MESSAGE_BYTES);
         if let Some(stderr) = stderr {
             // The server outlives the step that started it and serves many
             // calls: each line is written in the span of the call in flight
@@ -255,7 +263,22 @@ impl Connection {
             info,
             dirty,
             reader_span,
+            lines,
         })
+    }
+
+    /// What the reader of the server's standard output knows (a test's seam, and `is_closed`'s).
+    pub fn lines(&self) -> &Arc<LineState> {
+        &self.lines
+    }
+
+    /// A message of the server went past LIM-I22: the stream ended, and the server is stopped
+    /// as one that ended. Its process is still running (it is writing what nobody reads), so it
+    /// is killed with its group now, not at the next start.
+    fn stop_if_a_message_was_too_large(&self) {
+        if self.lines.exceeded() {
+            self.kill();
+        }
     }
 
     /// What the server reported at initialize.
@@ -275,6 +298,7 @@ impl Connection {
 
     /// Whether the transport is gone.
     pub fn is_closed(&self) -> bool {
+        self.stop_if_a_message_was_too_large();
         self.peer.is_transport_closed()
             || self
                 .closer
@@ -379,7 +403,11 @@ impl Connection {
                             is_error: result.is_error.unwrap_or(false),
                         },
                         Ok(_) => CallOutcome::Failed { reason: "response_shape".into() },
-                        Err(e) => CallOutcome::Failed { reason: format!("call:{}", kind_of(&e)) },
+                        Err(e) => {
+                            // A server whose message went past LIM-I22 is a server that ended.
+                            self.stop_if_a_message_was_too_large();
+                            CallOutcome::Failed { reason: format!("call:{}", kind_of(&e)) }
+                        }
                     };
                 }
                 () = tokio::time::sleep(CANCEL_POLL) => {}
