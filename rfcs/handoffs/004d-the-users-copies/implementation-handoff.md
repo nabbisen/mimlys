@@ -83,3 +83,43 @@ Each of these must be killed:
 - the mutations;
 - the proposed JSON shape and component list;
 - the design questions.
+
+## After review: 004d-4
+
+The review of 2026-11-19 (`.git-exclude/reviewed/handoff-004d/README.md`) approved 004d-1 to 004d-3 and landed them. Your finding on the worker's frame is a defect of 0.11 and earlier, and the release cannot claim LIM-S4 or LIM-H4 until it is fixed. It is fixed here, before the spike, with three small items from your questions.
+
+1. **The worker's frame carries what the bounds allow.**
+   - **Today:** `ExecutionRecord`'s `stdout` and `stderr` are `Vec<u8>`, written by `serde_json` as arrays of numbers (three to four characters a byte), while `MAX_FRAME_BYTES` is `2 * LIM-S4 + 64 KiB` (`protocol.rs:120`), which assumes a byte a byte. So a stream above about 600 KB ends the worker. A configured `sandbox.output_bytes` above its default (the runtime passes it as `--output-bytes`, up to 64 MiB) can never be carried, and LIM-H4 (4 MiB) never could.
+   - **The change:**
+     - the streams travel encoded at about a byte a byte (base64, or a binary part of the frame: propose one, with its cost measured);
+     - `PROTOCOL_VERSION` becomes 2;
+     - both sides derive the frame limit from the bounds in force: the configured LIM-S4 and LIM-H4, encoded, twice, plus the record's margin.
+
+     A frame the peer refuses is still `worker_died`, never a hang.
+2. **The whole copy is whole.**
+   - **The blob's bound:** the bound in force (the configured LIM-S4 passed down to the core, not the constant; LIM-H4 for a host tool), times three. A byte the decoding replaces becomes at most three bytes of U+FFFD, so the captured text is never cut again. This is your question 2.
+   - **When the capture itself was cut** (the tool printed more than its bound), say so: the index and the JSON report it (for example `capture_cut: true` with the bytes kept). The worker knows when it stopped capturing; carry that in the record. Propose the field.
+3. **`--attempt N`** (your question 5). Default: the latest. The index names the attempts the action has, so that "what did it print when it failed?" has an answer.
+
+**Tests (by state):**
+- **Through the real worker:**
+  - a script that prints exactly its bound, at the default LIM-S4 and at a configured 4 MiB;
+  - a host tool that prints LIM-H4 (Linux, and the Windows and macOS jobs through `m6b` and `m6c`).
+
+  Each is stored whole, the worker lives on, and the task completes.
+- **A tool that prints past its bound:** the copy holds the bound and `capture_cut` says so.
+- **Invalid bytes up to the bound** are stored whole.
+- **`--attempt`** on an action retried once, and an attempt that does not exist.
+
+**Mutations:** each of these must be killed:
+- the old encoding;
+- the frame limit back to the constant;
+- the blob's bound without the factor of three;
+- `capture_cut` never set;
+- `--attempt` ignored.
+
+**Book and CHANGELOG:**
+- **CHANGELOG, Fixed:** a tool that printed more than about 600 KB ended the worker (0.11 and earlier), with the effect on an action that cannot be undone, `unknown_outcome`.
+- **External design §13.1's frame sentence:** I wrote it as a known defect, and it becomes the rule.
+
+**Return:** `.git-exclude/review-requests/004d-4-the-users-copies/README.md`.
