@@ -48,6 +48,13 @@ pub struct ConfinementSpec {
     /// AppContainer profile from it and finds the permission record there.
     #[serde(default)]
     pub data_dir: PathBuf,
+    /// macOS (handoff 011p): the marker of this worker's profile, a mach
+    /// service name the profile admits and nothing else names, made by the
+    /// runtime for each worker it starts and recorded with it, so that the
+    /// runtime, outside the sandbox, can tell this worker's members from
+    /// every other process (`macos::outside`). `None` everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
 }
 
 /// The specification narrowed to one task (REQ-CONF-006): the write set's

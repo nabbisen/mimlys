@@ -982,3 +982,103 @@ fn req_conf_011_a_file_in_the_read_set_is_admitted_as_that_file_only() {
         .expect("an exec rule");
     assert!(exec.contains("/opt/mimlys/bin/mimlys-worker"), "{exec}");
 }
+
+fn with_marker(marker: &str) -> ConfinementSpec {
+    ConfinementSpec {
+        marker: Some(marker.to_owned()),
+        ..spec(&["/usr"], &["/data/workspaces"])
+    }
+}
+
+/// Handoff 011p, item 1 (external design §13.3): a worker's profile holds one
+/// more rule than another's, the one mach service name that is its marker; the
+/// runtime finds the worker's members by it from outside the sandbox. It is
+/// one rule, a lookup of one name, written once; a specification with none
+/// (every other platform) gets the profile it always had.
+#[test]
+fn req_conf_009_the_profile_names_the_workers_marker_once() {
+    let marker = marker_from(&[7u8; 16]);
+    let p = generate(&with_marker(&marker)).unwrap();
+    let rules: Vec<String> = p
+        .lines()
+        .filter(|l| l.contains("mach-lookup"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        rules,
+        vec![
+            "(allow mach-lookup (global-name \"com.apple.bsd.dirhelper\"))".to_owned(),
+            format!("(allow mach-lookup (global-name \"{marker}\"))"),
+        ],
+        "{p}"
+    );
+    assert_eq!(p.matches(&marker).count(), 1, "the marker is written once");
+    // Nothing else of the profile changes: without the marker, the same text minus that rule.
+    let without = generate(&spec(&["/usr"], &["/data/workspaces"])).unwrap();
+    let removed = p.replace(
+        &format!(
+            "\n;; the marker of this worker (handoff 011p): a name nothing else names\n(allow mach-lookup (global-name \"{marker}\"))\n"
+        ),
+        "",
+    );
+    assert_eq!(removed, without);
+}
+
+/// Handoff 011p, item 1: two workers' profiles differ by their markers, so a
+/// profile that holds one worker's marker does not hold the other's.
+#[test]
+fn req_conf_009_two_workers_profiles_hold_each_only_its_own_marker() {
+    let a = marker_from(&[1u8; 16]);
+    let b = marker_from(&[2u8; 16]);
+    let (pa, pb) = (
+        generate(&with_marker(&a)).unwrap(),
+        generate(&with_marker(&b)).unwrap(),
+    );
+    assert!(pa.contains(&a) && !pa.contains(&b));
+    assert!(pb.contains(&b) && !pb.contains(&a));
+    assert_ne!(pa, pb);
+}
+
+/// Handoff 011p, item 1: a marker that is not of the shape the runtime makes
+/// is refused, never written into a profile (a quote or a newline would end the
+/// string literal and let a rule in).
+#[test]
+fn req_conf_009_a_marker_that_is_not_a_plain_name_is_refused() {
+    for bad in [
+        "".to_owned(),
+        MARKER_PREFIX.to_owned(),
+        "com.apple.bsd.dirhelper".to_owned(),
+        format!("{MARKER_PREFIX}a\")(allow default"),
+        format!("{MARKER_PREFIX}a\nb"),
+        format!("{MARKER_PREFIX}a b"),
+        format!("{MARKER_PREFIX}{}", "a".repeat(100)),
+    ] {
+        assert!(!marker_is_valid(&bad), "{bad:?}");
+        assert!(
+            matches!(
+                generate(&with_marker(&bad)),
+                Err(ProfileError::Marker(m)) if m == bad
+            ),
+            "{bad:?}"
+        );
+    }
+    assert!(marker_is_valid(&marker_from(&[0xAB; 16])));
+}
+
+/// Handoff 011p, item 1: each marker the runtime makes is new, valid and of
+/// the form the profile accepts; the canary made from it is another name, which
+/// is not the marker of any worker.
+#[test]
+fn req_conf_009_fresh_markers_differ_and_the_canary_is_another_name() {
+    let markers: Vec<String> = (0..50).map(|_| fresh_marker().unwrap()).collect();
+    let distinct: std::collections::BTreeSet<&String> = markers.iter().collect();
+    assert_eq!(distinct.len(), markers.len(), "{markers:?}");
+    for m in &markers {
+        assert!(marker_is_valid(m), "{m}");
+        assert_eq!(m.len(), MARKER_PREFIX.len() + 32);
+        let canary = canary_of(m);
+        assert_ne!(&canary, m);
+        assert!(!markers.contains(&canary));
+        assert!(!generate(&with_marker(m)).unwrap().contains(&canary));
+    }
+}

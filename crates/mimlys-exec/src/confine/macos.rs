@@ -106,6 +106,50 @@ pub const XCRUN_CACHE: &str = "xcrun_db";
 /// (`trustd`, `nsurlsessiond`, `securityd` and the like) is never admitted.
 pub const MACH_SERVICES: [&str; 1] = ["com.apple.bsd.dirhelper"];
 
+/// What every worker's marker starts with (handoff 011p): a name in the
+/// reverse-domain form of mach services, which no service registers.
+pub const MARKER_PREFIX: &str = "com.mimlys.marker.";
+
+/// The marker for 16 random bytes: [`MARKER_PREFIX`] and 32 hexadecimal characters.
+pub fn marker_from(bytes: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    let mut name = String::from(MARKER_PREFIX);
+    for b in bytes {
+        let _ = write!(name, "{b:02x}");
+    }
+    name
+}
+
+/// A fresh marker, made from the system's random source for each worker the
+/// runtime starts (never reused for another worker, never derived from a name
+/// or a pid): the unique rule of one worker's profile (handoff 011p, item 1).
+pub fn fresh_marker() -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(marker_from(&bytes))
+}
+
+/// A name no profile names, made from a marker: a process whose profile allows
+/// every lookup allows it too, which a member's profile does not (handoff 011p,
+/// spike M1: 25 system processes allow any name, so the marker alone takes them
+/// for members).
+pub fn canary_of(marker: &str) -> String {
+    format!("{marker}.canary")
+}
+
+/// Whether a marker is of the shape [`fresh_marker`] makes: the prefix, then
+/// letters, numbers, `.`, `-` and `_` only, so that it is written in the
+/// profile as a string literal without escaping.
+pub fn marker_is_valid(marker: &str) -> bool {
+    marker.starts_with(MARKER_PREFIX)
+        && marker.len() > MARKER_PREFIX.len()
+        && marker.len() <= 96
+        && marker
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
 /// Why a profile cannot be generated from a specification. Every variant
 /// refuses to guess: a profile that is not exactly what was asked for is
 /// worse than none.
@@ -123,6 +167,9 @@ pub enum ProfileError {
     /// A set holds the filesystem root, which would admit every file.
     #[error("a path set holds the filesystem root")]
     Root,
+    /// The marker is not of the shape [`marker_is_valid`] states.
+    #[error("the worker's marker is not a valid name: {0}")]
+    Marker(String),
 }
 
 /// The system part of the read set (settled point 8): the fixed entries,
@@ -346,6 +393,15 @@ pub fn generate(spec: &ConfinementSpec) -> Result<String, ProfileError> {
     for service in MACH_SERVICES {
         p.push_str(&format!(
             "(allow mach-lookup (global-name \"{service}\"))\n"
+        ));
+    }
+    if let Some(marker) = &spec.marker {
+        if !marker_is_valid(marker) {
+            return Err(ProfileError::Marker(marker.clone()));
+        }
+        p.push_str(&format!(
+            "\n;; the marker of this worker (handoff 011p): a name nothing else names\n\
+             (allow mach-lookup (global-name \"{marker}\"))\n"
         ));
     }
     p.push_str(
