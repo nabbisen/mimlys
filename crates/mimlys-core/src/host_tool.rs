@@ -503,7 +503,7 @@ impl ReadPathRefusal {
         };
         if let ReadPathRefusal::DataDirectory { .. } = self {
             return format!(
-                "\"{shown}\" {found} (REQ-CONF-006, A-06: a read path must not reach the tasks' trees or the store); {narrower}"
+                "\"{shown}\" {found} (REQ-CONF-011: a read path must not reach the tasks' trees or the store); {narrower}"
             );
         }
         format!(

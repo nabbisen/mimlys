@@ -395,7 +395,13 @@ fn req_conf_006_a_read_path_over_the_data_directory_is_refused_at_load() {
             err.reason.contains(&data.to_string_lossy().into_owned()),
             "the data directory is named: {err}"
         );
-        assert!(err.reason.contains("A-06"), "{err}");
+        assert!(
+            err.reason.contains("REQ-CONF-011")
+                && err
+                    .reason
+                    .contains("must not reach the tasks' trees or the store"),
+            "{err}"
+        );
     }
     // A sibling of the data directory, and one that shares its prefix, load.
     declare(&share.join("other")).unwrap();
