@@ -26,9 +26,9 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | M6b | Host tools, Windows | AppContainer, Job Object and restricted-token backend; reversible toolchain ACL management; redirected profile and temp paths | The same demonstration on Windows. **Not met in 0.7.0:** `cargo` cannot run inside an AppContainer (the `NUL` device); the clause suite passes with the probe tool. Investigated 2026-11-03 on Windows Server 2022 and 2025: the same refusal, no remedy that keeps F, N and P; an exception without a remedy, revisited if Windows changes | 0.7 |
 | M6c | Host tools, macOS | Seatbelt backend, one profile for the worker and its tools; tree termination by sandbox membership (enforced, RFC 011 Amendment 2); memory and process-count watchdogs over the members (best-effort) | The same demonstration on macOS | 0.8 |
 | M7a | Operation on one machine, part one | Read-only open of the store; storage view; `task prune`; the book's storage and operation pages (RFC 013 decisions 1 to 4) | A second terminal watches a running task; the storage view sums to what the disk holds; prune frees what it listed | 0.10 |
-| M7b | Operation on one machine, part two | Admission per user (LIM-X5), the CPU part of clause C (LIM-H7), the engine gate, the machine view (RFC 013 decisions 5 to 8) | Two runtimes: the second waits and says why; a build stays within its CPU share | after 0.10 |
-| M8 | Adaptive effort, part one | Effort levels, a backend per level, the fitness probe, plan-first (RFC 015) | The M4 task under each level, measured; the probe classifies the models measured so far | after 0.10 |
-| M9 | The local daemon | Served mode over a local socket, one scheduler (RFC 014) | Approve from a second terminal; one queue for the user's tasks | decided at 0.10's disposition |
+| M7b | Operation on one machine, part two | Admission per user (LIM-X5), the CPU part of clause C (LIM-H7), the engine gate, the machine view (RFC 013 decisions 5 to 8) | Two runtimes: the second waits and says why; a build stays within its CPU share | 0.12 |
+| M8 | Adaptive effort, part one | Effort levels, a backend per level, the fitness probe, plan-first (RFC 015) | The M4 task under each level, measured; the probe classifies the models measured so far | 0.13 |
+| M9 | The local daemon | Served mode over a local socket, one scheduler (RFC 014) | Approve from a second terminal; one queue for the user's tasks | 0.14 |
 
 **0.7.1** is a hardening patch between M6b and M6c (RFC 011 Amendment 1, handoff 011d): the Linux backend's clause N and read set, found in the intake review after 0.7.0. It adds no milestone. 0.7.0 is tagged but not published to crates.io; 0.7.1 (2026-11-04) is the first release published there.
 
@@ -89,16 +89,28 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | Done when | each handoff's acceptance; A-21: a test on the macOS job in which a tool signals the sweeper and is refused, and a tool's tree is swept after the worker is killed, or the residual restated as accepted; A-06 on Windows: a test on the Windows job in which a tool of one task cannot open another task's tree; every CI job green with skips counted; the threat register's review for 0.11; the CHANGELOG |
 | Next | 0.12: **the user's copies** (REQ-PERS-005: an output stream's whole bounded output written as a blob, and one command that shows a result's or a stream's whole copy), then the operation theme's RFC, then the daemon RFC alongside DR-016/017, as below |
 
-## After 0.11 (planned; RFCs written when 0.9 is in review, decided at 0.10's disposition)
+## Release 0.12 (scoped 2026-11-18: the user's copies, then operation on one machine)
 
-- **The operation theme** (one RFC): admission per user (at most a new LIM-X5 executions at once), a CPU bound per host-tool tree (a new LIM-H id; LIM-H6 is the macOS tracking interval), one engine request in flight per endpoint, and the machine view in `status`. Defaults are measured first.
-- **The daemon** (one RFC in this repository, superseding DR-002 in part): one daemon per operating-system user over a local socket with a peer-credential check, no network, no multi-user; approvals stay with the human at a client.
-- **DR-016 / DR-017**: host paths read and written under grants (their own RFC).
-- **Adaptive effort** (owner's direction of 2026-11-10, D-E1 to D-E4): RFC 015 part one (levels as envelopes, a backend per level, the fitness probe, the plan-first gate) after the operation theme; the automatic level (`auto`) and parallel `deep` attempts in a later RFC citing it. Escalation local-only until 1.0.
+| | |
+|---|---|
+| Objective | Keep and show the user the whole of what a tool returned or printed (REQ-PERS-005), then bound several runtimes of one user on one machine (RFC 013 part two, M7b: 1.0's condition 5) |
+| Scope | `.git-exclude/reviewed/scope-0.12/README.md`, every item checked against 0.11.0's code. RFC 013 part two is amended for 0.11's rules (the waits end at the first stop request; a worker per task on macOS and Windows; the registry outside every write set) |
+| Phase 1, steady | **004d**: an output stream's whole bounded output written as a blob, redacted as its excerpt is; `mimlys task output <task> [<action>] [--stdout \| --stderr \| --result]` shows a stream's or a result's whole copy; `detail.component` on every `unavailable`. **013d-0**: the measurement spike for LIM-X5 and LIM-H7, and the cost of a task switch with a worker per task, early |
+| Phase 2, the operation theme | **013d**: admission per user (the registry, LIM-X5), the CPU part of clause C (LIM-H7), the engine gate (LIM-O12), the machine view, `runtime reap`, the visible fail-open (LIM-O11) |
+| Cut point | If the spike or M7b runs long, 0.12 ships after phase 1 and M7b is 0.13, with the later releases moved by one |
+| Done when | each handoff's acceptance; two runtimes, the second waiting and saying why; a build within its CPU share; `task output` showing a stream's and a result's whole copy; every CI job green with skips counted; the threat register's review for 0.12; the CHANGELOG |
+| Next | 0.13: adaptive effort, part one (RFC 015, M8). 0.14: the local daemon (RFC 014, M9). Then the release that prepares 1.0: the contract's inventory, review and freeze (condition 3), a tested example in the book for every command (condition 4), the M4 task with a small pinned model on all three platforms in CI (condition 1), and the dependency refresh before the freeze; then 1.0.0 |
+
+## After 0.11 (the themes; their releases set in the scope of 0.12, 2026-11-18)
+
+- **The operation theme** (RFC 013 part two, **0.12**): admission per user (at most a new LIM-X5 executions at once), a CPU bound per host-tool tree (a new LIM-H id; LIM-H6 is the macOS tracking interval), one engine request in flight per endpoint, and the machine view in `status`. Defaults are measured first.
+- **The daemon** (RFC 014, **0.14**, before 1.0; superseding DR-002 in part): one daemon per operating-system user over a local socket with a peer-credential check, no network, no multi-user; approvals stay with the human at a client.
+- **DR-016 / DR-017**: host paths read and written under grants (their own RFC; not scheduled, and not a condition of 1.0).
+- **Adaptive effort** (owner's direction of 2026-11-10, D-E1 to D-E4): RFC 015 part one in **0.13**, before 1.0 (levels as envelopes, a backend per level, the fitness probe, the plan-first gate) after the operation theme; the automatic level (`auto`) and parallel `deep` attempts in a later RFC citing it. Escalation local-only until 1.0.
 
 ## 1.0 (definition adopted on 2026-11-08)
 
-1.0 when: (1) a local model completes the M4 task on llama.cpp and Ollama on all three platforms; (2) the independent audit is done and its findings are closed or accepted; (3) the external contract (REQ-MAIN-001) is frozen; (4) the book covers every command with a tested example; (5) the behaviour of several runtimes on one machine is specified, bounded and documented (the operation theme delivered).
+1.0 when: (1) the M4 task runs end to end through llama.cpp and Ollama, with native tool calls, on all three platforms in CI with a small pinned model, and a 7B-class local model completes the repair (Linux, run B of the M4 report; amended 2026-11-18, the owner's decision in the scope of 0.12); (2) the independent audit is done and its findings are closed or accepted; (3) the external contract (REQ-MAIN-001) is frozen; (4) the book covers every command with a tested example; (5) the behaviour of several runtimes on one machine is specified, bounded and documented (the operation theme delivered); (6) adaptive effort, part one (RFC 015, M8) is delivered; (7) the local daemon (RFC 014, M9) is delivered (conditions 6 and 7 added 2026-11-18, the owner's decision in the scope of 0.12).
 
 ## RFCs, in order
 

@@ -1,6 +1,6 @@
 # RFC 013 — Operation on one machine
 
-**Status.** Accepted (2026-11-10, by the owner). Part one (decisions 1 to 4) is milestone M7a, in 0.10: **part one implemented in 0.10.0**; part two (decisions 5 to 8) is M7b, in the release after. Normative text written 2026-11-10 (requirements, limits, threat register). Drafted by the owner with the startup architect; reviewed by the architect, whose changes are marked *[review]* and argued in `.git-exclude/reviewed/rfc-013-015-review/README.md`. For the owner's sign-off.
+**Status.** Accepted (2026-11-10, by the owner). Part one (decisions 1 to 4) is milestone M7a, in 0.10: **part one implemented in 0.10.0**; part two (decisions 5 to 8) is M7b, in 0.12 (Amendment 1). Normative text written 2026-11-10 (requirements, limits, threat register). Drafted by the owner with the startup architect; reviewed by the architect, whose changes are marked *[review]* and argued in `.git-exclude/reviewed/rfc-013-015-review/README.md`. For the owner's sign-off.
 **Tracks.** The owner's review of the replanning report (2026-11-08) and its assessment `assessment-operation-on-one-machine.md`; the replanning report §3 C (hygiene) and §3 D; the roadmap's "After 0.10"; DR-002 in part (the parts that need no daemon).
 **Touches.** `mimlys-persist` (the store's lock and a read-only open), `mimlys-core` (scheduling: admission as a queued reason; events; metrics), `mimlys-exec` (the `tool` cgroup, the Job Object and the macOS watchdog: a CPU bound), `mimlys` (the registry under the user's runtime directory, `status`, `task prune`, the storage view, the book); requirements §12, §15, §16, §21, §22; external design §13.3, §13.5, §14.6, §17, §19, §20; the limits register (new LIM-X5, LIM-H7, LIM-O11, LIM-O12); the threat register (new THR-37, THR-38).
 **Release.** The read-only open, the storage view, `task prune` and the book's pages in 0.10 (decisions 1 to 4; design-light, shipped as hygiene under this RFC); admission, the CPU bound, the engine gate and the machine view in the release after 0.10 (decisions 5 to 8). Partial shipping as RFC 000 allows; the Status line records what shipped where.
@@ -63,6 +63,16 @@ Verified at `0.9.0` (the assessment, 2026-11-08):
 2. The macOS CPU share: a priority is all the platform offers without a privileged helper; is "best effort, reported" acceptable for a clause part, as it is for K? The owner's answer on K suggests yes.
 3. Whether `task prune` should also offer the promotion backups of tasks whose promotion is no longer reversible (because the project changed since), with a separate confirmation.
 4. Whether the read-only open should also serve `promote --patch` and `rollback --dry-run`, which read only.
+
+## Amendment 1 (2026-11-18, the scope of 0.12)
+
+Part two was written before three rules of 0.11, and it is read with them:
+
+1. **Both waits end at the first stop request.** The admission wait of decision 5 comes before an action is recorded `running`, and the engine gate of decision 7 before a request is sent. Each is a wait before the send (external design §8, `stopped_before_start`; handoffs 010e and 010f). A first Ctrl-C ends it, with the action not begun and the task paused, as for the pin check. The task's deadline keeps counting, as decided.
+2. **A worker per task on macOS and Windows** (handoffs 011o and 011p). The CPU part of clause C applies to each task's worker tree: the worker's Job Object on Windows, the `tool` cgroup on Linux, and a priority on macOS. A task switch costs a worker start there, and the measurement report of decisions 5 and 6 measures that cost too.
+3. **The registry is outside every write set.** It is under the user's runtime directory, which no confinement admits on any platform, so a host tool cannot forge or remove an entry. THR-38's controls say so.
+
+Part two is milestone M7b in 0.12 (handoffs 013d-0 and 013d).
 
 ## References
 
