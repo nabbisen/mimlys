@@ -921,6 +921,7 @@ pub fn read_path_refusal_with(
     let home = home.map(|h| PathBuf::from(normalized(h)));
     // Both by their longest existing ancestor, so that a data directory not
     // made yet, or a link on the way to it, does not hide the overlap.
+    let shown_data_dir = data_dir.map(|d| d.to_string_lossy().into_owned());
     let data_dir = data_dir.map(resolved);
     let entries: Vec<String> = std::fs::read_dir(&path)
         .map(|dir| {
@@ -937,7 +938,16 @@ pub fn read_path_refusal_with(
         cfg!(any(windows, target_os = "macos")),
     )
     .err()
-    .map(|refusal| refusal.reason(written))
+    .map(|refusal| match (refusal, shown_data_dir) {
+        // The data directory as the configuration (or the command) spells it,
+        // not as it resolved: the one the administrator can find.
+        (
+            mimlys_core::host_tool::ReadPathRefusal::DataDirectory { relation, .. },
+            Some(data_dir),
+        ) => mimlys_core::host_tool::ReadPathRefusal::DataDirectory { relation, data_dir }
+            .reason(written),
+        (refusal, _) => refusal.reason(written),
+    })
 }
 
 /// The path as the filesystem sees it: absolute, its links followed as far as
