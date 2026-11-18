@@ -629,20 +629,25 @@ fn main() {
             // is left is the runtime's to sweep.
             let secs: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
             let file = args.get(2).cloned().unwrap_or_else(|| "writer.log".into());
-            let sleeper = std::process::Command::new("/bin/sleep")
-                .arg(secs.to_string())
-                .spawn();
+            // Each in a session of its own: the worker's process group, which the
+            // runtime kills when the worker ends, does not hold them. What ends
+            // them is the sweep of the sandbox's members.
+            let sleeper = mimlys_exec::confine::macos::probe::spawn_in_new_session(
+                "/bin/sleep",
+                &[&secs.to_string()],
+            );
             let orphan = mimlys_exec::confine::macos::probe::spawn_in_new_session(
                 "/bin/sh",
                 &["-c", &format!("/bin/sleep {} >/dev/null 2>&1 &", secs + 1)],
             )
             .and_then(|mut shell| shell.wait());
-            let writer = std::process::Command::new("/bin/sh")
-                .args([
+            let writer = mimlys_exec::confine::macos::probe::spawn_in_new_session(
+                "/bin/sh",
+                &[
                     "-c",
                     &format!("while :; do echo x >> {file}; /bin/sleep 0.05; done"),
-                ])
-                .spawn();
+                ],
+            );
             if sleeper.is_err() || orphan.is_err() || writer.is_err() {
                 println!("spawn failed");
                 3
