@@ -1068,6 +1068,7 @@ fn req_conf_009_a_marker_that_is_not_a_plain_name_is_refused() {
 /// Handoff 011p, item 1: each marker the runtime makes is new, valid and of
 /// the form the profile accepts; the canary made from it is another name, which
 /// is not the marker of any worker.
+#[cfg(unix)]
 #[test]
 fn req_conf_009_fresh_markers_differ_and_the_canary_is_another_name() {
     let markers: Vec<String> = (0..50).map(|_| fresh_marker().unwrap()).collect();
