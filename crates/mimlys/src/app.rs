@@ -7,7 +7,7 @@ use crate::workspace::LocalWorkspaces;
 use mimlys_core::clock::SystemClock;
 use mimlys_core::ids::{IdSource, SystemIds, TaskId};
 use mimlys_core::path::PlatformRules;
-use mimlys_core::runtime::{Runtime, RuntimeDeps, RuntimeError, Session};
+use mimlys_core::runtime::{MODEL_BACKEND, Runtime, RuntimeDeps, RuntimeError, Session};
 use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_model::fake::FakeBackend;
 use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved, TransportMode};
@@ -116,22 +116,35 @@ impl AppError {
         }
     }
 
+    /// The component an `unavailable` error names, in its `detail.component` (external design §18;
+    /// handoff 004d): `Some` for every error of the kind `unavailable` and for no other. The words
+    /// are the ones the runtime already uses where it names a component (`model_backend`,
+    /// `tool_provider`), and `permissions` and `download` for the two refusals the command line
+    /// makes itself. The matches have no wildcard: a new error, or a new kind of a runtime
+    /// error, does not compile until it says whether it is `unavailable` and which component.
+    pub fn component(&self) -> Option<String> {
+        match self {
+            AppError::Runtime(e) => runtime_component(e),
+            AppError::Workspace(e) => workspace_component(e),
+            AppError::Permissions(_) => Some("permissions".into()),
+            AppError::Download(_) => Some("download".into()),
+            AppError::Config(_)
+            | AppError::Persistence(_)
+            | AppError::Io { .. }
+            | AppError::Partial { .. }
+            | AppError::Output { .. }
+            | AppError::TaskRef { .. } => None,
+        }
+    }
+
     /// The JSON error object.
     pub fn to_json(&self) -> serde_json::Value {
         if let AppError::Partial { report, .. } = self {
             return report.clone();
         }
-        let detail = match self {
+        let mut detail = match self {
             AppError::Config(e) => serde_json::json!({ "parameter": e.key }),
-            AppError::Permissions(_)
-            | AppError::Workspace(mimlys_core::spi::WorkspaceError::PermissionsNotApplied {
-                ..
-            })
-            | AppError::Runtime(RuntimeError::Workspace(
-                mimlys_core::spi::WorkspaceError::PermissionsNotApplied { .. },
-            )) => serde_json::json!({ "component": "permissions" }),
             AppError::Download(e) => serde_json::json!({
-                "component": "download",
                 "url": e.url,
                 "last_status": e.last_status,
             }),
@@ -169,8 +182,39 @@ impl AppError {
             }
             _ => serde_json::json!({}),
         };
+        // Every `unavailable` names the component that was not reachable.
+        if let Some(component) = self.component() {
+            detail["component"] = serde_json::json!(component);
+        }
         serde_json::json!({ "error": { "kind": self.kind(), "message": self.to_string(), "detail": detail } })
     }
+}
+
+/// The component of a runtime error of the kind `unavailable` (see [`AppError::component`]).
+fn runtime_component(e: &RuntimeError) -> Option<String> {
+    match e {
+        // The runtime names the component itself: the adapter whose call it contained.
+        RuntimeError::Unavailable { component } => Some(component.clone()),
+        RuntimeError::Backend(_) => Some(MODEL_BACKEND.into()),
+        RuntimeError::Workspace(w) => workspace_component(w),
+        RuntimeError::InvalidRequest { .. }
+        | RuntimeError::NotFound { .. }
+        | RuntimeError::State(_)
+        | RuntimeError::Denied { .. }
+        | RuntimeError::Conflict { .. }
+        | RuntimeError::Persistence(_)
+        | RuntimeError::PromotionFailed { .. } => None,
+    }
+}
+
+/// The component of a workspace error of the kind `unavailable`: the permissions of a directory
+/// that could not be written (Windows).
+fn workspace_component(e: &mimlys_core::spi::WorkspaceError) -> Option<String> {
+    matches!(
+        e,
+        mimlys_core::spi::WorkspaceError::PermissionsNotApplied { .. }
+    )
+    .then(|| "permissions".into())
 }
 
 /// The backend's probe result as `status` shows it (RFC 008 §4).

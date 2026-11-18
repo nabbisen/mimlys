@@ -91,3 +91,175 @@ fn req_sbx_001_a_failed_download_is_unavailable_download() {
     };
     assert_eq!(lookalike.kind(), "internal");
 }
+
+/// Every source of an error of the kind `unavailable`, each with the word its `detail.component`
+/// must carry: the runtime's own names where it has them (the adapter whose call it contained:
+/// `model_backend`, `tool_provider`), and `permissions` and `download`. A new source of the kind
+/// is added here, or the test below fails (and `AppError::component` does not compile until the
+/// source is decided).
+fn unavailable_sources() -> Vec<(&'static str, AppError, &'static str)> {
+    use mimlys_core::runtime::{MODEL_BACKEND, TOOL_PROVIDER};
+    use mimlys_core::spi::{BackendError, WorkspaceError};
+    let permissions = || WorkspaceError::PermissionsNotApplied {
+        reason: "acl_not_applied: the permissions lock is held".into(),
+    };
+    let download = crate::download::DownloadError {
+        url: "https://example.invalid/qjs.wasm".into(),
+        language: "javascript".into(),
+        last_status: Some(504),
+        last: "HTTP status 504".into(),
+        retries: 3,
+    };
+    let [held, locked] = refusals();
+    vec![
+        (
+            "a contained panic of the model backend",
+            AppError::Runtime(RuntimeError::Unavailable {
+                component: MODEL_BACKEND.into(),
+            }),
+            "model_backend",
+        ),
+        (
+            "a contained panic of the tool provider",
+            AppError::Runtime(RuntimeError::Unavailable {
+                component: TOOL_PROVIDER.into(),
+            }),
+            "tool_provider",
+        ),
+        (
+            "the backend, unreachable",
+            AppError::Runtime(RuntimeError::Backend(BackendError::Unavailable {
+                detail: "status:503".into(),
+            })),
+            "model_backend",
+        ),
+        (
+            "the backend, past its deadline",
+            AppError::Runtime(RuntimeError::Backend(BackendError::Timeout)),
+            "model_backend",
+        ),
+        (
+            "the backend, cancelled",
+            AppError::Runtime(RuntimeError::Backend(BackendError::Cancelled)),
+            "model_backend",
+        ),
+        (
+            "a scripted backend with nothing left",
+            AppError::Runtime(RuntimeError::Backend(BackendError::ScriptExhausted)),
+            "model_backend",
+        ),
+        (
+            "the permissions of a new workspace, through the runtime",
+            AppError::Runtime(RuntimeError::Workspace(permissions())),
+            "permissions",
+        ),
+        (
+            "the permissions of a workspace",
+            AppError::Workspace(permissions()),
+            "permissions",
+        ),
+        (
+            "the permission lock, held",
+            AppError::Permissions(held),
+            "permissions",
+        ),
+        (
+            "the permission lock, not obtainable",
+            AppError::Permissions(locked),
+            "permissions",
+        ),
+        (
+            "an interpreter download that failed",
+            AppError::Download(download),
+            "download",
+        ),
+    ]
+}
+
+/// Errors of every other kind: none of them is `unavailable`, none has a component.
+fn other_errors() -> Vec<AppError> {
+    use mimlys_core::spi::{PersistenceError, WorkspaceError};
+    vec![
+        AppError::Config(
+            crate::config::Config::parse("config_version = 1\n[runtime]\nno_such_key = 1\n")
+                .expect_err("an unknown key is refused"),
+        ),
+        AppError::Persistence(PersistenceError::Storage { detail: "x".into() }),
+        AppError::Io { detail: "x".into() },
+        AppError::Output {
+            detail: "x".into(),
+            kind: "state",
+        },
+        AppError::TaskRef {
+            detail: "x".into(),
+            not_found: true,
+        },
+        AppError::Workspace(WorkspaceError::NotFound { what: "x".into() }),
+        AppError::Runtime(RuntimeError::InvalidRequest { detail: "x".into() }),
+        AppError::Runtime(RuntimeError::NotFound { what: "x".into() }),
+        AppError::Runtime(RuntimeError::Denied { detail: "x".into() }),
+        AppError::Runtime(RuntimeError::Conflict { detail: "x".into() }),
+        AppError::Runtime(RuntimeError::Persistence(PersistenceError::Storage {
+            detail: "x".into(),
+        })),
+        AppError::Runtime(RuntimeError::Workspace(WorkspaceError::Refused {
+            reason: "x".into(),
+        })),
+    ]
+}
+
+/// External design §18 (handoff 004d): every error of the kind `unavailable` carries
+/// `detail.component`, one stable word, for each source of the kind; no other kind has one.
+#[test]
+fn req_cli_004_every_unavailable_source_names_its_component() {
+    for (source, error, component) in unavailable_sources() {
+        assert_eq!(error.kind(), "unavailable", "{source}");
+        assert_eq!(error.component().as_deref(), Some(component), "{source}");
+        let json = error.to_json();
+        assert_eq!(json["error"]["kind"], "unavailable", "{source}: {json}");
+        assert_eq!(
+            json["error"]["detail"]["component"], component,
+            "{source}: {json}"
+        );
+    }
+    for error in other_errors() {
+        assert_ne!(error.kind(), "unavailable", "{error:?}");
+        assert_eq!(error.component(), None, "{error:?}");
+        assert!(
+            error.to_json()["error"]["detail"]
+                .get("component")
+                .is_none(),
+            "{error:?}"
+        );
+    }
+}
+
+/// The words are a closed set, each one a lower-case word with underscores (a stable vocabulary
+/// for a script to match on).
+#[test]
+fn req_cli_004_the_components_are_a_small_stable_set() {
+    let mut words: Vec<&str> = unavailable_sources().iter().map(|(_, _, c)| *c).collect();
+    words.sort();
+    words.dedup();
+    assert_eq!(
+        words,
+        ["download", "model_backend", "permissions", "tool_provider"]
+    );
+    for word in words {
+        assert!(
+            word.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+            "{word}"
+        );
+    }
+}
+
+/// The detail an `unavailable` error already had stays beside the component: the download's URL
+/// and last status.
+#[test]
+fn req_cli_004_the_component_does_not_replace_the_rest_of_the_detail() {
+    let (_, download, _) = unavailable_sources().pop().unwrap();
+    let detail = &download.to_json()["error"]["detail"];
+    assert_eq!(detail["component"], "download");
+    assert_eq!(detail["last_status"], 504);
+    assert_eq!(detail["url"], "https://example.invalid/qjs.wasm");
+}

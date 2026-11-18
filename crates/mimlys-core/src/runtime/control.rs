@@ -4,7 +4,7 @@
 //! never submits a decision, validates an action or executes anything.
 
 use super::loop_::{PROVIDER, state_changed};
-use super::{Runtime, RuntimeError, Session};
+use super::{MODEL_BACKEND, Runtime, RuntimeError, Session};
 use crate::action::{Action, ActionInput, ActionStatus, EffectKind, can_be_undone};
 use crate::approval::{ApprovalRequest, ApprovalStatus, InvalidationReason, UserDecision};
 use crate::clock::Instant;
@@ -299,7 +299,7 @@ impl Runtime {
                     self.deps.policy.profiles.keys().collect::<Vec<_>>()
                 ),
             })?;
-        let locality = self.guard("model_backend", || self.deps.backend.locality())?;
+        let locality = self.guard(MODEL_BACKEND, || self.deps.backend.locality())?;
         if locality == crate::spi::Locality::Remote && !profile.external {
             return Err(RuntimeError::Denied {
                 detail: format!(
@@ -431,7 +431,7 @@ impl Runtime {
             action_schema_version: crate::action::ACTION_SCHEMA_VERSION,
             tool_definition_hashes: hashes,
             runtime_version: self.deps.runtime_version.clone(),
-            backend: Some(self.guard("model_backend", || self.deps.backend.describe())?),
+            backend: Some(self.guard(MODEL_BACKEND, || self.deps.backend.describe())?),
             tool_imports: self.guard(PROVIDER, || tools.imports())?,
         };
         // Drained before anything is persisted (REQ-SEC-011): a provider that
@@ -1560,7 +1560,7 @@ impl Runtime {
         let activity = super::read::activity(self.deps.persistence.as_ref())?;
         Ok(RuntimeStatus {
             version: self.deps.runtime_version.clone(),
-            backend: self.guard("model_backend", || self.deps.backend.describe())?,
+            backend: self.guard(MODEL_BACKEND, || self.deps.backend.describe())?,
             tier: self
                 .deps
                 .probe

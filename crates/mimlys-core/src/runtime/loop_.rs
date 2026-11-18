@@ -8,7 +8,7 @@
 
 use super::contain::{Panicked, contained, contained_call};
 use super::context::{ContextInputs, assemble};
-use super::{Runtime, RuntimeError};
+use super::{MODEL_BACKEND, Runtime, RuntimeError};
 use crate::action::{
     Action, ActionInput, DispositionKind, Execution, FailureCause, Proposal, Termination,
     disposition, outcome_is_unknown,
@@ -50,7 +50,7 @@ use crate::validate::{AuthorizedAction, ControlDecision, Outcome, ValidationCont
 use std::sync::Arc;
 
 /// The component name of a contained panic in a tool provider.
-pub(super) const PROVIDER: &str = "tool_provider";
+pub(super) const PROVIDER: &str = super::TOOL_PROVIDER;
 
 /// The `tracing` target of the lines that carry a prompt or a reply
 /// (`logging.debug_prompts`, REQ-PRIV-004). They are written at `debug`; the
@@ -389,11 +389,11 @@ impl Runtime {
         loop {
             let call = contained(
                 || self.deps.backend.decision_transport(cancel.clone()),
-                |panicked| self.log_contained_panic("model_backend", panicked),
+                |panicked| self.log_contained_panic(MODEL_BACKEND, panicked),
             );
             match call.await {
                 Err(panicked) => {
-                    self.log_contained_panic("model_backend", &panicked);
+                    self.log_contained_panic(MODEL_BACKEND, &panicked);
                     return Err(BackendError::Unavailable {
                         detail: "adapter_panic".into(),
                     });
@@ -523,11 +523,11 @@ impl Runtime {
             }
             let call = contained(
                 || self.deps.backend.generate(request.clone(), cancel.clone()),
-                |panicked| self.log_contained_panic("model_backend", panicked),
+                |panicked| self.log_contained_panic(MODEL_BACKEND, panicked),
             );
             match call.await {
                 Err(panicked) => {
-                    self.log_contained_panic("model_backend", &panicked);
+                    self.log_contained_panic(MODEL_BACKEND, &panicked);
                     break Err(BackendError::Unavailable {
                         detail: "adapter_panic".into(),
                     });
@@ -550,7 +550,7 @@ impl Runtime {
             measures.usage = match contained_call(|| self.deps.backend.last_usage()) {
                 Ok(usage) => usage,
                 Err(panicked) => {
-                    self.log_contained_panic("model_backend", &panicked);
+                    self.log_contained_panic(MODEL_BACKEND, &panicked);
                     None
                 }
             };
@@ -559,7 +559,7 @@ impl Runtime {
             Ok(_) => match contained_call(|| self.deps.backend.last_text_chars()) {
                 Ok(chars) => chars,
                 Err(panicked) => {
-                    self.log_contained_panic("model_backend", &panicked);
+                    self.log_contained_panic(MODEL_BACKEND, &panicked);
                     None
                 }
             },
