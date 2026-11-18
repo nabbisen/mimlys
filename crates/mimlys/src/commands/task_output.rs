@@ -1,4 +1,4 @@
-//! `mimlys task output <task> [<action>] [--stdout | --stderr | --result]` (handoff 004d;
+//! `mimlys task output <task> [<action>] [--attempt N] [--stdout | --stderr | --result]` (handoff 004d;
 //! REQ-PERS-005; external design §19.2): the user's copies of what an action produced, whole.
 //!
 //! The model reads an excerpt of each stream (LIM-C2) and a bounded result (LIM-I19); the
@@ -14,8 +14,8 @@ use crate::app::{AppError, ReadApp};
 use crate::messages;
 use crate::output::Output;
 use mimlys_core::action::{Action, Execution};
-use mimlys_core::ids::{ActionId, TaskId};
-use mimlys_core::observation::{Notice, Observation, Stream};
+use mimlys_core::ids::{ActionId, ExecutionId, TaskId};
+use mimlys_core::observation::{Notice, Observation, ObservationStatus, Stream};
 use mimlys_core::runtime::RuntimeError;
 use mimlys_core::spi::{PersistenceError, PersistenceRead};
 use serde::Serialize;
@@ -127,17 +127,30 @@ pub enum Content {
     Json(Value),
 }
 
-/// The action's latest execution and the observation it recorded.
+/// One attempt of an action: an execution, with how it ended as its observation says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attempt {
+    /// One-based attempt number.
+    pub attempt: u32,
+    /// The execution.
+    pub execution_id: ExecutionId,
+    /// How the observation of that execution calls its status.
+    pub status: ObservationStatus,
+}
+
+/// An execution of the action, as the command names it, and the observation it recorded.
 #[derive(Clone, Debug)]
 pub struct Found {
     /// The task.
     pub task_id: TaskId,
     /// The action.
     pub action: Action,
-    /// Its latest execution.
+    /// The attempt shown: the one asked for, else the latest.
     pub execution: Execution,
     /// The observation that execution recorded.
     pub observation: Observation,
+    /// Every attempt the action has, in order, so that the index can name them.
+    pub attempts: Vec<Attempt>,
 }
 
 fn refusal(kind: &'static str, detail: impl Into<String>) -> AppError {
@@ -184,13 +197,15 @@ fn resolve_action<'a>(actions: &'a [Action], text: &str) -> Result<&'a Action, A
     }
 }
 
-/// The action's latest execution with its observation. The action is the one named, else the
-/// task's latest that ran. An action that never ran (it was rejected, cancelled before it began,
-/// or is still waiting for its approval) has no execution and says so.
+/// An execution of the action with its observation: the attempt asked for, else the latest. The
+/// action is the one named, else the task's latest that ran. An action that never ran (it was
+/// rejected, cancelled before it began, or is still waiting for its approval) has no execution
+/// and says so; an attempt the action does not have is `not_found`, naming the ones it has.
 pub fn find(
     persistence: &dyn PersistenceRead,
     task_id: TaskId,
     action: Option<&str>,
+    attempt: Option<u32>,
 ) -> Result<Found, AppError> {
     if persistence.load_task(task_id)?.is_none() {
         return Err(AppError::Runtime(RuntimeError::NotFound {
@@ -226,32 +241,58 @@ pub fn find(
             latest.ok_or_else(|| refusal("state", messages::task_has_no_action_that_ran()))?
         }
     };
-    let execution = executions
-        .into_iter()
-        .max_by_key(|e| e.attempt)
-        .expect("at least one execution");
-    // An execution and its observation are one transaction; an action that was stopped before its
-    // call also has an observation, which no execution stands behind.
-    let observation = persistence
+    let mut executions = executions;
+    executions.sort_by_key(|e| e.attempt);
+    // An execution and its observation are one transaction, so they pair in order; an action that
+    // was stopped before its call also has an observation, which no execution stands behind.
+    let observations: Vec<Observation> = persistence
         .load_observations(task_id)?
         .into_iter()
-        .rfind(|o| {
+        .filter(|o| {
             o.action_id == action.action_id
                 && !o
                     .notices
                     .iter()
                     .any(|n| matches!(n, Notice::StoppedBeforeStart))
         })
-        .ok_or_else(|| {
-            AppError::Persistence(PersistenceError::NotFound {
-                what: "observation".into(),
-            })
-        })?;
+        .collect();
+    if observations.len() < executions.len() {
+        return Err(AppError::Persistence(PersistenceError::NotFound {
+            what: "observation".into(),
+        }));
+    }
+    let observations = &observations[observations.len() - executions.len()..];
+    let attempts: Vec<Attempt> = executions
+        .iter()
+        .zip(observations)
+        .map(|(e, o)| Attempt {
+            attempt: e.attempt,
+            execution_id: e.execution_id,
+            status: o.status,
+        })
+        .collect();
+    let at = match attempt {
+        None => executions.len() - 1,
+        Some(n) => executions
+            .iter()
+            .position(|e| e.attempt == n)
+            .ok_or_else(|| {
+                refusal(
+                    "not_found",
+                    messages::action_has_no_attempt(
+                        &action.action_id.to_string(),
+                        n,
+                        &attempts.iter().map(|a| a.attempt).collect::<Vec<_>>(),
+                    ),
+                )
+            })?,
+    };
     Ok(Found {
         task_id,
         action,
-        execution,
-        observation,
+        execution: executions[at].clone(),
+        observation: observations[at].clone(),
+        attempts,
     })
 }
 
@@ -409,7 +450,17 @@ pub struct IndexJson {
     execution_id: String,
     tool: String,
     attempt: u32,
+    /// Every attempt the action has, so that an earlier one can be asked for (`--attempt`).
+    attempts: Vec<AttemptJson>,
     copies: Vec<CopyJson>,
+}
+
+/// One attempt of the action, in the index.
+#[derive(Clone, Debug, Serialize)]
+struct AttemptJson {
+    attempt: u32,
+    execution_id: String,
+    status: &'static str,
 }
 
 /// One entry of the index.
@@ -438,6 +489,15 @@ pub fn index_json(found: &Found, copies: &[Copy]) -> IndexJson {
         execution_id: found.execution.execution_id.to_string(),
         tool: found.action.content().tool().to_owned(),
         attempt: found.execution.attempt,
+        attempts: found
+            .attempts
+            .iter()
+            .map(|a| AttemptJson {
+                attempt: a.attempt,
+                execution_id: a.execution_id.to_string(),
+                status: a.status.name(),
+            })
+            .collect(),
         copies: copies
             .iter()
             .map(|c| match &c.state {
@@ -508,13 +568,14 @@ pub fn run(
     app: &ReadApp,
     task: &str,
     action: Option<&str>,
+    attempt: Option<u32>,
     which: Option<Which>,
     terminal: bool,
     out: &Output,
 ) -> Result<(), AppError> {
     let task_id = app.resolve_task(task)?;
     let persistence = app.reader.persistence();
-    let found = find(persistence, task_id, action)?;
+    let found = find(persistence, task_id, action, attempt)?;
     match which {
         None => {
             let copies = Which::ALL
@@ -527,6 +588,7 @@ pub fn run(
                 found.action.content().tool(),
                 found.execution.attempt,
                 found.observation.status.name(),
+                &found.attempts,
                 &copies,
             ) {
                 out.line(line);
