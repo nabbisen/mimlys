@@ -140,6 +140,7 @@ fn spec_denying_network(tmp: &Path) -> ConfinementSpec {
         memory_bytes: 1 << 30,
         max_processes: 64,
         data_dir: tmp.to_path_buf(),
+        marker: None,
     }
 }
 

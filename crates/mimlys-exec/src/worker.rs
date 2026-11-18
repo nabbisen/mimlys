@@ -50,6 +50,10 @@ pub struct WorkerRecord {
     /// The delegated cgroup, when one holds the tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cgroup: Option<PathBuf>,
+    /// macOS (handoff 011p): the marker of the worker's profile, with which
+    /// a later runtime finds the worker's members from outside the sandbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
 }
 
 /// Terminates what a previous runtime left behind, from its record; returns how many trees were killed.
@@ -149,6 +153,8 @@ struct Live {
     cgroup: Option<PathBuf>,
     /// The task this worker was made for, where workers are made per task ([`Worker::per_task`]).
     task: Option<TaskId>,
+    /// The marker of its profile (macOS), recorded with it.
+    marker: Option<String>,
 }
 
 /// The worker handle. One execution at a time (LIM-X2).
@@ -161,6 +167,9 @@ pub struct Worker {
     require: Mutex<Option<Vec<Clause>>>,
     /// Workers are made per task (see `Worker::per_task`).
     per_task: std::sync::atomic::AtomicBool,
+    /// Each worker's specification carries a marker of its own (see
+    /// [`Worker::with_marker`]): on macOS, where the profile names it.
+    markers: std::sync::atomic::AtomicBool,
     restarts: Mutex<BTreeMap<TaskId, u32>>,
     facts: Mutex<WorkerFacts>,
     /// The execution in flight, for the span of the log thread's lines.
@@ -180,6 +189,7 @@ impl Worker {
                     || (cfg!(debug_assertions)
                         && std::env::var_os("MIMLYS_PROBE_WORKER_PER_TASK").is_some()),
             ),
+            markers: std::sync::atomic::AtomicBool::new(cfg!(target_os = "macos")),
             restarts: Mutex::new(BTreeMap::new()),
             facts: Mutex::new(WorkerFacts::default()),
             reader_span: mimlys_core::log_span::ReaderSpan::new(),
@@ -202,9 +212,8 @@ impl Worker {
     }
 
     fn run_probe(&self) -> Result<Probe, String> {
-        let spec = self
-            .config
-            .spec
+        let spec = self.with_marker(self.config.spec.clone())?;
+        let spec = spec
             .as_ref()
             .ok_or_else(|| "no confinement specification".to_owned())?;
         let mut args = vec![
@@ -225,7 +234,7 @@ impl Worker {
         let mut child = self
             .config
             .confinement
-            .spawn(&command, self.config.spec.as_ref())
+            .spawn(&command, Some(spec))
             .map_err(|e| e.to_string())?;
         drop(child.take_stdin());
         // Both streams are drained by threads: a worker that neither writes
@@ -326,6 +335,7 @@ impl Worker {
             Some(execution) => self.spec_for(execution)?,
             None => self.config.spec.clone(),
         };
+        let spec = self.with_marker(spec)?;
         let mut args = vec![
             "--serve".to_owned(),
             "--fuel".to_owned(),
@@ -423,6 +433,7 @@ impl Worker {
             facts: WorkerFacts::default(),
             cgroup: None,
             task: task.map(|e| e.task_id),
+            marker: spec.as_ref().and_then(|s| s.marker.clone()),
         };
         tracing::debug!(target: "mimlys_worker", "worker {} started, probing", live.child.id());
         let probing = Instant::now();
@@ -587,6 +598,32 @@ impl Worker {
         self.per_task.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// The specification with a marker of its own for the worker about to be
+    /// made (macOS: handoff 011p), never one that an earlier worker had, so
+    /// that the members of one worker are told from every other process by
+    /// the rule that only its profile holds.
+    fn with_marker(
+        &self,
+        spec: Option<crate::confine::ConfinementSpec>,
+    ) -> Result<Option<crate::confine::ConfinementSpec>, String> {
+        let Some(mut spec) = spec else {
+            return Ok(None);
+        };
+        if self.markers.load(std::sync::atomic::Ordering::Relaxed) {
+            spec.marker = Some(
+                crate::confine::macos::fresh_marker()
+                    .map_err(|e| format!("cannot make the worker's marker: {e}"))?,
+            );
+        }
+        Ok(Some(spec))
+    }
+
+    /// Makes each worker's specification carry a marker, or not (it does on
+    /// macOS); for tests, which can ask for it on any platform.
+    pub fn make_markers(&self, on: bool) {
+        self.markers.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Makes this handle's workers per task, or not (see `per_task`); for tests.
     pub fn bind_to_task(&self, on: bool) {
         self.per_task
@@ -624,6 +661,7 @@ impl Worker {
             pid,
             start_time,
             cgroup: live.cgroup.clone(),
+            marker: live.marker.clone(),
         };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);

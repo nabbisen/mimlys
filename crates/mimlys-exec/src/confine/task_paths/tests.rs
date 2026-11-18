@@ -21,6 +21,7 @@ fn spec(data: &Path) -> ConfinementSpec {
         memory_bytes: 0,
         max_processes: 0,
         data_dir: data.to_path_buf(),
+        marker: None,
     }
 }
 

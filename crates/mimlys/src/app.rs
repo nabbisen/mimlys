@@ -308,6 +308,7 @@ pub fn confinement_spec(
         memory_bytes: mimlys_core::limits::LIM_H2_HOST_MEMORY_BYTES,
         max_processes: mimlys_core::limits::LIM_H3_HOST_PROCESSES,
         data_dir: data_dir.to_path_buf(),
+        marker: None,
     }
 }
 
