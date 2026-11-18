@@ -672,7 +672,10 @@ pub fn grant(container: &mut Container, data_dir: &Path, path: &Path) -> Result<
 #[cfg(windows)]
 pub fn revoke(container: &mut Container, data_dir: &Path, path: &Path) -> Result<bool, AppError> {
     use mimlys_exec::confine::windows::acl;
-    let held = acl::revoke(path, &container.sid).map_err(acl_error)? == acl::Revoked::Removed;
+    let held = {
+        acl::revoke(path, &container.sid).map_err(acl_error)?;
+        true
+    };
     let text = normalized(path);
     container
         .record
