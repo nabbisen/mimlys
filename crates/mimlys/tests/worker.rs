@@ -1000,3 +1000,30 @@ fn ed_13_1_a_worker_of_another_protocol_version_is_refused_at_the_handshake() {
     );
     worker.shutdown();
 }
+
+/// REQ-SBX-005 (handoff 004d-4): through the real worker, the notice that says a capture was cut
+/// is on the stream that was cut, with the bytes kept, and only there: a stream of exactly its
+/// bound is whole even when the other one overflows and ends the run (it was reported cut when
+/// the notice followed the run's `output_limit`, not the stream).
+#[test]
+fn req_sbx_005_only_the_stream_that_overflowed_is_reported_cut() {
+    use mimlys_core::observation::{Notice, Stream};
+    let fx = fx();
+    let bound = 1024u32;
+    let out = run_printing(&fx, bound, bound + 1, "x");
+    assert_eq!(out.termination, Termination::OutputLimit);
+    assert_eq!(
+        out.stdout.len(),
+        bound as usize * 1024,
+        "whole, at its bound"
+    );
+    assert_eq!(out.stderr.len(), bound as usize * 1024, "cut at its bound");
+    assert_eq!(
+        out.notices,
+        vec![Notice::OutputTruncated {
+            stream: Stream::Stderr,
+            total_bytes: bound as u64 * 1024,
+            captured_bytes: Some(bound as u64 * 1024),
+        }]
+    );
+}

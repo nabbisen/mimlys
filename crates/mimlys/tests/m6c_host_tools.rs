@@ -92,7 +92,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
-allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "sandbox-nested", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "sandbox-nested", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find", "fill"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 allow_paths = true
 max_args = 3
@@ -2056,4 +2056,31 @@ fn req_conf_009_status_says_when_the_sweep_outside_the_sandbox_is_unavailable() 
         .collect();
     assert_eq!(lines.len(), 1, "one line: {text}");
     assert!(lines[0].contains(reason), "{}", lines[0]);
+}
+
+/// REQ-PERS-005, LIM-H4 (handoff 004d-4), macOS: a host tool that prints exactly LIM-H4 (4 MiB)
+/// under the Seatbelt profile is carried whole by the worker (its frame follows the bounds in
+/// force): the execution ends `exited`, the task completes, and the one blob holds every byte.
+/// The worker that could not send more than about 600 KB of text ended the execution instead
+/// (0.11 and earlier).
+#[test]
+fn req_pers_005_a_host_tool_that_prints_exactly_its_bound_is_carried_whole() {
+    let test = "req_pers_005_a_host_tool_that_prints_exactly_its_bound_is_carried_whole";
+    let bound = mimlys_core::limits::LIM_H4_HOST_OUTPUT_BYTES;
+    let env = Env::new(
+        &[probe(&["fill", &bound.to_string(), "78"]), complete()],
+        "",
+    );
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_eq!(obs[0]["payload"]["termination"], "exited", "{}", obs[0]);
+    let blobs: Vec<_> = std::fs::read_dir(env.data.path().join("data/blobs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(blobs.len(), 1, "{blobs:?}");
+    let stored = std::fs::read(&blobs[0]).unwrap();
+    assert_eq!(stored.len(), bound);
+    assert!(stored.iter().all(|b| *b == b'x'));
 }

@@ -1220,6 +1220,12 @@ pub fn output_index(
             Err(Unavailable::NotKept) => "the model read a cut of it, and no whole copy was kept (the action ran before mimlys 0.12 kept them, or the copy could not be stored)".to_owned(),
             Err(Unavailable::Removed) => "the model read a cut of it, and its whole copy was removed with the task's outputs by `task delete`".to_owned(),
         };
+        let what = match copy.captured_bytes {
+            Some(kept) => format!(
+                "{what}; the tool printed more than mimlys keeps, so what is kept is the first {kept} bytes it printed"
+            ),
+            None => what,
+        };
         lines.push(format!("  {label}{what}"));
     }
     lines

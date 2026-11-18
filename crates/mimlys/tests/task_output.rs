@@ -117,11 +117,11 @@ fn req_pers_005_the_index_says_what_the_action_has_and_what_was_cut() {
     assert_eq!(kinds, ["result", "stdout", "stderr"]);
     assert_eq!(
         copies[1],
-        json!({"kind": "stdout", "bytes": whole, "cut": true, "source": "blob", "flag": "--stdout"})
+        json!({"kind": "stdout", "bytes": whole, "cut": true, "source": "blob", "flag": "--stdout", "capture_cut": false})
     );
     assert_eq!(
         copies[2],
-        json!({"kind": "stderr", "bytes": COMPLAINT.len(), "cut": false, "source": "excerpt", "flag": "--stderr"})
+        json!({"kind": "stderr", "bytes": COMPLAINT.len(), "cut": false, "source": "excerpt", "flag": "--stderr", "capture_cut": false})
     );
     assert_eq!(copies[0]["cut"], false);
     assert_eq!(copies[0]["source"], "payload");
@@ -488,6 +488,7 @@ fn req_cli_007_the_help_the_reference_and_the_book_say_the_same_of_task_output()
         "carriage return that ends no line is shown as `\\r`",
         "no text can hide what precedes it on its line",
         "works while another mimlys process runs a task",
+        "printed more than mimlys keeps",
         "--stdout",
         "--stderr",
         "--result",

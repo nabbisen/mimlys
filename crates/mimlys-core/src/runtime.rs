@@ -74,6 +74,10 @@ pub struct RuntimeDeps {
     pub secrets: Vec<(String, String)>,
     /// The context budget in characters (LIM-C1 or the backend's override).
     pub context_chars: usize,
+    /// LIM-S4 as configured (`sandbox.output_bytes`): what a script's stream may hold. The bound
+    /// of a stream's whole copy follows it ([`crate::observation::WholeStreams::bound_bytes`]),
+    /// as the bound of the worker's capture does.
+    pub output_bytes: usize,
 }
 
 /// A runtime failure reported to the control API (external design §18).

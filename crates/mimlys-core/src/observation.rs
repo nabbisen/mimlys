@@ -31,6 +31,11 @@ pub enum Notice {
         stream: Stream,
         /// Its full size.
         total_bytes: u64,
+        /// Present only when the tool printed more than the capture holds (LIM-S4, LIM-H4):
+        /// the bytes of the stream that were kept (handoff 004d-4). The notice that says the
+        /// excerpt is a cut of what was captured does not carry it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        captured_bytes: Option<u64>,
     },
     /// Returned content was cut to the requested size.
     ContentTruncated {
@@ -193,15 +198,23 @@ pub struct WholeStreams {
 }
 
 impl WholeStreams {
-    /// The bound a stream's whole copy is stored within (REQ-PERS-005): LIM-S4 for a script's
-    /// streams, LIM-H4 for a host tool's. An external tool has no streams.
-    pub fn bound_bytes(tool: &str) -> usize {
-        if tool == crate::host_tool::RUN_HOST_TOOL {
+    /// The bound a stream's whole copy is stored within (REQ-PERS-005; handoff 004d-4): the
+    /// bound the capture is held to, times three. A script's capture is held to LIM-S4 as
+    /// configured (`lim_s4`), a host tool's to LIM-H4; an external tool has no streams. The text
+    /// is longer than the bytes it is made of only where decoding replaced a byte that is no
+    /// UTF-8 by U+FFFD, which is three bytes: so the text of a capture that holds its bound is
+    /// at most three times it, and is never cut again.
+    pub fn bound_bytes(tool: &str, lim_s4: usize) -> usize {
+        let captured = if tool == crate::host_tool::RUN_HOST_TOOL {
             crate::limits::LIM_H4_HOST_OUTPUT_BYTES
         } else {
-            crate::limits::LIM_S4_OUTPUT_BYTES as usize
-        }
+            lim_s4
+        };
+        captured * Self::TEXT_BYTES_PER_CAPTURED_BYTE
     }
+
+    /// The most bytes a captured byte can become as text: U+FFFD, in UTF-8.
+    pub const TEXT_BYTES_PER_CAPTURED_BYTE: usize = 3;
 }
 
 /// The longest prefix of `text` of at most `max_bytes` bytes that ends on a character boundary.
@@ -407,6 +420,7 @@ fn normalize_stream(
         notices.push(Notice::OutputTruncated {
             stream,
             total_bytes: bytes.len() as u64,
+            captured_bytes: None,
         });
     }
     // The excerpt is the whole text unless it was cut; only then is there a second copy.

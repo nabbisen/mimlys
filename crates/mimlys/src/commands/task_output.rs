@@ -98,6 +98,11 @@ pub struct Copy {
     pub which: Which,
     /// What it is, or why it cannot be shown.
     pub state: Result<Held, Unavailable>,
+    /// Present only for a stream whose tool printed more than mimlys keeps (LIM-S4, LIM-H4): the
+    /// bytes it kept, the first it printed. The copy, the whole of what was kept, is itself a cut
+    /// then, which the index says (`capture_cut`; handoff 004d-4). The observation's notice that
+    /// the capture was cut is the source; a record of 0.11 has none.
+    pub captured_bytes: Option<u64>,
 }
 
 /// The copy itself, with what the index says of it.
@@ -328,11 +333,40 @@ pub fn copy(
     found: &Found,
     which: Which,
 ) -> Result<Copy, AppError> {
-    let state = match which {
-        Which::Result => result_copy(found),
-        Which::Stdout | Which::Stderr => text_copy(persistence, found, which)?,
+    let (state, captured_bytes) = match which {
+        Which::Result => (result_copy(found), None),
+        Which::Stdout | Which::Stderr => (
+            text_copy(persistence, found, which)?,
+            captured_bytes(found, which),
+        ),
     };
-    Ok(Copy { which, state })
+    Ok(Copy {
+        which,
+        state,
+        captured_bytes,
+    })
+}
+
+/// The bytes kept of a stream the tool printed more of than mimlys keeps, as the observation's
+/// notice says it (the worker knows when it stopped capturing). `None` for a stream that was
+/// not cut by the capture, and for an external tool, which has no streams.
+fn captured_bytes(found: &Found, which: Which) -> Option<u64> {
+    let stream = match which {
+        Which::Stdout => Stream::Stdout,
+        Which::Stderr => Stream::Stderr,
+        Which::Result => return None,
+    };
+    if is_external(found.action.content().tool()) {
+        return None;
+    }
+    found.observation.notices.iter().find_map(|n| match n {
+        Notice::OutputTruncated {
+            stream: s,
+            captured_bytes: Some(kept),
+            ..
+        } if *s == stream => Some(*kept),
+        _ => None,
+    })
 }
 
 /// A carriage return that ends no line is shown as `\r`, so that no text can hide what precedes
@@ -386,6 +420,12 @@ struct CopyJson {
     cut: bool,
     source: Option<Source>,
     flag: &'static str,
+    /// Whether the tool printed more than mimlys keeps, so that the whole copy is itself a cut
+    /// of what it printed (handoff 004d-4).
+    capture_cut: bool,
+    /// The bytes kept, present with `capture_cut`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    captured_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     unavailable: Option<Unavailable>,
 }
@@ -407,6 +447,8 @@ pub fn index_json(found: &Found, copies: &[Copy]) -> IndexJson {
                     cut: held.cut,
                     source: Some(held.source),
                     flag: c.which.flag(),
+                    capture_cut: c.captured_bytes.is_some(),
+                    captured_bytes: c.captured_bytes,
                     unavailable: None,
                 },
                 Err(why) => CopyJson {
@@ -417,6 +459,8 @@ pub fn index_json(found: &Found, copies: &[Copy]) -> IndexJson {
                     cut: !matches!(why, Unavailable::NoStreams),
                     source: None,
                     flag: c.which.flag(),
+                    capture_cut: c.captured_bytes.is_some(),
+                    captured_bytes: c.captured_bytes,
                     unavailable: Some(*why),
                 },
             })
@@ -436,7 +480,11 @@ pub fn copy_json(found: &Found, copy: &Copy, held: &Held) -> Value {
         "bytes": held.bytes,
         "cut": held.cut,
         "source": held.source,
+        "capture_cut": copy.captured_bytes.is_some(),
     });
+    if let Some(kept) = copy.captured_bytes {
+        value["captured_bytes"] = json!(kept);
+    }
     match &held.content {
         Content::Text(text) => value["text"] = json!(text),
         Content::Json(result) => value["result"] = result.clone(),

@@ -824,17 +824,26 @@ fn execute(
     };
     let outcome = state.sandbox.run(module, &request, interrupt);
     let _ = std::fs::remove_dir_all(&tmp);
+    // A stream is cut when the program wrote more than the capture holds; one of exactly its
+    // bound is whole (the other stream's overflow, which ends the run, does not cut it).
     let mut notices = Vec::new();
-    for (stream, bytes) in [
-        (mimlys_core::observation::Stream::Stdout, &outcome.stdout),
-        (mimlys_core::observation::Stream::Stderr, &outcome.stderr),
+    for (stream, bytes, cut) in [
+        (
+            mimlys_core::observation::Stream::Stdout,
+            &outcome.stdout,
+            outcome.stdout_cut,
+        ),
+        (
+            mimlys_core::observation::Stream::Stderr,
+            &outcome.stderr,
+            outcome.stderr_cut,
+        ),
     ] {
-        if bytes.len() >= state.limits.output_bytes
-            && outcome.termination == Termination::OutputLimit
-        {
+        if cut {
             notices.push(Notice::OutputTruncated {
                 stream,
                 total_bytes: bytes.len() as u64,
+                captured_bytes: Some(bytes.len() as u64),
             });
         }
     }

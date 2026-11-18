@@ -636,9 +636,11 @@ impl Capture {
             }
         }
         let (bytes, total) = std::mem::take(&mut *self.buffer.lock().expect("capture"));
+        // The tool printed more than the capture holds: the notice says what was kept.
         let notice = (total as usize > bytes.len()).then_some(Notice::OutputTruncated {
             stream: self.stream,
             total_bytes: total,
+            captured_bytes: Some(bytes.len() as u64),
         });
         (bytes, notice)
     }

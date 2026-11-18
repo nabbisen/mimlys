@@ -1636,9 +1636,10 @@ impl Runtime {
 
     /// Stores the whole text of each stream whose excerpt is a cut, as a blob, and returns
     /// the blobs' ids (REQ-PERS-005): the text the excerpt was cut from, cleaned and
-    /// redacted, within LIM-S4 (a script's streams) or LIM-H4 (a host tool's). Text beyond the
-    /// bound (invalid bytes become three-byte replacement characters) is cut at the
-    /// bound on a character boundary, never refused.
+    /// redacted, within three times the capture's bound: LIM-S4 as configured for a script's
+    /// streams, LIM-H4 for a host tool's (a byte that is no UTF-8 becomes at most three bytes, so
+    /// what a capture holds is never cut again). Text beyond that bound (only a redaction
+    /// can make it longer) is cut at it on a character boundary and logged, never refused.
     ///
     /// A blob that cannot be written does not lose the execution: the action ran and its
     /// record is what recovery and the audit stand on, so the failure is logged and the
@@ -1649,10 +1650,22 @@ impl Runtime {
         tool: &str,
         whole: WholeStreams,
     ) -> (Option<BlobId>, Option<BlobId>) {
-        let bound = WholeStreams::bound_bytes(tool);
+        let bound = WholeStreams::bound_bytes(tool, self.deps.output_bytes);
         let keep = |stream: &'static str, text: Option<String>| -> Option<BlobId> {
             let text = text?;
             let kept = prefix_within_bytes(&text, bound);
+            if kept.len() < text.len() {
+                // Not a capture's cut (the bound is three times what the capture holds): a
+                // redaction made the text longer than that. The log says so, since nothing else does.
+                tracing::warn!(
+                    target: "mimlys_core",
+                    %task_id,
+                    stream,
+                    text_bytes = text.len(),
+                    bound,
+                    "the whole text of a stream is longer than its bound and was cut at it"
+                );
+            }
             match self
                 .deps
                 .persistence

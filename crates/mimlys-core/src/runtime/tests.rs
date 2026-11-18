@@ -135,6 +135,7 @@ impl Harness {
             probe: crate::confine::Probe::unavailable("no backend in tests"),
             secrets,
             context_chars,
+            output_bytes: crate::limits::LIM_S4_OUTPUT_BYTES as usize,
         })
         .unwrap();
         Self {
@@ -1152,6 +1153,7 @@ fn req_sched_002_one_step_and_one_execution_at_a_time_per_task() {
         probe: crate::confine::Probe::unavailable("no backend in tests"),
         secrets: vec![],
         context_chars: crate::limits::LIM_C1_CONTEXT_CHARS,
+        output_bytes: crate::limits::LIM_S4_OUTPUT_BYTES as usize,
     })
     .unwrap();
     let session = Session {
@@ -2862,6 +2864,7 @@ fn inv_05_a_transition_is_durable_before_its_consequence_is_visible() {
         probe: crate::confine::Probe::unavailable("no backend in tests"),
         secrets: vec![],
         context_chars: crate::limits::LIM_C1_CONTEXT_CHARS,
+        output_bytes: crate::limits::LIM_S4_OUTPUT_BYTES as usize,
     })
     .unwrap();
     let session = Session {

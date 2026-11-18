@@ -195,3 +195,124 @@ fn req_pers_005_the_storage_view_counts_a_blob_and_task_delete_and_prune_free_it
         assert_eq!(view["bytes"]["blobs"], 0, "{view}");
     }
 }
+
+const KIB: usize = 1024;
+
+/// A run of a module that prints `out_kib` KiB of `byte` (`x`, or `\ff` for bytes that are no
+/// text), with LIM-S4 left at its default or set to `bound` (`sandbox.output_bytes`), through the
+/// real worker: the data directory's parent and the report of the run.
+fn run_printing(out_kib: u32, byte: &str, bound: Option<usize>) -> (tempfile::TempDir, Value) {
+    let scope = scope_printing(out_kib, 0, byte);
+    let dir = tempfile::tempdir().unwrap();
+    let script = script(dir.path());
+    let bound = bound.map(|b| b.to_string());
+    let mut extra = vec![];
+    if let Some(bound) = &bound {
+        extra.extend(["--sandbox-output-bytes", bound.as_str()]);
+    }
+    let run = run_printer(&dir.path().join("data"), scope.path(), &script, &extra, &[]);
+    assert!(run.status.success(), "{}", run.stderr);
+    (dir, run.report.unwrap())
+}
+
+/// The blob the first execution names, as bytes.
+fn first_blob(dir: &tempfile::TempDir, report: &Value) -> Vec<u8> {
+    let blob = report["executions"][0]["stdout_blob"]
+        .as_str()
+        .expect("the execution names a blob");
+    std::fs::read(dir.path().join("data/blobs").join(blob)).unwrap()
+}
+
+/// `mimlys --json task output <task> [rest]` over the run's store.
+fn output_json(dir: &tempfile::TempDir, report: &Value, rest: &[&str]) -> Value {
+    let task = report["task_id"].as_str().unwrap();
+    let mut args = vec!["--json", "task", "output", task];
+    args.extend_from_slice(rest);
+    let (code, stdout, stderr) = mimlys(&dir.path().join("data"), &args);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    serde_json::from_str(stdout.trim()).unwrap()
+}
+
+/// REQ-PERS-005, LIM-S4 (handoff 004d-4): through the real worker, a script that prints exactly
+/// its bound, at the default LIM-S4 and at a configured 4 MiB, is stored whole: the worker
+/// carries the record, its blob holds every byte (no cut, none refused), the execution ends
+/// `exited`, the task completes, and the index says the capture was not cut. A worker that
+/// could not send more than about 600 KB of text ended instead (0.11 and earlier).
+#[test]
+fn req_pers_005_a_script_that_prints_exactly_its_bound_is_stored_whole() {
+    for bound in [None, Some(4 * 1024 * KIB)] {
+        let want = bound.unwrap_or(1024 * KIB);
+        let (dir, report) = run_printing((want / KIB) as u32, "x", bound);
+        assert_eq!(report["state"]["state"], "completed", "{bound:?}");
+        assert_eq!(
+            report["executions"][0]["termination"], "exited",
+            "{bound:?}: the worker lived and sent its record"
+        );
+        let stored = first_blob(&dir, &report);
+        assert_eq!(stored.len(), want, "{bound:?}: every byte, no more");
+        assert!(stored.iter().all(|b| *b == b'x'));
+        let index = output_json(&dir, &report, &[]);
+        let stdout = &index["copies"][1];
+        assert_eq!(stdout["kind"], "stdout");
+        assert_eq!(stdout["bytes"], want, "{index}");
+        assert_eq!(stdout["cut"], true, "the model read a cut of it");
+        assert_eq!(stdout["capture_cut"], false, "{index}");
+        assert!(stdout.get("captured_bytes").is_none(), "{index}");
+    }
+}
+
+/// REQ-PERS-005, LIM-S4 (handoff 004d-4): a script that prints past its bound is ended
+/// (`output_limit`), the copy holds the bound, the first bytes it printed, and the index and the
+/// JSON of `task output` say the capture was cut and how many bytes were kept: the user is not
+/// told that a cut copy is whole.
+#[test]
+fn req_pers_005_a_script_that_prints_past_its_bound_has_a_copy_that_says_the_capture_was_cut() {
+    let bound = 1024 * KIB;
+    let (dir, report) = run_printing(1025, "x", None);
+    assert_eq!(report["executions"][0]["termination"], "output_limit");
+    let stored = first_blob(&dir, &report);
+    assert_eq!(stored.len(), bound, "the copy holds the bound");
+    let index = output_json(&dir, &report, &[]);
+    let stdout = &index["copies"][1];
+    assert_eq!(stdout["capture_cut"], true, "{index}");
+    assert_eq!(stdout["captured_bytes"], bound, "{index}");
+    assert_eq!(stdout["bytes"], bound, "{index}");
+    let stderr = &index["copies"][2];
+    assert_eq!(stderr["capture_cut"], false, "{index}");
+    let shown = output_json(&dir, &report, &["--stdout"]);
+    assert_eq!(shown["capture_cut"], true, "{shown}");
+    assert_eq!(shown["captured_bytes"], bound, "{shown}");
+    assert_eq!(shown["text"].as_str().unwrap().len(), bound);
+    // The text index says it too.
+    let task = report["task_id"].as_str().unwrap();
+    let (code, text, stderr) = mimlys(&dir.path().join("data"), &["task", "output", task]);
+    assert_eq!(code, 0, "{stderr}");
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("standard output"))
+        .unwrap();
+    assert!(
+        line.contains("the tool printed more than mimlys keeps")
+            && line.contains(&format!("the first {bound} bytes")),
+        "{text}"
+    );
+}
+
+/// REQ-PERS-005 (handoff 004d-4): a capture of bytes that are no text, up to its bound, is stored
+/// whole: each byte is U+FFFD as text, three bytes, so the copy is three times the bound, never
+/// cut again, at the default and at a configured 4 MiB. It is not a capture cut.
+#[test]
+fn req_pers_005_invalid_bytes_up_to_the_bound_are_stored_whole() {
+    for bound in [None, Some(4 * 1024 * KIB)] {
+        let want = bound.unwrap_or(1024 * KIB);
+        let (dir, report) = run_printing((want / KIB) as u32, "\\ff", bound);
+        assert_eq!(report["state"]["state"], "completed", "{bound:?}");
+        let stored = first_blob(&dir, &report);
+        assert_eq!(stored.len(), 3 * want, "{bound:?}: three bytes for each");
+        assert!(stored.chunks(3).all(|c| c == [0xef, 0xbf, 0xbd]));
+        let index = output_json(&dir, &report, &[]);
+        let stdout = &index["copies"][1];
+        assert_eq!(stdout["bytes"], 3 * want, "{index}");
+        assert_eq!(stdout["capture_cut"], false, "{index}");
+    }
+}
