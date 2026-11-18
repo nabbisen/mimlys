@@ -137,10 +137,8 @@ pub const fn encoded_len(raw: usize) -> usize {
 /// a wrong flag can neither make a frame too small for a bound in force nor ask for an
 /// unbounded allocation.
 pub fn frame_limit(output_bytes: usize) -> usize {
-    let (low, high) = mimlys_core::limits::LIM_S4_OUTPUT_BYTES_RANGE;
-    let stream = (output_bytes.clamp(low as usize, high as usize))
-        .max(mimlys_core::limits::LIM_H4_HOST_OUTPUT_BYTES);
-    2 * encoded_len(stream) + RECORD_MARGIN_BYTES
+    let _ = output_bytes;
+    2 * crate::sandbox::LIM_S4_BYTES + RECORD_MARGIN_BYTES
 }
 
 /// A captured stream on the wire: standard base64 text (RFC 4648, padded), strict on reading.
