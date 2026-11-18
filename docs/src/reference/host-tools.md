@@ -246,6 +246,25 @@ shorter than a poll), as on Linux without a delegated cgroup. If the worker
 cannot verify the mechanism on a given macOS, K, M and C read `unavailable:
 membership_unverified: …` and host tools are not offered.
 
+**When a tool kills its worker.** A tool may signal the members of its own
+sandbox, and the worker and the small process that cleans up after it are two
+of them, so a hostile tool can kill both and leave its own processes running
+(0.10 said so as a residual). Since 0.11 the runtime, which is outside every
+sandbox, sweeps the worker's processes itself, whenever the worker ends for
+any reason (it finished, was killed, crashed, or was replaced by another
+task's), within two seconds, and the next start does the same for a worker
+that a crashed runtime left. It finds them through a rule that only that
+worker's profile holds (a name, made new for each worker and recorded in
+`worker.json`), never by a process's name or parent, and it never signals a
+process that is not in that sandbox: yours, or another application's. At each
+start the runtime checks the test on a process it knows is a member (the worker
+it has just started) and on one it knows is not (itself); if the test does not
+hold on some macOS, `status` says so in one line (`sweep           the sweep from
+outside the sandbox is unavailable (…)`, and `outside_sweep_unavailable` in
+`--json`), the worker's own cleanup process alone runs as in 0.10, and the tier
+does not change. What remains: a process of a tool that outlives its worker and
+the runtime at once cannot be found before the next start of mimlys, as before.
+
 **What to declare.** The system's pieces a build needs are in the set already:
 `/usr`, `/bin`, `/sbin`, two small files, the active developer directory (the
 Xcode or Command Line Tools that `xcode-select -p` names; mimlys reads the link

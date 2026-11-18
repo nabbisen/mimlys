@@ -53,6 +53,15 @@ pub fn xcrun_cache_missing_warning(file: &str) -> String {
         "warning: xcrun's cache {file} is missing and could not be made: host tools that build with Xcode will fail; run `env -i PATH=/usr/bin:/bin /usr/bin/xcrun --find clang` once"
     )
 }
+/// `status` (macOS): the test that finds a worker's members from outside the
+/// sandbox did not hold when it was verified, so the runtime does not use it
+/// (handoff 011p, item 4); the worker's own sweeper alone ends a tool's tree, as
+/// in 0.10, and the tier is the same. One line, with the reason.
+pub fn outside_sweep_unavailable(reason: &str) -> String {
+    format!(
+        "sweep           the sweep from outside the sandbox is unavailable ({reason}): a tool that kills its worker's sweeper can leave its processes running; the tier is unchanged"
+    )
+}
 /// The configuration file in use, or the defaults.
 pub fn config_source(path: Option<&str>) -> String {
     match path {

@@ -188,12 +188,15 @@ pub struct StoreView {
 /// The worker's confinement as the probe finds it, for `status`: the same
 /// specification a runtime starts its worker with, a worker that records
 /// nothing (REQ-CONF-009's record belongs to the runtime that holds the lock).
+/// With it, on macOS, why the sweep from outside the sandbox is unavailable
+/// when the verification on the probe worker found that the test does not hold
+/// (handoff 011p, item 4); `None` when it holds, and everywhere else.
 pub fn probe_confinement(
     config: &crate::config::Config,
     data_dir: &Path,
     interpreters: &[mimlys_exec::interpreters::Configured],
     host_tools: &[mimlys_core::host_tool::HostToolDeclaration],
-) -> mimlys_core::confine::Probe {
+) -> (mimlys_core::confine::Probe, Option<String>) {
     let limits = mimlys_exec::sandbox::Limits {
         fuel: config.sandbox.fuel,
         deadline_ms: config.sandbox.deadline_ms.max(1) as u64,
@@ -215,6 +218,10 @@ pub fn probe_confinement(
         record: None,
     });
     let probe = worker.probe_confined();
+    let outside = match worker.outside_sweep() {
+        mimlys_exec::worker::OutsideSweep::Unavailable(reason) => Some(reason),
+        _ => None,
+    };
     worker.shutdown();
-    probe
+    (probe, outside)
 }
