@@ -47,21 +47,24 @@ fn req_ws_014_a_workspace_no_task_refers_to_is_found_with_its_footprint() {
 /// are neither listed nor removed. No `workspaces` directory is no workspace.
 #[test]
 fn req_ws_014_only_directories_named_like_a_task_are_looked_at() {
+    // Not the same name as another written here with other letters: macOS and Windows
+    // keep one name for both.
+    const FILE: &str = "00000000-0000-0000-0000-000000000010";
     let data = data();
     let root = data.path().join("workspaces");
     for odd in [
         "notes",
-        "00000000-0000-0000-0000-00000000000A",
+        "00000000-0000-0000-0000-00000000000F",
         "0000000000000000000000000000000d",
     ] {
         std::fs::create_dir_all(root.join(odd).join("tree")).unwrap();
     }
-    std::fs::write(root.join(A), b"a file with a task's name").unwrap();
+    std::fs::write(root.join(FILE), b"a file with a task's name").unwrap();
     assert_eq!(find(data.path(), &BTreeSet::new()).unwrap(), vec![]);
     assert!(remove(data.path(), "notes").is_empty());
     assert!(root.join("notes").exists(), "not a task's name: kept");
-    assert!(remove(data.path(), A).is_empty());
-    assert!(root.join(A).is_file(), "not a directory: kept");
+    assert!(remove(data.path(), FILE).is_empty());
+    assert!(root.join(FILE).is_file(), "not a directory: kept");
     let none = tempfile::tempdir().unwrap();
     assert_eq!(find(none.path(), &BTreeSet::new()).unwrap(), vec![]);
 }
