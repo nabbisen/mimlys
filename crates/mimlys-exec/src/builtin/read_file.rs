@@ -50,7 +50,7 @@ pub(super) fn run(body: Body) -> ToolResult {
         "max_chars",
         (LIM_C2_EXCERPT_HEAD_CHARS + LIM_C2_EXCERPT_TAIL_CHARS) as i64,
     )
-    .clamp(1, LIM_I19_RESULT_TOTAL_CHARS as i64) as usize;
+    .max(1) as usize;
     // The file is opened without blocking and is a regular file; what is read is bounded
     // by LIM-W3, the size of a file a tool writes: `total_chars` and `total_lines` are of
     // the whole file, so the read goes to its end, and a larger file is refused.

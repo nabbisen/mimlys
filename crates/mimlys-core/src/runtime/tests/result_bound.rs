@@ -92,3 +92,45 @@ fn req_ctx_006_what_the_tool_said_is_not_said_twice() {
         Some(json!({"text": "the provider's own whole copy"}))
     );
 }
+
+/// REQ-CTX-007, REQ-CTX-006: a secret that lies across the point where the
+/// runtime cuts a payload leaves nothing of itself, not even a part: the payload
+/// is redacted whole before it is cut. The cut point is read off the cut of a
+/// probe of the same size (the head depends on the digits of the size alone).
+#[test]
+fn req_ctx_007_a_secret_across_the_runtimes_cut_leaves_nothing() {
+    let value = "sk-live-0123456789abcdef";
+    let probe = json!({"text": "a".repeat(76_000)});
+    let cut = crate::bound::bound(&probe, LIM, Unit::Chars, true).expect("over the bound");
+    let head = cut.value["text"]
+        .as_str()
+        .and_then(|t| t.find('\n'))
+        .expect("a marker");
+    // The secret starts a few characters before the head ends.
+    let mut text = "a".repeat(head - 6);
+    text.push_str(value);
+    text.push_str(&"b".repeat(76_000 - text.len()));
+    assert_eq!(text.chars().count(), 76_000);
+    let h = Harness::with_context(
+        vec![act("read_file", "src/lib.rs")],
+        Policy::shipped(),
+        vec![("TOKEN".into(), value.into())],
+        crate::limits::LIM_C1_CONTEXT_CHARS,
+    );
+    h.tools.script(
+        "read_file",
+        ExecutionOutcome::succeeded(json!({"text": text}), 3),
+    );
+    let id = h.create();
+    h.step(id);
+    let o = h.persistence.load_observations(id).unwrap().remove(0);
+    let shown = serde_json::to_string(&o.payload).unwrap();
+    assert!(serialized_size(&o.payload, Unit::Chars) <= LIM);
+    assert!(!shown.contains(value));
+    for part in [&value[..6], &value[value.len() - 6..]] {
+        assert!(!shown.contains(part), "{part} is left of the secret");
+    }
+    let whole = serde_json::to_string(&o.full_payload).unwrap();
+    assert!(!whole.contains(value), "the user's copy is redacted too");
+    assert_eq!(truncated_notices(&o.notices).len(), 1);
+}
