@@ -47,8 +47,9 @@ pub const LIM_I3_TOOL_PARAMETERS: usize = 8;
 pub const LIM_I4_SCHEMA_DEPTH: usize = 2;
 /// LIM-I5: length of a notice, hint or error message, in characters.
 pub const LIM_I5_MESSAGE_CHARS: usize = 200;
-/// LIM-I19 (handoff 009i, audit A-26): an external tool's result,
-/// serialized, as the model reads it, in characters. LIM-C1 (32 000) less LIM-I1
+/// LIM-I19 (handoff 009i, audit A-26; every tool's since handoff 013c): a
+/// tool's result, serialized, as the model reads it, in characters; the last
+/// bound of every observation's payload, whatever the provider. LIM-C1 (32 000) less LIM-I1
 /// (8 000) leaves 24 000 for everything else; the instructions and capabilities
 /// take about 1 700, a goal up to LIM-D4 (4 000) and a plan up to LIM-D3 (20 x
 /// 200 = 4 000), so 9 700 at worst, and the latest step is never compressed
@@ -67,6 +68,11 @@ pub const LIM_I20_TOOL_DEFINITION_CHARS: usize = 2000;
 /// lists of an output schema (128), so that one number bounds both; the
 /// rendering bound above is what limits the values' size.
 pub const LIM_I21_ENUM_VALUES: usize = 128;
+/// LIM-I22 (handoff 013c): bytes of one message a server writes on its standard
+/// output (one JSON-RPC line), counted as they are read, before the message is
+/// parsed: LIM-W3's size, 8 MiB. Past it the message is never held whole, the
+/// server is stopped as a server that ended, and the log says why.
+pub const LIM_I22_SERVER_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 /// LIM-I6: rendered approval request, in characters.
 pub const LIM_I6_APPROVAL_CHARS: usize = 4000;
 /// LIM-I7: entries returned by `list_dir` or `search_files`.
@@ -91,8 +97,13 @@ pub const LIM_C4_SUMMARY_CHARS: usize = 300;
 pub const LIM_C2_EXCERPT_HEAD_CHARS: usize = 3000;
 /// LIM-C2: observation excerpt tail, in characters.
 pub const LIM_C2_EXCERPT_TAIL_CHARS: usize = 1000;
-/// LIM-C2: ceiling of an excerpt a tool may be asked for, in characters.
-pub const LIM_C2_EXCERPT_CEILING_CHARS: usize = 64000;
+/// LIM-C2: the range of the observation excerpt, in characters (500 to 8 000).
+/// Its upper end is LIM-I19: no excerpt, and no `max_chars` of `read_file`,
+/// exceeds what the model reads of a result (handoff 013c; the ceiling was
+/// 64 000, twice LIM-C1). No configuration key reads it in 0.11: the excerpt is
+/// head plus tail above, and `read_file`'s `max_chars` is at most
+/// [`LIM_I19_RESULT_TOTAL_CHARS`].
+pub const LIM_C2_EXCERPT_CHARS_RANGE: (usize, usize) = (500, LIM_I19_RESULT_TOTAL_CHARS);
 /// LIM-W3: single file written by a tool, in bytes (8 MiB).
 pub const LIM_W3_FILE_BYTES: usize = 8 * 1024 * 1024;
 /// LIM-O4: deadline of a built-in tool invocation, in milliseconds.

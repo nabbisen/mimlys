@@ -139,6 +139,30 @@ pub(crate) fn workspace_path(
     WorkspacePath::canonicalize(text).map_err(|_| ToolError::new("invalid_path"))
 }
 
+/// Drops trailing `entries` until `envelope` (the result with an empty list) and
+/// the entries together, serialized, are at most LIM-I19: the result is bounded
+/// as the model reads it by dropping whole entries, never by cutting one (a cut
+/// path would name a file that does not exist). Returns how many were dropped;
+/// the caller says so with its `truncated`.
+pub(crate) fn fit_entries(envelope: &Value, entries: &mut Vec<Value>) -> usize {
+    use mimlys_core::bound::{Unit, serialized_size};
+    use mimlys_core::limits::LIM_I19_RESULT_TOTAL_CHARS;
+    let mut total = serialized_size(envelope, Unit::Chars);
+    let mut kept = 0;
+    for entry in entries.iter() {
+        // The entry and, after the first, the comma before it.
+        let cost = serialized_size(entry, Unit::Chars) + usize::from(kept > 0);
+        if total + cost > LIM_I19_RESULT_TOTAL_CHARS {
+            break;
+        }
+        total += cost;
+        kept += 1;
+    }
+    let dropped = entries.len() - kept;
+    entries.truncate(kept);
+    dropped
+}
+
 pub(crate) fn int_arg(args: &Map<String, Value>, name: &str, default: i64) -> i64 {
     args.get(name).and_then(Value::as_i64).unwrap_or(default)
 }

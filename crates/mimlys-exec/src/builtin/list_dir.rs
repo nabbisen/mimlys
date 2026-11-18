@@ -1,5 +1,6 @@
 use super::{
-    Body, ToolError, ToolResult, check_cancel, int_arg, make_definition, path_param, workspace_path,
+    Body, ToolError, ToolResult, check_cancel, fit_entries, int_arg, make_definition, path_param,
+    workspace_path,
 };
 use cap_std::fs::Dir;
 use mimlys_core::action::EffectKind;
@@ -42,7 +43,11 @@ pub(super) fn run(body: Body) -> ToolResult {
         cancel: &body.cancel,
     };
     listing.walk(&body.dir, path.as_str(), depth)?;
-    let truncated = listing.total as usize > LIM_I7_ENTRIES;
+    // At most LIM-I7 entries, and in total (the paths are of any length) at most
+    // LIM-I19 as the model reads them: whole entries are dropped from the end.
+    let envelope = json!({ "path": path.as_str(), "entries": [], "truncated": false });
+    let dropped = fit_entries(&envelope, &mut listing.entries);
+    let truncated = listing.total as usize > LIM_I7_ENTRIES || dropped > 0;
     let notices = if truncated {
         vec![Notice::EntriesTruncated {
             total: listing.total,

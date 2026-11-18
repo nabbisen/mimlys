@@ -420,7 +420,9 @@ async fn req_tool_006_007_deadline_and_cancellation() {
 
 /// REQ-SEC-012 (handoff 008c), REQ-TOOL-003: the pinned definition hash of every
 /// built-in file tool is the one 0.9.0 computed (tasks of 0.9.0 pin these), whatever
-/// `sha2` the build uses.
+/// `sha2` the build uses. `read_file`'s definition changed in 0.11 (`max_chars` is at
+/// most LIM-I19, 8 000, not 64 000: handoff 013c): its 0.9.0 hash is checked on the
+/// definition with the old maximum put back, and its 0.11 hash is pinned as well.
 #[test]
 fn req_tool_003_golden_definition_hashes_of_0_9_0() {
     let expected = [
@@ -453,9 +455,22 @@ fn req_tool_003_golden_definition_hashes_of_0_9_0() {
     assert_eq!(definitions.len(), expected.len());
     for (definition, (name, hash)) in definitions.iter().zip(expected) {
         assert_eq!(definition.name, name);
-        let actual = mimlys_core::hash::hash_canonical(&serde_json::to_value(definition).unwrap());
+        let mut value = serde_json::to_value(definition).unwrap();
+        if name == "read_file" {
+            // 0.9.0's maximum of `max_chars`, put back (see above).
+            let max = &mut value["input"]["params"][2]["max"];
+            assert_eq!(*max, 8000);
+            *max = json!(64000);
+        }
+        let actual = mimlys_core::hash::hash_canonical(&value);
         assert_eq!(actual.as_str(), hash, "{name}");
     }
+    let read_file = serde_json::to_value(&definitions[0]).unwrap();
+    assert_eq!(
+        mimlys_core::hash::hash_canonical(&read_file).as_str(),
+        "0091c834956a82a09b1f61b7a9c509a9148ee8851f99090474cafe010bef0c0c",
+        "read_file in 0.11"
+    );
 }
 
 /// REQ-TOOL-003: a tool refuses a directory with `is_directory` and its hint, whatever it
@@ -655,3 +670,5 @@ fn req_tool_006_the_open_of_a_named_pipe_does_not_wait() {
         "no reader: refused at once"
     );
 }
+
+mod bounded;

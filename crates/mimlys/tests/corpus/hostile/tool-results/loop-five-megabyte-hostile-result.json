@@ -44,7 +44,7 @@
       "continued"
     ],
     "observations": 1,
-    "max_stream_chars": "LIM_C2_EXCERPT_CEILING_CHARS",
+    "max_stream_chars": "LIM_I19_RESULT_TOTAL_CHARS",
     "stdout_lacks_chars": [
       "\u0000",
       "\u001b",

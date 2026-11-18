@@ -249,6 +249,24 @@ impl Observation {
         }
     }
 
+    /// The last bound of every observation (handoff 013c; LIM-I19, REQ-CTX-006):
+    /// the payload, whatever tool or provider made it, is bounded as the model
+    /// reads it, by cutting its longest strings first (valid JSON in every case),
+    /// and the cut is said once, as `content_truncated`. A tool bounds its own
+    /// result first, so that its cut says what it means; this acts only on one
+    /// that did not (or whose result a redaction made longer). It runs after
+    /// [`Observation::redact`], so a secret is replaced whole before anything is
+    /// cut. The whole payload is kept for the user as `full_payload` unless the
+    /// provider kept one already.
+    pub fn bound_payload(&mut self) {
+        let payload = std::mem::take(&mut self.payload);
+        let (payload, whole) = crate::bound::bound_result(payload, &mut self.notices);
+        self.payload = payload;
+        if self.full_payload.is_none() {
+            self.full_payload = whole;
+        }
+    }
+
     /// Replaces configured secret values in the payload, both streams and
     /// the notices' texts (REQ-CTX-007), adding one `secret_redacted` notice
     /// per secret found.

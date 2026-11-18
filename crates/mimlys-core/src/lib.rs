@@ -20,6 +20,7 @@
 
 pub mod action;
 pub mod approval;
+pub mod bound;
 pub mod clock;
 pub mod confine;
 pub mod context;
