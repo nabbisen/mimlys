@@ -322,7 +322,9 @@ so that it can go through a pipe (`mimlys task output <task> --stdout | less`); 
 printed as JSON. On a terminal a carriage return that ends no line is shown as `\r`, so that no
 text can hide what precedes it on its line (a tool that prints `all is well\r` over a line
 of something else is seen doing it); through a pipe the text is exact. The copy is that of its
-latest execution, so after a retry the first attempt's output is not shown. An
+latest execution unless you give `--attempt N`: the index names the attempts the action has, each
+as it ended (`1 (failed), 2 (succeeded)`), so after a retry what the first attempt printed when it
+failed is `mimlys task output <task> --attempt 1 --stdout`. An attempt the action does not have is refused. An
 external tool has no streams; its result is what `--result` prints. A stream the model read a
 cut of and whose whole copy is not there (the task ran before 0.12, which kept none, or
 `task delete` removed it) is said so, and never shown as if it were whole. The command is a

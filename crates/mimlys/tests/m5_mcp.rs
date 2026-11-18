@@ -3726,3 +3726,42 @@ fn req_pers_005_task_output_shows_the_whole_result_the_model_read_a_cut_of() {
     );
     drop(holder);
 }
+
+/// REQ-PERS-005 (handoff 004d-4), through a real retry: an idempotent read whose server died is
+/// tried again once, so the action has two attempts, both failed. `task output` names them in the
+/// index, shows the latest by default and an earlier one with `--attempt 1` (its own execution
+/// and its own result flag), and refuses an attempt the action does not have as `not_found`.
+#[test]
+fn req_pers_005_task_output_names_the_attempts_of_a_retried_external_read() {
+    let (env, _log) = dying_env("external_read", 1);
+    let scope = env.scope();
+    let (_, value) = env.json(&["run", "die", "--scope", scope.to_str().unwrap()]);
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, index) = env.json(&["task", "output", &id]);
+    assert_eq!(code, 0, "{index}");
+    let attempts = index["attempts"].as_array().unwrap();
+    assert!(attempts.len() >= 2, "the read was tried again: {index}");
+    assert_eq!(index["attempt"], attempts.len(), "the latest by default");
+    for (n, attempt) in attempts.iter().enumerate() {
+        assert_eq!(attempt["attempt"], n + 1);
+        assert_eq!(attempt["status"], "failed", "{index}");
+    }
+    let (code, first) = env.json(&["task", "output", &id, "--attempt", "1"]);
+    assert_eq!(code, 0, "{first}");
+    assert_eq!(first["attempt"], 1);
+    assert_eq!(first["execution_id"], attempts[0]["execution_id"]);
+    assert_ne!(first["execution_id"], index["execution_id"]);
+    // The flag works per attempt too: each is that attempt's execution.
+    let (code, one) = env.json(&["task", "output", &id, "--attempt", "1", "--result"]);
+    assert_eq!(code, 0, "{one}");
+    assert_eq!(one["attempt"], 1);
+    assert_eq!(one["execution_id"], attempts[0]["execution_id"]);
+    let (code, last) = env.json(&["task", "output", &id, "--result"]);
+    assert_eq!(code, 0, "{last}");
+    assert_eq!(last["attempt"], attempts.len());
+    assert_eq!(last["execution_id"], index["execution_id"]);
+    let missing = attempts.len() + 1;
+    let (code, error) = env.json(&["task", "output", &id, "--attempt", &missing.to_string()]);
+    assert_ne!(code, 0);
+    assert_eq!(error["error"]["kind"], "not_found", "{error}");
+}

@@ -294,15 +294,20 @@ enum TaskCommand {
     /// carriage return that ends no line is shown as `\r`, so that no text can hide what
     /// precedes it on its line, and the last line is ended. The action is the task's latest action that
     /// ran unless you name it (an id, or at least four characters of it); the copy is that of its
-    /// latest execution. It is a reader: it works while another mimlys process runs a task. It
+    /// latest execution unless you give `--attempt N`, and the index names the attempts the action
+    /// has, each as it ended, so that what an earlier attempt printed can be shown. It is a reader: it works while another mimlys process runs a task. It
     /// refuses, with the reason, an action that never ran, an external tool's standard output or
-    /// error (it has none), and a stream the model read a cut of whose whole copy is not there
-    /// (the action ran before 0.12, or `task delete` removed it).
+    /// error (it has none), an attempt the action does not have (`not_found`), and a stream the
+    /// model read a cut of whose whole copy is not there (the action ran before 0.12, or
+    /// `task delete` removed it).
     Output {
         /// Task id or a unique prefix.
         task: String,
         /// Action id or a unique prefix; the task's latest action that ran by default.
         action: Option<String>,
+        /// The attempt (execution) to show, from 1; the latest by default. The index lists them.
+        #[arg(long, value_name = "N")]
+        attempt: Option<u32>,
         /// Print the whole standard output.
         #[arg(long, group = "copy")]
         stdout: bool,
@@ -523,6 +528,7 @@ enum ReadCommand {
     TaskOutput {
         task: String,
         action: Option<String>,
+        attempt: Option<u32>,
         which: Option<commands::task_output::Which>,
     },
     ToolchainList,
@@ -555,12 +561,14 @@ impl ReadCommand {
             Command::Task(TaskCommand::Output {
                 task,
                 action,
+                attempt,
                 stdout,
                 stderr,
                 result,
             }) => Some(Self::TaskOutput {
                 task: task.clone(),
                 action: action.clone(),
+                attempt: *attempt,
                 which: match (*stdout, *stderr, *result) {
                     (true, _, _) => Some(commands::task_output::Which::Stdout),
                     (_, true, _) => Some(commands::task_output::Which::Stderr),
@@ -594,11 +602,13 @@ async fn dispatch_read(app: &ReadApp, command: ReadCommand, out: &Output) -> Res
         ReadCommand::TaskOutput {
             task,
             action,
+            attempt,
             which,
         } => commands::task_output::run(
             app,
             &task,
             action.as_deref(),
+            attempt,
             which,
             std::io::stdout().is_terminal(),
             out,

@@ -1197,6 +1197,7 @@ pub fn output_index(
     tool: &str,
     attempt: u32,
     status: &str,
+    attempts: &[crate::commands::task_output::Attempt],
     copies: &[crate::commands::task_output::Copy],
 ) -> Vec<String> {
     use crate::commands::task_output::Unavailable;
@@ -1228,7 +1229,28 @@ pub fn output_index(
         };
         lines.push(format!("  {label}{what}"));
     }
+    // The attempts the action has, each as it ended, so that "what did it print when it failed?"
+    // has an answer: `--attempt N` shows that attempt's copies.
+    let list = attempts
+        .iter()
+        .map(|a| format!("{} ({})", a.attempt, a.status.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    lines.push(format!(
+        "  {:<17}{list}; --attempt N shows that attempt's copies",
+        "attempts"
+    ));
     lines
+}
+
+/// `task output --attempt N` named an attempt the action does not have.
+pub fn action_has_no_attempt(action_id: &str, asked: u32, has: &[u32]) -> String {
+    let has = has
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("action {action_id} has no attempt {asked}; its attempts are {has}")
 }
 
 /// `task output` named an action that never ran.

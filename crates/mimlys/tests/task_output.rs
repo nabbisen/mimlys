@@ -489,6 +489,8 @@ fn req_cli_007_the_help_the_reference_and_the_book_say_the_same_of_task_output()
         "no text can hide what precedes it on its line",
         "works while another mimlys process runs a task",
         "printed more than mimlys keeps",
+        "--attempt N",
+        "names the attempts the action has, each as it ended",
         "--stdout",
         "--stderr",
         "--result",
@@ -497,4 +499,150 @@ fn req_cli_007_the_help_the_reference_and_the_book_say_the_same_of_task_output()
             assert!(text.contains(phrase), "the {name} lacks `{phrase}`");
         }
     }
+}
+
+/// What attempt 2 printed in the tests of `--attempt`.
+const SECOND_ATTEMPT: &str = "the second attempt printed this\n";
+
+impl Run {
+    /// Gives the action a second attempt, as a retry records it: its own execution, blob and
+    /// observation (a built-in tool is never retried, so a retry cannot be made through one; the
+    /// real retry is tested through an external tool in `m5_mcp.rs`). The first attempt then
+    /// failed and the second succeeded; the first one's blob is the one the run made.
+    fn retried(&self) {
+        let data = self.data();
+        let conn = rusqlite::Connection::open(data.join("mimlys.db")).unwrap();
+        let second_blob = "01a1eecb-1111-7000-8000-000000000002";
+        std::fs::write(data.join("blobs").join(second_blob), SECOND_ATTEMPT).unwrap();
+        conn.execute(
+            "insert into blobs (blob_id, task_id, size, created_at) values (?1, ?2, ?3, '2026-11-18T00:00:00Z')",
+            rusqlite::params![second_blob, self.task, SECOND_ATTEMPT.len() as i64],
+        )
+        .unwrap();
+        let record: String = conn
+            .query_row("select record from executions", [], |r| r.get(0))
+            .unwrap();
+        let mut execution: Value = serde_json::from_str(&record).unwrap();
+        execution["execution_id"] = json!("01a1eecb-2222-7000-8000-000000000003");
+        execution["attempt"] = json!(2);
+        execution["stdout_blob"] = json!(second_blob);
+        conn.execute(
+            "insert into executions (execution_id, action_id, attempt, termination, record, record_version) values (?1, ?2, 2, 'exited', ?3, 1)",
+            rusqlite::params![
+                execution["execution_id"].as_str().unwrap(),
+                self.action,
+                execution.to_string()
+            ],
+        )
+        .unwrap();
+        let record: String = conn
+            .query_row("select record from observations", [], |r| r.get(0))
+            .unwrap();
+        let mut first: Value = serde_json::from_str(&record).unwrap();
+        let mut second = first.clone();
+        second["observation_id"] = json!("01a1eecb-3333-7000-8000-000000000004");
+        first["status"] = json!("failed");
+        conn.execute(
+            "update observations set record = ?1",
+            rusqlite::params![first.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into observations (observation_id, action_id, created_at, record, record_version) values (?1, ?2, '2026-11-18T00:00:01Z', ?3, 1)",
+            rusqlite::params![
+                second["observation_id"].as_str().unwrap(),
+                self.action,
+                second.to_string()
+            ],
+        )
+        .unwrap();
+    }
+}
+
+/// REQ-PERS-005 (handoff 004d-4): the index names the attempts the action has, each as it ended,
+/// in text and in JSON, so that "what did it print when it failed?" has an answer; `--attempt N`
+/// shows that attempt (its execution, its copies), the latest is the default, and an attempt the
+/// action does not have is refused as `not_found`, naming the ones it has.
+#[test]
+fn req_pers_005_the_index_names_the_attempts_and_attempt_shows_one() {
+    let run = Run::new(&printed(), COMPLAINT);
+    // One attempt: listed too.
+    let (code, index) = run.json(&[]);
+    assert_eq!(code, 0, "{index}");
+    assert_eq!(index["attempts"].as_array().unwrap().len(), 1, "{index}");
+    assert_eq!(index["attempts"][0]["attempt"], 1);
+    assert_eq!(index["attempts"][0]["status"], "succeeded");
+    assert_eq!(index["attempts"][0]["execution_id"], index["execution_id"]);
+    run.retried();
+
+    let (code, index) = run.json(&[]);
+    assert_eq!(code, 0, "{index}");
+    let attempts = index["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{index}");
+    assert_eq!(attempts[0]["status"], "failed", "{index}");
+    assert_eq!(attempts[1]["status"], "succeeded", "{index}");
+    assert_eq!(index["attempt"], 2, "the latest by default");
+    assert_eq!(index["execution_id"], attempts[1]["execution_id"]);
+
+    let (code, first) = run.json(&["--attempt", "1"]);
+    assert_eq!(code, 0, "{first}");
+    assert_eq!(first["attempt"], 1);
+    assert_eq!(first["execution_id"], attempts[0]["execution_id"]);
+    assert_eq!(first["attempts"], index["attempts"], "the same list");
+    let (code, second) = run.json(&["--attempt", "2"]);
+    assert_eq!(code, 0, "{second}");
+    assert_eq!(second["execution_id"], index["execution_id"]);
+
+    // Text: the header names the attempt shown, and a line lists the attempts.
+    let (code, text, stderr) = run.output(&["--attempt", "1"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        text.lines().next().unwrap().contains("attempt 1, failed"),
+        "{text}"
+    );
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("attempts"))
+        .unwrap_or_else(|| panic!("no attempts line in:\n{text}"));
+    assert!(
+        line.contains("1 (failed), 2 (succeeded)") && line.contains("--attempt N"),
+        "{line}"
+    );
+
+    // An attempt the action does not have: refused, naming the ones it has.
+    for asked in ["3", "0"] {
+        let (code, stdout, stderr) = run.output(&["--attempt", asked, "--stdout"]);
+        assert_ne!(code, 0, "{stdout}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(
+            stderr.contains(&format!("has no attempt {asked}; its attempts are 1, 2")),
+            "{stderr}"
+        );
+        let (code, error) = run.json(&["--attempt", asked]);
+        assert_ne!(code, 0);
+        assert_eq!(error["error"]["kind"], "not_found", "{error}");
+    }
+}
+
+/// REQ-PERS-005 (handoff 004d-4): each attempt's flag prints that attempt's copy: the first
+/// attempt, which failed, shows what it printed (its blob), the second what it printed, and
+/// without a number the latest's.
+#[test]
+fn req_pers_005_each_attempt_prints_its_own_copy() {
+    let run = Run::new(&printed(), COMPLAINT);
+    run.retried();
+    let (code, stdout, stderr) = run.output(&["--attempt", "1", "--stdout"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, cleaned(), "what the first attempt printed");
+    let (code, stdout, stderr) = run.output(&["--attempt", "2", "--stdout"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, SECOND_ATTEMPT);
+    let (code, stdout, stderr) = run.output(&["--stdout"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, SECOND_ATTEMPT, "the latest without a number");
+    // The JSON of a flag carries the attempt it shows.
+    let (code, one) = run.json(&["--attempt", "1", "--stdout"]);
+    assert_eq!(code, 0, "{one}");
+    assert_eq!(one["attempt"], 1);
+    assert_eq!(one["text"], cleaned());
 }
