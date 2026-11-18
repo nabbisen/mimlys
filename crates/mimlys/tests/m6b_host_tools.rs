@@ -745,7 +745,8 @@ fn req_conf_006_toolchain_grant_refuses_the_data_directory_and_what_covers_it() 
     assert_eq!(granted["applied"], true, "{granted}");
     let data = env.data.path().join("data");
     std::fs::create_dir_all(data.join("workspaces")).unwrap();
-    let data_text = plain(&data);
+    // The data directory as the configuration spells it (the message does not resolve it).
+    let data_text = data.to_string_lossy().into_owned();
     for (path, words) in [
         (data.clone(), "is the data directory"),
         (data.join("workspaces"), "is inside the data directory"),
