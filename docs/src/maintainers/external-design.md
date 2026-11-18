@@ -718,7 +718,7 @@ Structured lines on standard error: timestamp, level, event, durations, counts, 
 | `state` | the verb is not valid in the current state | `state`, `pending` |
 | `denied` | a grant or budget beyond the ceiling; promotion not allowed | `reason`, `ceiling` |
 | `conflict` | overlapping project scope; promotion conflicts | `with`, `paths` |
-| `unavailable` | backend, worker or server not reachable; on Windows, the permissions of a directory being written by another runtime past LIM-O7 or their lock not obtainable, or a new workspace whose per-task entries cannot be written (`component: "permissions"`; retrying later is the remedy; handoff 011o-4); an interpreter download that failed after its retries (`component: "download"`, §12) | `component`, `retry_after_ms` |
+| `unavailable` | backend, worker or server not reachable (every `unavailable` carries `detail.component`, naming which: handoff 004d); on Windows, the permissions of a directory being written by another runtime past LIM-O7 or their lock not obtainable, or a new workspace whose per-task entries cannot be written (`component: "permissions"`; retrying later is the remedy; handoff 011o-4); an interpreter download that failed after its retries (`component: "download"`, §12) | `component`, `retry_after_ms` |
 | `internal` | a runtime defect | `reference` (an event id; never a stack trace) |
 
 Messages are at most LIM-I5 characters and never carry secrets, file content or provider text.
@@ -842,7 +842,7 @@ Validation refuses an unknown `config_version`, an unknown key, an inline secret
 | Command | Behaviour |
 |---|---|
 | `mimlys run <goal> [--scope DIR] [--profile P] [--grant …]` | Create and start a task, follow its events, prompt when it waits |
-| `mimlys task new <goal> [--hold] [--from-task T [--from-snapshot S]]` · `show` · `list` · `resume [--extend-steps N] [--extend-deadline D]` · `pause` · `cancel` · `delete [--audit] [--yes]` | Task control; `delete` shows the footprint and asks |
+| `mimlys task new <goal> [--hold] [--from-task T [--from-snapshot S]]` · `show` · `list` · `resume [--extend-steps N] [--extend-deadline D]` · `pause` · `cancel` · `delete [--audit] [--yes]` · `output <task> [<action>] [--stdout \| --stderr \| --result]` | Task control; `delete` shows the footprint and asks; `output` shows an action's whole copies (REQ-PERS-005): without a flag, what the action has (its result and each stream, each with its size and whether the model's copy was cut), with a flag that copy itself, the text as it is to standard output (on a terminal a carriage return that ends no line is shown as `\r`), the result as JSON; the action defaults to the task's latest that ran, and the copy is the latest execution's; a reader, served by the read-only open (handoff 004d) |
 | `mimlys approve <task>` · `reject <task> [--note T] [--halt]` · `answer <task> <text>` | User items |
 | `mimlys grant <task> tool NAME` · `host_tool NAME` · `network DOMAIN[:PORT]` · `revoke <task> <grant>` | Grants within the ceiling; `host_read` and `host_write` are refused as reserved (§9.1) |
 | `mimlys rollback <task> [--snapshot ID \| --promotion ID]` · `promote <task> [--yes] [--summary] [--patch]` | Workspace: restore, or reverse a promotion; promote after the diff and the confirmation, or print a patch |
