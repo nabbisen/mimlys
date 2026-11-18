@@ -237,3 +237,46 @@ fn req_pers_005_invalid_bytes_up_to_the_bound_are_stored_whole() {
         captured_bytes: Some(MIB as u64),
     }));
 }
+
+/// REQ-PERS-005 (handoff 004d-4), what the factor of three does not cover: a redaction can make
+/// the text longer than the bytes it was made of (a secret of eight characters becomes a marker
+/// of the secret's name, which can be much longer), so the text of a capture that holds its bound
+/// can exceed three times it. The copy is then cut at its bound, on a character boundary, never
+/// refused and never longer than the bound; the log says so (the user's index does not: a design
+/// question in the request of 004d-4). No secret is ever on the disk either way.
+#[test]
+fn req_pers_005_a_redaction_that_lengthens_the_text_past_its_bound_is_cut_at_it() {
+    const MIB: usize = 1024 * 1024;
+    let secret = "abcd1234"; // MIN_SECRET_CHARS, the shortest value that is redacted
+    let name = "A_NAME_OF_FORTY_CHARACTERS_FOR_THE_TEST"; // the marker is `[redacted:<name>]`
+    let h = Harness::with_backend_and_tools(
+        Arc::new(ScriptedBackend::with_decisions(vec![act(
+            "run_script",
+            "x",
+        )])),
+        Policy::shipped(),
+        vec![(name.into(), secret.into())],
+        crate::limits::LIM_C1_CONTEXT_CHARS,
+        vec![tool("run_script", EffectKind::WorkspaceRead)],
+    );
+    h.tools.script("run_script", {
+        let mut outcome = ExecutionOutcome::succeeded(json!({}), 3);
+        // A capture at its bound (1 MiB) that is the secret over and over.
+        outcome.stdout = secret.repeat(MIB / secret.len()).into_bytes();
+        outcome
+    });
+    let id = h.create();
+    h.step(id);
+    let blob = execution_of(&h, id)
+        .stdout_blob
+        .expect("a blob is written, cut at its bound");
+    let stored = h.persistence.get_blob(blob).unwrap();
+    assert!(
+        stored.len() <= 3 * MIB && stored.len() > 3 * MIB - 80,
+        "{}",
+        stored.len()
+    );
+    let stored = String::from_utf8(stored).expect("cut on a character boundary");
+    assert!(!stored.contains(secret), "no secret on the disk");
+    assert!(stored.starts_with(&format!("[redacted:{name}]")));
+}
