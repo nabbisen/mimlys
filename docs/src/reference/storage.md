@@ -116,6 +116,14 @@ mimlys task delete <task>
   let it go. A task whose promotion failed and could not restore the project
   from its backup is kept the same way: its backup is the only way back.
 - It keeps the audit (the tasks' events) unless you add `--audit`.
+- It also lists, with the tasks, each directory of `workspaces` that no task
+  refers to, as `no task: left by a refused creation`, with what it holds,
+  and removes it under the same confirmation. Releases before 0.11 left such a
+  copy of the project when a task was refused after its workspace was made (the
+  tools' provider, the store or the clock failed, or the project could not be read); 0.11 removes the workspace
+  of a refused creation itself, so these are the remains of an earlier release.
+  The filters (`--state`, `--older-than`) do not apply to them; a directory
+  whose name is not a task's, and a link, are left alone.
 - If one deletion fails, prune stops there, says which task failed and why, and
   names the tasks it did not touch.
 - A deletion lists its files in a journal before the rows go and then tries
@@ -124,6 +132,7 @@ mimlys task delete <task>
   message says that the task is deleted all the same: `task <id> is deleted; N
   path(s) could not be removed and are left to the next start: …`. The exit
   code is 1, because files remain, and the next command that writes finishes
-  the removal. `task prune` stops at such a task and counts it as failed.
+  the removal. `task prune` counts such a task as deleted, goes on, and finishes
+  with exit code 1 and the paths in its report.
 - `mimlys task delete <task>` removes one finished task, after showing what
   will go and asking.

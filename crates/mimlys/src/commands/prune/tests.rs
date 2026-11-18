@@ -296,3 +296,105 @@ fn req_ws_014_a_task_deleted_with_files_left_does_not_stop_the_run() {
         [found[2].task_id.clone(), found[3].task_id.clone()]
     );
 }
+
+fn orphan(n: u128, bytes: u64) -> Orphan {
+    Orphan {
+        name: uuid::Uuid::from_u128(n).to_string(),
+        bytes,
+        reason: orphans::REASON,
+    }
+}
+
+/// REQ-WS-014 (handoff 013c): the plan lists each workspace no task refers to as `no task: left
+/// by a refused creation`, with its footprint and a total; after the plan of the tasks when
+/// there is one (`also`), alone when there is not; and a plan with none is what it was.
+#[test]
+fn req_ws_014_the_plan_lists_the_workspaces_no_task_refers_to() {
+    let found = [orphan(1, 2048), orphan(2, 0)];
+    let lines = crate::messages::prune_no_task_plan(&found, true);
+    assert!(lines[0].starts_with("Pruning also removes 2 workspace(s) that no task refers to"));
+    for o in &found {
+        let line = lines.iter().find(|l| l.contains(&o.name)).unwrap();
+        assert!(
+            line.contains("no task: left by a refused creation"),
+            "{line}"
+        );
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("2 KiB") || l.contains("2048"))
+    );
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .contains("2 workspace(s) with no task")
+    );
+    let alone = crate::messages::prune_no_task_plan(&found[..1], false);
+    assert!(
+        alone[0].starts_with("Pruning removes 1 workspace(s)"),
+        "{alone:?}"
+    );
+    // The question says what it asks about.
+    assert_eq!(
+        crate::messages::prune_confirm(true, false),
+        "Delete these tasks?"
+    );
+    assert_eq!(
+        crate::messages::prune_confirm(true, true),
+        "Delete these tasks and workspaces?"
+    );
+    assert_eq!(
+        crate::messages::prune_confirm(false, true),
+        "Delete these workspaces?"
+    );
+    // The closing line is what it was when there is none.
+    assert_eq!(
+        crate::messages::prune_done(2, 0, 1024),
+        format!(
+            "pruned 2 task(s), {} freed",
+            crate::messages::bytes_text(1024)
+        )
+    );
+    assert!(crate::messages::prune_done(2, 1, 1024).contains("1 workspace(s) with no task"));
+}
+
+/// REQ-WS-014 (handoff 013c): every workspace is tried and reported; one with paths left does
+/// not stop the run, is not counted as removed and keeps its paths.
+#[test]
+fn req_ws_014_a_workspace_with_paths_left_does_not_stop_the_run() {
+    let found = [orphan(1, 10), orphan(2, 20), orphan(3, 30)];
+    let mut tried = Vec::new();
+    let mut reported = Vec::new();
+    let outcome = remove_orphans(
+        &found,
+        |o| {
+            tried.push(o.name.clone());
+            if o.name == found[1].name {
+                vec![format!("workspaces/{}/tree", o.name)]
+            } else {
+                vec![]
+            }
+        },
+        |o, left| reported.push((o.name.clone(), left.len())),
+    );
+    assert_eq!(tried.len(), 3);
+    assert_eq!(
+        reported.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
+        [0, 1, 0]
+    );
+    assert_eq!(outcome.removed, [found[0].clone(), found[2].clone()]);
+    assert_eq!(
+        outcome.left,
+        [(
+            found[1].name.clone(),
+            vec![format!("workspaces/{}/tree", found[1].name)]
+        )]
+    );
+    let line = crate::messages::prune_no_task_left(&outcome.left);
+    assert!(
+        line.contains(&found[1].name) && line.contains("mimlys task prune"),
+        "{line}"
+    );
+}

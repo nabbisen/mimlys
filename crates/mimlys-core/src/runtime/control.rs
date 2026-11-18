@@ -139,6 +139,71 @@ fn scope_error(error: crate::spi::WorkspaceError) -> RuntimeError {
     }
 }
 
+/// The workspace made for a task that is not recorded yet (handoff 013c; REQ-TASK-001,
+/// REQ-WS-014): from the start of its materialization until the task is recorded, a
+/// creation that ends in any error, whatever refused it (the scope, the provider, the store,
+/// the clock, the limit on the definitions), leaves no workspace. The guard holds the task's
+/// tool provider, which holds a handle on the tree (a directory with an open handle cannot be
+/// removed on Windows), and lets it go before the workspace is removed. A guard dropped
+/// without [`Creation::recorded`] also covers a panic that unwinds out of the creation.
+///
+/// A workspace the removal could not remove is logged and left: no task refers to it, and
+/// `mimlys task prune` lists it as `no task: left by a refused creation`.
+struct Creation<'a> {
+    workspaces: &'a dyn crate::spi::WorkspaceProvider,
+    task_id: TaskId,
+    tools: Option<std::sync::Arc<dyn crate::spi::ToolProvider>>,
+    armed: bool,
+}
+
+impl<'a> Creation<'a> {
+    /// Begins the guard, before the workspace is materialized.
+    fn begin(workspaces: &'a dyn crate::spi::WorkspaceProvider, task_id: TaskId) -> Self {
+        Self {
+            workspaces,
+            task_id,
+            tools: None,
+            armed: true,
+        }
+    }
+
+    /// The task's tool provider: opened once, and held by the guard, which lets it go
+    /// before it removes the workspace.
+    fn tools(&mut self) -> Result<&std::sync::Arc<dyn crate::spi::ToolProvider>, RuntimeError> {
+        if self.tools.is_none() {
+            self.tools = Some(self.workspaces.tools(self.task_id)?);
+        }
+        Ok(self.tools.as_ref().expect("opened above"))
+    }
+
+    /// The task is recorded: the workspace is its own, and the guard ends.
+    fn recorded(&mut self) {
+        self.armed = false;
+        self.tools = None;
+    }
+}
+
+impl Drop for Creation<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // The provider is let go first.
+        self.tools = None;
+        if let Err(error) = self
+            .workspaces
+            .delete_files(self.task_id, &crate::spi::DeletedRows::default())
+        {
+            tracing::warn!(
+                target: "mimlys_core",
+                task_id = %self.task_id,
+                %error,
+                "the workspace of a refused creation could not be removed; `mimlys task prune` lists it"
+            );
+        }
+    }
+}
+
 /// What a snapshot is asked for, to word the refusal of a promotion's backup.
 #[derive(Clone, Copy)]
 enum BackupUse {
@@ -332,6 +397,8 @@ impl Runtime {
             .persistence
             .record_workspace_state(task_id, WorkspaceState::Allocated, None)
             .ok();
+        // From here until the task is recorded, an error leaves no workspace (handoff 013c).
+        let mut creation = Creation::begin(&*self.deps.workspaces, task_id);
         let (info, prepared_base) = match &fork {
             Some((_, from)) => {
                 let (info, prepared) = self.deps.workspaces.materialize_from(
@@ -351,7 +418,7 @@ impl Runtime {
                 None,
             ),
         };
-        let tools = self.deps.workspaces.tools(task_id)?;
+        let tools = creation.tools()?;
         let mut hashes = std::collections::BTreeMap::new();
         for d in self.guard(PROVIDER, || tools.definitions())? {
             hashes.insert(
@@ -409,17 +476,9 @@ impl Runtime {
         // profile, a fork's inherited grants and the request's are judged as one
         // set, before anything is recorded (handoff 009i, audit A-32).
         if let Err(refused) = self.check_definitions_fit(task_id, &kinds) {
-            // The workspace was made for this task alone and nothing refers to
-            // it: it is not left behind, a copy of the scope for every refusal.
-            // The provider holds a handle on its tree (a directory with an open
-            // handle cannot be removed on Windows): it is let go first.
-            drop(tools);
-            let _ = self
-                .deps
-                .workspaces
-                .delete_files(task_id, &crate::spi::DeletedRows::default());
-            // No workspace state is recorded: the task has no row, and the
-            // workspace's row refers to it.
+            // The workspace is removed by the guard when this returns, as it is
+            // for any other refusal. No workspace state is recorded: the task has
+            // no row, and the workspace's row refers to it.
             // The servers started for the import are on the record all the same.
             let _ = self.append_provider_events(provider_events);
             return Err(refused);
@@ -446,6 +505,8 @@ impl Runtime {
                 Event::TaskCreated,
             ),
         )?;
+        // The task is recorded: the workspace is its own.
+        creation.recorded();
         self.deps.persistence.append_event(&self.event(
             crate::event::Actor::Runtime,
             Some(task_id),

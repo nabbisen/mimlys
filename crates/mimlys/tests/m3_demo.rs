@@ -95,6 +95,19 @@ impl Env {
             .join(task_id)
             .join("tree")
     }
+
+    /// The names in `<data>/workspaces`: what a refused creation must not leave one of.
+    #[cfg(unix)]
+    fn workspaces(&self) -> Vec<String> {
+        std::fs::read_dir(self.data.path().join("data/workspaces"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// External design §23, M3: a failed write execution leaves the workspace
@@ -1020,6 +1033,8 @@ fn req_ws_002_a_scope_that_cannot_be_read_is_an_invalid_request() {
     assert!(text.contains("src/locked"), "{text}");
     let (_, list) = env.json(&["task", "list"]);
     assert!(list.as_array().unwrap().is_empty(), "{list}");
+    // REQ-TASK-001 (handoff 013c): a refused creation leaves no workspace.
+    assert_eq!(env.workspaces(), Vec::<String>::new());
 }
 
 /// REQ-WS-002 (handoff 006c-6): the same for a name that is not valid UTF-8 (Linux).
@@ -1048,6 +1063,8 @@ fn req_ws_002_a_name_that_is_not_utf8_in_the_scope_is_an_invalid_request() {
     assert_eq!(refused["error"]["kind"], "invalid_request", "{refused}");
     let text = refused["error"]["message"].to_string();
     assert!(text.contains("xE9"), "{text}");
+    // REQ-TASK-001 (handoff 013c): a refused creation leaves no workspace.
+    assert_eq!(env.workspaces(), Vec::<String>::new());
 }
 
 /// REQ-WS-012 (handoff 006c-6): `task delete` of a task whose deletion leaves files names at most

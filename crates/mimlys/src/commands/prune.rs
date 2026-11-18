@@ -10,6 +10,12 @@
 //! the command finishes `Partial` (exit 1) so that a script sees that files
 //! remain.
 //!
+//! The plan also lists each directory of `<data>/workspaces` that no task refers to
+//! (REQ-WS-014; handoff 013c: a copy of a scope that a refused creation left behind) as
+//! `no task: left by a refused creation`, with its footprint, and removes it under the same
+//! confirmation. Those are not tasks: the filters do not apply to them, and they are removed
+//! before the tasks, so that a task that fails to delete does not leave them.
+//!
 //! The selection, the plan and the run are plain functions over data, so that
 //! the rules are tested without a store; `run` joins them to the runtime.
 
@@ -18,6 +24,7 @@ use crate::commands::parse_duration_ms;
 use crate::messages;
 use crate::output::Output;
 use crate::prompt::Interaction;
+use crate::workspace::orphans::{self, Orphan};
 use mimlys_core::clock::{Clock, Instant, SystemClock};
 use mimlys_core::ids::TaskId;
 use mimlys_core::snapshot::Footprint;
@@ -187,6 +194,57 @@ pub fn execute(
     out
 }
 
+/// What a run did with the workspaces no task refers to.
+#[derive(Debug, Default)]
+pub struct OrphanOutcome {
+    /// The workspaces removed, with what each held (one with paths left is among them: the
+    /// next prune finds the rest).
+    pub removed: Vec<Orphan>,
+    /// The workspaces with paths that could not be removed, with the paths.
+    pub left: Vec<(String, Vec<String>)>,
+}
+
+/// Removes the workspaces, one at a time, through `remove`, which returns the paths it could not
+/// remove; `report` is called after each one. A workspace with paths left does not stop the
+/// run: every one is tried, and a next prune lists the one that remains.
+pub fn remove_orphans(
+    found: &[Orphan],
+    mut remove: impl FnMut(&Orphan) -> Vec<String>,
+    mut report: impl FnMut(&Orphan, &[String]),
+) -> OrphanOutcome {
+    let mut out = OrphanOutcome::default();
+    for orphan in found {
+        let left = remove(orphan);
+        report(orphan, &left);
+        if left.is_empty() {
+            out.removed.push(orphan.clone());
+        } else {
+            out.left.push((orphan.name.clone(), left));
+        }
+    }
+    out
+}
+
+/// The workspaces no task refers to: the directories of `<data>/workspaces` named like a task
+/// that no task of the store has, and no deletion that is not finished names (the next start
+/// finishes it).
+fn orphans(app: &App) -> Result<Vec<Orphan>, AppError> {
+    let mut referenced: std::collections::BTreeSet<String> = app
+        .runtime
+        .list_tasks()?
+        .into_iter()
+        .map(|t| t.task_id.to_string())
+        .collect();
+    if let Ok(pending) = mimlys_persist::snapshots::SnapshotFiles::open_for_reading(&app.data_dir)
+        .pending_deletions()
+    {
+        referenced.extend(pending.into_iter().map(|(task_id, _)| task_id.to_string()));
+    }
+    orphans::find(&app.data_dir, &referenced).map_err(|e| AppError::Io {
+        detail: format!("<data>/workspaces could not be read: {e}"),
+    })
+}
+
 /// The matching terminal tasks of the store with their footprints, newest
 /// change last (the order `task list` has them in, reversed: oldest first).
 ///
@@ -238,30 +296,49 @@ pub fn run(
 ) -> Result<(), AppError> {
     let filter = Filter::parse(states, older_than)?;
     let found = candidates(app, &filter, audit, SystemClock.now())?;
+    let no_task = orphans(app)?;
     let todo = to_delete(&found);
-    if found.is_empty() {
+    if found.is_empty() && no_task.is_empty() {
         out.line(messages::PRUNE_NOTHING);
-        out.value(&serde_json::json!({ "tasks": [], "total_bytes": 0, "deleted": [], "confirmed": false }));
+        out.value(&serde_json::json!({ "tasks": [], "no_task": [], "total_bytes": 0, "deleted": [], "confirmed": false }));
         return Ok(());
     }
     // The plan is shown before anything goes, as `task delete` shows its own.
-    for line in messages::prune_plan(&found, audit) {
-        out.line(line);
+    if !found.is_empty() {
+        for line in messages::prune_plan(&found, audit) {
+            out.line(line);
+        }
     }
-    let total: u64 = todo.iter().map(|c| c.bytes()).sum();
-    if todo.is_empty() {
-        out.value(&serde_json::json!({ "tasks": found, "total_bytes": 0, "deleted": [], "confirmed": false, "audit": audit }));
+    if !no_task.is_empty() {
+        for line in messages::prune_no_task_plan(&no_task, !found.is_empty()) {
+            out.line(line);
+        }
+    }
+    let no_task_bytes: u64 = no_task.iter().map(|o| o.bytes).sum();
+    let total: u64 = todo.iter().map(|c| c.bytes()).sum::<u64>() + no_task_bytes;
+    if todo.is_empty() && no_task.is_empty() {
+        out.value(&serde_json::json!({ "tasks": found, "no_task": [], "total_bytes": 0, "deleted": [], "confirmed": false, "audit": audit }));
         return Ok(());
     }
     let confirmed = yes
         || (interaction.interactive()
             && !out.json()
-            && interaction.confirm(messages::PRUNE_CONFIRM));
+            && interaction.confirm(messages::prune_confirm(
+                !todo.is_empty(),
+                !no_task.is_empty(),
+            )));
     if !confirmed {
         out.line(messages::PRUNE_NOT_CONFIRMED);
-        out.value(&serde_json::json!({ "tasks": found, "total_bytes": total, "deleted": [], "confirmed": false, "audit": audit }));
+        out.value(&serde_json::json!({ "tasks": found, "no_task": no_task, "total_bytes": total, "deleted": [], "confirmed": false, "audit": audit }));
         return Ok(());
     }
+    // The workspaces no task refers to first: they are not tasks, and a task that cannot be
+    // deleted stops the run after them, not before.
+    let removed_no_task = remove_orphans(
+        &no_task,
+        |o| orphans::remove(&app.data_dir, &o.name),
+        |o, left| out.line(messages::prune_no_task_removed(o, left)),
+    );
     let outcome = execute(
         &found,
         |c| {
@@ -276,43 +353,56 @@ pub fn run(
         },
     );
     // What a task deleted with files left freed is not known: it is not counted.
-    let freed: u64 = outcome
+    let freed_tasks: u64 = outcome
         .deleted
         .iter()
         .filter(|(id, _)| !outcome.left.iter().any(|(left, _)| left == id))
         .map(|(_, f)| f.workspace_bytes + f.object_bytes_exclusive + f.blob_bytes)
         .sum();
+    let freed_no_task: u64 = removed_no_task.removed.iter().map(|o| o.bytes).sum();
+    let freed = freed_tasks + freed_no_task;
     let report = serde_json::json!({
         "tasks": found,
+        "no_task": no_task,
         "total_bytes": total,
         "confirmed": true,
         "audit": audit,
         "deleted": outcome.deleted.iter().map(|(id, f)| serde_json::json!({ "task_id": id, "footprint": f })).collect::<Vec<_>>(),
+        "no_task_removed": removed_no_task.removed,
         "freed_bytes": freed,
         "failed": outcome.failed.as_ref().map(|(id, why)| serde_json::json!({ "task_id": id, "error": why })),
         "untouched": outcome.untouched,
         "left": outcome.left.iter().map(|(id, paths)| serde_json::json!({ "task_id": id, "paths": paths })).collect::<Vec<_>>(),
+        "no_task_left": removed_no_task.left.iter().map(|(name, paths)| serde_json::json!({ "name": name, "paths": paths })).collect::<Vec<_>>(),
     });
-    match (outcome.failed, outcome.left.is_empty()) {
-        (None, true) => {
-            out.line(messages::prune_done(outcome.deleted.len(), freed));
+    let done = messages::prune_done(outcome.deleted.len(), removed_no_task.removed.len(), freed);
+    // The paths that remain: of tasks (the next start removes them) and of workspaces with no
+    // task (the next prune lists them again).
+    let mut left_parts = Vec::new();
+    if !outcome.left.is_empty() {
+        left_parts.push(messages::prune_left(&outcome.left));
+    }
+    if !removed_no_task.left.is_empty() {
+        left_parts.push(messages::prune_no_task_left(&removed_no_task.left));
+    }
+    let left_text = (!left_parts.is_empty()).then(|| left_parts.join("; "));
+    match (outcome.failed, left_text) {
+        (None, None) => {
+            out.line(done);
             out.value(&report);
             Ok(())
         }
-        // Every task was deleted, and files of some are left for the next start to remove.
-        (None, false) => {
-            out.line(messages::prune_done(outcome.deleted.len(), freed));
-            Err(AppError::Partial {
-                message: messages::prune_left(&outcome.left),
-                report,
-            })
+        // Every task was deleted, and files of some are left.
+        (None, Some(message)) => {
+            out.line(done);
+            Err(AppError::Partial { message, report })
         }
-        (Some((id, why)), _) => {
+        (Some((id, why)), left) => {
             let mut message =
                 messages::prune_stopped(&id, &why, &outcome.untouched, outcome.deleted.len());
-            if !outcome.left.is_empty() {
+            if let Some(left) = left {
                 message.push_str("; ");
-                message.push_str(&messages::prune_left(&outcome.left));
+                message.push_str(&left);
             }
             Err(AppError::Partial { message, report })
         }

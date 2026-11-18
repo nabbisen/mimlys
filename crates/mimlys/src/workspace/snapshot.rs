@@ -1408,7 +1408,7 @@ fn remove_leftovers<'a>(project: &Dir, paths: impl Iterator<Item = &'a str>) {
 
 /// Removes `path` and everything below it without following links, attempting every removal;
 /// each failure is added to `failed` as a path relative to `root`.
-fn remove_tree(path: &Path, root: &Path, failed: &mut Vec<String>) {
+pub(super) fn remove_tree(path: &Path, root: &Path, failed: &mut Vec<String>) {
     let name = |p: &Path| {
         p.strip_prefix(root)
             .unwrap_or(p)

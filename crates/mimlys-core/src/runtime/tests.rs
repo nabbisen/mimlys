@@ -24,6 +24,7 @@ mod definitions_bound;
 mod interrupt;
 mod native;
 mod native_context;
+mod refused_creation;
 mod rejection_feedback;
 mod result_bound;
 mod script_mode;

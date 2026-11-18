@@ -1035,9 +1035,100 @@ pub fn prune_deleted(task_id: &str, f: &mimlys_core::snapshot::Footprint) -> Str
 pub fn prune_failed(task_id: &str, why: &str) -> String {
     format!("failed  {task_id}: {why}")
 }
+/// `task prune`: the confirmation question (asked once), for what the plan holds.
+pub fn prune_confirm(tasks: bool, no_task: bool) -> &'static str {
+    match (tasks, no_task) {
+        (true, true) => "Delete these tasks and workspaces?",
+        (false, true) => "Delete these workspaces?",
+        _ => PRUNE_CONFIRM,
+    }
+}
+/// `task prune`: the workspaces no task refers to, in the plan (REQ-WS-014): each with why it is
+/// there and what it holds, and the total. `with_tasks` says that the plan of the tasks came
+/// first.
+pub fn prune_no_task_plan(
+    found: &[crate::workspace::orphans::Orphan],
+    with_tasks: bool,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Pruning {}removes {} workspace(s) that no task refers to:",
+        if with_tasks { "also " } else { "" },
+        found.len()
+    )];
+    for orphan in found {
+        lines.push(format!(
+            "  {}  {}  {:>10}",
+            orphan.name,
+            crate::workspace::orphans::REASON,
+            bytes_text(orphan.bytes)
+        ));
+    }
+    let total: u64 = found.iter().map(|o| o.bytes).sum();
+    lines.push(format!(
+        "total: {} workspace(s) with no task, {} ({total} bytes)",
+        found.len(),
+        bytes_text(total)
+    ));
+    lines
+}
+/// `task prune`: one workspace with no task removed, or with paths left.
+pub fn prune_no_task_removed(
+    orphan: &crate::workspace::orphans::Orphan,
+    left: &[String],
+) -> String {
+    if left.is_empty() {
+        format!(
+            "removed {}: {} freed (no task: left by a refused creation)",
+            orphan.name,
+            bytes_text(orphan.bytes)
+        )
+    } else {
+        format!(
+            "not removed completely {}: {} path(s) are left: {}",
+            orphan.name,
+            left.len(),
+            shown_paths(left)
+        )
+    }
+}
+/// The first paths of a list, and how many more.
+fn shown_paths(paths: &[String]) -> String {
+    const SHOWN: usize = 10;
+    let shown: Vec<&str> = paths.iter().take(SHOWN).map(String::as_str).collect();
+    let more = paths.len().saturating_sub(SHOWN);
+    format!(
+        "{}{}",
+        shown.join(", "),
+        if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        }
+    )
+}
+/// `task prune`: workspaces with no task that could not be removed completely: a next
+/// prune lists what remains (they are not a deletion's, which the next start finishes).
+pub fn prune_no_task_left(left: &[(String, Vec<String>)]) -> String {
+    let parts: Vec<String> = left
+        .iter()
+        .map(|(name, paths)| format!("{name} ({} path(s): {})", paths.len(), shown_paths(paths)))
+        .collect();
+    format!(
+        "{} workspace(s) with no task were not removed completely; `mimlys task prune` lists what remains: {}",
+        left.len(),
+        parts.join("; ")
+    )
+}
 /// `task prune`: all done.
-pub fn prune_done(count: usize, freed: u64) -> String {
-    format!("pruned {count} task(s), {} freed", bytes_text(freed))
+pub fn prune_done(tasks: usize, no_task: usize, freed: u64) -> String {
+    if no_task == 0 {
+        format!("pruned {tasks} task(s), {} freed", bytes_text(freed))
+    } else {
+        format!(
+            "pruned {tasks} task(s) and {no_task} workspace(s) with no task, {} freed",
+            bytes_text(freed)
+        )
+    }
 }
 /// `task prune`: one task deleted with files left: its first paths (all of them are in the JSON
 /// report), then how many more.

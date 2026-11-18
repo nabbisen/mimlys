@@ -1238,6 +1238,14 @@ pub mod fake {
         reverted: Mutex<Vec<(PromotionId, EditedPaths)>>,
         fail_reverts: Mutex<bool>,
         edited: Mutex<Vec<String>>,
+        /// The workspaces made and not removed: what a refused creation must not leave.
+        materialized: Mutex<std::collections::BTreeSet<TaskId>>,
+        /// From now on a materialization makes the workspace and then fails (a full disk).
+        fail_materialize: Mutex<bool>,
+        /// From now on `tools` fails (the provider cannot be opened).
+        fail_tools: Mutex<bool>,
+        /// For each removal, the holders of the tool provider at that moment.
+        removed_with_holders: Mutex<Vec<usize>>,
     }
 
     /// What a test runs when a promotion is applied; an error fails the apply.
@@ -1258,6 +1266,10 @@ pub mod fake {
                 reverted: Mutex::new(Vec::new()),
                 fail_reverts: Mutex::new(false),
                 edited: Mutex::new(Vec::new()),
+                materialized: Mutex::new(Default::default()),
+                fail_materialize: Mutex::new(false),
+                fail_tools: Mutex::new(false),
+                removed_with_holders: Mutex::new(Vec::new()),
             }
         }
 
@@ -1336,9 +1348,15 @@ pub mod fake {
     impl WorkspaceProvider for FakeWorkspaces {
         fn materialize(
             &self,
-            _task_id: TaskId,
+            task_id: TaskId,
             scope: &ScopeSpec,
         ) -> Result<WorkspaceInfo, WorkspaceError> {
+            self.materialized.lock().expect("fake lock").insert(task_id);
+            if *self.fail_materialize.lock().expect("fake lock") {
+                return Err(WorkspaceError::Storage {
+                    detail: "injected".into(),
+                });
+            }
             Ok(WorkspaceInfo {
                 root: format!("/fake/workspaces/{}", scope.root.trim_start_matches('/')),
                 case_mode: CaseMode::Sensitive,
@@ -1359,6 +1377,9 @@ pub mod fake {
         }
 
         fn tools(&self, _task_id: TaskId) -> Result<Arc<dyn ToolProvider>, WorkspaceError> {
+            if *self.fail_tools.lock().expect("fake lock") {
+                return Err(WorkspaceError::Missing);
+            }
             Ok(Arc::clone(&self.tools))
         }
 
@@ -1556,6 +1577,14 @@ pub mod fake {
         }
 
         fn delete_files(&self, task_id: TaskId, _rows: &DeletedRows) -> Result<(), WorkspaceError> {
+            self.materialized
+                .lock()
+                .expect("fake lock")
+                .remove(&task_id);
+            self.removed_with_holders
+                .lock()
+                .expect("fake lock")
+                .push(Arc::strong_count(&self.tools));
             self.snapshots
                 .lock()
                 .expect("fake lock")
@@ -1565,6 +1594,32 @@ pub mod fake {
     }
 
     impl FakeWorkspaces {
+        /// The tasks whose workspace was made and not removed, in order.
+        pub fn materialized(&self) -> Vec<TaskId> {
+            self.materialized
+                .lock()
+                .expect("fake lock")
+                .iter()
+                .copied()
+                .collect()
+        }
+
+        /// From now on a materialization makes its workspace and then fails.
+        pub fn fail_materialize(&self) {
+            *self.fail_materialize.lock().expect("fake lock") = true;
+        }
+
+        /// From now on the tool provider of a task cannot be opened.
+        pub fn fail_tools(&self) {
+            *self.fail_tools.lock().expect("fake lock") = true;
+        }
+
+        /// For each removal of a workspace, the number of holders of the tool provider
+        /// (the fake's own, and whoever else holds a handle) at that moment.
+        pub fn removed_with_holders(&self) -> Vec<usize> {
+            self.removed_with_holders.lock().expect("fake lock").clone()
+        }
+
         /// Snapshots taken, in order.
         pub fn snapshots(&self) -> Vec<SnapshotRecord> {
             self.snapshots.lock().expect("fake lock").clone()
@@ -1610,6 +1665,8 @@ pub mod fake {
         /// Run by the write method of that name before it writes, outside the
         /// fake's own lock (a test's stop signal that falls at the start of an action).
         before_write: Mutex<std::collections::HashMap<&'static str, WriteHook>>,
+        /// The write methods that fail with a storage error (a full disk).
+        failing: Mutex<std::collections::BTreeSet<&'static str>>,
     }
 
     /// A test's hook run before a write method of the fake writes.
@@ -1650,6 +1707,11 @@ pub mod fake {
                 .insert(name, hook);
         }
 
+        /// From now on the write method `name` fails with a storage error, and writes nothing.
+        pub fn fail_write(&self, name: &'static str) {
+            self.failing.lock().expect("fake lock").insert(name);
+        }
+
         /// The write methods called so far, in order.
         pub fn writes(&self) -> Vec<&'static str> {
             self.inner.lock().expect("fake lock").writes.clone()
@@ -1683,6 +1745,11 @@ pub mod fake {
                 .cloned();
             if let Some(hook) = hook {
                 hook();
+            }
+            if self.failing.lock().expect("fake lock").contains(name) {
+                return Err(PersistenceError::Storage {
+                    detail: "injected".into(),
+                });
             }
             let mut inner = self.inner.lock().expect("fake lock");
             let r = f(&mut inner)?;
