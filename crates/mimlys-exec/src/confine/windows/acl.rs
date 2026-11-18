@@ -788,6 +788,7 @@ pub fn revoke(path: &Path, sid: &[u8]) -> Result<Revoked, AclError> {
     let dir = Dir::open(path)?;
     let _lock = DaclLock::acquire(&dir)?;
     if state_of(&dir, sid, Access::Read)? == EntryState::Absent {
+        merge_entry(&dir, sid, wanted_mask(Access::Read), REVOKE_ACCESS)?;
         return Ok(Revoked::NoEntry);
     }
     merge_entry(&dir, sid, wanted_mask(Access::Read), REVOKE_ACCESS)?;
