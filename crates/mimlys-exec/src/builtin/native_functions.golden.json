@@ -8,7 +8,7 @@
         "properties": {
           "max_chars": {
             "description": "Maximum characters to return.",
-            "maximum": 64000,
+            "maximum": 8000,
             "minimum": 1,
             "type": "integer"
           },

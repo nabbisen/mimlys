@@ -504,10 +504,10 @@ fn call(name: &str, arguments: &Map<String, Value>) -> Value {
             // (the head depends only on the digits of the size).
             let value = leak_value().unwrap_or_default();
             let probe = json!({"text": "a".repeat(76_000)});
-            let cut = crate::bound::bound(
+            let cut = mimlys_core::bound::bound(
                 &probe,
                 mimlys_core::limits::LIM_I19_RESULT_TOTAL_CHARS,
-                crate::bound::Unit::Chars,
+                mimlys_core::bound::Unit::Chars,
                 true,
             )
             .expect("the probe is over the bound");

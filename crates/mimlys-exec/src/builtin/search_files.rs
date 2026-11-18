@@ -1,5 +1,7 @@
 use super::open::{Access, ReadError, open_regular, read_bounded};
-use super::{Body, ToolError, ToolResult, check_cancel, int_arg, make_definition, str_arg};
+use super::{
+    Body, ToolError, ToolResult, check_cancel, fit_entries, int_arg, make_definition, str_arg,
+};
 use cap_std::fs::Dir;
 use mimlys_core::action::EffectKind;
 use mimlys_core::limits::{LIM_I7_ENTRIES, LIM_W3_FILE_BYTES};
@@ -97,7 +99,13 @@ pub(super) fn run(body: Body) -> ToolResult {
             count: *count,
         })
         .collect();
-    let truncated = search.total as usize > max_results;
+    // At most `max_results` matches, and in total at most LIM-I19 as the model
+    // reads them: whole matches are dropped from the end.
+    let dropped = fit_entries(
+        &json!({ "matches": [], "truncated": false }),
+        &mut search.matches,
+    );
+    let truncated = search.total as usize > max_results || dropped > 0;
     if truncated {
         notices.push(Notice::EntriesTruncated {
             total: search.total,

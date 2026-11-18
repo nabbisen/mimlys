@@ -1,8 +1,9 @@
 use super::open::{Access, ReadError, open_regular, read_bounded};
 use super::{Body, ToolError, ToolResult, int_arg, make_definition, path_param, workspace_path};
 use mimlys_core::action::EffectKind;
+use mimlys_core::bound::{Unit, serialized_size};
 use mimlys_core::limits::{
-    LIM_C2_EXCERPT_CEILING_CHARS, LIM_C2_EXCERPT_HEAD_CHARS, LIM_C2_EXCERPT_TAIL_CHARS,
+    LIM_C2_EXCERPT_HEAD_CHARS, LIM_C2_EXCERPT_TAIL_CHARS, LIM_I19_RESULT_TOTAL_CHARS,
     LIM_W3_FILE_BYTES,
 };
 use mimlys_core::observation::{Notice, decode_lossy};
@@ -28,7 +29,7 @@ pub(super) fn definition() -> ToolDefinition {
                 name: "max_chars".into(),
                 ty: ParamType::Integer {
                     min: 1,
-                    max: LIM_C2_EXCERPT_CEILING_CHARS as i64,
+                    max: LIM_I19_RESULT_TOTAL_CHARS as i64,
                 },
                 optional: true,
                 description: "Maximum characters to return.".into(),
@@ -49,7 +50,7 @@ pub(super) fn run(body: Body) -> ToolResult {
         "max_chars",
         (LIM_C2_EXCERPT_HEAD_CHARS + LIM_C2_EXCERPT_TAIL_CHARS) as i64,
     )
-    .max(1) as usize;
+    .clamp(1, LIM_I19_RESULT_TOTAL_CHARS as i64) as usize;
     // The file is opened without blocking and is a regular file; what is read is bounded
     // by LIM-W3, the size of a file a tool writes: `total_chars` and `total_lines` are of
     // the whole file, so the read goes to its end, and a larger file is refused.
@@ -86,24 +87,44 @@ pub(super) fn run(body: Body) -> ToolResult {
         .collect::<Vec<_>>()
         .join("\n");
     let total_chars = from_line.chars().count();
-    let (content, truncated) = if total_chars > max_chars {
-        notices.push(Notice::ContentTruncated {
-            total_chars: total_chars as u64,
-        });
-        (from_line.chars().take(max_chars).collect::<String>(), true)
-    } else {
-        (from_line, false)
-    };
-    let lines_returned = content.lines().count().max(1);
-    let last_line = start_line + lines_returned - 1;
-    Ok((
+    // What is returned is at most `max_chars` characters and, serialized with the
+    // rest of the payload, at most LIM-I19: the escapes of a text (a newline or a
+    // quote is two characters) and the other fields count, so the content is
+    // cut, from its tail, to the longest that fits. It is a prefix: `truncated`,
+    // `total_chars` and `line_range` say what was returned, and a following read
+    // starts at the line after `line_range`.
+    let payload_of = |chars: usize| {
+        let content: String = from_line.chars().take(chars).collect();
+        let lines_returned = content.lines().count().max(1);
         json!({
             "path": path.as_str(),
             "content": content,
-            "truncated": truncated,
+            "truncated": chars < total_chars,
             "total_chars": total_chars,
-            "line_range": [start_line, last_line],
-        }),
-        notices,
-    ))
+            "line_range": [start_line, start_line + lines_returned - 1],
+        })
+    };
+    let fits = |chars: usize| {
+        serialized_size(&payload_of(chars), Unit::Chars) <= LIM_I19_RESULT_TOTAL_CHARS
+    };
+    let mut chars = total_chars.min(max_chars);
+    if !fits(chars) {
+        // The size grows with the number of characters kept: the largest that fits.
+        let (mut lo, mut hi) = (0, chars);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if fits(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        chars = lo;
+    }
+    if chars < total_chars {
+        notices.push(Notice::ContentTruncated {
+            total_chars: total_chars as u64,
+        });
+    }
+    Ok((payload_of(chars), notices))
 }

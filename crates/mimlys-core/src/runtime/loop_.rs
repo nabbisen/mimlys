@@ -1518,6 +1518,8 @@ impl Runtime {
                 &self.redactor,
             );
             observation.redact(&self.redactor);
+            // The last bound, whatever the provider (LIM-I19, handoff 013c).
+            observation.bound_payload();
             step.observation_id = Some(observation.observation_id);
             let cause_name = cause.as_ref().map(FailureCause::name).map(str::to_owned);
             persistence.record_execution(

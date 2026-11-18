@@ -9,11 +9,16 @@
 //! often hold the facts, stay whole. Each kind of change is counted once per
 //! result, and the caller says it once.
 //!
+//! The module is in `mimlys-core` because every provider's result is bounded
+//! here: the external tools' provider bounds its own results with it (so that
+//! its cut is said where the result was made), and the runtime bounds every
+//! observation's payload last (handoff 013c, LIM-I19), whatever the provider.
+//!
 //! Nothing here reads a clock or takes a lock; the functions are pure.
 
-use mimlys_core::context::Redactor;
-use mimlys_core::limits::LIM_I5_MESSAGE_CHARS;
-use mimlys_core::observation::{excerpt, sanitize};
+use crate::context::Redactor;
+use crate::limits::{LIM_I5_MESSAGE_CHARS, LIM_I19_RESULT_TOTAL_CHARS, LIM_S4_OUTPUT_BYTES};
+use crate::observation::{Notice, excerpt, sanitize};
 use serde_json::{Map, Value, json};
 use std::io::Write;
 
@@ -182,6 +187,32 @@ pub fn bound(value: &Value, limit: usize, unit: Unit, keys: bool) -> Option<Cut>
         value: cut,
         total_chars,
     })
+}
+
+/// A payload as the model reads it, and the whole result when that is a cut of
+/// it (handoff 009i, A-26; handoff 013c; REQ-MCP-006, REQ-CTX-006): the
+/// serialized payload is bounded in total by LIM-I19, cutting its longest
+/// strings first, and the cut is said once, in one `content_truncated` with its
+/// total (a `content_truncated` the tool already said is not said twice). The
+/// whole result is kept for the user within LIM-S4 (REQ-PERS-005) and never
+/// shown to the model. `None` for the second part when nothing was cut.
+pub fn bound_result(payload: Value, notices: &mut Vec<Notice>) -> (Value, Option<Value>) {
+    let Some(cut) = bound(&payload, LIM_I19_RESULT_TOTAL_CHARS, Unit::Chars, true) else {
+        return (payload, None);
+    };
+    if !notices
+        .iter()
+        .any(|n| matches!(n, Notice::ContentTruncated { .. }))
+    {
+        notices.push(Notice::ContentTruncated {
+            total_chars: cut.total_chars,
+        });
+    }
+    let full = match bound(&payload, LIM_S4_OUTPUT_BYTES as usize, Unit::Bytes, false) {
+        Some(whole) => whole.value,
+        None => payload,
+    };
+    (cut.value, Some(full))
 }
 
 /// Whether an object of the payload has a key over LIM-I5.

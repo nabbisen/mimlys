@@ -25,6 +25,7 @@ mod interrupt;
 mod native;
 mod native_context;
 mod rejection_feedback;
+mod result_bound;
 mod script_mode;
 
 fn tool(name: &str, kind: EffectKind) -> ToolDefinition {

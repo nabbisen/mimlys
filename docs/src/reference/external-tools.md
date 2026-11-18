@@ -244,7 +244,8 @@ unavailable, with the reason in `status`, rather than half imported.
   lines past that are counted, and when the second ends one line says how many
   (`N lines dropped`). These are LIM-I17, LIM-I18 and LIM-O18.
 - **A result is bounded as a whole.** What the model reads of a tool's result
-  is at most 8 000 characters of JSON in total (LIM-I19), however many strings, keys and levels the server sends. The
+  is at most 8 000 characters of JSON in total (LIM-I19), however many strings, keys and levels the server sends
+  (the built-in tools' results are bounded the same way, and the runtime bounds every result last, whatever provider made it). The
   result is first cleaned (invisible characters removed, secrets redacted), then
   checked against the tool's output schema, and only then bounded, so a cut is
   never the reason for `output_invalid`: a string that must be 20 000 characters

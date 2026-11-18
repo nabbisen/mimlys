@@ -5,15 +5,15 @@
 //! content bounded, sanitized and validated against the pinned output
 //! schema.
 
-use crate::bound::{self, Cleaned, Unit};
 use crate::client::CallOutcome;
 use crate::import::{Imported, import};
 use crate::server::{Server, ServerError, ServerInfo};
 use mimlys_core::action::{ExecutionMetrics, FailureCause, HostFaultDetail, Termination};
+use mimlys_core::bound::{self, Cleaned, bound_result};
 use mimlys_core::context::Redactor;
 use mimlys_core::event::Event;
 use mimlys_core::ids::TaskId;
-use mimlys_core::limits::{LIM_I5_MESSAGE_CHARS, LIM_I19_RESULT_TOTAL_CHARS, LIM_S4_OUTPUT_BYTES};
+use mimlys_core::limits::LIM_I5_MESSAGE_CHARS;
 use mimlys_core::observation::Notice;
 use mimlys_core::spi::{BoxFuture, Cancellation, ExecutionContext, ExecutionOutcome, ToolProvider};
 use mimlys_core::tool::{ImportRecord, ToolDefinition};
@@ -276,7 +276,7 @@ impl McpTools {
             ..ExecutionMetrics::default()
         };
         let failed = |failure: FailureCause, payload: Value, mut notices: Vec<Notice>| {
-            let (payload, full_payload) = bounded(payload, &mut notices);
+            let (payload, full_payload) = bound_result(payload, &mut notices);
             ExecutionOutcome {
                 termination: Termination::Exited { exit_code: 1 },
                 failure: Some(failure),
@@ -453,7 +453,7 @@ impl McpTools {
                         Err(_) => return self.map_outcome_timeout(metrics),
                     }
                 }
-                let (payload, full_payload) = bounded(payload, &mut notices);
+                let (payload, full_payload) = bound_result(payload, &mut notices);
                 ExecutionOutcome {
                     termination: Termination::Exited { exit_code: 0 },
                     failure: None,
@@ -498,26 +498,6 @@ impl McpTools {
             metrics,
         }
     }
-}
-
-/// A payload as the model reads it, and the whole result when that is a cut of
-/// it (handoff 009i, A-26; REQ-MCP-006, REQ-CTX-006): the serialized payload is
-/// bounded in total by cutting its longest strings first, and the cuts are said
-/// once, in one `content_truncated` with its total. The whole result is kept
-/// for the user, within LIM-S4 (REQ-PERS-005), and never shown to the model.
-/// What is cut is cut after the output schema was checked.
-fn bounded(payload: Value, notices: &mut Vec<Notice>) -> (Value, Option<Value>) {
-    let Some(cut) = bound::bound(&payload, LIM_I19_RESULT_TOTAL_CHARS, Unit::Chars, true) else {
-        return (payload, None);
-    };
-    notices.push(Notice::ContentTruncated {
-        total_chars: cut.total_chars,
-    });
-    let full = match bound::bound(&payload, LIM_S4_OUTPUT_BYTES as usize, Unit::Bytes, false) {
-        Some(whole) => whole.value,
-        None => payload,
-    };
-    (cut.value, Some(full))
 }
 
 impl ToolProvider for McpTools {

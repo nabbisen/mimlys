@@ -74,7 +74,7 @@ All paths are relative to the workspace root.
 
 | Tool | Arguments | Result | Effect |
 |---|---|---|---|
-| `read_file` | `path`, `start_line?`, `max_chars?` | `content`, `truncated`, `total_chars`, `line_range` | `workspace_read` |
+| `read_file` | `path`, `start_line?`, `max_chars?` (at most 8 000) | `content`, `truncated`, `total_chars`, `line_range` | `workspace_read` |
 | `write_file` | `path`, `content` | `bytes_written`, `created`, `parents_created` | `workspace_write` |
 | `replace_in_file` | `path`, `find`, `replace`, `occurrences?` | `replaced` | `workspace_write` |
 | `list_dir` | `path`, `depth?` | `entries[]{path, type, size}`, `truncated` | `workspace_read` |
@@ -93,6 +93,18 @@ file is refused with `not_a_file` (and a hint); a directory given to
 reads at most 8 MiB (LIM-W3) and refuses a larger file with `too_large`, since it
 does not truncate before it checks. `search_files` skips an entry that is not a
 regular file and counts it with the entries it could not read.
+
+What the model reads of any tool's result, the built-in tools' included, is at
+most 8 000 characters of JSON (LIM-I19). `read_file` takes a `max_chars` of at
+most 8 000 (4 000 when it is not given) and returns a prefix of the text that
+fits as the model reads it: a quote or a newline is two characters in JSON, so
+a text full of them gives less than `max_chars`. `truncated` is then `true`,
+`line_range` is what was returned and `total_chars` is the whole, so the next
+read starts at the line after. `list_dir` and `search_files` drop whole entries
+from the end of the list until it fits and say so with `truncated`; a path is
+never cut, so none names a file that does not exist. The runtime applies the
+same bound last to every result, whatever made it, and says so once, as
+`content_truncated`.
 
 A tool is visible to the model only under a grant: a `tool` grant for a
 built-in or external tool, a `host_tool` grant for a declared host tool

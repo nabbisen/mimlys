@@ -113,7 +113,7 @@ fn limit(name: &str) -> Result<usize, String> {
         "LIM_I6_APPROVAL_CHARS" => LIM_I6_APPROVAL_CHARS,
         "LIM_I2_TOOL_DESCRIPTION_CHARS" => LIM_I2_TOOL_DESCRIPTION_CHARS,
         "LIM_C1_CONTEXT_CHARS" => LIM_C1_CONTEXT_CHARS,
-        "LIM_C2_EXCERPT_CEILING_CHARS" => LIM_C2_EXCERPT_CEILING_CHARS,
+        "LIM_I19_RESULT_TOTAL_CHARS" => LIM_I19_RESULT_TOTAL_CHARS,
         other => return Err(format!("unknown limit `{other}`")),
     })
 }
