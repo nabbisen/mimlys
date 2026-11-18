@@ -1896,3 +1896,164 @@ fn req_conf_011_only_the_workers_and_the_modules_files_are_admitted() {
         }
     }
 }
+
+/// The children of a process (`pgrep -P`).
+fn children_of(pid: u32) -> Vec<u32> {
+    let out = Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect()
+}
+
+/// REQ-CONF-009 / audit A-21 (handoff 011p, item 3): the runtime is killed
+/// after the worker's sweeper and the worker were (as a tool that kills them
+/// would), leaving a tree in the sandbox that nothing of the worker's is left
+/// to end; the next start that writes sweeps it from outside, by the marker
+/// `worker.json` records, removes the record, and says so (`runtime.orphans_killed`).
+/// The control: before the next start the tool and its sleeper run, the tool's
+/// parent is `launchd`, and the record holds a marker. The mutation: the sweep
+/// at the next start removed leaves the tree running.
+#[test]
+fn req_conf_009_the_next_start_sweeps_a_worker_a_crashed_runtime_left() {
+    let test = "req_conf_009_the_next_start_sweeps_a_worker_a_crashed_runtime_left";
+    let secs = "2371";
+    clear_stale_sleepers(secs);
+    let env = Env::new(&[probe(&["setsid-sleep", secs]), complete()], "");
+    let (_, table) = clauses(&env);
+    if !seatbelt_or_skip(test, &table) {
+        return;
+    }
+    let scope = env.scope();
+    let mut run = env
+        .command(&[
+            "--json",
+            "run",
+            "sleep",
+            "--scope",
+            scope.to_str().unwrap(),
+            "--grant",
+            "host_tool:probe",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(std::time::Duration::from_secs(60), || !sleepers(secs)
+            .is_empty()),
+        "the tool's sleeper runs"
+    );
+    let tool = Command::new("pgrep")
+        .args(["-f", &format!("mimlys-probe-tool setsid-sleep {secs}$")])
+        .output()
+        .unwrap();
+    let tool: u32 = String::from_utf8_lossy(&tool.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse().ok())
+        .expect("the tool runs");
+    let worker = ppid_of(tool).expect("the tool's parent");
+    assert!(worker > 1);
+    let sweeper: Vec<u32> = children_of(worker)
+        .into_iter()
+        .filter(|p| *p != tool)
+        .collect();
+    assert!(!sweeper.is_empty(), "the worker has its sweeper");
+    let record = env.data.path().join("data/worker.json");
+    let text = std::fs::read_to_string(&record).expect("the worker's record");
+    assert!(
+        text.contains("com.mimlys.marker."),
+        "the record holds the marker: {text}"
+    );
+    // The runtime is stopped first, so that it does not sweep the worker's death
+    // itself; then the sweeper and the worker die, then the runtime, as in a crash.
+    let kill = |signal: &str, pid: u32| {
+        assert!(
+            Command::new("kill")
+                .args([signal, &pid.to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    kill("-STOP", run.id());
+    for pid in &sweeper {
+        kill("-KILL", *pid);
+    }
+    kill("-KILL", worker);
+    run.kill().unwrap();
+    let _ = run.wait();
+    // The control: the tree outlived the sweeper, the worker and the runtime.
+    assert!(
+        wait_until(std::time::Duration::from_secs(60), || ppid_of(tool)
+            == Some(1)),
+        "the tool is an orphan of launchd"
+    );
+    assert!(!sleepers(secs).is_empty(), "its sleeper runs");
+    assert!(record.exists(), "the record is left");
+    // The next start that writes reaps it (a reader does not: REQ-PERS-013).
+    let (_, _) = env.json(&["status"]);
+    assert!(
+        !sleepers(secs).is_empty(),
+        "a reader sweeps nothing: the tree is still there"
+    );
+    assert!(record.exists());
+    let (_, _) = env.json(&["interpreters", "list"]);
+    assert!(
+        wait_until(std::time::Duration::from_secs(60), || sleepers(secs)
+            .is_empty()
+            && ppid_of(tool).is_none()),
+        "the tool and its sleeper are swept at the next start"
+    );
+    assert!(!record.exists(), "the record is removed");
+    let (_, metrics) = env.json(&["metrics"]);
+    assert_eq!(metrics["events_by_name"]["runtime.orphans_killed"], 1);
+}
+
+/// REQ-CONF-003 / REQ-CONF-009 (handoff 011p, item 4): when the test that
+/// finds a worker's members does not hold at the verification (the known
+/// member's answer is made wrong), `status` says so in one line with the reason
+/// (and `outside_sweep_unavailable` in JSON), and the tier and clause K are
+/// what they were: neither changes. Where it holds, the line and the field
+/// are absent.
+#[test]
+fn req_conf_009_status_says_when_the_sweep_outside_the_sandbox_is_unavailable() {
+    let test = "req_conf_009_status_says_when_the_sweep_outside_the_sandbox_is_unavailable";
+    let good = Env::new(&[], "");
+    let (tier, table) = clauses(&good);
+    if !seatbelt_or_skip(test, &table) {
+        return;
+    }
+    let (_, status) = good.json(&["status"]);
+    assert!(
+        status.get("outside_sweep_unavailable").is_none(),
+        "the test holds here: {status}"
+    );
+    let (_, text, _) = good.run(&["status"]);
+    assert!(!text.contains("sweep from outside the sandbox"), "{text}");
+    let bad = Env::new(&[], "").env("MIMLYS_TEST_OUTSIDE_VERIFY_WRONG", "1");
+    let (bad_tier, bad_table) = clauses(&bad);
+    assert_eq!(bad_tier, tier, "the tier does not change");
+    assert_eq!(bad_table["termination"], table["termination"]);
+    assert_eq!(bad_table["termination"]["state"], "enforced");
+    assert_eq!(
+        bad_table["termination"]["primitive"], "seatbelt_membership",
+        "K is seatbelt_membership either way"
+    );
+    let (_, status) = bad.json(&["status"]);
+    let reason = status["outside_sweep_unavailable"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no reason in {status}"));
+    assert!(reason.contains("does not find the worker"), "{reason}");
+    let (_, text, _) = bad.run(&["status"]);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("sweep from outside the sandbox"))
+        .collect();
+    assert_eq!(lines.len(), 1, "one line: {text}");
+    assert!(lines[0].contains(reason), "{}", lines[0]);
+}

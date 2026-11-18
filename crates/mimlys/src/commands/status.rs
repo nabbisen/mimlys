@@ -18,6 +18,11 @@ struct Status<'a> {
     /// macOS: `xcrun`'s cache file, when it is missing and could not be made.
     #[serde(skip_serializing_if = "Option::is_none")]
     xcrun_cache_missing: Option<String>,
+    /// macOS: why the sweep from outside the sandbox is unavailable (the test
+    /// that finds a worker's members did not hold at the verification); shown
+    /// only then. The tier is the same either way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outside_sweep_unavailable: Option<String>,
     /// Windows: the one-time migration of 0.11 (the container, the per-task
     /// entries) has not finished; shown only then.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -78,7 +83,8 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     if let Some(notice) = notice {
         out.line(notice);
     }
-    let confinement = probe_confinement(config, &app.data_dir, &app.interpreters, &app.host_tools);
+    let (confinement, outside_sweep_unavailable) =
+        probe_confinement(config, &app.data_dir, &app.interpreters, &app.host_tools);
     let activity = app.reader.activity()?;
     let mut status = mimlys_core::runtime::RuntimeStatus {
         version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -213,6 +219,9 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             out.line(messages::server_undeclared(tool));
         }
     }
+    if let Some(reason) = &outside_sweep_unavailable {
+        out.line(messages::outside_sweep_unavailable(reason));
+    }
     let migration_pending = app.container.as_ref().is_some_and(|c| c.migration_pending);
     if migration_pending {
         out.line(messages::MIGRATION_PENDING);
@@ -231,6 +240,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         data_dir_in_temporary_directory: data_dir_in_temp,
         xcrun_cache_missing: xcrun_missing,
+        outside_sweep_unavailable,
         permissions_migration_pending: migration_pending,
         config: app
             .loaded

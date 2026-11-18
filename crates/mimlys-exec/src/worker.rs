@@ -61,8 +61,13 @@ pub fn reap_orphans(record: &std::path::Path) -> u32 {
     let Ok(text) = std::fs::read_to_string(record) else {
         return 0;
     };
+    // macOS keeps the record until the sweep of its members is done, so that a
+    // runtime that dies in the middle of it leaves the record for the next.
+    #[cfg(not(target_os = "macos"))]
     let _ = std::fs::remove_file(record);
     let Ok(r) = serde_json::from_str::<WorkerRecord>(&text) else {
+        #[cfg(target_os = "macos")]
+        let _ = std::fs::remove_file(record);
         return 0;
     };
     #[cfg(target_os = "linux")]
@@ -91,12 +96,58 @@ pub fn reap_orphans(record: &std::path::Path) -> u32 {
         }
         killed
     }
+    // macOS (handoff 011p, item 3): what the worker left in its sandbox, found
+    // from outside by the marker the record holds.
+    #[cfg(target_os = "macos")]
+    {
+        let killed = sweep_recorded(&r);
+        let _ = std::fs::remove_file(record);
+        killed
+    }
     // Windows: the job's kill-on-close ends the tree when the runtime's
     // handle closes, crash included; nothing can be left to reap.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = r;
         0
+    }
+}
+
+/// macOS: sweeps the members of the worker a crashed runtime recorded, from
+/// outside the sandbox, within LIM-O2. The half of the verification that needs
+/// no member comes first (no worker is alive at the next start): the call is
+/// there and the runtime is not itself taken for a member. A record without a
+/// marker (0.10's) has nothing to find. Returns 1 when a member was signalled.
+#[cfg(target_os = "macos")]
+fn sweep_recorded(r: &WorkerRecord) -> u32 {
+    use crate::confine::macos::outside;
+    let Some(marker) = &r.marker else {
+        return 0;
+    };
+    if let Err(why) = outside::verify_outsider(marker) {
+        tracing::warn!(
+            target: "mimlys_worker",
+            "a worker a previous runtime left is not swept: the sweep outside the sandbox is unavailable: {why}"
+        );
+        return 0;
+    }
+    match outside::sweep(marker, Duration::from_millis(LIM_O2_CANCEL_MS)) {
+        Ok(report) => {
+            if !report.sweep.complete {
+                tracing::warn!(
+                    target: "mimlys_worker",
+                    "tree_kill_incomplete: members of a worker a previous runtime left remained after the sweep from outside"
+                );
+            }
+            u32::from(report.sweep.killed > 0)
+        }
+        Err(why) => {
+            tracing::warn!(
+                target: "mimlys_worker",
+                "tree_kill_incomplete: the sweep from outside the sandbox could not run: {why}"
+            );
+            0
+        }
     }
 }
 
@@ -210,7 +261,11 @@ impl Worker {
             ),
             markers: std::sync::atomic::AtomicBool::new(cfg!(target_os = "macos")),
             outside: Mutex::new(OutsideSweep::NotChecked),
-            verify_wrong: std::sync::atomic::AtomicBool::new(false),
+            // Debug builds only: the tests of the command line make the verification fail.
+            verify_wrong: std::sync::atomic::AtomicBool::new(
+                cfg!(debug_assertions)
+                    && std::env::var_os("MIMLYS_TEST_OUTSIDE_VERIFY_WRONG").is_some(),
+            ),
             restarts: Mutex::new(BTreeMap::new()),
             facts: Mutex::new(WorkerFacts::default()),
             reader_span: mimlys_core::log_span::ReaderSpan::new(),
@@ -242,6 +297,14 @@ impl Worker {
             "--confine".to_owned(),
             serde_json::to_string(spec).expect("serializes"),
         ];
+        // macOS (handoff 011p, item 4): the probe worker is held after it has
+        // answered, so that the test that finds a worker's members from outside
+        // the sandbox is verified on a worker that is alive, and `status` can say
+        // when it does not hold.
+        let hold = cfg!(target_os = "macos") && spec.marker.is_some();
+        if hold {
+            args.push("--hold".to_owned());
+        }
         for d in &self.config.host_tools {
             args.push("--host-tool".into());
             args.push(serde_json::to_string(d).expect("serializes"));
@@ -257,11 +320,30 @@ impl Worker {
             .confinement
             .spawn(&command, Some(spec))
             .map_err(|e| e.to_string())?;
-        drop(child.take_stdin());
+        let mut held_stdin = child.take_stdin();
+        if !hold {
+            drop(held_stdin.take());
+        }
         // Both streams are drained by threads: a worker that neither writes
         // nor exits must end in the timed wait, never in a blocking read.
-        let out_rx = drain(child.take_stdout());
+        let (first_rx, out_rx) = if hold {
+            let (first, rest) = drain_first_line(child.take_stdout());
+            (Some(first), rest)
+        } else {
+            (None, drain(child.take_stdout()))
+        };
         let err_rx = drain(child.take_stderr());
+        let mut first_line = String::new();
+        if let Some(first_rx) = first_rx {
+            if let Ok(line) = first_rx.recv_timeout(Duration::from_millis(LIM_X4_WORKER_START_MS)) {
+                first_line = line;
+                if let Some(marker) = &spec.marker {
+                    let _ = self.verify_member(child.id() as i32, marker);
+                }
+            }
+            // The probe worker may end now.
+            drop(held_stdin.take());
+        }
         if !child.wait_within(Duration::from_millis(LIM_X4_WORKER_START_MS)) {
             let activity = child
                 .activity()
@@ -277,9 +359,10 @@ impl Worker {
             ));
         }
         let status = child.try_wait().ok().flatten();
-        let out = out_rx
-            .recv_timeout(Duration::from_millis(LIM_O2_CANCEL_MS))
-            .unwrap_or_default();
+        let out = first_line
+            + &out_rx
+                .recv_timeout(Duration::from_millis(LIM_O2_CANCEL_MS))
+                .unwrap_or_default();
         let err = err_rx
             .recv_timeout(Duration::from_millis(LIM_O2_CANCEL_MS))
             .unwrap_or_default();
@@ -664,13 +747,23 @@ impl Worker {
         let Some(marker) = live.marker.clone() else {
             return;
         };
+        if self.verify_member(live.child.id() as i32, &marker) {
+            live.child.arm_outside_sweep();
+        }
+    }
+
+    /// The verification on a known member (`pid`, a worker of this handle that
+    /// is alive) and the runtime as the known outsider; keeps what it found for
+    /// `status` and says whether the test holds.
+    #[cfg(target_os = "macos")]
+    fn verify_member(&self, pid: i32, marker: &str) -> bool {
         let seam = crate::confine::macos::outside::Seam {
             wrong_member: self.verify_wrong.load(std::sync::atomic::Ordering::Relaxed),
         };
-        match crate::confine::macos::outside::verify(live.child.id() as i32, &marker, seam) {
+        match crate::confine::macos::outside::verify(pid, marker, seam) {
             Ok(()) => {
-                live.child.arm_outside_sweep();
                 *self.outside.lock().expect("outside") = OutsideSweep::Verified;
+                true
             }
             Err(reason) => {
                 tracing::warn!(
@@ -678,8 +771,15 @@ impl Worker {
                     "the sweep outside the sandbox is unavailable: {reason}"
                 );
                 *self.outside.lock().expect("outside") = OutsideSweep::Unavailable(reason);
+                false
             }
         }
+    }
+
+    /// No verification off macOS.
+    #[cfg(not(target_os = "macos"))]
+    fn verify_member(&self, _pid: i32, _marker: &str) -> bool {
+        false
     }
 
     /// No sweep from outside the sandbox on this platform.
@@ -1110,6 +1210,31 @@ fn fault(detail: HostFaultDetail, started: Instant, note: Option<&str>) -> Execu
 }
 
 /// Reads a child's stream to its end on a thread; the receiver gets the text once.
+/// As [`drain`], but the first line is delivered as soon as it is read, and
+/// the rest when the stream ends: for a worker that answers and then waits.
+fn drain_first_line<R: std::io::Read + Send + 'static>(
+    stream: Option<R>,
+) -> (
+    std::sync::mpsc::Receiver<String>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let (first_tx, first_rx) = channel();
+    let (rest_tx, rest_rx) = channel();
+    if let Some(s) = stream {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(s);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_ok() {
+                let _ = first_tx.send(line);
+            }
+            let mut rest = String::new();
+            let _ = std::io::Read::read_to_string(&mut reader, &mut rest);
+            let _ = rest_tx.send(rest);
+        });
+    }
+    (first_rx, rest_rx)
+}
+
 fn drain<R: std::io::Read + Send + 'static>(
     stream: Option<R>,
 ) -> std::sync::mpsc::Receiver<String> {

@@ -182,6 +182,16 @@ pub fn main() {
             )
             .expect("serializes")
         );
+        // macOS (handoff 011p, item 4): the runtime holds the probe worker
+        // alive until it has verified the test that finds a worker's members
+        // from outside the sandbox on it, then closes its input.
+        #[cfg(target_os = "macos")]
+        if args.iter().any(|a| a == "--hold") {
+            use std::io::{Read as _, Write as _};
+            let _ = std::io::stdout().flush();
+            let mut sink = Vec::new();
+            let _ = std::io::stdin().read_to_end(&mut sink);
+        }
         return;
     }
     let configured = parse_interpreters(&args);
