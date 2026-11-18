@@ -243,6 +243,17 @@ unavailable, with the reason in `status`, rather than half imported.
   one log line and no memory. At most 50 lines are logged in each second; the
   lines past that are counted, and when the second ends one line says how many
   (`N lines dropped`). These are LIM-I17, LIM-I18 and LIM-O18.
+- **One message from a server is bounded before it is read.** A server's
+  answer is one line of JSON on its standard output, and the runtime counts the
+  bytes of a line as they arrive: past 8 MiB (LIM-I22) it does not read the
+  message, whole or in part, and ends the connection as it ends when a server
+  exits. The call in flight is `host_fault` with `worker_died`, the cause
+  `sandbox_fault`, as for a server that died during a call (an effect that
+  cannot be undone is then `unknown`, as there); the process is killed with its
+  group, and the log says at `warn` which server and the bound. The next call
+  starts the server again, and that counts against the restart limit of 3 per
+  task like any start after a death. A server that returns more than 8 MiB at
+  once, as a file or a page, is better made to return it in parts.
 - **A result is bounded as a whole.** What the model reads of a tool's result
   is at most 8 000 characters of JSON in total (LIM-I19), however many strings, keys and levels the server sends
   (the built-in tools' results are bounded the same way, and the runtime bounds every result last, whatever provider made it). The

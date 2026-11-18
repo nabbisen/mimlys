@@ -6,6 +6,7 @@
 //! the configuration surface. With `MIMLYS_RYPSOK_BIN` set, the
 //! demonstration also runs against a real `rypsok serve`.
 
+use mimlys_core::event::Event;
 use mimlys_core::spi::Cancellation;
 use mimlys_mcp::client::CallOutcome;
 use mimlys_mcp::server::{Server, ServerConfig};
@@ -2869,6 +2870,205 @@ fn req_mcp_001_a_servers_standard_error_is_bounded_by_line_and_by_rate() {
         &log[..log.len().min(2000)]
     );
     assert!(log.contains("flood line 0"));
+}
+
+/// The two tests of LIM-I22 run one at a time: the first reads the `warn` line the reader
+/// writes through a subscriber of its own, and a callsite first reached on another thread with
+/// no subscriber would not be seen by it.
+static OVERSIZE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Waits until the file a server's heartbeat writes stops growing: a second without a byte is
+/// twenty beats missed, and a process that is still alive beats for ever (a minute is the
+/// most it is given to be killed).
+async fn wait_until_it_stops_beating(beat: &std::path::Path) {
+    let len = |p: &std::path::Path| std::fs::metadata(p).map_or(0, |m| m.len());
+    assert!(len(beat) > 0, "the server never beat");
+    let began = std::time::Instant::now();
+    loop {
+        let before = len(beat);
+        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+        if before == len(beat) {
+            return;
+        }
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(60),
+            "the server is still running"
+        );
+    }
+}
+
+/// One call of `tool` of `server` for `task`, with the deadline of a minute.
+async fn call_as(
+    server: &Server,
+    task: mimlys_core::ids::TaskId,
+    tool: &str,
+) -> Result<CallOutcome, mimlys_mcp::server::ServerError> {
+    server
+        .call(
+            task,
+            tool,
+            Default::default(),
+            None,
+            60_000,
+            &Cancellation::new(),
+            &Cancellation::new(),
+        )
+        .await
+}
+
+/// REQ-MCP-001, LIM-I22 (handoff 013c, item 3): a message a server writes past LIM-I22 is
+/// never held whole. The call ends as one to a server that ended during it ends (the same
+/// outcome as `die`); the reader of the server's standard output passed on less than the
+/// bound of that message and ended the stream (by its own counters, not by timing); the log
+/// says why at `warn`, naming the server and the bound; the process is stopped; and the
+/// next call starts the server again, a restart counted against LIM-X3.
+#[test]
+fn req_mcp_001_a_message_past_lim_i22_ends_the_server_and_is_never_held_whole() {
+    use mimlys_core::limits::LIM_I22_SERVER_MESSAGE_BYTES as BOUND;
+    let _one_at_a_time = OVERSIZE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let beat = dir.path().join("heartbeat");
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer({
+            let captured = captured.clone();
+            move || captured.clone()
+        })
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .finish();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    tracing::subscriber::with_default(subscriber, || {
+        rt.block_on(async {
+            let task = a_task();
+            // What a server that ends during a call gives.
+            let dying = knob_server(15_000, &[]);
+            let ended = call_as(&dying, task, "die")
+                .await
+                .expect("a call that ended");
+            assert!(matches!(ended, CallOutcome::Failed { .. }), "{ended:?}");
+            dying.shutdown().await;
+
+            let size = BOUND + (1 << 20);
+            let server = knob_server(
+                15_000,
+                &[
+                    ("MIMLYS_TESTSERVER_OVERSIZE", size.to_string()),
+                    (
+                        "MIMLYS_TESTSERVER_HEARTBEAT",
+                        beat.to_string_lossy().into_owned(),
+                    ),
+                ],
+            );
+            server.list().await.expect("the server starts");
+            let outcome = call_as(&server, task, "oversize")
+                .await
+                .expect("a call that ended");
+            assert_eq!(
+                outcome, ended,
+                "what a server that ended during a call gives"
+            );
+            // By state: the reader ended the stream, and passed on less than the bound of
+            // the message, which is a megabyte longer than the bound.
+            let reader = server.message_reader().expect("the connection is held");
+            assert!(reader.exceeded());
+            assert!(reader.high_water() <= BOUND, "{}", reader.high_water());
+            assert!(
+                reader.high_water() > BOUND - 64 * 1024,
+                "the reader passed on what fits: {}",
+                reader.high_water()
+            );
+            // The log says why, naming the server and the bound.
+            let log = captured.lines().join("\n");
+            assert!(
+                log.contains("WARN") && log.contains("LIM-I22") && log.contains("server=t"),
+                "{log}"
+            );
+            assert!(log.contains(&format!("bound={BOUND}")), "{log}");
+            // The process is stopped, not left writing: its heartbeat stops.
+            wait_until_it_stops_beating(&beat).await;
+            // The next call starts the server again: a death, a restart of the task's.
+            let again = call_as(&server, task, "engine_status")
+                .await
+                .expect("served again");
+            assert!(matches!(again, CallOutcome::Result { .. }), "{again:?}");
+            let events = server.drain_events();
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::ServerStopped { reason, .. } if reason == "died")),
+                "{events:?}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| matches!(e, Event::ServerStarted { .. }))
+                    .count(),
+                2,
+                "{events:?}"
+            );
+            server.shutdown().await;
+        });
+    });
+}
+
+/// REQ-MCP-001, LIM-I22 (handoff 013c, item 3): the same when no call is in flight. The
+/// server answers a call, and then writes a message past the bound: the call is not
+/// touched, the reader ends the stream, and the server is found closed (and its process
+/// stopped) when it is next looked at; the next call starts it again.
+#[test]
+fn req_mcp_001_a_message_past_lim_i22_between_calls_stops_the_server_too() {
+    use mimlys_core::limits::LIM_I22_SERVER_MESSAGE_BYTES as BOUND;
+    let _one_at_a_time = OVERSIZE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let beat = dir.path().join("heartbeat");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let task = a_task();
+        let server = knob_server(
+            15_000,
+            &[
+                (
+                    "MIMLYS_TESTSERVER_OVERSIZE",
+                    (BOUND + (1 << 20)).to_string(),
+                ),
+                (
+                    "MIMLYS_TESTSERVER_HEARTBEAT",
+                    beat.to_string_lossy().into_owned(),
+                ),
+            ],
+        );
+        server.list().await.expect("the server starts");
+        let answer = call_as(&server, task, "oversize_after")
+            .await
+            .expect("the call is answered");
+        assert!(matches!(answer, CallOutcome::Result { .. }), "{answer:?}");
+        // The reader trips on the message that follows, by its own state.
+        let reader = server.message_reader().expect("the connection is held");
+        let began = std::time::Instant::now();
+        while !reader.exceeded() {
+            assert!(
+                began.elapsed() < std::time::Duration::from_secs(60),
+                "the message was never read"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(reader.high_water() <= BOUND, "{}", reader.high_water());
+        // Looking at the server finds it closed, and stops its process.
+        assert!(!server.is_running().await);
+        wait_until_it_stops_beating(&beat).await;
+        let again = call_as(&server, task, "engine_status")
+            .await
+            .expect("served again");
+        assert!(matches!(again, CallOutcome::Result { .. }), "{again:?}");
+        server.shutdown().await;
+    });
 }
 
 /// REQ-MCP-002, REQ-MCP-001 (handoff 009h, item 4a): the pin is compared on the

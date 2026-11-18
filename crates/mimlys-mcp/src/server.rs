@@ -297,6 +297,16 @@ impl Server {
             .is_some_and(|l| !l.connection.is_closed())
     }
 
+    /// What the reader of the standard output of the current (or last) process knows, when
+    /// there is one: a test's seam for LIM-I22.
+    pub fn message_reader(&self) -> Option<Arc<crate::lines::LineState>> {
+        self.live
+            .lock()
+            .expect("live lock")
+            .as_ref()
+            .map(|l| Arc::clone(l.connection.lines()))
+    }
+
     /// The last list seen, without starting the server.
     pub fn last_list(&self) -> Option<Listing> {
         self.last.lock().expect("last lock").clone()

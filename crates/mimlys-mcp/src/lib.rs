@@ -10,6 +10,7 @@
 
 pub mod client;
 pub mod import;
+pub mod lines;
 pub mod server;
 pub mod stderr;
 pub mod tools;
