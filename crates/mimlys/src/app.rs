@@ -12,8 +12,8 @@ use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_model::fake::FakeBackend;
 use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved, TransportMode};
 use mimlys_persist::recovery::{
-    Recovered, RecoveredPromotion, RecoveryContext, recover_all, recover_deletions,
-    recover_promotions, recover_snapshot_journals,
+    Recovered, RecoveredPromotion, RecoveryContext, recover_all, recover_blob_files,
+    recover_deletions, recover_promotions, recover_snapshot_journals,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -807,6 +807,22 @@ impl App {
             &mimlys_persist::snapshots::SnapshotFiles::open(&data_dir)?,
             &recovery_ctx,
         )?;
+        // The blob files a crash left without a row (REQ-PERS-005): this start is the store's
+        // only writer (the lock) and has stored no blob yet, so no file is waiting for its row.
+        let blob_files = recover_blob_files(&store)?;
+        if !blob_files.removed.is_empty() {
+            tracing::info!(
+                "removed {} blob file(s) that no record named, left by a process that ended in the middle of a write",
+                blob_files.removed.len()
+            );
+        }
+        if !blob_files.failed.is_empty() {
+            tracing::warn!(
+                "{} blob file(s) that no record names could not be removed and will be tried at the next start: {}",
+                blob_files.failed.len(),
+                blob_files.failed.join(", ")
+            );
+        }
         mimlys_persist::integrity::check(&store, now)?;
         let (backend, openai) = make_backend(&config, &loaded, backend)?;
         let store: Arc<dyn Persistence> = Arc::new(store);

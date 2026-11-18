@@ -313,3 +313,80 @@ fn req_ctx_008_visible_symbols_stay() {
         assert_eq!(sanitize(text), (text.to_owned(), 0), "{text:?}");
     }
 }
+
+/// REQ-PERS-005: the whole text of a stream is the text its excerpt is cut from, not the raw
+/// bytes: invalid UTF-8 replaced, invisible characters removed, a secret replaced everywhere
+/// (also across the point where the excerpt is cut), a carriage return kept; a stream that fits
+/// has none, since its excerpt is its whole.
+#[test]
+fn req_pers_005_the_whole_text_is_the_cleaned_and_redacted_text_before_the_cut() {
+    let ids = ScriptedIds::default();
+    let secret = "sk-live-0123456789abcdef";
+    let redactor = crate::context::Redactor::new(&[("TOKEN".into(), secret.into())]);
+    // A secret that lies across the cut: the head is 3 000 characters.
+    let mut raw = "a".repeat(LIM_C2_EXCERPT_HEAD_CHARS - 6).into_bytes();
+    raw.extend_from_slice(secret.as_bytes());
+    raw.extend_from_slice(b"\x1b[31m\xff\r\nend\r");
+    raw.extend_from_slice("b".repeat(LIM_C2_EXCERPT_TAIL_CHARS + 50).as_bytes());
+    let outcome = ExecutionOutcome {
+        stdout: raw.clone(),
+        stderr: b"short\r".to_vec(),
+        ..ExecutionOutcome::succeeded(serde_json::json!({}), 1)
+    };
+    let (o, whole) = Observation::from_outcome_with_streams(
+        ObservationId::new(&ids),
+        ActionId::new(&ids),
+        "run_script",
+        &outcome,
+        Verdict {
+            status: ObservationStatus::Succeeded,
+            cause: None,
+            rolled_back: false,
+        },
+        FakeClock::default().now(),
+        &redactor,
+    );
+    let stdout = whole.stdout.expect("the excerpt is a cut of it");
+    assert!(!stdout.contains(secret));
+    assert!(stdout.contains("[redacted:TOKEN]"));
+    assert!(!stdout.contains('\u{1b}') && stdout.contains('\u{FFFD}'));
+    assert!(stdout.contains("\r\nend\r"), "a carriage return is kept");
+    // Exactly the text the excerpt is cut from.
+    let (expected, _) = excerpt(
+        &stdout,
+        LIM_C2_EXCERPT_HEAD_CHARS,
+        LIM_C2_EXCERPT_TAIL_CHARS,
+    );
+    assert_eq!(o.stdout, expected);
+    assert!(o.stdout.chars().count() < stdout.chars().count());
+    // A stream that fits its excerpt has no second copy.
+    assert_eq!(whole.stderr, None);
+    assert_eq!(o.stderr, "short\r");
+    // `from_outcome` is the same observation.
+    let plain = Observation::from_outcome(
+        o.observation_id,
+        o.action_id,
+        "run_script",
+        &outcome,
+        Verdict {
+            status: ObservationStatus::Succeeded,
+            cause: None,
+            rolled_back: false,
+        },
+        FakeClock::default().now(),
+        &redactor,
+    );
+    assert_eq!(plain, o);
+}
+
+/// The longest prefix within a byte bound ends on a character boundary.
+#[test]
+fn req_pers_005_a_prefix_within_a_bound_ends_on_a_character_boundary() {
+    assert_eq!(prefix_within_bytes("abc", 3), "abc");
+    assert_eq!(prefix_within_bytes("abc", 10), "abc");
+    assert_eq!(prefix_within_bytes("abc", 2), "ab");
+    assert_eq!(prefix_within_bytes("a€b", 3), "a");
+    assert_eq!(prefix_within_bytes("a€b", 4), "a€");
+    assert_eq!(prefix_within_bytes("€", 2), "");
+    assert_eq!(prefix_within_bytes("", 0), "");
+}

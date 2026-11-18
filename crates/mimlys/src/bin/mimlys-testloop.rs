@@ -74,6 +74,9 @@ struct Cli {
     /// A JavaScript interpreter module to install into the data directory before the run.
     #[arg(long)]
     interpreter_module: Option<PathBuf>,
+    /// A secret the runtime redacts, as `NAME=VALUE`; repeatable (a configured secret, without a configuration file).
+    #[arg(long = "secret", value_name = "NAME=VALUE")]
+    secrets: Vec<String>,
     /// Write the runtime log to standard error at this level (`info`, `debug`, …).
     #[arg(long)]
     log: Option<String>,
@@ -187,7 +190,12 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
         Loaded {
             config,
             path: None,
-            secrets: vec![],
+            secrets: cli
+                .secrets
+                .iter()
+                .filter_map(|s| s.split_once('='))
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect(),
         },
         Some(backend.clone()),
     )?;
