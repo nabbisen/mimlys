@@ -460,3 +460,130 @@ fn req_ws_014_a_prune_goes_on_past_a_task_deleted_with_files_left() {
         assert!(!env.has_workspace(&first), "and so was the first");
     }
 }
+
+/// What a refused creation of an earlier release left: a copy of a scope in
+/// `workspaces`, in a directory named like a task that has no row.
+fn leave_a_workspace(env: &Env, n: u128, bytes: usize) -> String {
+    let name = uuid::Uuid::from_u128(n).to_string();
+    let tree = env.data.join("workspaces").join(&name).join("tree/src");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("lib.rs"), vec![b'x'; bytes]).unwrap();
+    name
+}
+
+/// REQ-WS-014 (handoff 013c): the plan lists a workspace no task refers to as `no task:
+/// left by a refused creation`, with its footprint, beside the tasks, and deletes nothing
+/// unconfirmed; a task that is not terminal and its workspace are not in it; `--json` gives
+/// the directories their own key.
+#[test]
+fn req_ws_014_prune_lists_a_workspace_no_task_refers_to() {
+    let env = Env::new();
+    let done = env.completed("a");
+    let held = env.created("b");
+    let left = leave_a_workspace(&env, 7, 4000);
+    let (code, stdout, stderr) = env.run(&["task", "prune"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains(&left))
+        .unwrap_or_else(|| panic!("{left} is not listed:\n{stdout}"));
+    assert!(
+        line.contains("no task: left by a refused creation"),
+        "{line}"
+    );
+    assert!(stdout.contains(&done), "{stdout}");
+    assert!(
+        !stdout.contains(&held),
+        "a task's workspace is not one that no task refers to: {stdout}"
+    );
+    assert!(
+        stdout.contains("nothing deleted; confirm with --yes"),
+        "{stdout}"
+    );
+    assert!(env.data.join("workspaces").join(&left).exists());
+    let (code, value) = env.json(&["task", "prune"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["confirmed"], false);
+    let no_task = value["no_task"].as_array().unwrap();
+    assert_eq!(no_task.len(), 1, "{value}");
+    assert_eq!(no_task[0]["name"], left.as_str());
+    assert_eq!(no_task[0]["reason"], "no task: left by a refused creation");
+    assert!(no_task[0]["bytes"].as_u64().unwrap() >= 4000, "{value}");
+    assert_eq!(value["tasks"].as_array().unwrap().len(), 1);
+    assert!(
+        value["total_bytes"].as_u64().unwrap() > no_task[0]["bytes"].as_u64().unwrap(),
+        "the total holds the tasks' and the workspaces'"
+    );
+}
+
+/// REQ-WS-014 (handoff 013c): with `--yes` the workspace no task refers to is removed under
+/// the same confirmation, the terminal task goes as before, and what a task holds is kept (a
+/// task that is not terminal; a directory that is not named like a task; a link).
+#[test]
+fn req_ws_014_prune_removes_a_workspace_no_task_refers_to_and_keeps_the_rest() {
+    let env = Env::new();
+    let done = env.completed("a");
+    let held = env.created("b");
+    let left = leave_a_workspace(&env, 7, 4000);
+    let other = leave_a_workspace(&env, 8, 10);
+    let strange = env.data.join("workspaces").join("notes");
+    std::fs::create_dir_all(strange.join("tree")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = env.dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("precious"), b"keep").unwrap();
+        let link = uuid::Uuid::from_u128(9).to_string();
+        std::os::unix::fs::symlink(&outside, env.data.join("workspaces").join(link)).unwrap();
+        let (code, value) = env.json(&["task", "prune", "--yes"]);
+        assert_eq!(code, 0, "{value}");
+        assert!(
+            outside.join("precious").exists(),
+            "a link is never followed"
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let (code, value) = env.json(&["task", "prune", "--yes"]);
+        assert_eq!(code, 0, "{value}");
+    }
+    assert!(!env.data.join("workspaces").join(&left).exists());
+    assert!(!env.data.join("workspaces").join(&other).exists());
+    assert!(!env.has_workspace(&done));
+    assert!(
+        env.has_workspace(&held),
+        "a task that is not terminal keeps its workspace"
+    );
+    assert!(
+        strange.exists(),
+        "a name that is not a task's is not this command's"
+    );
+    let (code, again) = env.json(&["task", "prune", "--yes"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(again["no_task"], serde_json::json!([]), "{again}");
+    assert_eq!(again["tasks"], serde_json::json!([]), "{again}");
+}
+
+/// REQ-WS-014 (handoff 013c), the report of a run: the text says what was removed and what it
+/// freed, and `--json` names each directory removed under `no_task_removed` and counts it in
+/// `freed_bytes`.
+#[test]
+fn req_ws_014_prune_reports_the_workspaces_it_removed() {
+    let env = Env::new();
+    let left = leave_a_workspace(&env, 7, 4000);
+    let (code, stdout, stderr) = env.run(&["task", "prune", "--yes"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains(&format!("removed {left}"))
+            && stdout.contains("pruned 0 task(s) and 1 workspace(s) with no task"),
+        "{stdout}"
+    );
+    let left = leave_a_workspace(&env, 8, 4000);
+    let (code, value) = env.json(&["task", "prune", "--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["confirmed"], true);
+    assert_eq!(value["no_task_removed"][0]["name"], left.as_str());
+    assert!(value["freed_bytes"].as_u64().unwrap() >= 4000, "{value}");
+    assert_eq!(value["no_task_left"], serde_json::json!([]));
+    assert!(!env.data.join("workspaces").join(&left).exists());
+}
