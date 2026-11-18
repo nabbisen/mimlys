@@ -72,7 +72,7 @@ pub fn grant(
     let dir = existing_dir(path)?;
     // REQ-CONF-011: the same refusal as a declaration's `read_paths`; an
     // entry for the container covers the whole directory.
-    if let Some(reason) = crate::toolchain::read_path_refusal(&dir, Some(&app.data_dir)) {
+    if let Some(reason) = crate::toolchain::read_path_refusal(&dir, None) {
         return Err(AppError::Io { detail: reason });
     }
     if !yes && !interaction.confirm(&messages::toolchain_grant_confirm(&dir, &container.profile)) {
