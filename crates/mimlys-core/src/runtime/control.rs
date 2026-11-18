@@ -393,10 +393,8 @@ impl Runtime {
             }
             None => None,
         };
-        self.deps
-            .persistence
-            .record_workspace_state(task_id, WorkspaceState::Allocated, None)
-            .ok();
+        // No workspace state is written before the task is: the workspace's row
+        // refers to the task's, so the store refuses it (`active` follows the record).
         // From here until the task is recorded, an error leaves no workspace (handoff 013c).
         let mut creation = Creation::begin(&*self.deps.workspaces, task_id);
         let (info, prepared_base) = match &fork {
