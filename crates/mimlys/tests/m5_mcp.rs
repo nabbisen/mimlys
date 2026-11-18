@@ -3622,3 +3622,107 @@ fn req_cli_005_the_providers_wait_for_a_restart_ends_not_started_for_every_effec
         });
     }
 }
+
+/// REQ-PERS-005 (handoff 004d), end to end with the test server's flood: `task output` of an
+/// external tool's result that the model read a cut of. Without a flag it says so, with the size
+/// of the whole and the flag; `--result` prints the whole, which is the observation's
+/// `full_payload` and not the payload the model read; `--json` gives the same; the tool has no
+/// streams, which the index says and `--stdout` refuses (`state`); and all of it works while
+/// another runtime holds the store.
+#[test]
+fn req_pers_005_task_output_shows_the_whole_result_the_model_read_a_cut_of() {
+    let env = Env::new(
+        &[act("rypsok.flood", json!({})), complete()],
+        "[servers.rypsok.tools.flood]\neffect = \"external_read\"\nidempotent = true\n",
+        &["rypsok.flood"],
+    )
+    .env("MIMLYS_TESTSERVER_FLOOD", "1");
+    let_the_server_see(&env, "MIMLYS_TESTSERVER_FLOOD");
+    let scope = env.scope();
+    let (code, value) = env.json(&["run", "flood", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0, "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let observation = read_observation(&env.data.path().join("data/mimlys.db"), &id);
+    let whole = observation["full_payload"].clone();
+    let cut = observation["payload"].clone();
+    assert_ne!(whole, cut, "the model read a cut of the result");
+
+    // Another runtime holds the store while the user reads: the reader works, and says nothing
+    // of a lock.
+    let holder = mimlys_persist::open(&env.data.path().join("data")).unwrap();
+
+    // Without a flag: the result was cut and has a whole copy; an external tool has no streams.
+    let (code, stdout, stderr) = env.run(&["task", "output", &id]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(!stdout.to_lowercase().contains("locked") && !stderr.to_lowercase().contains("locked"));
+    let line = |label: &str| -> String {
+        stdout
+            .lines()
+            .find(|l| l.trim_start().starts_with(label))
+            .unwrap_or_else(|| panic!("no `{label}` line in:\n{stdout}"))
+            .to_owned()
+    };
+    assert!(
+        line("result").contains("the model read a cut of it")
+            && line("result").contains("--result"),
+        "{stdout}"
+    );
+    let whole_bytes = serde_json::to_vec(&whole).unwrap().len();
+    assert!(
+        line("result").contains(&format!("{whole_bytes} bytes")),
+        "{stdout}"
+    );
+    assert!(
+        line("standard output").contains("an external tool has no streams"),
+        "{stdout}"
+    );
+    assert!(
+        line("standard error").contains("an external tool has no streams"),
+        "{stdout}"
+    );
+
+    // With the flag: the whole, as JSON, and only that.
+    let (code, stdout, stderr) = env.run(&["task", "output", &id, "--result"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let printed: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    assert_eq!(printed, whole, "--result prints full_payload");
+    assert_ne!(printed, cut, "not the payload the model read");
+    assert_eq!(printed["items"].as_array().unwrap().len(), 60);
+    assert!(stderr.is_empty(), "{stderr}");
+
+    // --json: the index and the copy.
+    let (code, index) = env.json(&["task", "output", &id]);
+    assert_eq!(code, 0, "{index}");
+    let copies = index["copies"].as_array().unwrap();
+    assert_eq!(copies.len(), 3);
+    assert_eq!(copies[0]["kind"], "result");
+    assert_eq!(copies[0]["cut"], true);
+    assert_eq!(copies[0]["source"], "full_payload");
+    assert_eq!(copies[0]["bytes"], whole_bytes);
+    assert_eq!(copies[0]["flag"], "--result");
+    for stream in &copies[1..] {
+        assert_eq!(stream["unavailable"], "no_streams", "{stream}");
+        assert!(stream["bytes"].is_null() && stream["source"].is_null());
+        assert_eq!(stream["cut"], false);
+    }
+    let (code, one) = env.json(&["task", "output", &id, "--result"]);
+    assert_eq!(code, 0, "{one}");
+    assert_eq!(one["result"], whole);
+    assert_eq!(one["kind"], "result");
+    assert_eq!(one["source"], "full_payload");
+    assert_eq!(one["cut"], true);
+    assert_eq!(one["tool"], "rypsok.flood");
+
+    // A stream of an external tool: refused, kind `state`, and the remedy is named.
+    let (code, error) = env.json(&["task", "output", &id, "--stdout"]);
+    assert_eq!(code, 1, "{error}");
+    assert_eq!(error["error"]["kind"], "state", "{error}");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--result"),
+        "{error}"
+    );
+    drop(holder);
+}

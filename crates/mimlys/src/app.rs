@@ -63,6 +63,17 @@ pub enum AppError {
         /// The command's report, printed as the JSON value.
         report: serde_json::Value,
     },
+    /// `task output` could not show what was asked (handoff 004d): an action that is not the
+    /// task's (`not_found`), one that never ran or an external tool's stream (`state`), a
+    /// whole copy that was not kept or was removed (`not_found`), an action reference that is
+    /// too short or matches several (`invalid_request`).
+    #[error("{detail}")]
+    Output {
+        /// What was wrong.
+        detail: String,
+        /// The error kind of external design §18.
+        kind: &'static str,
+    },
     /// A task reference matched nothing or more than one task.
     #[error("{detail}")]
     TaskRef {
@@ -97,6 +108,7 @@ impl AppError {
                 | mimlys_core::spi::WorkspaceError::ReadFailed { .. },
             ) => "state",
             AppError::Workspace(_) => "internal",
+            AppError::Output { kind, .. } => kind,
             AppError::TaskRef {
                 not_found: true, ..
             } => "not_found",

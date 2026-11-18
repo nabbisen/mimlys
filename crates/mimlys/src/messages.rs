@@ -1189,6 +1189,75 @@ pub fn footprint_line(f: &mimlys_core::snapshot::Footprint) -> String {
         f.blob_bytes
     )
 }
+/// The index of `task output` (handoff 004d): what the action has, for the result and each stream,
+/// with its size, whether the model read a cut of it, and the flag that shows it.
+pub fn output_index(
+    task_id: &str,
+    action_id: &str,
+    tool: &str,
+    attempt: u32,
+    status: &str,
+    copies: &[crate::commands::task_output::Copy],
+) -> Vec<String> {
+    use crate::commands::task_output::Unavailable;
+    let mut lines = vec![format!(
+        "task {task_id}, action {action_id}: {tool}, attempt {attempt}, {status}"
+    )];
+    for copy in copies {
+        let label = format!("{:<17}", copy.which.words());
+        let what = match &copy.state {
+            Ok(held) if held.cut => format!(
+                "{} bytes; the model read a cut of it; {} shows the whole",
+                held.bytes,
+                copy.which.flag()
+            ),
+            Ok(held) => format!(
+                "{} bytes; the model read it whole; {} shows it",
+                held.bytes,
+                copy.which.flag()
+            ),
+            Err(Unavailable::NoStreams) => "none: an external tool has no streams".to_owned(),
+            Err(Unavailable::NotKept) => "the model read a cut of it, and no whole copy was kept (the action ran before mimlys 0.12 kept them, or the copy could not be stored)".to_owned(),
+            Err(Unavailable::Removed) => "the model read a cut of it, and its whole copy was removed with the task's outputs by `task delete`".to_owned(),
+        };
+        lines.push(format!("  {label}{what}"));
+    }
+    lines
+}
+
+/// `task output` named an action that never ran.
+pub fn action_never_ran(action_id: &str, tool: &str, status: &str) -> String {
+    format!(
+        "action {action_id} ({tool}) never ran (its status is {status}): it has no execution and no output"
+    )
+}
+
+/// `task output` without an action, for a task none of whose actions ran.
+pub fn task_has_no_action_that_ran() -> String {
+    "the task has no action that ran, so there is no output to show".to_owned()
+}
+
+/// `task output --stdout` or `--stderr` of an external tool.
+pub fn external_tool_has_no_streams(tool: &str) -> String {
+    format!(
+        "{tool} is an external tool: it has no standard output or standard error; --result shows its result"
+    )
+}
+
+/// A stream the model read a cut of, with no whole copy.
+pub fn no_whole_copy_kept(words: &str) -> String {
+    format!(
+        "no whole copy of the {words} was kept: the model read a cut of it, and the action ran before mimlys 0.12 kept them, or the copy could not be stored"
+    )
+}
+
+/// A stream whose whole copy `task delete` removed.
+pub fn whole_copy_removed(words: &str) -> String {
+    format!(
+        "the whole copy of the {words} was removed with the task's outputs by `task delete`; the model's cut of it is all that is left"
+    )
+}
+
 /// A metric line.
 pub fn metric_line(name: &str, value: u64) -> String {
     format!("{name:<40} {value}")

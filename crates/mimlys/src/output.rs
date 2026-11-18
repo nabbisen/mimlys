@@ -27,6 +27,19 @@ impl Output {
         }
     }
 
+    /// Text exactly as given, with nothing added (nothing in JSON mode): what a command that
+    /// prints a stored copy writes, so that a pipe gets the bytes. A reader that has gone
+    /// (a closed pipe) ends the output without an error: it has what it wanted.
+    pub fn raw(&self, text: &str) {
+        use std::io::Write;
+        if self.json {
+            return;
+        }
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(text.as_bytes());
+        let _ = stdout.flush();
+    }
+
     /// The command's JSON value (nothing in human mode).
     pub fn value<T: Serialize>(&self, value: &T) {
         if self.json {

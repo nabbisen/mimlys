@@ -124,3 +124,7 @@ required-features = ["test-bins"]
 [[test]]
 name = "user_copies_host_tool"
 required-features = ["test-bins"]
+
+[[test]]
+name = "task_output"
+required-features = ["test-bins"]
