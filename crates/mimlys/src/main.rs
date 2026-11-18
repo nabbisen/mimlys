@@ -281,6 +281,35 @@ enum TaskCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Show what an action produced, whole: its result, what it printed and what it printed as an error.
+    ///
+    /// The model reads a cut of a long result and of a long output; mimlys keeps the whole of
+    /// each for you, and this command shows it. Without a flag it says what the action has (its
+    /// result, its standard output, its standard error) with the size of each, whether the model
+    /// read a cut of it, and the flag that shows the whole. With a flag it prints that copy
+    /// alone, exactly as stored (the result as JSON), so that it can be piped; on a terminal a
+    /// carriage return that ends no line is shown as `\r`, so that no text can hide what
+    /// precedes it on its line, and the last line is ended. The action is the task's latest action that
+    /// ran unless you name it (an id, or at least four characters of it); the copy is that of its
+    /// latest execution. It is a reader: it works while another mimlys process runs a task. It
+    /// refuses, with the reason, an action that never ran, an external tool's standard output or
+    /// error (it has none), and a stream the model read a cut of whose whole copy is not there
+    /// (the action ran before 0.12, or `task delete` removed it).
+    Output {
+        /// Task id or a unique prefix.
+        task: String,
+        /// Action id or a unique prefix; the task's latest action that ran by default.
+        action: Option<String>,
+        /// Print the whole standard output.
+        #[arg(long, group = "copy")]
+        stdout: bool,
+        /// Print the whole standard error.
+        #[arg(long, group = "copy")]
+        stderr: bool,
+        /// Print the whole result, as JSON.
+        #[arg(long, group = "copy")]
+        result: bool,
+    },
     /// Delete a terminal task's workspace, snapshots and blobs; the audit stays unless --audit.
     Delete {
         /// Task id or a unique prefix.
@@ -488,6 +517,11 @@ enum ReadCommand {
         arguments: bool,
     },
     TaskList,
+    TaskOutput {
+        task: String,
+        action: Option<String>,
+        which: Option<commands::task_output::Which>,
+    },
     ToolchainList,
     PromotePatch {
         task: String,
@@ -515,6 +549,22 @@ impl ReadCommand {
                 arguments: *arguments,
             }),
             Command::Task(TaskCommand::List) => Some(Self::TaskList),
+            Command::Task(TaskCommand::Output {
+                task,
+                action,
+                stdout,
+                stderr,
+                result,
+            }) => Some(Self::TaskOutput {
+                task: task.clone(),
+                action: action.clone(),
+                which: match (*stdout, *stderr, *result) {
+                    (true, _, _) => Some(commands::task_output::Which::Stdout),
+                    (_, true, _) => Some(commands::task_output::Which::Stderr),
+                    (_, _, true) => Some(commands::task_output::Which::Result),
+                    _ => None,
+                },
+            }),
             Command::Toolchain(ToolchainCommand::List) => Some(Self::ToolchainList),
             Command::Promote {
                 task, patch: true, ..
@@ -538,6 +588,18 @@ async fn dispatch_read(app: &ReadApp, command: ReadCommand, out: &Output) -> Res
             commands::task::show(app, &task, arguments, out)
         }
         ReadCommand::TaskList => commands::task::list(app, out),
+        ReadCommand::TaskOutput {
+            task,
+            action,
+            which,
+        } => commands::task_output::run(
+            app,
+            &task,
+            action.as_deref(),
+            which,
+            std::io::stdout().is_terminal(),
+            out,
+        ),
         ReadCommand::ToolchainList => commands::toolchain::list(app, out),
         ReadCommand::PromotePatch { task } => commands::promote::patch(app, &task, out),
     }
@@ -557,7 +619,7 @@ async fn dispatch(
             TaskCommand::New { args, hold } => {
                 commands::run::run(app, &args.into_new_task(hold), terminal, out).await
             }
-            TaskCommand::Show { .. } | TaskCommand::List => {
+            TaskCommand::Show { .. } | TaskCommand::List | TaskCommand::Output { .. } => {
                 unreachable!("routed to the reader by ReadCommand::of")
             }
             TaskCommand::Resume {

@@ -270,8 +270,9 @@ unavailable, with the reason in `status`, rather than half imported.
   `content_truncated` with the number of characters of everything cut, however
   many strings it came from. The whole result, cleaned and within 1 MiB (LIM-S4),
   is kept in the task's record with the observation, as `full_payload`, and is
-  never shown to the model. No command shows it in 0.11; one comes in 0.12. An error from a tool and a result that is not valid are bounded the
-  same way.
+  never shown to the model. `mimlys task output <task> --result` prints it (and
+  without `--result` says whether the model read a cut of the result). An error
+  from a tool and a result that is not valid are bounded the same way.
 - **Content that is not passed on is said.** When a tool answers without
   `structuredContent`, only its first text block is the result; any other
   content block (an image, a second text) is not passed on, and the

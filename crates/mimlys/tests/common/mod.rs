@@ -6,6 +6,11 @@
 
 #![allow(dead_code)]
 
+#[cfg(feature = "test-bins")]
+pub mod printer;
+#[cfg(unix)]
+pub mod pty;
+
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};

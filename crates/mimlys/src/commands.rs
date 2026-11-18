@@ -19,6 +19,7 @@ pub mod run;
 pub mod status;
 pub mod storage;
 pub mod task;
+pub mod task_output;
 pub mod toolchain;
 
 use crate::app::{App, AppError};

@@ -6,139 +6,10 @@
 //! a process that ends between the blob and the execution's record leaves a file that the next
 //! start removes, and a record that is consistent.
 
-use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use serde_json::Value;
 
 mod common;
-use common::run_bounded;
-
-const SECRET: &str = "sk-live-0123456789abcdef";
-
-/// What the module prints: far more than an excerpt (LIM-C2) holds, a secret in the middle, a
-/// rewritten line (a carriage return that ends no line) and an escape sequence.
-fn printed() -> String {
-    let mut text = String::new();
-    for n in 0..800 {
-        text.push_str(&format!("line {n:04} of the tool's output\n"));
-        if n == 400 {
-            text.push_str(&format!("the token is {SECRET} here\n"));
-            text.push_str("progress 50%\rprogress 100%\n");
-            text.push_str("\u{1b}[31mred\u{1b}[0m\n");
-        }
-    }
-    text
-}
-
-/// What the printed text is after the cleaning and the redaction.
-fn cleaned() -> String {
-    printed()
-        .replace('\u{1b}', "")
-        .replace(SECRET, "[redacted:TOKEN]")
-}
-
-/// A WebAssembly module (text) that writes `stdout` to fd 1 and `stderr` to fd 2.
-fn printer(stdout: &str, stderr: &str) -> Vec<u8> {
-    let escape = |text: &str| -> String { text.bytes().map(|b| format!("\\{b:02x}")).collect() };
-    let at = stdout.len() as u32 + 16;
-    let wat = format!(
-        r#"(module
-        (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
-        (memory 1) (export "memory" (memory 0))
-        (data (i32.const 0) "{out}")
-        (data (i32.const {at}) "{err}")
-        (func (export "_start")
-            (i32.store (i32.const 60000) (i32.const 0)) (i32.store (i32.const 60004) (i32.const {out_len}))
-            (drop (call $fd_write (i32.const 1) (i32.const 60000) (i32.const 1) (i32.const 60100)))
-            (i32.store (i32.const 60000) (i32.const {at})) (i32.store (i32.const 60004) (i32.const {err_len}))
-            (drop (call $fd_write (i32.const 2) (i32.const 60000) (i32.const 1) (i32.const 60100)))))"#,
-        out = escape(stdout),
-        err = escape(stderr),
-        out_len = stdout.len(),
-        err_len = stderr.len(),
-    );
-    wat::parse_str(wat).unwrap()
-}
-
-fn scope(stdout: &str, stderr: &str) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("tools")).unwrap();
-    std::fs::write(dir.path().join("tools/print.wasm"), printer(stdout, stderr)).unwrap();
-    dir
-}
-
-fn script(dir: &Path) -> PathBuf {
-    let path = dir.join("script.json");
-    let steps = json!([
-        {"decision": "act", "tool": "run_wasm",
-         "arguments": {"module": "tools/print.wasm", "mode": "read_only"}},
-        {"decision": "complete", "summary": "printed"}
-    ]);
-    std::fs::write(&path, steps.to_string()).unwrap();
-    path
-}
-
-struct Run {
-    status: std::process::ExitStatus,
-    report: Option<Value>,
-    stderr: String,
-}
-
-fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
-    cmd.args(args);
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let streams = tempfile::tempdir().expect("a directory for the streams");
-    let out = run_bounded(&mut cmd, streams.path());
-    Run {
-        status: out.status,
-        report: serde_json::from_str(&out.stdout).ok(),
-        stderr: out.stderr,
-    }
-}
-
-fn run_printer(
-    data: &Path,
-    scope: &Path,
-    script: &Path,
-    extra: &[&str],
-    envs: &[(&str, &str)],
-) -> Run {
-    let mut args = vec![
-        "--script",
-        script.to_str().unwrap(),
-        "--data-dir",
-        data.to_str().unwrap(),
-        "--scope",
-        scope.to_str().unwrap(),
-        "--secret",
-        "TOKEN=sk-live-0123456789abcdef",
-    ];
-    args.extend_from_slice(extra);
-    testloop(&args, envs)
-}
-
-fn blob_files(data: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(data.join("blobs"))
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
-
-fn blob_rows(data: &Path) -> Vec<String> {
-    let conn = rusqlite::Connection::open(data.join("mimlys.db")).unwrap();
-    let mut stmt = conn
-        .prepare("select blob_id from blobs order by blob_id")
-        .unwrap();
-    stmt.query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect()
-}
+use common::printer::*;
 
 /// REQ-PERS-005: the whole text of a stream whose excerpt is a cut of it is a blob: its file
 /// exists, the execution names it, and it holds the cleaned and redacted text (a carriage return
@@ -271,28 +142,6 @@ fn req_test_007_a_crash_between_the_blob_and_the_executions_record_leaves_a_cons
             "{target}: the completed execution names its blob"
         );
     }
-}
-
-/// The command line over the data directory a run of the harness made: a configuration that
-/// names it, and no backend (the commands here run no step).
-fn mimlys(data: &Path, args: &[&str]) -> (i32, String, String) {
-    let config = data.parent().unwrap().join("config.toml");
-    std::fs::write(
-        &config,
-        format!(
-            "config_version = 1\n[runtime]\ndata_dir = {:?}\n[backend]\nkind = \"fake\"\n",
-            data.to_string_lossy()
-        ),
-    )
-    .unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
-    cmd.arg("--config")
-        .arg(&config)
-        .args(args)
-        .env("MIMLYS_CONFIG", "")
-        .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
-    let out = run_bounded(&mut cmd, data.parent().unwrap());
-    (out.code(), out.stdout, out.stderr)
 }
 
 /// The blob bytes the storage view reports, by kind and for the first task.

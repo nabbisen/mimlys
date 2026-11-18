@@ -183,6 +183,10 @@ retried by the runtime only when the cause and the effect allow it
 (a timed-out idempotent read, for instance); otherwise the failure is fed
 back to the model and counts toward the failure budget.
 
+The model reads a cut of a long result and of a long output (an excerpt of
+4 000 characters, 8 000 of a result); mimlys keeps the whole of each for you, and
+`mimlys task output` shows it (see [How a task runs](../how-a-task-runs.md#what-persists-and-how-to-continue)).
+
 ## Snapshots and rollback
 
 Every action with a write effect (`write_file`, `replace_in_file`,

@@ -299,6 +299,35 @@ mimlys events <task>
 mimlys metrics --task <task>
 ```
 
+**What a tool printed.** The model reads at most 4 000 characters of what a script or a
+host tool printed to standard output or standard error (the first 3 000 and the last 1 000,
+with the middle left out) and at most 8 000 characters of an external tool's result. mimlys
+keeps the whole of each for you: a stream's whole text as a file under `blobs/` (cleaned of
+invisible characters and with your configured secrets redacted, as the excerpt is, so no secret
+is on the disk through it; up to 1 MiB for a script's stream and 4 MiB for a host tool's), a
+result's in the task's record. `mimlys task output` shows them, and none of this changes
+anything:
+
+<!-- tested -->
+```sh
+mimlys task output <task>
+mimlys task output <task> --result
+```
+
+Without a flag it says, for the task's latest action that ran (name another by its id or at
+least four characters of it), what it has: its result, its standard output and its standard
+error, each with its size, whether the model read a cut of it, and the flag that shows the
+whole. With `--stdout`, `--stderr` or `--result` it prints that copy alone, exactly as stored,
+so that it can go through a pipe (`mimlys task output <task> --stdout | less`); the result is
+printed as JSON. On a terminal a carriage return that ends no line is shown as `\r`, so that no
+text can hide what precedes it on its line (a tool that prints `all is well\r` over a line
+of something else is seen doing it); through a pipe the text is exact. The copy is that of its
+latest execution, so after a retry the first attempt's output is not shown. An
+external tool has no streams; its result is what `--result` prints. A stream the model read a
+cut of and whose whole copy is not there (the task ran before 0.12, which kept none, or
+`task delete` removed it) is said so, and never shown as if it were whole. The command is a
+reader: it works while another mimlys process runs a task.
+
 **Continue.** `mimlys task resume <task>` continues a task that is paused,
 halted, or created with `--hold`. A task that halted for its step budget or
 its deadline takes `--extend-steps N` or `--extend-deadline D`, within the
