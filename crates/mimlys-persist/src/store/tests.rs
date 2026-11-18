@@ -7,7 +7,6 @@ fn fake_workspaces() -> mimlys_core::spi::fake::FakeWorkspaces {
     ))
 }
 use crate::sqlite::{LIM_O3_LOCK_WAIT_MS, open};
-use crate::store::LIM_S4_BLOB_BYTES;
 use mimlys_core::action::{
     Action, ActionInput, EffectKind, EffectView, Execution, ExecutionMetrics, Proposal, Termination,
 };
@@ -598,7 +597,8 @@ fn req_pers_004_ordering_violations_are_refused() {
     );
 }
 
-/// REQ-PERS-005: a blob is on disk before its row, bounded by LIM-S4; orphans are detectable.
+/// REQ-PERS-005: a blob is on disk before its row, within the bound its caller names (LIM-S4 or
+/// LIM-H4); orphans are detectable.
 #[test]
 fn req_pers_005_blobs() {
     let dir = tempfile::tempdir().unwrap();
@@ -606,13 +606,26 @@ fn req_pers_005_blobs() {
     let store = open(&data).unwrap();
     let fx = Fx::new();
     let task = fx.task();
-    let id = store.put_blob(task.task_id, b"hello").unwrap();
+    let id = store.put_blob(task.task_id, b"hello", 1 << 20).unwrap();
     assert_eq!(store.get_blob(id).unwrap(), b"hello");
     assert!(data.join("blobs").join(id.to_string()).exists());
+    // The bound is the caller's: exactly the bound is stored, one byte more is refused and
+    // leaves neither a file nor a row.
+    let bound = 4096;
+    let at_bound = store
+        .put_blob(task.task_id, &vec![7u8; bound], bound)
+        .unwrap();
+    assert_eq!(store.get_blob(at_bound).unwrap().len(), bound);
+    let files_before = std::fs::read_dir(data.join("blobs")).unwrap().count();
     assert!(matches!(
-        store.put_blob(task.task_id, &vec![0u8; LIM_S4_BLOB_BYTES + 1]),
+        store.put_blob(task.task_id, &vec![0u8; bound + 1], bound),
         Err(PersistenceError::Storage { .. })
     ));
+    assert_eq!(
+        std::fs::read_dir(data.join("blobs")).unwrap().count(),
+        files_before
+    );
+    assert_eq!(store.blob_bytes(task.task_id).unwrap(), 5 + bound as u64);
     std::fs::write(data.join("blobs").join("orphan"), b"x").unwrap();
     assert_eq!(store.orphan_blobs().unwrap(), vec!["orphan".to_owned()]);
     assert!(matches!(
@@ -877,7 +890,13 @@ fn req_dec_011_a_plan_version_is_never_replaced() {
 fn req_test_007_crash_at_every_point_recovers() {
     let exe = std::env::current_exe().unwrap();
     for point in crate::crash::POINTS {
-        for phase in ["before", "after"] {
+        // A blob has one more point, between its file and its row.
+        let phases: &[&str] = if point == "blob" {
+            &["file", "before", "after"]
+        } else {
+            &["before", "after"]
+        };
+        for &phase in phases {
             let dir = tempfile::tempdir().unwrap();
             let data = dir.path().join("data");
             let child = std::process::Command::new(&exe)
@@ -917,6 +936,20 @@ fn req_test_007_crash_at_every_point_recovers() {
                 recovery: Recovery { auto_resume: false },
             };
             recover_all(&store, &ctx, &fake_workspaces()).unwrap();
+            // REQ-PERS-005: the next start removes the blob file a crash left without a row;
+            // a blob whose row committed stays (it is the task's); nothing else is touched.
+            let swept = crate::recovery::recover_blob_files(&store).unwrap();
+            let file_without_row = point == "blob" && ["file", "before"].contains(&phase);
+            assert_eq!(
+                swept.removed.len(),
+                usize::from(file_without_row),
+                "the sweep after {point}.{phase}: {swept:?}"
+            );
+            assert!(swept.failed.is_empty(), "{point}.{phase}: {swept:?}");
+            assert!(
+                store.orphan_blobs().unwrap().is_empty(),
+                "a blob file without a row is left after {point}.{phase}"
+            );
             integrity::check(&store, fx.now()).unwrap();
             assert!(
                 store.tasks_in_state("running").unwrap().is_empty(),
@@ -945,7 +978,7 @@ fn crash_child_sequence() {
     let store = open(std::path::Path::new(&dir)).unwrap();
     let fx = Fx::new();
     let (task, _) = sequence_with(&store, &fx, 8, true, true);
-    store.put_blob(task.task_id, b"out").unwrap();
+    store.put_blob(task.task_id, b"out", 1 << 20).unwrap();
     // M3 points: a snapshot (files first, then the row) and a deletion (rows first, then files).
     {
         let files = crate::snapshots::SnapshotFiles::open(std::path::Path::new(&dir)).unwrap();
@@ -1211,7 +1244,7 @@ mod snapshots_m3 {
             .create_task(&other, &[], &fx.event(&other, Event::TaskCreated))
             .unwrap();
         snapshot_with(&store, &files, &fx, &other, b"shared", SnapshotReason::Base);
-        store.put_blob(task.task_id, b"blob").unwrap();
+        store.put_blob(task.task_id, b"blob", 1 << 20).unwrap();
         assert_eq!(store.blob_bytes(task.task_id).unwrap(), 4);
         let rows = store
             .delete_task_data(
@@ -1473,4 +1506,40 @@ fn req_main_002_the_tasks_of_an_old_store_read_with_the_values_of_their_era() {
     assert_eq!(read(Some("0.9.0")), [(2, 2)]);
     assert_eq!(read(Some("0.8.0")), [(1, 2)]);
     assert_eq!(read(Some("0.7.1")), [(1, 1)]);
+}
+
+/// REQ-PERS-005: the start removes a blob file that no row names, and only that: a file whose
+/// row exists, a file of another name, a directory and a link are left as they are.
+#[test]
+fn req_pers_005_the_sweep_removes_only_a_blob_file_without_a_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let store = open(&data).unwrap();
+    let fx = Fx::new();
+    let task = fx.task();
+    let kept = store.put_blob(task.task_id, b"kept", 1 << 20).unwrap();
+    let blobs = data.join("blobs");
+    // What a crash between the file and its row leaves: a file named as a blob id.
+    let lost = mimlys_core::ids::BlobId::new(&fx.ids).to_string();
+    std::fs::write(blobs.join(&lost), b"lost").unwrap();
+    // What is not this program's to remove.
+    std::fs::write(blobs.join("notes.txt"), b"mine").unwrap();
+    std::fs::create_dir(blobs.join("a-directory")).unwrap();
+    let a_dir_named_as_a_blob = mimlys_core::ids::BlobId::new(&fx.ids).to_string();
+    std::fs::create_dir(blobs.join(&a_dir_named_as_a_blob)).unwrap();
+    let swept = crate::recovery::recover_blob_files(&store).unwrap();
+    assert_eq!(swept.removed, vec![lost.clone()], "{swept:?}");
+    assert!(swept.failed.is_empty(), "{swept:?}");
+    assert!(!blobs.join(&lost).exists());
+    assert_eq!(store.get_blob(kept).unwrap(), b"kept");
+    assert!(blobs.join("notes.txt").is_file());
+    assert!(blobs.join("a-directory").is_dir());
+    assert!(blobs.join(&a_dir_named_as_a_blob).is_dir());
+    // Again: nothing more to do.
+    assert!(
+        crate::recovery::recover_blob_files(&store)
+            .unwrap()
+            .removed
+            .is_empty()
+    );
 }

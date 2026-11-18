@@ -147,7 +147,7 @@ fn store() -> Store {
     let writer = mimlys_persist::open(&env.data).unwrap();
     for (id, size) in [(&ids[0], 1500usize), (&ids[1], 900)] {
         let task_id = mimlys_core::ids::TaskId::from_uuid(id.parse().unwrap());
-        writer.put_blob(task_id, &vec![9u8; size]).unwrap();
+        writer.put_blob(task_id, &vec![9u8; size], 1 << 20).unwrap();
     }
     Store { env, ids, writer }
 }

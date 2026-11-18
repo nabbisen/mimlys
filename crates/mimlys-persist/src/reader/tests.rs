@@ -422,8 +422,8 @@ fn req_ws_013_holdings_come_from_the_records() {
         vec![file("f1", &[1; 10]), file("f4", &[4; 7])],
         17,
     );
-    writer.put_blob(a.task_id, &[0; 100]).unwrap();
-    writer.put_blob(b.task_id, &[0; 40]).unwrap();
+    writer.put_blob(a.task_id, &[0; 100], 1 << 20).unwrap();
+    writer.put_blob(b.task_id, &[0; 40], 1 << 20).unwrap();
     drop(writer);
 
     let reader = std::sync::Arc::new(open_read_only(&data).unwrap());

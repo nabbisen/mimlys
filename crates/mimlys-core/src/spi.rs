@@ -1727,6 +1727,11 @@ pub mod fake {
             }
         }
 
+        /// Every blob so far, in the order they were stored.
+        pub fn blobs(&self) -> Vec<(BlobId, Vec<u8>)> {
+            self.inner.lock().expect("fake lock").blobs.clone()
+        }
+
         /// Every event so far.
         pub fn events(&self) -> Vec<EventRecord> {
             self.inner.lock().expect("fake lock").events.clone()
@@ -2416,16 +2421,22 @@ pub mod fake {
             })
         }
 
-        fn put_blob(&self, _task_id: TaskId, bytes: &[u8]) -> Result<BlobId, PersistenceError> {
-            let id = BlobId::from_uuid(uuid::Uuid::from_u128(
-                self.inner.lock().expect("fake lock").blobs.len() as u128 + 1,
-            ));
-            self.inner
-                .lock()
-                .expect("fake lock")
-                .blobs
-                .push((id, bytes.to_vec()));
-            Ok(id)
+        fn put_blob(
+            &self,
+            _task_id: TaskId,
+            bytes: &[u8],
+            max_bytes: usize,
+        ) -> Result<BlobId, PersistenceError> {
+            if bytes.len() > max_bytes {
+                return Err(PersistenceError::Storage {
+                    detail: "blob_too_large".into(),
+                });
+            }
+            self.write("blob", |i| {
+                let id = BlobId::from_uuid(uuid::Uuid::from_u128(i.blobs.len() as u128 + 1));
+                i.blobs.push((id, bytes.to_vec()));
+                Ok(id)
+            })
         }
 
         fn record_snapshot(
@@ -2874,6 +2885,13 @@ pub trait Persistence: PersistenceRead {
     /// Appends an event that belongs to no record transition (runtime start and stop, tool pinning, recovery dispositions).
     fn append_event(&self, event: &EventRecord) -> Result<(), PersistenceError>;
 
-    /// Stores a bounded blob and returns its id (file first, then the row).
-    fn put_blob(&self, task_id: TaskId, bytes: &[u8]) -> Result<BlobId, PersistenceError>;
+    /// Stores a blob of at most `max_bytes` and returns its id (file first, then the row).
+    /// The caller names the bound that applies to what it stores (LIM-S4 for a script's
+    /// stream, LIM-H4 for a host tool's); more is refused, never cut.
+    fn put_blob(
+        &self,
+        task_id: TaskId,
+        bytes: &[u8],
+        max_bytes: usize,
+    ) -> Result<BlobId, PersistenceError>;
 }

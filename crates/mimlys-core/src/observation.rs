@@ -179,6 +179,43 @@ pub struct Observation {
     pub created_at: Instant,
 }
 
+/// The whole text of each stream whose excerpt is not its whole text (REQ-PERS-005,
+/// handoff 004d): the text [`Observation::from_outcome`] makes of the stream, decoded,
+/// cleaned and redacted, before the cut. It is `None` for a stream that fits its
+/// excerpt: the excerpt is then the whole, and nothing is kept twice. It is the user's
+/// copy and never reaches the model.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WholeStreams {
+    /// Standard output, when its excerpt is a cut of it.
+    pub stdout: Option<String>,
+    /// Standard error, when its excerpt is a cut of it.
+    pub stderr: Option<String>,
+}
+
+impl WholeStreams {
+    /// The bound a stream's whole copy is stored within (REQ-PERS-005): LIM-S4 for a script's
+    /// streams, LIM-H4 for a host tool's. An external tool has no streams.
+    pub fn bound_bytes(tool: &str) -> usize {
+        if tool == crate::host_tool::RUN_HOST_TOOL {
+            crate::limits::LIM_H4_HOST_OUTPUT_BYTES
+        } else {
+            crate::limits::LIM_S4_OUTPUT_BYTES as usize
+        }
+    }
+}
+
+/// The longest prefix of `text` of at most `max_bytes` bytes that ends on a character boundary.
+pub fn prefix_within_bytes(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 impl Observation {
     /// Normalizes an execution outcome: lossy decoding, sanitization,
     /// redaction and excerpting of both streams with the matching notices. The
@@ -193,18 +230,44 @@ impl Observation {
         now: Instant,
         redactor: &crate::context::Redactor,
     ) -> Self {
+        Self::from_outcome_with_streams(
+            observation_id,
+            action_id,
+            tool,
+            outcome,
+            verdict,
+            now,
+            redactor,
+        )
+        .0
+    }
+
+    /// As [`Observation::from_outcome`], and the whole text of each stream that was cut
+    /// (REQ-PERS-005): the same cleaned and redacted text the excerpt is cut from, so
+    /// that a secret never reaches the disk through the user's copy.
+    pub fn from_outcome_with_streams(
+        observation_id: ObservationId,
+        action_id: ActionId,
+        tool: &str,
+        outcome: &ExecutionOutcome,
+        verdict: Verdict,
+        now: Instant,
+        redactor: &crate::context::Redactor,
+    ) -> (Self, WholeStreams) {
         let Verdict {
             status,
             cause,
             rolled_back,
         } = verdict;
         let mut notices = outcome.notices.clone();
-        let stdout = normalize_stream(&outcome.stdout, Stream::Stdout, redactor, &mut notices);
-        let stderr = normalize_stream(&outcome.stderr, Stream::Stderr, redactor, &mut notices);
+        let (stdout, whole_stdout) =
+            normalize_stream(&outcome.stdout, Stream::Stdout, redactor, &mut notices);
+        let (stderr, whole_stderr) =
+            normalize_stream(&outcome.stderr, Stream::Stderr, redactor, &mut notices);
         if rolled_back {
             notices.push(Notice::RolledBack);
         }
-        Self {
+        let observation = Self {
             observation_id,
             action_id,
             tool: tool.to_owned(),
@@ -218,7 +281,14 @@ impl Observation {
             notices,
             metrics: outcome.metrics.clone(),
             created_at: now,
-        }
+        };
+        (
+            observation,
+            WholeStreams {
+                stdout: whole_stdout,
+                stderr: whole_stderr,
+            },
+        )
     }
 }
 
@@ -318,7 +388,7 @@ fn normalize_stream(
     stream: Stream,
     redactor: &crate::context::Redactor,
     notices: &mut Vec<Notice>,
-) -> String {
+) -> (String, Option<String>) {
     let (text, replaced) = decode_lossy(bytes);
     if replaced {
         notices.push(Notice::InvalidUtf8Replaced { stream });
@@ -339,7 +409,9 @@ fn normalize_stream(
             total_bytes: bytes.len() as u64,
         });
     }
-    excerpt
+    // The excerpt is the whole text unless it was cut; only then is there a second copy.
+    let whole = total.is_some().then_some(clean);
+    (excerpt, whole)
 }
 
 /// Decodes bytes as UTF-8, replacing invalid sequences; reports whether any were replaced.

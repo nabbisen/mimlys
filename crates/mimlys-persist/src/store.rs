@@ -29,9 +29,6 @@ use std::io::Write;
 /// The version of every record type written by this runtime (REQ-MAIN-002).
 pub const RECORD_VERSION: u32 = 1;
 
-/// LIM-S4: bound of a stored blob, in bytes (1 MiB).
-pub const LIM_S4_BLOB_BYTES: usize = 1024 * 1024;
-
 fn json<T: Serialize>(value: &T) -> Result<String, PersistenceError> {
     serde_json::to_string(value).map_err(|_| PersistenceError::Storage {
         detail: "serialize".into(),
@@ -871,8 +868,13 @@ impl Persistence for Store {
         })
     }
 
-    fn put_blob(&self, task_id: TaskId, bytes: &[u8]) -> Result<BlobId, PersistenceError> {
-        if bytes.len() > LIM_S4_BLOB_BYTES {
+    fn put_blob(
+        &self,
+        task_id: TaskId,
+        bytes: &[u8],
+        max_bytes: usize,
+    ) -> Result<BlobId, PersistenceError> {
+        if bytes.len() > max_bytes {
             return Err(PersistenceError::Storage {
                 detail: "blob_too_large".into(),
             });
@@ -1168,8 +1170,8 @@ fn uuid_v7_for_blob() -> uuid::Uuid {
 }
 
 impl Store {
-    /// Blob files without a row (a crash between file and row); the garbage
-    /// collector of M3 removes them (REQ-PERS-009).
+    /// Blob files without a row (a crash between file and row); the next start's
+    /// `recovery::recover_blob_files` removes them (REQ-PERS-005).
     pub fn orphan_blobs(&self) -> Result<Vec<String>, PersistenceError> {
         let known: std::collections::HashSet<String> = {
             let conn = self.conn.lock().map_err(|_| poisoned())?;

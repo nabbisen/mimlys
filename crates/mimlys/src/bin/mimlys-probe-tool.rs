@@ -182,6 +182,34 @@ fn main() {
             println!("ok");
             0
         }
+        // `emit <bytes> <word>`: prints about `bytes` bytes of lines to standard output, a line
+        // that says `word` among them (a secret the runtime must not store), a line that ends
+        // in a carriage return that ends no line, and a few lines to standard error. For the
+        // tests of the user's copy of a stream (handoff 004d).
+        Some("emit") => {
+            use std::io::Write;
+            let want: usize = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+            let word = args.get(2).map(String::as_str).unwrap_or("");
+            let mut out = std::io::stdout().lock();
+            let mut written = 0usize;
+            let mut n = 0u64;
+            while written < want {
+                let line = match n {
+                    400 => format!("the word is {word} here\n"),
+                    401 => "progress 50%\rprogress 100%\n".to_owned(),
+                    _ => format!("line {n:07} of the tool's output\n"),
+                };
+                if out.write_all(line.as_bytes()).is_err() {
+                    break;
+                }
+                written += line.len();
+                n += 1;
+            }
+            let _ = out.flush();
+            eprintln!("emitted {n} lines");
+            eprintln!("done");
+            0
+        }
         Some("cwd") => {
             println!(
                 "{}",

@@ -22,12 +22,16 @@ use crate::decision::DECISION_SCHEMA_VERSION;
 use crate::event::{Actor, Event};
 use crate::grant::GrantSet;
 use crate::hooks::{PolicyHooks, TaskView};
-use crate::ids::{ActionId, ApprovalId, ExecutionId, ObservationId, QuestionId, StepId, TaskId};
+use crate::ids::{
+    ActionId, ApprovalId, BlobId, ExecutionId, ObservationId, QuestionId, StepId, TaskId,
+};
 use crate::limits::{
     LIM_A1_EXPIRY_MS, LIM_D1_DECISION_BYTES, LIM_M1_REQUEST_MS, LIM_M3_BACKEND_RETRIES,
 };
 use crate::native::{self, DecisionTransport};
-use crate::observation::{Observation, ObservationStatus, Verdict};
+use crate::observation::{
+    Observation, ObservationStatus, Verdict, WholeStreams, prefix_within_bytes,
+};
 use crate::panic_text::bounded_message;
 use crate::path::CaseMode;
 use crate::policy::Profile;
@@ -1483,24 +1487,12 @@ impl Runtime {
                     }
                 }
             }
-            let execution = Execution {
-                execution_id: ExecutionId::new(self.deps.ids.as_ref()),
-                action_id: action.action_id,
-                attempt: action.executions,
-                started_at: started,
-                ended_at: ended,
-                termination: outcome.termination.clone(),
-                snapshot_before: action.snapshot_before,
-                snapshot_after,
-                stdout_blob: None,
-                stderr_blob: None,
-                metrics: outcome.metrics.clone(),
-            };
+            let execution_id = ExecutionId::new(self.deps.ids.as_ref());
             let outcome_with_notices = crate::spi::ExecutionOutcome {
                 notices,
                 ..outcome.clone()
             };
-            let mut observation = Observation::from_outcome(
+            let (mut observation, whole) = Observation::from_outcome_with_streams(
                 ObservationId::new(self.deps.ids.as_ref()),
                 action.action_id,
                 authorized.tool(),
@@ -1520,6 +1512,24 @@ impl Runtime {
             observation.redact(&self.redactor);
             // The last bound, whatever the provider (LIM-I19, handoff 013c).
             observation.bound_payload();
+            // The user's copy of a stream whose excerpt is a cut (REQ-PERS-005): its blob is
+            // written, file and row, before the execution's record that names it, so that a
+            // record never names a blob that is not there.
+            let (stdout_blob, stderr_blob) =
+                self.keep_whole_streams(task.task_id, authorized.tool(), whole);
+            let execution = Execution {
+                execution_id,
+                action_id: action.action_id,
+                attempt: action.executions,
+                started_at: started,
+                ended_at: ended,
+                termination: outcome.termination.clone(),
+                snapshot_before: action.snapshot_before,
+                snapshot_after,
+                stdout_blob,
+                stderr_blob,
+                metrics: outcome.metrics.clone(),
+            };
             step.observation_id = Some(observation.observation_id);
             let cause_name = cause.as_ref().map(FailureCause::name).map(str::to_owned);
             persistence.record_execution(
@@ -1622,6 +1632,46 @@ impl Runtime {
                 DispositionKind::Feedback => return Ok((step, Some(ActionOutcome::Failed), task)),
             }
         }
+    }
+
+    /// Stores the whole text of each stream whose excerpt is a cut, as a blob, and returns
+    /// the blobs' ids (REQ-PERS-005): the text the excerpt was cut from, cleaned and
+    /// redacted, within LIM-S4 (a script's streams) or LIM-H4 (a host tool's). Text beyond the
+    /// bound (invalid bytes become three-byte replacement characters) is cut at the
+    /// bound on a character boundary, never refused.
+    ///
+    /// A blob that cannot be written does not lose the execution: the action ran and its
+    /// record is what recovery and the audit stand on, so the failure is logged and the
+    /// excerpt, whose cut `output_truncated` already says, is the only copy.
+    pub(super) fn keep_whole_streams(
+        &self,
+        task_id: TaskId,
+        tool: &str,
+        whole: WholeStreams,
+    ) -> (Option<BlobId>, Option<BlobId>) {
+        let bound = WholeStreams::bound_bytes(tool);
+        let keep = |stream: &'static str, text: Option<String>| -> Option<BlobId> {
+            let text = text?;
+            let kept = prefix_within_bytes(&text, bound);
+            match self
+                .deps
+                .persistence
+                .put_blob(task_id, kept.as_bytes(), bound)
+            {
+                Ok(id) => Some(id),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "mimlys_core",
+                        %task_id,
+                        stream,
+                        %error,
+                        "the whole text of a stream could not be stored; the excerpt is the only copy"
+                    );
+                    None
+                }
+            }
+        };
+        (keep("stdout", whole.stdout), keep("stderr", whole.stderr))
     }
 
     /// The source task's history for a fork, bounded by LIM-C5 (REQ-TASK-004).

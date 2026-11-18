@@ -225,6 +225,46 @@ pub fn recover_deletions(
     Ok(report)
 }
 
+/// What the start did with the files of `<data>/blobs` that no row names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlobSweep {
+    /// The files removed (their names, which are blob ids).
+    pub removed: Vec<String>,
+    /// The files that could not be removed, with the reason's kind; tried again at the next start.
+    pub failed: Vec<String>,
+}
+
+/// Removes each file of `<data>/blobs` that has no row (REQ-PERS-005): a blob's file is
+/// written and synced before its row (and its row before the record of the execution that
+/// names it), so a crash between the two leaves a file that nothing names. It is the store's
+/// writer that sweeps, at its start and before anything is written: the lock keeps every other
+/// writer out, so no file is waiting for its row.
+///
+/// Only what this program makes is removed: a regular file named as a blob id. Anything else in
+/// the directory (a directory, a link, a file of another name) is left alone, and `status
+/// --storage` does not count it. A row no execution names (a crash after the row) is the task's
+/// and goes with it.
+pub fn recover_blob_files(store: &Store) -> Result<BlobSweep, PersistenceError> {
+    let dir = store.data_dir().join("blobs");
+    let mut report = BlobSweep::default();
+    for name in store.orphan_blobs()? {
+        if uuid::Uuid::parse_str(&name).is_err() {
+            continue;
+        }
+        let path = dir.join(&name);
+        // A link is not followed, and not removed: it is not a file this program wrote.
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.is_file() => {}
+            _ => continue,
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => report.removed.push(name),
+            Err(e) => report.failed.push(format!("{name} ({})", e.kind())),
+        }
+    }
+    Ok(report)
+}
+
 /// What start-up did with a promotion it found `applying`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveredPromotion {
