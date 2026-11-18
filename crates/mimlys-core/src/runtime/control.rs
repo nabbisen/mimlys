@@ -188,8 +188,7 @@ impl Drop for Creation<'_> {
         if !self.armed {
             return;
         }
-        // The provider is let go first.
-        self.tools = None;
+        // MUTATION (throwaway): the provider is not let go.
         if let Err(error) = self
             .workspaces
             .delete_files(self.task_id, &crate::spi::DeletedRows::default())
