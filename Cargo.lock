@@ -1500,6 +1500,7 @@ dependencies = [
 name = "mimlys-exec"
 version = "0.11.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "cap-std",
  "globset",
