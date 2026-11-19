@@ -100,7 +100,7 @@
 | LIM-X2 | Executions in flight, per runtime | 1 | fixed | Memory: LIM-X2 × LIM-S3; no configuration changes it (as LIM-X1) |
 | LIM-X3 | Worker or MCP server restarts per task, in one runtime process (external design §11.1) | 3 | 0–10 | Fault containment |
 | LIM-X4 | Worker start, including interpreter compilation | 60000 ms | 5000 – 600000 | Cranelift compiles a multi-megabyte interpreter once per worker |
-| LIM-X5 | Executions of one user at once across runtimes (RFC 013 admission) | 2 | 1–16 | Provisional: a candidate until the operation theme's measurement report fixes it (RFC 013) |
+| LIM-X5 | Executions of one user at once across runtimes (RFC 013 admission) | 2 | 1–16 | Measured (M7b report §3, 2026-11-19): with LIM-H7 at one half, two bounded trees cost each other ×1.02 to ×1.15 and a third ×1.5 to ×1.7 (rule `floor(1 / share)`); where the CPU part is not a bound, the second slot costs ×1.2 to ×2.0, and the default stays 2 for one rule everywhere |
 
 ## Approvals and questions
 
@@ -134,7 +134,7 @@
 | LIM-O9 | Deadline of one download of an interpreter artifact (`interpreters install`) | 120000 ms | fixed | The shipped artifacts are a few MB; a slower link uses `--from FILE` |
 | LIM-O10 | Retries of a transient download failure (no connection, timeout, HTTP 429 or 5xx), and the waits before them | 3, after 1 s, 2 s and 4 s | fixed | GitHub's release downloads answered 504 intermittently for an hour on 2026-11-08 (011g's CI) |
 | LIM-O11 | Bound of one admission-registry operation (take, return, reap) | 2000 ms | fixed | Provisional (RFC 013); past it the runtime runs unadmitted and says so |
-| LIM-O12 | Engine requests in flight per backend endpoint per user (`max_in_flight`) | 1 | 1–16 | Provisional (RFC 013); one consumer GPU serves one request at a time |
+| LIM-O12 | Engine requests in flight per backend endpoint per user (`max_in_flight`) | 1 | 1–16 | One consumer GPU serves one request at a time; nothing in the M7b report argues otherwise (§6) |
 | LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
 | LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
 | LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
@@ -168,4 +168,4 @@
 | LIM-H4 | Captured output of a host tool, each stream | 4 MiB | fixed | Build logs; the code reads no key for it, so the register says fixed (review of 004d-4) |
 | LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | fixed | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |
 | LIM-H6 | Interval of the macOS tree tracker and its memory and process-count watchdogs (M6c) | 100 ms | fixed | Measured (011c-5, 2026-11-07, `macos-latest`, about 570 processes): one poll 0.8 ms on average, the worker 0.5 to 0.6 % of a CPU while a tool runs; the shorter, the fewer short-lived excursions missed and the more CPU |
-| LIM-H7 | CPU share of a host tool tree (clause C's CPU part) | half the cores, at least one | one core – all cores | Provisional: measured against the M6a demonstration's duration before it is fixed (RFC 013) |
+| LIM-H7 | CPU share of a host tool tree (clause C's CPU part) | half the cores, at least one | one core – all cores | Measured (M7b report §4): the M6a demonstration takes ×1.52 at half of four cores and ×2.57 at one; all cores is no bound. On Windows the Job Object's rate is a share of the whole machine, so the runtime converts (half the cores is 5 000 on any machine) |

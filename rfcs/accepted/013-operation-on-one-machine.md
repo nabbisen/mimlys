@@ -74,6 +74,17 @@ Part two was written before three rules of 0.11, and it is read with them:
 
 Part two is milestone M7b in 0.12 (handoffs 013d-0 and 013d).
 
+## Amendment 2 (2026-11-20, from the M7b report)
+
+The measurement report (`docs/src/maintainers/m7b-report.md`) fixed the defaults (LIM-X5 2, LIM-H7 half the cores with at least one, LIM-O12 1), and it sharpens decision 6:
+
+1. **Linux: the worker in a leaf beside `tool`.** cgroup v2 enables a controller in a cgroup's children only when that cgroup holds no process of its own. So the worker moves into a leaf `worker` of its own cgroup, beside `tool`, and `cpu.max` goes on `tool`; the worker's memory and process limits stay on the parent and still cover both. Where the cgroup above cannot be arranged that way (measured: a terminal's scope, a CI job, and even a `Delegate=yes` scope, where the runtime itself lives in the cgroup), the CPU part is `unavailable` with the reason, as M and C already are there. The book says how to bound the whole runtime instead: `systemd-run --user --scope -p CPUQuota=…`, which worked on every Linux machine measured.
+2. **Windows: the rate is a share of the whole machine.** `JOB_OBJECT_CPU_RATE_CONTROL` counts hundredths of a percent of all processors, so the runtime converts LIM-H7 (half the cores is 5 000 on any machine, one core is `10 000 / cores`). The rate is set on the worker's Job Object, which holds the tools, since there is a worker per task (Amendment 1).
+3. **macOS: `setpriority`, not the background policy.** A lowered nice value is not a bound, and was not even a share under contention on the runner; it is reported `best_effort (priority)`, as decided. The background policy (`taskpolicy -b`) starved a tree that shared the machine (up to a hundred times slower), which a deadline would then end, so it is not used.
+4. **Windows: the M6a demonstration cannot run** (cargo cannot open `NUL` in the AppContainer, unchanged since M6b), so the Windows value rests on a native tool through the same path.
+5. **LIM-X5 stays 2 where the CPU part is not a bound** (the second slot then costs ×1.2 to ×2.0): one default and one rule everywhere; a user may set 1.
+6. **There is no queued flag to extend.** Decision 5 and the cross-cutting vocabulary speak of a task "queued" with `reason: concurrency` "as today", but no such state exists: a runtime runs one task at a time (LIM-X1 is fixed at 1), and nothing queues. So a task that waits for a slot stays `running`, and its view says `waiting` with the reason `admission` (external design §19.3). `concurrency` is not used; the words `waiting` and `slot` keep the one meaning decision 8 gives them.
+
 ## References
 
 The owner's review package `.git-exclude/reviewed/owner-review-replanning-after-0.8/` (README §2 to §3, the assessment, the theme proposal); the replanning report §3 C, §3 D; requirements REQ-SCHED-001 … 005, REQ-CONF-001 … 012, REQ-WS-008, REQ-WS-009, REQ-PERS-001 … 012, REQ-OBS-001 … 008; external design §13.3, §13.5, §14.6, §16, §17, §19, §20; limits LIM-X1 … X4, LIM-H1 … H6, LIM-O3, LIM-M1, LIM-T5; threats THR-23, THR-32.
