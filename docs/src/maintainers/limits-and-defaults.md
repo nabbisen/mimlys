@@ -75,7 +75,7 @@
 | LIM-S1 | Fuel per execution | 10^10 | 10^6 – 10^12 | Deadline usually fires first; fuel gives determinism |
 | LIM-S2 | Deadline of one execution | 30000 ms | 1000 – 600000 | Study |
 | LIM-S3 | Memory of one instance | 256 MiB | 16 – 4096 MiB | Study |
-| LIM-S4 | Captured stdout and stderr, each | 1 MiB | 64 KiB – 64 MiB | Study |
+| LIM-S4 | Captured stdout and stderr of a script, each (`[sandbox] output_bytes`) | 1 MiB | 64 KiB – 16 MiB | Study; the stored copy is bounded by three times it, and the worker's frame is derived from it (external design 13.1). The maximum was 64 MiB until handoff 004d-5: carried for real since 004d-4, it would cost over a gigabyte of transient memory for one execution |
 | LIM-S5 | Size of a module or interpreter | 64 MiB | operator | Interpreter builds are tens of MiB |
 | LIM-S6 | Clock granularity visible to the sandbox | 1 ms | fixed | SEC-008 of the draft, R-21 |
 | LIM-S7 | Epoch tick | 10 ms | fixed | Study |
@@ -165,7 +165,7 @@
 | LIM-H1 | Deadline of a host tool execution | 600000 ms | 10000 – 3600000 | Builds and test suites |
 | LIM-H2 | Memory of a host tool tree | 2 GiB | 256 MiB – 32 GiB | Compilers |
 | LIM-H3 | Processes in a host tool tree | 64 | 1–1024 | Fork-bomb bound |
-| LIM-H4 | Captured output of a host tool, each stream | 4 MiB | 64 KiB – 64 MiB | Build logs |
+| LIM-H4 | Captured output of a host tool, each stream | 4 MiB | fixed | Build logs; the code reads no key for it, so the register says fixed (review of 004d-4) |
 | LIM-H5 | Names refused directly under a declared read path (REQ-CONF-011) | LIM-W5's patterns, `credentials`, `credentials.*`, `.netrc`, `.npmrc`, `.pypirc`, `.docker/` | fixed | Registry and cloud tokens live beside toolchains (`~/.cargo/credentials.toml`) |
 | LIM-H6 | Interval of the macOS tree tracker and its memory and process-count watchdogs (M6c) | 100 ms | fixed | Measured (011c-5, 2026-11-07, `macos-latest`, about 570 processes): one poll 0.8 ms on average, the worker 0.5 to 0.6 % of a CPU while a tool runs; the shorter, the fewer short-lived excursions missed and the more CPU |
 | LIM-H7 | CPU share of a host tool tree (clause C's CPU part) | half the cores, at least one | one core – all cores | Provisional: measured against the M6a demonstration's duration before it is fixed (RFC 013) |

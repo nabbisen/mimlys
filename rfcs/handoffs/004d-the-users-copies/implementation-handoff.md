@@ -123,3 +123,34 @@ The review of 2026-11-19 (`.git-exclude/reviewed/handoff-004d/README.md`) approv
 - **External design §13.1's frame sentence:** I wrote it as a known defect, and it becomes the rule.
 
 **Return:** `.git-exclude/review-requests/004d-4-the-users-copies/README.md`.
+
+## After review: 004d-5
+
+The review of 2026-11-19 (`.git-exclude/reviewed/handoff-004d-4/README.md`) approved 004d-4 and landed it. Three small changes follow, as one PR, from your questions.
+
+1. **A copy cut by a redaction says so** (your question 3).
+   - **Today:** a redaction that lengthens the text past three times the bound cuts the stored copy at the bound, with a `warn` only, and `task output` shows it with `capture_cut: false`, as if whole.
+   - **The change:** record the fact (the observation and the execution's record are written after `keep_whole_streams`, so it can be carried with them; propose where) and show it. The JSON field is `copy_cut`, beside `capture_cut`, and the text line says it. The rule, "never shown as whole when it is not", is REQ-PERS-005's.
+2. **LIM-S4's maximum is 16 MiB** (your question 6). The register is amended: from 64 MiB to 16 MiB.
+   - A configuration above it no longer loads, and the message names the maximum.
+   - `LIM_S4_OUTPUT_BYTES_RANGE`, the frame's clamp and their tests follow.
+   - Measure the transient memory of one execution at 16 MiB (both streams at the bound, a host tool beside it) and state it.
+   - CHANGELOG, Changed, with **upgrade: read this**.
+3. **The text index names the attempts only when there is more than one** (your question 5). The JSON keeps `attempts` always.
+
+**Settled by the review, nothing to do:**
+- LIM-H4 is fixed (the register says so now);
+- base64;
+- `capture_cut` lives in the notice.
+
+**Tests (by state):**
+- a secret repeated to the bound, with a long name: `copy_cut: true`, no secret on the disk;
+- the configuration at 16 MiB loads, and above it is refused, naming the maximum;
+- the index with one attempt and with two.
+
+**Mutations:** each of these must be killed:
+- `copy_cut` never set;
+- the old maximum;
+- the attempts line always shown.
+
+**Return:** `.git-exclude/review-requests/004d-5-the-users-copies/README.md`.
