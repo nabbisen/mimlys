@@ -36,6 +36,12 @@ pub enum Notice {
         /// excerpt is a cut of what was captured does not carry it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         captured_bytes: Option<u64>,
+        /// Present (true) only on the excerpt's notice, and only when the user's whole copy of
+        /// the stream was itself cut at its bound: a redaction made the text longer than the
+        /// bound allows, which the capture's own bound cannot (handoff 004d-5; REQ-PERS-005).
+        /// Set by the runtime after the copy is stored; `task output` reads it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        copy_cut: bool,
     },
     /// Returned content was cut to the requested size.
     ContentTruncated {
@@ -350,6 +356,37 @@ impl Observation {
         }
     }
 
+    /// Says that the user's whole copy of `stream` was itself cut at its bound (handoff 004d-5;
+    /// REQ-PERS-005: a copy is never shown as whole when it is not). The fact goes on the notice
+    /// of the stream's excerpt, the one the capture's cut does not name (`captured_bytes`),
+    /// which an excerpt that is a cut always has; a record that somehow lacks it gets one, so
+    /// that the fact is never lost. Additive: an older reader ignores the field.
+    pub fn mark_copy_cut(&mut self, stream: Stream) {
+        let excerpt_notice = self.notices.iter_mut().find_map(|n| match n {
+            Notice::OutputTruncated {
+                stream: s,
+                captured_bytes: None,
+                copy_cut,
+                ..
+            } if *s == stream => Some(copy_cut),
+            _ => None,
+        });
+        if let Some(copy_cut) = excerpt_notice {
+            *copy_cut = true;
+            return;
+        }
+        let total_bytes = match stream {
+            Stream::Stdout => self.stdout.len(),
+            Stream::Stderr => self.stderr.len(),
+        } as u64;
+        self.notices.push(Notice::OutputTruncated {
+            stream,
+            total_bytes,
+            captured_bytes: None,
+            copy_cut: true,
+        });
+    }
+
     /// Replaces configured secret values in the payload, both streams and
     /// the notices' texts (REQ-CTX-007), adding one `secret_redacted` notice
     /// per secret found.
@@ -421,6 +458,7 @@ fn normalize_stream(
             stream,
             total_bytes: bytes.len() as u64,
             captured_bytes: None,
+            copy_cut: false,
         });
     }
     // The excerpt is the whole text unless it was cut; only then is there a second copy.

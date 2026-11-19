@@ -1319,6 +1319,17 @@ impl Config {
             LIM_S2_DEADLINE_MS_RANGE,
         )?;
         range("sandbox.memory_mib", s.memory_mib, LIM_S3_MEMORY_MIB_RANGE)?;
+        if s.output_bytes > LIM_S4_OUTPUT_BYTES_RANGE.1 {
+            // The maximum was 64 MiB before 0.12: say what it is now, and that it was lowered,
+            // since a configuration that loaded then stops loading now.
+            return Err(ConfigError::new(
+                "sandbox.output_bytes",
+                format!(
+                    "{} is outside {}..={} (64 KiB to 16 MiB; the maximum was 64 MiB before 0.12, because a stream's bytes are held several times over while an execution is recorded)",
+                    s.output_bytes, LIM_S4_OUTPUT_BYTES_RANGE.0, LIM_S4_OUTPUT_BYTES_RANGE.1
+                ),
+            ));
+        }
         range(
             "sandbox.output_bytes",
             s.output_bytes,

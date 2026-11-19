@@ -103,6 +103,10 @@ pub struct Copy {
     /// then, which the index says (`capture_cut`; handoff 004d-4). The observation's notice that
     /// the capture was cut is the source; a record of 0.11 has none.
     pub captured_bytes: Option<u64>,
+    /// Whether the stored copy was itself cut at its bound: a redaction made the text longer than
+    /// the bound allows (handoff 004d-5; the same observation's notice says it). A copy is never
+    /// shown as whole when it is not.
+    pub copy_cut: bool,
 }
 
 /// The copy itself, with what the index says of it.
@@ -374,17 +378,40 @@ pub fn copy(
     found: &Found,
     which: Which,
 ) -> Result<Copy, AppError> {
-    let (state, captured_bytes) = match which {
-        Which::Result => (result_copy(found), None),
+    let (state, captured_bytes, copy_cut) = match which {
+        Which::Result => (result_copy(found), None, false),
         Which::Stdout | Which::Stderr => (
             text_copy(persistence, found, which)?,
             captured_bytes(found, which),
+            copy_cut(found, which),
         ),
     };
     Ok(Copy {
         which,
         state,
         captured_bytes,
+        copy_cut,
+    })
+}
+
+/// Whether the stored copy of a stream was cut at its bound, as the observation's notice for the
+/// stream's excerpt says it (the runtime knows when it cut the text; handoff 004d-5). `false`
+/// for a record that has no such field (every record of 0.11 and earlier: none was cut that
+/// way and said so) and for an external tool, which has no streams.
+fn copy_cut(found: &Found, which: Which) -> bool {
+    let stream = match which {
+        Which::Stdout => Stream::Stdout,
+        Which::Stderr => Stream::Stderr,
+        Which::Result => return false,
+    };
+    if is_external(found.action.content().tool()) {
+        return false;
+    }
+    found.observation.notices.iter().any(|n| {
+        matches!(
+            n,
+            Notice::OutputTruncated { stream: s, copy_cut: true, .. } if *s == stream
+        )
     })
 }
 
@@ -477,6 +504,9 @@ struct CopyJson {
     /// The bytes kept, present with `capture_cut`.
     #[serde(skip_serializing_if = "Option::is_none")]
     captured_bytes: Option<u64>,
+    /// Whether the stored copy was itself cut at its bound, which only a redaction that
+    /// lengthens the text past it can do (handoff 004d-5).
+    copy_cut: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     unavailable: Option<Unavailable>,
 }
@@ -509,6 +539,7 @@ pub fn index_json(found: &Found, copies: &[Copy]) -> IndexJson {
                     flag: c.which.flag(),
                     capture_cut: c.captured_bytes.is_some(),
                     captured_bytes: c.captured_bytes,
+                    copy_cut: c.copy_cut,
                     unavailable: None,
                 },
                 Err(why) => CopyJson {
@@ -521,6 +552,7 @@ pub fn index_json(found: &Found, copies: &[Copy]) -> IndexJson {
                     flag: c.which.flag(),
                     capture_cut: c.captured_bytes.is_some(),
                     captured_bytes: c.captured_bytes,
+                    copy_cut: c.copy_cut,
                     unavailable: Some(*why),
                 },
             })
@@ -541,6 +573,7 @@ pub fn copy_json(found: &Found, copy: &Copy, held: &Held) -> Value {
         "cut": held.cut,
         "source": held.source,
         "capture_cut": copy.captured_bytes.is_some(),
+        "copy_cut": copy.copy_cut,
     });
     if let Some(kept) = copy.captured_bytes {
         value["captured_bytes"] = json!(kept);

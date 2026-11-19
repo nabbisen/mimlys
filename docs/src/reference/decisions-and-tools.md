@@ -125,6 +125,11 @@ Wasmtime with three guards that each end an execution on their own:
 | Deadline | `[sandbox] deadline_ms` (LIM-S2) | `deadline` |
 | Memory | `[sandbox] memory_mib` (LIM-S3) | `memory_limit` |
 
+`[sandbox] output_bytes` (LIM-S4) is 1 MiB by default and at most 16 MiB (at
+least 64 KiB; the maximum was 64 MiB before 0.12, and a configuration above 16 MiB no longer
+loads): the bytes of a stream are held several times over while an execution is recorded, and at
+16 MiB, with both streams at the bound, one execution peaks at about 170 MB in the runtime
+(about 310 MB for bytes that are not text) and about 115 MB in the worker (Linux, measured).
 A stream over `[sandbox] output_bytes` (LIM-S4) ends the execution
 `output_limit`; a program's own end is `exited` with its `exit_code`; a trap
 is `trapped` with its name; a cancel is `cancelled`; a sandbox or worker

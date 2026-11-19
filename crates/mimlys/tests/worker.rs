@@ -1024,6 +1024,7 @@ fn req_sbx_005_only_the_stream_that_overflowed_is_reported_cut() {
             stream: Stream::Stderr,
             total_bytes: bound as u64 * 1024,
             captured_bytes: Some(bound as u64 * 1024),
+            copy_cut: false,
         }]
     );
 }

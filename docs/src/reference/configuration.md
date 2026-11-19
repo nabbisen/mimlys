@@ -120,7 +120,7 @@ sha256 = "42a732a6…"            # must match the file; a mismatch is never loa
 fuel = 10000000000              # LIM-S1
 deadline_ms = 30000             # LIM-S2
 memory_mib = 256                # LIM-S3
-output_bytes = 1048576          # LIM-S4
+output_bytes = 1048576          # LIM-S4, 64 KiB – 16 MiB
 
 [workspace]
 max_bytes = 1073741824          # LIM-W1, 64 MiB – 64 GiB

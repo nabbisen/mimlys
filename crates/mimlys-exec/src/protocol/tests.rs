@@ -175,12 +175,17 @@ fn ed_13_1_the_frame_limit_follows_the_bounds_in_force() {
         2 * encoded_len(16 * MIB) + RECORD_MARGIN_BYTES
     );
     // Held within LIM-S4's own range: a wrong flag asks for no more than the largest bound.
-    let largest = frame_limit(64 * MIB);
+    let largest = frame_limit(16 * MIB);
+    assert_eq!(
+        frame_limit(64 * MIB),
+        largest,
+        "the old maximum (64 MiB) is held to the new one"
+    );
     assert_eq!(frame_limit(usize::MAX), largest);
     assert!(largest <= u32::MAX as usize, "the length prefix holds it");
     // The old constant (twice LIM-S4 and 64 KiB) could not carry LIM-H4 once encoded.
     assert!(frame_limit(MIB) > 2 * 4 * MIB);
-    for output_bytes in [MIB, 6 * MIB] {
+    for output_bytes in [MIB, 6 * MIB, 16 * MIB] {
         let bound = output_bytes.max(H4);
         let response = record(vec![b'x'; bound], vec![b'y'; bound]);
         let limit = frame_limit(output_bytes);

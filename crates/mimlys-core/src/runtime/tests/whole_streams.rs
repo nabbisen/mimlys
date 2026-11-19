@@ -170,7 +170,7 @@ fn req_pers_005_the_bound_is_three_times_the_capture_bound_in_force() {
         h3
     );
     assert_eq!(
-        WholeStreams::bound_bytes(crate::host_tool::RUN_HOST_TOOL, 64 * MIB),
+        WholeStreams::bound_bytes(crate::host_tool::RUN_HOST_TOOL, 16 * MIB),
         h3,
         "a host tool's bound is LIM-H4, whatever LIM-S4 is"
     );
@@ -191,14 +191,21 @@ fn req_pers_005_the_bound_is_three_times_the_capture_bound_in_force() {
             stdout: Some("\u{FFFD}".repeat(chars)),
             stderr: None,
         };
-        let (blob, _) = h.runtime.keep_whole_streams(id, tool, whole(capture));
+        let (kept, _) = h.runtime.keep_whole_streams(id, tool, whole(capture));
+        assert!(!kept.cut, "{tool} at {configured}: whole is not said cut");
+        let blob = kept.blob;
         let stored = h
             .persistence
             .get_blob(blob.expect("a stream within its bound"))
             .unwrap();
         assert_eq!(stored.len(), 3 * capture, "{tool} at {configured}: whole");
         // One character more is cut at the bound, and the cut is on a character boundary.
-        let (blob, _) = h.runtime.keep_whole_streams(id, tool, whole(capture + 1));
+        let (kept, _) = h.runtime.keep_whole_streams(id, tool, whole(capture + 1));
+        assert!(
+            kept.cut,
+            "{tool} at {configured}: one character more is said cut"
+        );
+        let blob = kept.blob;
         let stored = h.persistence.get_blob(blob.unwrap()).unwrap();
         assert_eq!(stored.len(), 3 * capture, "{tool} at {configured}: cut");
         assert!(String::from_utf8(stored).is_ok());
@@ -218,6 +225,7 @@ fn req_pers_005_invalid_bytes_up_to_the_bound_are_stored_whole() {
         stream: crate::observation::Stream::Stdout,
         total_bytes: MIB as u64,
         captured_bytes: Some(MIB as u64),
+        copy_cut: false,
     }];
     let (h, id) = run(outcome);
     let execution = execution_of(&h, id);
@@ -235,6 +243,7 @@ fn req_pers_005_invalid_bytes_up_to_the_bound_are_stored_whole() {
         stream: crate::observation::Stream::Stdout,
         total_bytes: MIB as u64,
         captured_bytes: Some(MIB as u64),
+        copy_cut: false,
     }));
 }
 
@@ -242,8 +251,8 @@ fn req_pers_005_invalid_bytes_up_to_the_bound_are_stored_whole() {
 /// the text longer than the bytes it was made of (a secret of eight characters becomes a marker
 /// of the secret's name, which can be much longer), so the text of a capture that holds its bound
 /// can exceed three times it. The copy is then cut at its bound, on a character boundary, never
-/// refused and never longer than the bound; the log says so (the user's index does not: a design
-/// question in the request of 004d-4). No secret is ever on the disk either way.
+/// refused and never longer than the bound; the observation says so (`copy_cut` on the excerpt's
+/// notice, handoff 004d-5), and no secret is ever on the disk either way.
 #[test]
 fn req_pers_005_a_redaction_that_lengthens_the_text_past_its_bound_is_cut_at_it() {
     const MIB: usize = 1024 * 1024;
@@ -279,4 +288,71 @@ fn req_pers_005_a_redaction_that_lengthens_the_text_past_its_bound_is_cut_at_it(
     let stored = String::from_utf8(stored).expect("cut on a character boundary");
     assert!(!stored.contains(secret), "no secret on the disk");
     assert!(stored.starts_with(&format!("[redacted:{name}]")));
+    // The copy is said cut, on the excerpt's notice of the stream that was cut, and only there:
+    // standard error printed nothing.
+    let observation = h.persistence.load_observations(id).unwrap().remove(0);
+    let cut_notices: Vec<_> = observation
+        .notices
+        .iter()
+        .filter(|n| matches!(n, Notice::OutputTruncated { copy_cut: true, .. }))
+        .collect();
+    assert_eq!(
+        cut_notices,
+        vec![&Notice::OutputTruncated {
+            stream: crate::observation::Stream::Stdout,
+            total_bytes: MIB as u64,
+            captured_bytes: None,
+            copy_cut: true,
+        }],
+        "{:?}",
+        observation.notices
+    );
+}
+
+/// REQ-PERS-005 (handoff 004d-5): a copy that is not there is not a cut copy: when the blob of a
+/// text that is longer than its bound cannot be written, nothing is said cut (the index then says
+/// that no whole copy was kept), and the step goes on.
+#[test]
+fn req_pers_005_a_copy_that_could_not_be_stored_is_not_said_cut() {
+    let h = harness();
+    h.persistence.fail_write("blob");
+    let id = h.create();
+    let bound =
+        WholeStreams::bound_bytes("run_script", crate::limits::LIM_S4_OUTPUT_BYTES as usize);
+    let whole = WholeStreams {
+        stdout: Some("a".repeat(bound + 1)),
+        stderr: None,
+    };
+    let (stdout, stderr) = h.runtime.keep_whole_streams(id, "run_script", whole);
+    assert_eq!((stdout.blob, stdout.cut), (None, false));
+    assert_eq!((stderr.blob, stderr.cut), (None, false));
+}
+
+/// REQ-PERS-005 (handoff 004d-5): a copy that is whole is not said cut, whatever else the
+/// notices say: a text printed whole, and a capture that was cut (the copy is then whole of what
+/// was kept), carry no `copy_cut`.
+#[test]
+fn req_pers_005_a_whole_copy_is_not_said_cut() {
+    const MIB: usize = 1024 * 1024;
+    let mut outcome = ExecutionOutcome::succeeded(json!({}), 3);
+    outcome.stdout = printed().into_bytes();
+    outcome.stderr = vec![0xffu8; MIB];
+    outcome.notices = vec![Notice::OutputTruncated {
+        stream: crate::observation::Stream::Stderr,
+        total_bytes: MIB as u64,
+        captured_bytes: Some(MIB as u64),
+        copy_cut: false,
+    }];
+    let (h, id) = run(outcome);
+    let execution = execution_of(&h, id);
+    assert!(execution.stdout_blob.is_some() && execution.stderr_blob.is_some());
+    let observation = h.persistence.load_observations(id).unwrap().remove(0);
+    assert!(
+        !observation
+            .notices
+            .iter()
+            .any(|n| matches!(n, Notice::OutputTruncated { copy_cut: true, .. })),
+        "{:?}",
+        observation.notices
+    );
 }

@@ -66,6 +66,7 @@ fn ed_8_observation_from_outcome() {
         stream: Stream::Stdout,
         total_bytes: big.len() as u64,
         captured_bytes: None,
+        copy_cut: false,
     }));
     assert!(o.notices.contains(&Notice::InvalidUtf8Replaced {
         stream: Stream::Stderr
@@ -401,6 +402,7 @@ fn req_pers_005_the_capture_cut_notice_names_the_bytes_kept_and_old_records_read
         stream: Stream::Stdout,
         total_bytes: 5_000_000,
         captured_bytes: Some(4_194_304),
+        copy_cut: false,
     };
     let json = serde_json::to_value(&cut).unwrap();
     assert_eq!(
@@ -412,6 +414,7 @@ fn req_pers_005_the_capture_cut_notice_names_the_bytes_kept_and_old_records_read
         stream: Stream::Stdout,
         total_bytes: 4_194_304,
         captured_bytes: None,
+        copy_cut: false,
     };
     assert_eq!(
         serde_json::to_value(&excerpt).unwrap(),
@@ -427,9 +430,74 @@ fn req_pers_005_the_capture_cut_notice_names_the_bytes_kept_and_old_records_read
         Notice::OutputTruncated {
             stream: Stream::Stderr,
             total_bytes: 52213,
-            captured_bytes: None
+            captured_bytes: None,
+            copy_cut: false,
         }
     );
     let back: Notice = serde_json::from_value(json).unwrap();
     assert_eq!(back, cut);
+}
+
+/// Handoff 004d-5 (REQ-PERS-005): a copy cut at its bound is said on the excerpt's notice, not
+/// on the capture's (which names the bytes kept); the field is additive (absent unless true, and
+/// a record without it reads as before); a record that lacks the excerpt's notice gets one, so the
+/// fact is never lost.
+#[test]
+fn req_pers_005_mark_copy_cut_marks_the_excerpt_notice_not_the_capture_notice() {
+    let ids = ScriptedIds::default();
+    let mut o = Observation::stopped_before_start(
+        ObservationId::new(&ids),
+        ActionId::new(&ids),
+        "run_script",
+        FakeClock::default().now(),
+    );
+    o.notices = vec![
+        Notice::OutputTruncated {
+            stream: Stream::Stdout,
+            total_bytes: 9,
+            captured_bytes: Some(9),
+            copy_cut: false,
+        },
+        Notice::OutputTruncated {
+            stream: Stream::Stdout,
+            total_bytes: 9,
+            captured_bytes: None,
+            copy_cut: false,
+        },
+    ];
+    o.mark_copy_cut(Stream::Stdout);
+    assert_eq!(
+        o.notices,
+        vec![
+            Notice::OutputTruncated {
+                stream: Stream::Stdout,
+                total_bytes: 9,
+                captured_bytes: Some(9),
+                copy_cut: false,
+            },
+            Notice::OutputTruncated {
+                stream: Stream::Stdout,
+                total_bytes: 9,
+                captured_bytes: None,
+                copy_cut: true,
+            },
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&o.notices[1]).unwrap(),
+        serde_json::json!({"code": "output_truncated", "stream": "stdout",
+            "total_bytes": 9, "copy_cut": true})
+    );
+    // Another stream: no excerpt notice for it, so one is added.
+    o.mark_copy_cut(Stream::Stderr);
+    assert_eq!(o.notices.len(), 3);
+    assert!(matches!(
+        o.notices[2],
+        Notice::OutputTruncated {
+            stream: Stream::Stderr,
+            captured_bytes: None,
+            copy_cut: true,
+            ..
+        }
+    ));
 }

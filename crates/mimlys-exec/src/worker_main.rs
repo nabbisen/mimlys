@@ -844,6 +844,7 @@ fn execute(
                 stream,
                 total_bytes: bytes.len() as u64,
                 captured_bytes: Some(bytes.len() as u64),
+                copy_cut: false,
             });
         }
     }
