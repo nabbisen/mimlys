@@ -80,8 +80,9 @@ shape: the memory they show is another process's as well as ours.
 
 ### 3.1 What happened
 
-No run failed: no out-of-memory kill (Linux: the kernel log was read before
-and after and holds none), no deadline, no tool error, in the 490 runs of the
+No run failed (every task completed, and `demo` and `wide` ended verified): no
+out-of-memory kill (Linux: the kernel log was read before and after and holds
+none), no deadline, in the 490 runs of the
 whole measurement on L-ci (of which 300 are in the tables of this section),
 290 on W-ci (200) and 262 on M-ci (180), and none on L-4 and L-32.
 
@@ -150,18 +151,21 @@ for four on L-ci), the cost of the same work sharing the cores.
 
 - **A tool that wants every core is a zero-sum game**: two `burn_n` take x2.0
   each on every platform, three x2.9, four x3.9. So do the parallel builds
-  (x1.7 to x1.9 for two). Nothing here is lost by admission; a second runtime
+  (x1.5 to x2.0 for two). Nothing here is lost by admission; a second runtime
   only slows the first.
 - **The demonstration and a script are partly parallel**: two of them cost
-  x1.2 to x1.6 each on 3 to 4 cores (the demonstration x1.59 on L-ci, x1.23 on
-  M-ci; a script x1.26 to x1.48); three cost x1.5 to x2.3; four x1.9 to x3.0.
+  x1.2 to x1.7 each on 3 to 4 cores (the demonstration x1.59 on both Linux
+  instances, x1.23 and x1.58 on two macOS ones; a script x1.26 to x1.68);
+  three cost x1.5 to x2.3; four x1.9 to x3.0.
 - **The handoff's example rule** (the largest count whose median run is within
   1.5 times the single run, and whose peak memory is within half the
   machine's) gives, on the three runners: **1** for a build and for `burn_n`,
-  **2** for the demonstration on M-ci (1 on L-ci, by 0.09), for `burn_2`,
-  `wasm` and `js`, and 3 for `wasm` on M-ci (x1.50, at the line). Memory
-  never decides. On L-32 the same rule gives 3 for the demonstration, 4 for
-  `burn_2`, `wasm` and `js`, 2 for the build and 1 for `burn_n`.
+  **2** for `burn_2`, `wasm` and `js`, and for the demonstration on M-ci in
+  run 2 (x1.23; x1.58 on the other macOS instance, and x1.59 on both Linux
+  ones, which is 1 by 0.09); `wasm` reached 3 on M-ci in run 2 (x1.50, at the
+  line). Memory never decides. On L-32 the same rule gives 3 for the
+  demonstration, 4 for `burn_2`, `wasm` and `js`, 2 for the build and 1 for
+  `burn_n`.
 
 ### 3.3 With the CPU bound on: slots times share
 
@@ -200,7 +204,7 @@ other nothing (x1.02 to x1.15 on both platforms where the bound exists);
 every further slot costs the others x1.5 or more. The candidate of RFC 013
 stands. Memory does not enter the rule: four runtimes of the heaviest
 workload took 15 % of the smallest machine measured, and one runtime took at
-most 60 MiB (a script) to 400 MiB (a build) above an idle machine.
+most 83 MiB (a script) to 400 MiB (a build) above an idle machine.
 
 Where the CPU part is not a bound (macOS; Linux without a delegated cgroup,
 which is the state of every Linux machine measured here: §4.1), the second
@@ -228,9 +232,9 @@ for the same reason. This is the same in every Linux state measured:
 | State | What the product's rung (and the kernel) answered |
 |---|---|
 | L-ci, as the job runs | no write to the cgroup (`mkdir` refused); M `rlimit_as (cgroup_not_writable)` |
-| this machine, a terminal's scope | the user may create a cgroup and move into it; the scope offers `memory pids` and **not** `cpu`; enabling a controller for the scope's children is refused (`EBUSY`: the scope holds the terminal's processes); M `rlimit_as (memory.max: permission denied)` |
-| this machine, a transient scope with `Delegate=yes` | the same: M `rlimit_as (memory.max: permission denied)`; the runtime itself lives in the cgroup, so no controller can be enabled for its children |
-| a transient unit with `Delegate=yes` on L-ci (run `44529348475`, §7) | see §7 |
+| this machine, a terminal's scope | the user may create a cgroup and move into it; the scope offers `memory pids` and **not** `cpu`; enabling a controller for the scope's children is refused (`EBUSY`; the scope held 14 processes); M `rlimit_as (memory.max: permission denied)` |
+| this machine, a transient scope with `Delegate=yes` | the same: M `rlimit_as (memory.max: permission denied)`, though the scope is delegated (the runtime itself lives in that cgroup) |
+| a transient unit with `Delegate=yes` on a runner (run `44529348475`, `sudo systemd-run -p Delegate=yes`, §7) | the unit's cgroup is delegated (`cpu` among its controllers), yet M reads `rlimit_as (memory.max: permission denied)` and the count `wall_clock`; K is `cgroup_kill` |
 
 **Where `cpu.max` can be set.** The worker's limits are written on its own
 cgroup `mimlys-<pid>` (`memory.max`, `pids.max`), not on the `tool`
@@ -244,8 +248,10 @@ parent, `cpu.max = 100000 100000` on `tool` held a 4-thread tool to one core
 and its output are in the review request). In the other order (`cpu`
 enabled for the children first, the worker moved afterwards) the kernel
 refused the move (`Operation not supported`) and `tool` had no `cpu.max`.
-I did not find a way for a runtime that lives in a user's terminal scope to
-arrange this for itself.
+On a runner, in a unit delegated with `sudo systemd-run -p Delegate=yes`, the
+same arrangement held the tool to one core (6.26 s of CPU in 6.18 s of wall
+time, against 1.57 s unbounded). I did not find a way for a runtime that lives
+in a user's terminal scope to arrange this for itself.
 
 **The effect of the bound, by a unit's `cpu.max`.** What the tree takes is
 bounded the same when the whole runtime runs in a transient unit with a
@@ -310,14 +316,22 @@ x1.02 of the unbounded time), so the report can say `best_effort (priority)`
 with these numbers; and with a competitor present the lowered priority gave
 the tree no smaller share (x1.87 against x1.87, x1.66 against x1.65; the build
 x1.58 against x1.44, the demonstration x1.34 against x1.26):
-on this runner `nice` does not even act as a share. `taskpolicy -b` (the
-background policy) did nothing on an idle
-runner in this run, but in the pilot (run `44517226777`, another instance, one
-sample each) it made the same tree x2.0 (`burn_n`), x2.9 (`wide`), x6.2
-(`demo`) and x1.2 (`burn_2`) slower. I cannot say what decides it, and it is
-not a bound either way: on a 3-CPU virtual machine the two policies are
-neither stable nor sized. M-ci is a virtual machine; a Mac of the user's own
-may differ (§9).
+on this runner `nice` does not even act as a share.
+
+`taskpolicy -b` (the background policy) did nothing on an idle runner in this
+run (x0.99 to x1.08; x0.94 to x1.16 in run 3), but in the pilot (run
+`44517226777`, another instance, one sample each) it made the same tree x2.0
+(`burn_n`), x2.9 (`wide`), x6.2 (`demo`) and x1.2 (`burn_2`) slower. **With a
+competitor running it starved the tree** (run 3; the competitor at `nice 0`;
+one or two samples each): `burn_n` 387 s and 497 s against 9.7 s for a tree at
+`nice 0` under the same competitor, `burn_2` 376 s (against 8.2 s), the
+demonstration 250 s (against 2.4 s), and `wide` was still running when the
+harness ended it at 1 200 s (a failure of that run, and the reason the macOS
+job was cancelled: §7). So the background policy is no bound on an idle
+machine and, under contention, no share either: it hands the tree to whoever
+else is running, and a tree that takes a hundred times as long runs into its
+deadline (LIM-H1). Of the two, `nice` is the harmless one. M-ci is a virtual
+machine; a Mac of the user's own may differ (§9).
 
 ### 4.4 Proposed default and rule
 
@@ -327,7 +341,7 @@ times its unbounded time on a 4-core machine, and at which two bounded trees
 fill the machine" (§3.3). On L-ci the demonstration at half the cores is
 x1.52; at one core x2.57; at all cores x1.02. A tool that uses two threads
 (a test run) loses x1.14 at half; a build that wants every core takes x1.7 to
-x1.9 (that is the price of the bound, by definition). On a machine with more
+x2.0 (that is the price of the bound, by definition). On a machine with more
 cores half costs less (L-32: the demonstration x1.04, the build x1.07).
 
 The range "one core to all cores" is as measured: all cores is the same as
@@ -351,8 +365,9 @@ and a worker of this one is started (and, on macOS, the tree swept: 011p);
 "cold" is the first execution of a runtime. Median, smallest and largest in
 brackets; 45 kept and 48 replaced samples per row (3 cold).
 
-**With the JavaScript interpreter installed** (every runtime of the CI runners
-has it; the worker compiles it at its start, LIM-X4's reason):
+**With the JavaScript interpreter configured** (the pinned QuickJS build, as
+a runtime that ran `mimlys interpreters install javascript` has it; the
+worker compiles it at its start, which is LIM-X4's reason):
 
 | Source | Kind | Cold | Kept | Replaced |
 |---|---|---|---|---|
@@ -381,11 +396,12 @@ starts and compiles nothing):
 | | host tool | | 24 ms (23-26) | 46 ms (45-48) |
 
 Against LIM-X4 (60 000 ms): a worker start with the interpreter is **0.6 to
-1.0 s, 1 to 2 % of the bound**; without it 24 to 150 ms. Almost all of the
+1.0 s, 1 to 2 % of the bound**; without it 24 to 160 ms for a script (46 to
+227 ms for a host tool). Almost all of the
 cost is the interpreter's compilation (a replaced execution without it
 is 24 to 88 ms on Linux and Windows). For admission's design: **every
 interleaving of two tasks on macOS or Windows costs about a second of
-latency at each switch** (0.6 to 0.8 s on macOS, 0.95 s on Windows); a
+latency at each switch** (0.6 to 0.75 s on macOS, 0.6 to 1.0 s on Windows across the instances of §7); a
 runtime that keeps working on one task pays it once. On Linux, where the
 worker serves every task, a switch costs nothing (1.0 ms for a script). A
 host tool costs 27 ms (Linux), 44 ms (Windows) and 123 ms (macOS) at the
@@ -400,19 +416,63 @@ No measurement was made. Nothing seen argues against the default of 1: no
 engine was in these runs, and nothing here bears on one consumer GPU's single
 request at a time.
 
-## 7. The replication and the pilot
+## 7. The pilot and the replication
 
-Run `44517226777` (the pilot: one round of each phase, other runner
-instances; the Linux one an AMD EPYC 7763 on kernel 7.0.0-1019, the Windows one
-build 26100.33828) gave the same picture with the same ordering: the
-single runtime of `burn_n` 4.66 s on L-ci (4.02 s in the full run), `wide`
-11.65 s (10.23 s); on the instance with the slower processor the CPU-bound
-workloads took 1.14 to 1.16 times as long, and the ratios agreed within 0.1
-(for example `burn_n` x1.99, x2.96, x3.93 against x2.00, x2.95, x3.92; the
-demonstration x1.68, x2.46, x3.17 against x1.59, x2.25, x2.92). Run
-`44529348475` repeated the full measurement on a third set of instances with
-fewer rounds; its numbers are in the review request and are used here only
-where this section says so. (Filled in below.)
+Two more runs of the same harness, on other runner instances, check the
+shapes above (they are in the review request).
+
+**The pilot**, run `44517226777` (one round of each phase; Linux an AMD EPYC
+7763 on kernel 7.0.0-1019, Windows build 26100.33828): the ratios agreed
+within 0.1 (for example `burn_n` x1.99, x2.96, x3.93 against x2.00, x2.95,
+x3.92; the demonstration x1.68, x2.46, x3.17 against x1.59, x2.25, x2.92);
+the processor was slower (the single `burn_n` 4.66 s against 4.02 s, `wide`
+11.65 s against 10.23 s).
+
+**The replication**, run `44529348475` (3 rounds of §3, 2 of §4, 2
+invocations of §5; Linux an Intel Xeon 6975P-C in another cloud, kernel
+7.0.0-1016-aws, 15 701 MiB and no swap; Windows an AMD family 26 processor,
+build 26100.33828; macOS the same image as M-ci). Its macOS job was
+**cancelled by me after about 80 minutes** (its phases §3 and §5 were complete,
+§4 incomplete): under contention the background policy of §4.3 starved the
+tree, one `wide` run reached the harness's 1 200 s limit and the rest of the
+round would have taken hours; its log is partial. The Linux job also ran the
+experiment of §4.1 in a delegated unit.
+
+| Measure | Run 2 (L-ci) | Run 3, Linux |
+|---|---|---|
+| `demo`, 2, 3, 4 runtimes | x1.59, x2.25, x2.92 | x1.59, x2.27, x2.97 |
+| `wide` | x1.88, x2.90, x3.88 | x1.99, x3.14, x4.19 |
+| `burn_2` | x1.16, x1.74, x2.31 | x1.16, x1.73, x2.31 |
+| `burn_n` | x2.00, x2.95, x3.92 | x1.99, x2.94, x3.92 |
+| `wasm`, `js` | x1.36 to x1.37, x2.02 to x2.04, x2.70 to x2.72 | x1.37 to x1.38, x1.98 to x2.02, x2.57 to x2.68 |
+| bounded to half, 2, 3, 4 (`demo`, `wide`, `burn_2`, `burn_n`) | x1.02 to x1.15, x1.5 to x1.7, x2.0 to x2.4 | x1.02 to x1.11, x1.5 to x1.8, x2.0 to x2.4 |
+| half the cores, one tree (`demo`, `burn_2`, `wide`, `burn_n`) | x1.52, x1.14, x1.74, x1.93 | x1.49, x1.13, x1.78, x1.96 |
+| one core | x2.57, x2.24, x3.18, x3.84 | x2.71, x2.25, x3.43, x3.90 |
+| a replaced worker with the interpreter (`wasm`, `js`, host tool) | 640, 640, 665 ms | 581, 582, 604 ms |
+| a replaced worker without it (`wasm`, host tool) | 24, 46 ms | 23, 44 ms |
+
+| Measure | Run 2 (W-ci) | Run 3, Windows | Run 2 (M-ci) | Run 3, macOS |
+|---|---|---|---|---|
+| `burn_2`, 2, 3, 4 | x1.26, x1.85, x2.47 | x1.23, x1.79, x2.41 | x1.35, x1.95, x2.55 | x1.47, x2.11, x2.69 |
+| `burn_n` | x1.98, x2.91, x3.88 | x1.92, x2.84, x3.82 | x1.95, x2.86, x3.94 | x1.88, x2.74, x4.04 |
+| `wasm` | x1.48, x2.13, x2.97 | x1.68, x2.20, x2.91 | x1.26, x1.50, x1.95 | x1.36, x1.47, x2.03 |
+| `js` | x1.46, x2.08, x2.77 | x1.56, x2.20, x2.94 | x1.27, x1.59, x2.15 | x1.27, x1.68, x2.00 |
+| `demo` and `wide`, 2 runtimes | | | x1.23 and x1.70 | x1.58 and x1.50 |
+| bounded to half, 2, 3, 4 (`burn_2`, `burn_n`) | x1.09 to x1.11, x1.60 to x1.64, x2.14 | x1.13 to x1.14, x1.65 to x1.66, x2.21 | | |
+| half the cores, one tree (`burn_n`, `burn_2`) | x1.81, x1.14 | x1.82, x1.08 | | |
+| one core | x3.56, x2.17 | x3.52, x2.05 | | |
+| a replaced worker with the interpreter (`wasm`, `js`, host tool) | 952, 951, 990 ms | 676, 665, 600 ms | 685, 615, 742 ms | 699, 620, 751 ms |
+| a replaced worker without it (`wasm`, host tool) | 47, 88 ms | 35, 55 ms | 148, 227 ms | 158, 232 ms |
+
+The ratios agree to within about 0.3 across instances and clouds (the widest
+gaps: the macOS demonstration's second runtime, x1.23 against x1.58, and
+`wide` at four runtimes on Linux, x3.88 against x4.19); the one that
+moves is a worker start, which follows the processor: 0.6 to 1.0 s with the
+interpreter on Windows (the two instances), 0.58 to 0.67 s on Linux, 0.6 to
+0.75 s on macOS. The demonstration's second runtime costs x1.59 on both Linux
+instances and x1.23 and x1.58 on the two macOS ones. In the delegated unit of
+run 3, the product's own rung read M `rlimit_as (memory.max: permission
+denied)`, the count `wall_clock` and K `cgroup_kill` (§4.1).
 
 ## 8. Proposed defaults, and where this touches RFC 013
 
@@ -428,14 +488,17 @@ What this contradicts or sharpens in RFC 013 and its Amendment 1:
   limits are on its own cgroup, and `tool` holds the tools and `cgroup.kill`.
   A `cpu.max` on `tool` works only if the worker lives in a leaf beside it
   and the cgroup above holds no process (§4.1); a runtime in a user's
-  terminal scope, on the CI runner and in a `Delegate=yes` unit could not get
-  that, so **the CPU part will read `unavailable` on Linux wherever memory and
+  terminal scope, on the CI runner as the job runs, and even in a
+  `Delegate=yes` scope or unit (where the runtime itself lives in the cgroup)
+  could not get that, so **the CPU part will read `unavailable` on Linux wherever memory and
   process count already read `rlimit_as` and `wall_clock`**, which is every
   Linux machine measured here. The sentence "so it never lowers the tier"
   holds; the expectation that the cgroup rung gives a bound on a normal
-  Linux machine does not. What did work everywhere is the same quota on a
-  unit the user starts the runtime in (`systemd-run --user --scope -p
-  CPUQuota=...`), which the book may say.
+  Linux machine does not. What did work on every Linux machine
+  measured is the same quota on a unit the user starts the runtime in
+  (`systemd-run --user --scope -p CPUQuota=...`), which the book may say; and
+  the arrangement of §4.1 (worker and `tool` as sibling leaves) worked by hand
+  in a delegated cgroup, locally and on a runner.
 - **Decision 6, "the CPU share ... measured against the M6a demonstration's
   duration"**: the demonstration cannot run on Windows (§1), so the Windows
   value rests on a native tool through the same path.
@@ -447,10 +510,11 @@ What this contradicts or sharpens in RFC 013 and its Amendment 1:
   a bound (§4.3), and here not even a share under contention. The wording of
   the clause part, `best_effort (priority)`, is right; "lowered priority"
   names more than one primitive (`nice`, the background policy), and the two
-  behaved differently (§4.3).
+  behaved differently: `nice` changed nothing, the background policy starved
+  a tree that shared the machine with another process (§4.3).
 - **Amendment 1, point 2** (a task switch costs a worker start): measured,
-  §5. The cost on macOS and Windows is about a second with the JavaScript
-  interpreter installed, which dominates it.
+  §5. The cost on macOS and Windows is 0.6 to 1.0 s with the JavaScript
+  interpreter configured, which dominates it.
 - **Decision 5**: nothing contradicts a slot per execution; the measured
   runtimes held 30 to 400 MiB each above an idle machine.
 
@@ -462,7 +526,7 @@ What this contradicts or sharpens in RFC 013 and its Amendment 1:
 - **A `cpu.max` set by the product.** The product sets none yet. The Linux
   numbers are a quota on the unit the runtime ran in, not a limit the worker
   placed on its own `tool` cgroup; the one `cpu.max` on a `tool` sub-cgroup
-  that was set was by hand, locally (§4.1). The Windows numbers come from a
+  that was set was by hand, locally and on a runner (§4.1, §7). The Windows numbers come from a
   patch on the throwaway branch that sets the rate on the worker's job, which
   is the call the product would make.
 - **The machine's responsiveness under several runtimes**: only the runtimes'
@@ -470,6 +534,9 @@ What this contradicts or sharpens in RFC 013 and its Amendment 1:
 - **Real hardware for macOS and Windows.** `macos-latest` is a virtual machine
   with 3 CPUs; `nice` and the background policy may behave otherwise on a Mac
   of one's own; Intel Macs were not measured.
+- **The background policy under contention**, except as the few samples of
+  §4.3 (one or two per workload, one of them ended by the harness's limit);
+  the macOS job of the replication was cancelled for it.
 - **More than 4 runtimes**, and machines with fewer than 3 or more than 4
   cores, except L-32.
 - **Memory pressure.** No run came near the memory of its machine (the most:
