@@ -317,13 +317,13 @@ mimlys task output <task> --result
 Without a flag it says, for the task's latest action that ran (name another by its id or at
 least four characters of it), what it has: its result, its standard output and its standard
 error, each with its size, whether the model read a cut of it, and the flag that shows the
-whole. A tool prints more than mimlys keeps only when it prints past `[sandbox] output_bytes` (a script's stream; 1 MiB by default, and the script is ended) or 4 MiB (a host tool's; it is read to its end and the rest is dropped): what was kept is the first bytes it printed, and the index says that the tool printed more than mimlys keeps and how many bytes it kept (`capture_cut` and `captured_bytes` in JSON). With `--stdout`, `--stderr` or `--result` it prints that copy alone, exactly as stored,
+whole. A tool prints more than mimlys keeps only when it prints past `[sandbox] output_bytes` (a script's stream; 1 MiB by default, and the script is ended) or 4 MiB (a host tool's; it is read to its end and the rest is dropped): what was kept is the first bytes it printed, and the index says that the tool printed more than mimlys keeps and how many bytes it kept (`capture_cut` and `captured_bytes` in JSON). A secret printed over and over can make the cleaned text longer than three times that bound (each secret becomes a marker with its name), and the stored copy is then cut at its bound: the index says that the stored copy is itself cut (`copy_cut` in JSON), and no secret is in it. With `--stdout`, `--stderr` or `--result` it prints that copy alone, exactly as stored,
 so that it can go through a pipe (`mimlys task output <task> --stdout | less`); the result is
 printed as JSON. On a terminal a carriage return that ends no line is shown as `\r`, so that no
 text can hide what precedes it on its line (a tool that prints `all is well\r` over a line
 of something else is seen doing it); through a pipe the text is exact. The copy is that of its
 latest execution unless you give `--attempt N`: the index names the attempts the action has, each
-as it ended (`1 (failed), 2 (succeeded)`), so after a retry what the first attempt printed when it
+as it ended (`1 (failed), 2 (succeeded)`), when it has more than one (the JSON always lists them), so after a retry what the first attempt printed when it
 failed is `mimlys task output <task> --attempt 1 --stdout`. An attempt the action does not have is refused. An
 external tool has no streams; its result is what `--result` prints. A stream the model read a
 cut of and whose whole copy is not there (the task ran before 0.12, which kept none, or

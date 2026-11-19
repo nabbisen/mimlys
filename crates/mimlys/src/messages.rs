@@ -1227,19 +1227,35 @@ pub fn output_index(
             ),
             None => what,
         };
+        // The stored copy was itself cut at its bound: only a redaction that lengthens the text
+        // past it can do that. A copy is never shown as whole when it is not.
+        let what = match (&copy.state, copy.copy_cut) {
+            (Ok(held), true) => format!(
+                "{what}; the stored copy is itself cut, at its first {} bytes: a redaction made the text longer than mimlys stores",
+                held.bytes
+            ),
+            (_, true) => format!(
+                "{what}; the stored copy was itself cut: a redaction made the text longer than mimlys stores"
+            ),
+            (_, false) => what,
+        };
         lines.push(format!("  {label}{what}"));
     }
     // The attempts the action has, each as it ended, so that "what did it print when it failed?"
-    // has an answer: `--attempt N` shows that attempt's copies.
-    let list = attempts
-        .iter()
-        .map(|a| format!("{} ({})", a.attempt, a.status.name()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    lines.push(format!(
-        "  {:<17}{list}; --attempt N shows that attempt's copies",
-        "attempts"
-    ));
+    // has an answer: `--attempt N` shows that attempt's copies. A line that offers a choice the
+    // user does not have is noise, so it is there only when there is more than one attempt (the
+    // JSON always lists them).
+    if attempts.len() > 1 {
+        let list = attempts
+            .iter()
+            .map(|a| format!("{} ({})", a.attempt, a.status.name()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "  {:<17}{list}; --attempt N shows that attempt's copies",
+            "attempts"
+        ));
+    }
     lines
 }
 

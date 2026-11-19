@@ -641,6 +641,7 @@ impl Capture {
             stream: self.stream,
             total_bytes: total,
             captured_bytes: Some(bytes.len() as u64),
+            copy_cut: false,
         });
         (bytes, notice)
     }

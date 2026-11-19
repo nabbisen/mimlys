@@ -158,7 +158,7 @@ pub const LIM_S3_MEMORY_MIB_RANGE: (u32, u32) = (16, 4096);
 /// LIM-S4: captured stdout and stderr, each, in bytes.
 pub const LIM_S4_OUTPUT_BYTES: u64 = 1024 * 1024;
 /// LIM-S4 range.
-pub const LIM_S4_OUTPUT_BYTES_RANGE: (u64, u64) = (64 * 1024, 64 * 1024 * 1024);
+pub const LIM_S4_OUTPUT_BYTES_RANGE: (u64, u64) = (64 * 1024, 16 * 1024 * 1024);
 /// LIM-S5: size of a module or interpreter, in bytes (64 MiB).
 pub const LIM_S5_MODULE_BYTES: u64 = 64 * 1024 * 1024;
 /// LIM-S6: clock granularity visible to the sandbox, in milliseconds.

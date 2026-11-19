@@ -117,11 +117,11 @@ fn req_pers_005_the_index_says_what_the_action_has_and_what_was_cut() {
     assert_eq!(kinds, ["result", "stdout", "stderr"]);
     assert_eq!(
         copies[1],
-        json!({"kind": "stdout", "bytes": whole, "cut": true, "source": "blob", "flag": "--stdout", "capture_cut": false})
+        json!({"kind": "stdout", "bytes": whole, "cut": true, "source": "blob", "flag": "--stdout", "capture_cut": false, "copy_cut": false})
     );
     assert_eq!(
         copies[2],
-        json!({"kind": "stderr", "bytes": COMPLAINT.len(), "cut": false, "source": "excerpt", "flag": "--stderr", "capture_cut": false})
+        json!({"kind": "stderr", "bytes": COMPLAINT.len(), "cut": false, "source": "excerpt", "flag": "--stderr", "capture_cut": false, "copy_cut": false})
     );
     assert_eq!(copies[0]["cut"], false);
     assert_eq!(copies[0]["source"], "payload");
@@ -491,6 +491,8 @@ fn req_cli_007_the_help_the_reference_and_the_book_say_the_same_of_task_output()
         "printed more than mimlys keeps",
         "--attempt N",
         "names the attempts the action has, each as it ended",
+        "when it has more than one",
+        "the stored copy is itself cut",
         "--stdout",
         "--stderr",
         "--result",
@@ -573,6 +575,24 @@ fn req_pers_005_the_index_names_the_attempts_and_attempt_shows_one() {
     assert_eq!(index["attempts"][0]["attempt"], 1);
     assert_eq!(index["attempts"][0]["status"], "succeeded");
     assert_eq!(index["attempts"][0]["execution_id"], index["execution_id"]);
+    // The text index offers no choice the user does not have: no attempts line for one attempt
+    // (handoff 004d-5), and the rest of the index is as ever.
+    let (code, text, stderr) = run.output(&[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        !text
+            .lines()
+            .any(|l| l.trim_start().starts_with("attempts") || l.contains("--attempt")),
+        "one attempt names no attempts:\n{text}"
+    );
+    assert!(
+        text.lines()
+            .next()
+            .unwrap()
+            .contains("attempt 1, succeeded"),
+        "{text}"
+    );
+    assert!(text.contains("standard output"), "{text}");
     run.retried();
 
     let (code, index) = run.json(&[]);

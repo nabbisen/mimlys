@@ -66,6 +66,17 @@ pub struct StepResultView {
     pub state: TaskState,
 }
 
+/// What was kept of one stream's whole text ([`Runtime::keep_whole_streams`], REQ-PERS-005).
+#[derive(Debug, Default)]
+pub(super) struct KeptCopy {
+    /// The blob that holds it, `None` when the stream fits its excerpt or the blob could not
+    /// be written.
+    pub blob: Option<BlobId>,
+    /// Whether the stored text was itself cut at its bound: a redaction made it longer than
+    /// the bound allows (handoff 004d-5).
+    pub cut: bool,
+}
+
 /// What one decision request produced: the backend's answer, the measures,
 /// and how the decision arrived (REQ-MDL-009).
 struct Decided {
@@ -1515,8 +1526,20 @@ impl Runtime {
             // The user's copy of a stream whose excerpt is a cut (REQ-PERS-005): its blob is
             // written, file and row, before the execution's record that names it, so that a
             // record never names a blob that is not there.
-            let (stdout_blob, stderr_blob) =
+            let (stdout_copy, stderr_copy) =
                 self.keep_whole_streams(task.task_id, authorized.tool(), whole);
+            // A copy cut at its bound is said so in the observation, which is written after it,
+            // on the notice of the excerpt's cut (handoff 004d-5): nothing is shown as whole
+            // that is not.
+            for (stream, copy) in [
+                (crate::observation::Stream::Stdout, &stdout_copy),
+                (crate::observation::Stream::Stderr, &stderr_copy),
+            ] {
+                if copy.cut {
+                    observation.mark_copy_cut(stream);
+                }
+            }
+            let (stdout_blob, stderr_blob) = (stdout_copy.blob, stderr_copy.blob);
             let execution = Execution {
                 execution_id,
                 action_id: action.action_id,
@@ -1635,11 +1658,13 @@ impl Runtime {
     }
 
     /// Stores the whole text of each stream whose excerpt is a cut, as a blob, and returns
-    /// the blobs' ids (REQ-PERS-005): the text the excerpt was cut from, cleaned and
+    /// what was stored for each (REQ-PERS-005): the text the excerpt was cut from, cleaned and
     /// redacted, within three times the capture's bound: LIM-S4 as configured for a script's
     /// streams, LIM-H4 for a host tool's (a byte that is no UTF-8 becomes at most three bytes, so
     /// what a capture holds is never cut again). Text beyond that bound (only a redaction
-    /// can make it longer) is cut at it on a character boundary and logged, never refused.
+    /// can make it longer) is cut at it on a character boundary and never refused: the copy is
+    /// then said cut ([`KeptCopy::cut`]), which the caller records with the observation
+    /// (handoff 004d-5), and logged.
     ///
     /// A blob that cannot be written does not lose the execution: the action ran and its
     /// record is what recovery and the audit stand on, so the failure is logged and the
@@ -1649,14 +1674,17 @@ impl Runtime {
         task_id: TaskId,
         tool: &str,
         whole: WholeStreams,
-    ) -> (Option<BlobId>, Option<BlobId>) {
+    ) -> (KeptCopy, KeptCopy) {
         let bound = WholeStreams::bound_bytes(tool, self.deps.output_bytes);
-        let keep = |stream: &'static str, text: Option<String>| -> Option<BlobId> {
-            let text = text?;
+        let keep = |stream: &'static str, text: Option<String>| -> KeptCopy {
+            let Some(text) = text else {
+                return KeptCopy::default();
+            };
             let kept = prefix_within_bytes(&text, bound);
-            if kept.len() < text.len() {
+            let cut = kept.len() < text.len();
+            if cut {
                 // Not a capture's cut (the bound is three times what the capture holds): a
-                // redaction made the text longer than that. The log says so, since nothing else does.
+                // redaction made the text longer than that.
                 tracing::warn!(
                     target: "mimlys_core",
                     %task_id,
@@ -1671,7 +1699,11 @@ impl Runtime {
                 .persistence
                 .put_blob(task_id, kept.as_bytes(), bound)
             {
-                Ok(id) => Some(id),
+                Ok(id) => KeptCopy {
+                    blob: Some(id),
+                    cut,
+                },
+                // A copy that is not there is not a cut copy: the index says it was not kept.
                 Err(error) => {
                     tracing::warn!(
                         target: "mimlys_core",
@@ -1680,7 +1712,7 @@ impl Runtime {
                         %error,
                         "the whole text of a stream could not be stored; the excerpt is the only copy"
                     );
-                    None
+                    KeptCopy::default()
                 }
             }
         };

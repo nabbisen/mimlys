@@ -289,13 +289,15 @@ enum TaskCommand {
     /// read a cut of it, and the flag that shows the whole. A tool that printed more than mimlys
     /// keeps (a script's `output_bytes`, 1 MiB by default; a host tool's 4 MiB) has a whole copy
     /// that is itself a cut of what it printed, the first bytes: the index says so and says how
-    /// many it kept. With a flag it prints that copy
+    /// many it kept; and a copy whose text a redaction made longer than mimlys stores (a secret
+    /// printed over and over) is cut at its bound, and the index says that the stored copy is
+    /// itself cut. With a flag it prints that copy
     /// alone, exactly as stored (the result as JSON), so that it can be piped; on a terminal a
     /// carriage return that ends no line is shown as `\r`, so that no text can hide what
     /// precedes it on its line, and the last line is ended. The action is the task's latest action that
     /// ran unless you name it (an id, or at least four characters of it); the copy is that of its
     /// latest execution unless you give `--attempt N`, and the index names the attempts the action
-    /// has, each as it ended, so that what an earlier attempt printed can be shown. It is a reader: it works while another mimlys process runs a task. It
+    /// has, each as it ended, when it has more than one, so that what an earlier attempt printed can be shown. It is a reader: it works while another mimlys process runs a task. It
     /// refuses, with the reason, an action that never ran, an external tool's standard output or
     /// error (it has none), an attempt the action does not have (`not_found`), and a stream the
     /// model read a cut of whose whole copy is not there (the action ran before 0.12, or

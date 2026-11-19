@@ -615,3 +615,34 @@ fn req_conf_011_command_decision_is_by_path_components() {
         assert!(why.contains(outside), "{why}");
     }
 }
+
+/// REQ-CFG-001, LIM-S4 (handoff 004d-5): `sandbox.output_bytes` loads up to 16 MiB and not above
+/// it; the refusal names the key and the maximum (the bytes of a stream are held several times
+/// over while an execution is recorded, so a larger bound is not carried), and the range's ends
+/// themselves load.
+#[test]
+fn req_cfg_001_lim_s4_the_maximum_is_16_mib() {
+    const MIB: u64 = 1024 * 1024;
+    assert_eq!(LIM_S4_OUTPUT_BYTES_RANGE, (64 * 1024, 16 * MIB));
+    let with = |bytes: u64| {
+        Config::parse(&format!(
+            "config_version = 1\n[sandbox]\noutput_bytes = {bytes}\n"
+        ))
+        .unwrap()
+        .validate()
+    };
+    with(16 * MIB).expect("16 MiB loads");
+    with(64 * 1024).expect("64 KiB loads");
+    for above in [16 * MIB + 1, 64 * MIB, 1024 * MIB] {
+        let err = with(above).unwrap_err();
+        assert_eq!(err.key, "sandbox.output_bytes");
+        assert!(
+            err.reason.contains("16777216"),
+            "the maximum is named: {err}"
+        );
+        assert!(err.reason.contains("16 MiB"), "{err}");
+    }
+    let err = with(64 * 1024 - 1).unwrap_err();
+    assert_eq!(err.key, "sandbox.output_bytes");
+    assert!(err.reason.contains("65536"), "{err}");
+}

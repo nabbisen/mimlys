@@ -202,6 +202,16 @@ const KIB: usize = 1024;
 /// text), with LIM-S4 left at its default or set to `bound` (`sandbox.output_bytes`), through the
 /// real worker: the data directory's parent and the report of the run.
 fn run_printing(out_kib: u32, byte: &str, bound: Option<usize>) -> (tempfile::TempDir, Value) {
+    run_printing_with(out_kib, byte, bound, &[])
+}
+
+/// As [`run_printing`], with more arguments for the harness (a secret).
+fn run_printing_with(
+    out_kib: u32,
+    byte: &str,
+    bound: Option<usize>,
+    more: &[&str],
+) -> (tempfile::TempDir, Value) {
     let scope = scope_printing(out_kib, 0, byte);
     let dir = tempfile::tempdir().unwrap();
     let script = script(dir.path());
@@ -210,6 +220,7 @@ fn run_printing(out_kib: u32, byte: &str, bound: Option<usize>) -> (tempfile::Te
     if let Some(bound) = &bound {
         extra.extend(["--sandbox-output-bytes", bound.as_str()]);
     }
+    extra.extend_from_slice(more);
     let run = run_printer(&dir.path().join("data"), scope.path(), &script, &extra, &[]);
     assert!(run.status.success(), "{}", run.stderr);
     (dir, run.report.unwrap())
@@ -314,5 +325,96 @@ fn req_pers_005_invalid_bytes_up_to_the_bound_are_stored_whole() {
         let stdout = &index["copies"][1];
         assert_eq!(stdout["bytes"], 3 * want, "{index}");
         assert_eq!(stdout["capture_cut"], false, "{index}");
+    }
+}
+
+/// REQ-PERS-005, THR-06 (handoff 004d-5), through the real worker: a script that prints a secret
+/// over and over up to its bound (1 MiB) makes a redacted text longer than three times the bound
+/// (each eight characters become a marker with the secret's long name), so the copy is cut at its
+/// bound. `task output` says so, in the index, in the text and with a flag, as `copy_cut`
+/// (the capture was not cut: `capture_cut` is false), and no secret is on the disk, in a blob or
+/// in the store. A copy that is whole says `copy_cut: false`.
+#[test]
+fn req_pers_005_a_copy_cut_by_a_redaction_says_so_and_holds_no_secret() {
+    const MIB: usize = 1024 * 1024;
+    let secret = "abcd1234"; // the shortest value a secret can have
+    let name = "A_NAME_OF_FORTY_CHARACTERS_FOR_THE_TEST";
+    let given = format!("{name}={secret}");
+    let (dir, report) = run_printing_with(1024, secret, None, &["--secret", &given]);
+    assert_eq!(report["state"]["state"], "completed");
+    assert_eq!(
+        report["executions"][0]["termination"], "exited",
+        "the capture holds its bound exactly and ends nothing"
+    );
+    let stored = first_blob(&dir, &report);
+    assert!(
+        stored.len() <= 3 * MIB && stored.len() > 3 * MIB - 80,
+        "cut at three times the bound: {}",
+        stored.len()
+    );
+    let text = String::from_utf8(stored).expect("cut on a character boundary");
+    assert!(text.starts_with(&format!("[redacted:{name}]")));
+
+    // The index and the flagged copy say it; the capture was whole.
+    let index = output_json(&dir, &report, &[]);
+    let stdout = &index["copies"][1];
+    assert_eq!(stdout["kind"], "stdout");
+    assert_eq!(stdout["copy_cut"], true, "{index}");
+    assert_eq!(stdout["capture_cut"], false, "{index}");
+    assert_eq!(stdout["bytes"], text.len(), "{index}");
+    assert_eq!(index["copies"][0]["copy_cut"], false, "the result: {index}");
+    assert_eq!(
+        index["copies"][2]["copy_cut"], false,
+        "standard error: {index}"
+    );
+    let shown = output_json(&dir, &report, &["--stdout"]);
+    assert_eq!(shown["copy_cut"], true, "{shown}");
+    assert_eq!(shown["capture_cut"], false, "{shown}");
+    // The text index says it, and says how much is stored.
+    let task = report["task_id"].as_str().unwrap();
+    let data = dir.path().join("data");
+    let (code, shown_text, stderr) = mimlys(&data, &["task", "output", task]);
+    assert_eq!(code, 0, "{stderr}");
+    let line = shown_text
+        .lines()
+        .find(|l| l.trim_start().starts_with("standard output"))
+        .unwrap();
+    assert!(
+        line.contains("the stored copy is itself cut")
+            && line.contains(&format!("first {} bytes", text.len()))
+            && !line.contains("printed more than mimlys keeps"),
+        "{line}"
+    );
+    // No secret on the disk: the blobs and the store.
+    for file in std::fs::read_dir(data.join("blobs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .chain([data.join("mimlys.db")])
+    {
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(
+            !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
+            "the secret is in {}",
+            file.display()
+        );
+    }
+}
+
+/// REQ-PERS-005 (handoff 004d-5): a copy that is whole is not said cut, in JSON and in text: a
+/// text that fits its bound exactly, and a capture that was cut (the copy is then whole of what
+/// was kept).
+#[test]
+fn req_pers_005_a_whole_copy_says_copy_cut_false() {
+    for (out_kib, capture_cut) in [(1024, false), (1025, true)] {
+        let (dir, report) = run_printing(out_kib, "x", None);
+        let index = output_json(&dir, &report, &[]);
+        let stdout = &index["copies"][1];
+        assert_eq!(stdout["copy_cut"], false, "{index}");
+        assert_eq!(stdout["capture_cut"], capture_cut, "{index}");
+        let task = report["task_id"].as_str().unwrap();
+        let (_, text, _) = mimlys(&dir.path().join("data"), &["task", "output", task]);
+        assert!(!text.contains("itself cut"), "{text}");
+        let shown = output_json(&dir, &report, &["--stdout"]);
+        assert_eq!(shown["copy_cut"], false, "{shown}");
     }
 }
