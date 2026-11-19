@@ -17,7 +17,7 @@ use mimlys_core::limits::LIM_S4_OUTPUT_BYTES;
 pub const LIM_S4_BYTES: usize = LIM_S4_OUTPUT_BYTES as usize;
 
 /// The engine's pinned version (REQ-ARCH-007).
-pub const ENGINE_VERSION: &str = "50.0.1";
+pub const ENGINE_VERSION: &str = "50.0.2";
 
 #[cfg(test)]
 mod tests;

@@ -139,7 +139,7 @@ fn req_arch_008_run_wasm_in_the_worker() {
     let fx = fx();
     write_module(&fx, "hello.wasm", HELLO);
     let facts = fx.worker.start().unwrap();
-    assert_eq!(facts.engine_version, "50.0.1");
+    assert_eq!(facts.engine_version, mimlys_exec::sandbox::ENGINE_VERSION);
     let out = fx.worker.execute(
         execution(
             &fx,

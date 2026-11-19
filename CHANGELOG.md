@@ -9,6 +9,10 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+### Security
+
+- `mimlys-exec` (REQ-ARCH-007; THR-17): **the WebAssembly engine is Wasmtime 50.0.2** (it was 50.0.1, pinned exactly). Eight advisories were published against 50.0.1 on 2026-11-19 (RUSTSEC-2026-0566 to -0573). Two of them apply to how mimlys builds the engine, without its `threads` and `gc` features: a guest could make the engine abort its process (RUSTSEC-2026-0567, -0570). That process is the confined worker, so a script that did it ended its own execution as `worker_died` and spent one of the worker's restarts (LIM-X3); it reached nothing outside the worker. The others concern features mimlys does not build (the component model, garbage collection, `wasi-http`). `status` reports the engine as `50.0.2`, and a test now fails if the reported version and the pin differ.
+
 ### Added
 
 - `mimlys` (handoff 004d-4; REQ-PERS-005; external design 19.2; **additive**): **`mimlys task output <task> [<action>] --attempt N` shows an earlier attempt of an action that was retried, and the index names the attempts.** "What did it print when it failed?" had no answer: the command showed the latest execution's copies and nothing else. Now the index lists every attempt the action has, each as its observation says it ended (`attempts  1 (failed), 2 (succeeded); --attempt N shows that attempt's copies`), the latest is still the default, and `--attempt N` (from 1) shows that attempt's execution and copies, with or without a flag. An attempt the action does not have, `0` included, is refused as `not_found`, naming the ones it has. `--json` gains `attempts: [{attempt, execution_id, status}]` in the index (and in the copy with a flag, `attempt` names the one shown, as before). The help, the command line reference and the book say the same, and a test holds them to the same phrases.

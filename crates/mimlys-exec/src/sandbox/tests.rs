@@ -526,3 +526,16 @@ fn req_tool_007_cancel() {
         "the cancel took {took:?} to end the run"
     );
 }
+
+/// REQ-ARCH-007: the engine version the runtime reports is the version the
+/// workspace pins, so that `status` and the probe never name an engine that is
+/// not the one built in (a bump of the pin without this constant fails here).
+#[test]
+fn req_arch_007_the_reported_engine_version_is_the_pinned_one() {
+    let manifest = include_str!("../../../../Cargo.toml");
+    let pin = format!("wasmtime = {{ version = \"={ENGINE_VERSION}\"");
+    assert!(
+        manifest.contains(&pin),
+        "Cargo.toml does not pin wasmtime at {ENGINE_VERSION}"
+    );
+}

@@ -433,7 +433,7 @@ fn m2_status_shows_tier_and_clauses() {
         .unwrap_or_else(|e| panic!("{e}: {}\n{}", out.stdout, out.stderr));
     let tier = json["tier"].as_str().unwrap();
     assert!(tier == "core" || tier == "full", "{tier}");
-    assert_eq!(json["engine_version"], "50.0.1");
+    assert_eq!(json["engine_version"], mimlys_exec::sandbox::ENGINE_VERSION);
     assert_eq!(
         json["clauses"]["environment"]["state"], "enforced",
         "{}",
