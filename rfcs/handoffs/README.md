@@ -87,6 +87,7 @@ The user's copies, then operation on one machine (ROADMAP, "Release 0.12"). Each
 |---|---|---|---|
 | 1 | [004d The user's copies](./004d-the-users-copies/implementation-handoff.md) | RFC 004, RFC 010 | — |
 | 2 | [013d-0 The operation theme's measurements](./013d-0-operation-measurements/implementation-handoff.md) | RFC 013 | — |
+| 3 | [013d Operation on one machine, part two](./013d-operation-on-one-machine/implementation-handoff.md) | RFC 013 | 2 |
 
 ## Release 0.11
 
