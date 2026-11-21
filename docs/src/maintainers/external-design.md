@@ -866,10 +866,11 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 
 **The engine gate (decision 7).** A model request takes the gate of its backend's URL for the user before it is sent (`[backend] max_in_flight`, default LIM-O12, within its range), and returns it when the answer is read.
 - **The wait** is the metric `engine_wait_ms` and a log line.
-- **It ends at the first stop request, at once,** since nothing has been sent (Amendment 1); a request in flight is interrupted at the grace, as before.
+- **It ends at the first stop request, at once,** since nothing has been sent (Amendment 1); a request in flight is interrupted at the grace, as before. The task's deadline ends it too, and the task halts `budget_deadline`, as for the slot: never `backend_unavailable`, since the engine never received the request (handoff 013d-4).
 - **The request's own deadline (LIM-M1) starts when the request is sent,** not when it starts waiting. The probe in `status` takes no gate.
 
 **Fail-open, visible.** A registry that cannot be read or written within LIM-O11 lets the runtime proceed as if alone and says so at `warn`.
+- **`status` only reads the registry** (handoff 013d-4): it makes no directory and writes no file, and judges from the directory's metadata. It says `admission: ready (<taken> of <limit> slots taken)`, or `admission: not yet used (no runtime of yours has taken a slot)` when the directory does not exist yet (JSON `{state: ready, not_yet_used: true}`), or `admission: unavailable (<reason>)`; the first take decides for real.
 - **While it lasts,** `status` shows `admission: unavailable (<reason>)`, and the task's events record `task.admission_changed{state: unadmitted, reason}`.
 - **A liveness defect of the registry never stops the user's work.** The residual risk is THR-37's.
 
