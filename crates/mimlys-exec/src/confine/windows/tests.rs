@@ -224,3 +224,32 @@ fn req_conf_006_a_tasks_capability_is_derived_from_its_identifier() {
         sid_string(&a)
     );
 }
+
+/// REQ-CONF-013, RFC 013 Amendment 2 point 2 (Windows job only): the rate set on
+/// a Job Object is the share of the **whole machine** and reads back from the
+/// system as such; a job made without a rate holds none, and a rate the
+/// system accepts is the hard cap that was asked for.
+#[test]
+fn req_conf_013_the_jobs_cpu_rate_is_the_machines_share_and_reads_back() {
+    let cores = super::super::cpu::machine_cores();
+    // Half the cores: 5 000 (50 %) on a machine of two or more cores, the whole
+    // machine (10 000) on a machine of one, the rate of one core.
+    let half = super::super::cpu::job_cpu_rate(cores, 50);
+    let job = Job::with_limits(None, None, Some(half)).unwrap();
+    assert_eq!(job.cpu_rate(), Some(half));
+    if cores >= 2 {
+        assert_eq!(job.cpu_rate(), Some(5_000), "{cores} cores");
+    }
+    // One core: `10 000 / cores`, not the number 1.
+    let one = super::super::cpu::job_cpu_rate(cores, 1);
+    let job = Job::with_limits(None, None, Some(one)).unwrap();
+    assert_eq!(job.cpu_rate(), Some(10_000 / cores.max(1)));
+    // All the cores, and a job with no rate asked for.
+    let job = Job::with_limits(None, None, Some(10_000)).unwrap();
+    assert_eq!(job.cpu_rate(), Some(10_000));
+    assert_eq!(Job::new().unwrap().cpu_rate(), None);
+    // The other limits are as they were with a rate beside them.
+    let job = Job::with_limits(Some(1 << 30), Some(64), Some(half)).unwrap();
+    assert_eq!(job.cpu_rate(), Some(half));
+    assert_eq!(job.active_processes(), Some(0));
+}
