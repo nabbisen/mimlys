@@ -882,7 +882,10 @@ pub fn machine_lines(machine: &crate::machine::Machine) -> Vec<String> {
     use crate::machine::{Admission, Holds, RowState};
     let mut lines = Vec::new();
     lines.push(match &machine.admission {
-        Admission::Ready => format!(
+        Admission::Ready { not_yet_used: true } => {
+            "admission: not yet used (no runtime of yours has taken a slot)".to_owned()
+        }
+        Admission::Ready { .. } => format!(
             "admission: ready ({} of {} slots taken)",
             machine.slots.taken, machine.slots.limit
         ),

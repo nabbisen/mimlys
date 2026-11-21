@@ -7,7 +7,7 @@
 //! - **waiting**: the runtime waits for one (its task stays `running` in its own store);
 //! - **slot**: one of the `admission_slots` executions of the user across runtimes.
 
-use crate::registry::{Entry, Kind, Registry, Scan, State};
+use crate::registry::{Entry, Kind, Presence, Registry, Scan, State};
 use mimlys_core::clock::Instant;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -16,8 +16,14 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Admission {
-    /// It can: slots are counted.
-    Ready,
+    /// It can: slots are counted. `not_yet_used` is true while the registry's directory does
+    /// not exist because no runtime of the user has taken a slot yet; it counts as ready, and the
+    /// first take makes the directory.
+    Ready {
+        /// No runtime of the user has taken a slot yet.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        not_yet_used: bool,
+    },
     /// It cannot: a runtime goes on unadmitted, which `status` says (the fail-open).
     Unavailable {
         /// Why, in the registry's words.
@@ -165,9 +171,12 @@ pub fn view(dir: Result<PathBuf, String>, limit: usize) -> Machine {
         crate::registry::Bounds::default(),
         std::sync::Arc::new(mimlys_core::clock::SystemClock),
     );
-    // Whether a slot could be taken here: the directory can be made private and written.
+    // Whether a slot could be taken here, from the directory's metadata: nothing is made,
+    // written or removed (a read command only reads).
     let admission = match registry.check() {
-        Ok(()) => Admission::Ready,
+        Ok(presence) => Admission::Ready {
+            not_yet_used: presence == Presence::Absent,
+        },
         Err(reason) => Admission::Unavailable { reason },
     };
     match registry.list() {
@@ -179,7 +188,7 @@ pub fn view(dir: Result<PathBuf, String>, limit: usize) -> Machine {
         // The reason the directory cannot be made or written is the better one when there is one.
         Err(reason) => empty(
             match admission {
-                Admission::Ready => Admission::Unavailable { reason },
+                Admission::Ready { .. } => Admission::Unavailable { reason },
                 unavailable => unavailable,
             },
             Some(shown),
@@ -257,7 +266,9 @@ pub fn from_scan(scan: &Scan, limit: usize) -> Machine {
     }
     Machine {
         registry: None,
-        admission: Admission::Ready,
+        admission: Admission::Ready {
+            not_yet_used: false,
+        },
         slots: Slots { limit, taken },
         runtimes,
         engine_gates,

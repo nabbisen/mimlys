@@ -42,9 +42,20 @@ pub const ENTRY_VERSION: u32 = 1;
 const MAX_ENTRY_BYTES: u64 = 4096;
 /// The most files the registry reads in one scan; a directory with more is not usable.
 const MAX_FILES: usize = 4096;
-/// The environment variable that names the registry's directory instead of the platform's: for
-/// tests and for a user who keeps their runtime directory elsewhere.
+/// The environment variable that names the registry's directory instead of the platform's. It is
+/// a seam for tests, read only in builds with `debug_assertions` on (like the `MIMLYS_PROBE_*`
+/// knobs) and never in a release: a user who set it for one runtime and not for another would
+/// split the registry in two without seeing it (013d-4).
 pub const DIR_ENV: &str = "MIMLYS_RUN_DIR";
+
+/// Whether the registry's directory is there, as a metadata look finds it ([`Registry::check`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    /// The directory exists and nothing in its metadata keeps this user from using it.
+    Present,
+    /// No runtime of the user has taken a slot yet: the first take makes the directory.
+    Absent,
+}
 
 /// What an entry is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -175,11 +186,26 @@ pub struct Owner {
     pub data_dir: String,
 }
 
-/// The directory of the registry on this machine: [`DIR_ENV`] when it is set, else the user's
-/// runtime directory (`$XDG_RUNTIME_DIR/mimlys`, else `$XDG_DATA_HOME/mimlys/run`;
-/// `%LOCALAPPDATA%\mimlys\run`; `~/Library/Application Support/mimlys/run`).
+/// What [`DIR_ENV`] names, when this build reads it: only with `debug_assertions` on.
+fn seam_dir() -> Option<std::ffi::OsString> {
+    seam_of(std::env::var_os(DIR_ENV))
+}
+
+/// What the seam's value counts for: itself (if not empty) in a debug build, nothing in a release.
+fn seam_of(value: Option<std::ffi::OsString>) -> Option<std::ffi::OsString> {
+    if cfg!(debug_assertions) {
+        value.filter(|d| !d.is_empty())
+    } else {
+        None
+    }
+}
+
+/// The directory of the registry on this machine: [`DIR_ENV`] when it is set (a debug build
+/// only, [`seam_dir`]), else the user's runtime directory (`$XDG_RUNTIME_DIR/mimlys`, else
+/// `$XDG_DATA_HOME/mimlys/run`; `%LOCALAPPDATA%\mimlys\run`;
+/// `~/Library/Application Support/mimlys/run`).
 pub fn default_dir() -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os(DIR_ENV).filter(|d| !d.is_empty()) {
+    if let Some(dir) = seam_dir() {
         let dir = PathBuf::from(dir);
         return if dir.is_absolute() {
             Ok(dir)
@@ -726,16 +752,37 @@ impl Registry {
         })
     }
 
-    /// Whether a slot could be taken here: the directory can be made and written. `status` asks,
-    /// so that a registry that cannot be used is shown before a task meets it.
-    pub fn check(&self) -> Result<(), Reason> {
+    /// Whether a slot could be taken here, judged from the directory's metadata alone: it
+    /// writes nothing, makes nothing and removes nothing (013d-4; a read command only reads).
+    /// `status` asks, so that a registry that cannot be used is shown before a task meets it.
+    /// The first take still decides for real: it makes the directory private, which a metadata
+    /// look cannot promise (a read-only filesystem, say, is found only by writing).
+    pub fn check(&self) -> Result<Presence, Reason> {
         let dir = self.dir.clone();
-        bounded(self.bounds.op, move || {
-            Self::prepare(&dir)?;
-            let probe = dir.join(format!("probe-{}.tmp", std::process::id()));
-            let file = create_new_no_follow(&probe).map_err(|e| io_reason("writing", &probe, &e));
-            let _ = std::fs::remove_file(&probe);
-            file.map(drop)
-        })
+        bounded(self.bounds.op, move || Self::look(&dir))
+    }
+
+    fn look(dir: &Path) -> Result<Presence, Reason> {
+        let meta = match std::fs::symlink_metadata(dir) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Presence::Absent),
+            Err(e) => return Err(io_reason("looking at", dir, &e)),
+        };
+        #[cfg(unix)]
+        let link = meta.file_type().is_symlink();
+        #[cfg(not(unix))]
+        let link = is_link(&meta);
+        if link || !meta.is_dir() {
+            return Err(format!("{} is not a directory of its own", dir.display()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // Another user's directory cannot be made private by this one.
+            if meta.uid() != rustix::process::geteuid().as_raw() {
+                return Err(format!("{} belongs to another user", dir.display()));
+            }
+        }
+        Ok(Presence::Present)
     }
 }
