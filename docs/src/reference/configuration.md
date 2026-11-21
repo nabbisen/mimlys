@@ -219,7 +219,7 @@ machine:
   elsewhere (`ssh -L 8080:gpu-box:8080`) looks loopback and is not, so you say
   `remote` for it. `remote` needs `policy.remote_backend_allowed = true`, and a
   task whose profile has `external = false` (every shipped profile) is refused
-  a remote backend: when it is created, and again whenever it starts.
+  a remote backend when it is created.
 - A 0.12 file that declared a LAN address `local` stops loading and says so. The
   fix is `locality = "remote"` (with the permission and a profile that has
   `external = true`), or a loopback URL.
