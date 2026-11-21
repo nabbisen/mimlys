@@ -19,6 +19,95 @@ use std::time::{Duration, Instant};
 /// The bound of one run.
 pub const BOUND: Duration = Duration::from_secs(180);
 
+/// A registry directory (RFC 013) holding an entry held by this process, for the suites that
+/// run a host tool under confinement: the registry is under the user's runtime directory, outside
+/// every write set (Amendment 1; THR-38), so a tool can neither forge, change nor remove an entry.
+/// `dir` is where the suite keeps its directories that no read set reaches.
+pub struct HeldRegistry {
+    /// The registry's directory.
+    pub dir: std::path::PathBuf,
+    /// The held entry's file stem.
+    pub stem: String,
+    text: Vec<u8>,
+    _held: mimlys::registry::Handle,
+}
+
+impl HeldRegistry {
+    pub fn new(dir: std::path::PathBuf) -> Self {
+        use mimlys::registry::{Bounds, Class, Kind, Owner, Registry, Take};
+        let _ = std::fs::remove_dir_all(&dir);
+        let registry = Registry::new(
+            dir.clone(),
+            Bounds::default(),
+            std::sync::Arc::new(mimlys_core::clock::SystemClock),
+        );
+        let class = Class {
+            kind: Kind::Slot,
+            key: None,
+            url: None,
+            limit: 8,
+        };
+        let owner = Owner {
+            pid: std::process::id(),
+            data_dir: "/data/held".into(),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let held = match runtime
+            .block_on(registry.take(&class, Some("held".into()), &owner, None))
+            .unwrap()
+        {
+            Take::Granted { handle, .. } => handle,
+            Take::Busy { .. } => panic!("an empty registry has a free slot"),
+        };
+        let stem = held.stem().to_owned();
+        let text = std::fs::read(dir.join(format!("{stem}.entry"))).unwrap();
+        Self {
+            dir,
+            stem,
+            text,
+            _held: held,
+        }
+    }
+
+    /// `(a file that does not exist, the entry's text, its lock file, the writers' lock)`.
+    pub fn paths(&self) -> [std::path::PathBuf; 4] {
+        [
+            self.dir.join("held-slot-forged.entry"),
+            self.dir.join(format!("{}.entry", self.stem)),
+            self.dir.join(format!("{}.lock", self.stem)),
+            self.dir.join("registry.lock"),
+        ]
+    }
+
+    /// What a tool that tried to create, change and remove all of them left: nothing forged, the
+    /// entry's text as it was, its lock and the writers' lock there, and the entry still live.
+    pub fn assert_untouched(&self) {
+        let [forged, entry, lock, mutex] = self.paths();
+        assert!(!forged.exists(), "an entry was forged");
+        assert_eq!(
+            std::fs::read(&entry).unwrap(),
+            self.text,
+            "an entry was changed"
+        );
+        assert!(lock.is_file() && mutex.is_file(), "a lock file was removed");
+        let live = mimlys::registry::Registry::new(
+            self.dir.clone(),
+            mimlys::registry::Bounds::default(),
+            std::sync::Arc::new(mimlys_core::clock::SystemClock),
+        )
+        .list()
+        .unwrap()
+        .live;
+        assert!(
+            live.iter().any(|s| s.stem == self.stem),
+            "the entry is not live any more: {live:?}"
+        );
+    }
+}
+
 static REGISTRIES: AtomicU64 = AtomicU64::new(0);
 
 /// A registry directory of its own, for one command (RFC 013): the user's runtimes share
