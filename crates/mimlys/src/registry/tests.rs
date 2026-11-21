@@ -668,3 +668,64 @@ async fn thr_38_a_slot_whose_holder_ended_is_free_for_the_waiter() {
     ));
     assert!(!names(dir.path()).contains(&format!("{stem}.entry")));
 }
+
+/// REQ-SCHED-006 (013d-4): `check` only looks. A directory that is not there is `Absent` and is
+/// not made; one that is there is `Present` and keeps its mode; a file or (Unix) a link in its
+/// place is unusable, with the reason, and is left as it was.
+#[test]
+fn req_sched_006_the_check_reads_only_and_judges_from_the_metadata() {
+    let parent = tempfile::tempdir().unwrap();
+    let run = parent.path().join("run");
+    let registry = registry_in(&run, fast());
+    assert_eq!(registry.check(), Ok(Presence::Absent));
+    assert!(!run.exists(), "a look makes no directory");
+    assert!(names(parent.path()).is_empty());
+
+    std::fs::create_dir(&run).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert_eq!(registry.check(), Ok(Presence::Present));
+    assert!(names(&run).is_empty(), "a look writes no probe");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&run).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "a look makes nothing private");
+    }
+
+    let file = parent.path().join("a-file");
+    std::fs::write(&file, b"kept").unwrap();
+    let Err(reason) = registry_in(&file, fast()).check() else {
+        panic!("a file is not a directory");
+    };
+    assert!(reason.contains("is not a directory of its own"), "{reason}");
+    assert_eq!(std::fs::read(&file).unwrap(), b"kept");
+
+    #[cfg(unix)]
+    {
+        let link = parent.path().join("a-link");
+        std::os::unix::fs::symlink(&run, &link).unwrap();
+        let Err(reason) = registry_in(&link, fast()).check() else {
+            panic!("a link is not a directory of its own");
+        };
+        assert!(reason.contains("is not a directory of its own"), "{reason}");
+        assert!(names(&run).is_empty());
+    }
+}
+
+/// REQ-SCHED-006 (013d-4): what the seam names counts in a debug build and counts for nothing in a
+/// release build (`cargo test --release` runs this test with the other expectation).
+#[test]
+fn req_sched_006_the_run_dir_seam_is_a_debug_build_seam() {
+    let named = Some(std::ffi::OsString::from("/somewhere/else"));
+    assert_eq!(seam_of(None), None);
+    assert_eq!(seam_of(Some(std::ffi::OsString::new())), None);
+    if cfg!(debug_assertions) {
+        assert_eq!(seam_of(named.clone()), named);
+    } else {
+        assert_eq!(seam_of(named), None, "a release build ignores {DIR_ENV}");
+    }
+}

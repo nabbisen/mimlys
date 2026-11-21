@@ -6,13 +6,6 @@ directory (`~/.config/mimlys`, `%APPDATA%\mimlys`, `~/Library/Application
 Support/mimlys`). Without a file, mimlys runs with the built-in defaults:
 the fake backend and the `workspace` profile.
 
-One more setting is an environment variable, not a key: `MIMLYS_RUN_DIR` names an
-absolute directory for the registry in which your runtimes count their slots and
-engine gates (see [Several projects, several jobs](../getting-started.md#several-projects-several-jobs)),
-instead of the one under your runtime directory. The tests use it. Set it for
-every runtime of yours or for none: two runtimes that look in two directories do
-not see each other.
-
 Rules (REQ-CFG-001 … 005):
 
 - `config_version = 1` is required.
