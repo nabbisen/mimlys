@@ -15,7 +15,16 @@ use mimlys_core::task::Extension;
 /// them, in `pending_approval.arguments`.
 pub fn show(app: &ReadApp, task: &str, arguments: bool, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    let view = app.reader.get_task(id)?;
+    let mut view = app.reader.get_task(id)?;
+    // A `running` task whose execution waits for a slot among the user's runtimes says why
+    // (external design §19.3); the registry knows, the store does not.
+    if view.task.state == mimlys_core::task::TaskState::Running {
+        view.waiting = crate::machine::waiting_of(
+            crate::registry::default_dir(),
+            &app.data_dir.to_string_lossy(),
+            &id.to_string(),
+        );
+    }
     for line in messages::show_lines(&view) {
         out.line(line);
     }

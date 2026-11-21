@@ -12,7 +12,6 @@
 use mimlys_model::mock::{MockConfig, MockServer, Reply, ToolsSupport, UsageStyle};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 
 mod common;
@@ -41,7 +40,7 @@ fn qjs() -> PathBuf {
                     ),
                 )
                 .unwrap();
-                let out = Command::new(env!("CARGO_BIN_EXE_mimlys"))
+                let out = common::mimlys()
                     .args([
                         "--config",
                         config.to_str().unwrap(),
@@ -113,7 +112,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

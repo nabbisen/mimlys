@@ -503,12 +503,29 @@ pub struct InterpreterSection {
 }
 
 /// `[runtime]`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSection {
     /// The data directory; the platform default when absent (external design §14.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<PathBuf>,
+    /// Executions of this user that may run at once across all runtimes (LIM-X5, RFC 013
+    /// decision 5): an execution beyond it waits for a slot, and `status` says so.
+    #[serde(default = "default_admission_slots")]
+    pub admission_slots: usize,
+}
+
+fn default_admission_slots() -> usize {
+    mimlys_core::limits::LIM_X5_ADMISSION_SLOTS
+}
+
+impl Default for RuntimeSection {
+    fn default() -> Self {
+        Self {
+            data_dir: None,
+            admission_slots: default_admission_slots(),
+        }
+    }
 }
 
 /// Which backend.
@@ -573,6 +590,11 @@ pub struct BackendSection {
     /// Deadline of one model request (LIM-M1).
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: i64,
+    /// Model requests of this user that may be in flight at once to this endpoint, across all
+    /// runtimes (LIM-O12, RFC 013 decision 7): a llama-server with several slots serves
+    /// requests in parallel by design.
+    #[serde(default = "default_max_in_flight")]
+    pub max_in_flight: usize,
     /// Maximum completion tokens (LIM-M2).
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
@@ -598,6 +620,9 @@ fn default_locality() -> Locality {
 fn default_timeout_ms() -> i64 {
     LIM_M1_REQUEST_MS
 }
+fn default_max_in_flight() -> usize {
+    mimlys_core::limits::LIM_O12_MAX_IN_FLIGHT
+}
 fn default_max_tokens() -> u32 {
     LIM_M2_MAX_TOKENS
 }
@@ -615,6 +640,7 @@ impl Default for BackendSection {
             decision_transport: DecisionTransport::Auto,
             structured_output: StructuredOutput::Auto,
             timeout_ms: LIM_M1_REQUEST_MS,
+            max_in_flight: default_max_in_flight(),
             max_tokens: LIM_M2_MAX_TOKENS,
             context_chars: LIM_C1_CONTEXT_CHARS,
             temperature: 0.0,
@@ -1164,6 +1190,16 @@ impl Config {
         }
         let b = &self.backend;
         range("backend.timeout_ms", b.timeout_ms, LIM_M1_REQUEST_MS_RANGE)?;
+        range(
+            "backend.max_in_flight",
+            b.max_in_flight,
+            mimlys_core::limits::LIM_O12_MAX_IN_FLIGHT_RANGE,
+        )?;
+        range(
+            "runtime.admission_slots",
+            self.runtime.admission_slots,
+            mimlys_core::limits::LIM_X5_ADMISSION_SLOTS_RANGE,
+        )?;
         range("backend.max_tokens", b.max_tokens, LIM_M2_MAX_TOKENS_RANGE)?;
         range(
             "backend.context_chars",

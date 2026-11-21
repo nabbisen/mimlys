@@ -247,6 +247,104 @@ pub struct BackendDescriptor {
     pub locality: Locality,
 }
 
+/// A slot or a gate that is held: dropping it returns it (RFC 013 decisions 5 and 7). The
+/// runtime keeps it for the length of an execution or a model request and knows nothing else of
+/// it.
+pub struct Held(#[allow(dead_code)] Box<dyn std::any::Any + Send + Sync>);
+
+impl Held {
+    /// Wraps a guard whose drop returns what it holds.
+    pub fn new<T: std::any::Any + Send + Sync>(guard: T) -> Self {
+        Self(Box::new(guard))
+    }
+}
+
+impl std::fmt::Debug for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Held")
+    }
+}
+
+/// What a wait for a slot or a gate reports as it changes (external design §19.3). The runtime
+/// records `task.admission_changed` for each.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WaitChange {
+    /// No slot is free: the wait begins.
+    Waiting {
+        /// Slots taken now, which is the limit.
+        slots_taken: u32,
+        /// The processes that hold them.
+        holders: Vec<u32>,
+    },
+    /// The wait ended with a slot.
+    Admitted {
+        /// Slots taken now, this one included.
+        slots_taken: u32,
+        /// How long the wait lasted, in milliseconds.
+        waited_ms: u64,
+    },
+    /// The registry cannot be read or written within its bound (LIM-O11): the execution goes on
+    /// as if alone, and the runtime says so.
+    Unadmitted {
+        /// Why, in the registry's words.
+        reason: String,
+    },
+}
+
+/// What a wait for a slot or a gate is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdmissionRequest {
+    /// The task.
+    pub task_id: TaskId,
+    /// The task's deadline in milliseconds from now: the wait ends when it passes (the deadline
+    /// keeps counting, RFC 013 decision 5).
+    pub remaining_ms: i64,
+}
+
+/// How a wait for a slot or a gate ended.
+#[derive(Debug)]
+pub enum AdmissionOutcome {
+    /// Admitted. `held` is `None` when the registry could not be used (the fail-open: the
+    /// execution goes on unadmitted, and the change `Unadmitted` was reported).
+    Admitted {
+        /// What to hold until the execution or the request ends.
+        held: Option<Held>,
+        /// How long the wait lasted, in milliseconds (zero when it did not wait).
+        waited_ms: u64,
+    },
+    /// The first stop request ended the wait: nothing is held, and nothing was sent.
+    Stopped {
+        /// How long the wait lasted, in milliseconds.
+        waited_ms: u64,
+    },
+    /// The task's deadline passed during the wait: nothing is held.
+    DeadlinePassed {
+        /// How long the wait lasted, in milliseconds.
+        waited_ms: u64,
+    },
+}
+
+/// A callback that records what a wait reports; an error is the store's.
+pub type WaitObserver<'a> = &'a (dyn Fn(WaitChange) -> Result<(), PersistenceError> + Send + Sync);
+
+/// Admission across the runtimes of one user (RFC 013): the same interface serves the execution
+/// slots (decision 5) and the engine gate (decision 7). The implementation owns the registry, the
+/// waiting and the bound on its own operations (LIM-O11); the runtime owns the order against the
+/// record of an action and the events.
+pub trait Admission: Send + Sync {
+    /// Takes a slot, or the gate, waiting for one. The wait ends at the first stop request
+    /// (`stop`, the weakest one, which the two stronger requests imply), at the task's deadline,
+    /// or when one is free. `changed` is called as the wait changes, in order, and an error from
+    /// it ends the wait with that error. A slot is never held when the outcome is `Stopped` or
+    /// `DeadlinePassed`.
+    fn admit<'a>(
+        &'a self,
+        request: AdmissionRequest,
+        stop: Cancellation,
+        changed: WaitObserver<'a>,
+    ) -> BoxFuture<'a, Result<AdmissionOutcome, PersistenceError>>;
+}
+
 /// What a tool provider receives beside the action.
 #[derive(Clone, Debug)]
 pub struct ExecutionContext {

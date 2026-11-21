@@ -12,7 +12,6 @@ mod common;
 use common::run_bounded;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 
 fn script(name: &str) -> PathBuf {
@@ -44,7 +43,7 @@ fn qjs() -> PathBuf {
                     ),
                 )
                 .unwrap();
-                let out = Command::new(env!("CARGO_BIN_EXE_mimlys"))
+                let out = common::mimlys()
                     .args([
                         "--config",
                         config.to_str().unwrap(),
@@ -109,7 +108,7 @@ struct Run {
 
 fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run {
     let qjs = qjs();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
+    let mut cmd = common::mimlys_testloop();
     cmd.args([
         "--script",
         script(script_name).to_str().unwrap(),
@@ -424,7 +423,7 @@ fn m2_status_shows_tier_and_clauses() {
     )
     .unwrap();
     let out = run_bounded(
-        Command::new(env!("CARGO_BIN_EXE_mimlys"))
+        common::mimlys()
             .args(["--config", config.to_str().unwrap(), "--json", "status"])
             .env("MIMLYS_CONFIG", ""),
         data.path(),
@@ -457,7 +456,7 @@ fn m2_status_shows_tier_and_clauses() {
     assert!(json["clauses"]["network"]["state"].is_string());
     assert_eq!(json["interpreters"][0]["language"], "javascript");
     let out = run_bounded(
-        Command::new(env!("CARGO_BIN_EXE_mimlys"))
+        common::mimlys()
             .args(["--config", config.to_str().unwrap(), "--json", "status"])
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_PROBE_FAIL", "K"),
@@ -486,7 +485,7 @@ fn m2_overhead_report() {
     std::fs::write(&script, serde_json::to_string(&decisions).unwrap()).unwrap();
     let qjs = qjs();
     let started = std::time::Instant::now();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
+    let mut cmd = common::mimlys_testloop();
     cmd.args([
         "--script",
         script.to_str().unwrap(),

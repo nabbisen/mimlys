@@ -10,6 +10,7 @@ use crate::observation::{Notice, ObservationStatus};
 use crate::spi::{BackendDescriptor, BoxFuture, Cancellation, GenerateRequest, ModelBackend};
 use std::sync::Mutex;
 
+mod admission;
 mod not_started;
 mod second_check;
 
@@ -227,6 +228,15 @@ impl Rig {
 
     /// As `new`, and the tool's execution ends as `outcome` says.
     fn ending(definition: ToolDefinition, outcome: ExecutionOutcome) -> Self {
+        Self::admitted(definition, outcome, None)
+    }
+
+    /// As `ending`, the runtime taking its slots from `admission` (RFC 013 decision 5).
+    fn admitted(
+        definition: ToolDefinition,
+        outcome: ExecutionOutcome,
+        admission: Option<Arc<crate::fake_admission::ScriptedAdmission>>,
+    ) -> Self {
         let name = definition.name.clone();
         let persistence = Arc::new(FakePersistence::default());
         let provider = Arc::new(Asking {
@@ -264,23 +274,25 @@ impl Rig {
             ask: Mutex::new(Ask::Nothing),
         });
         let workspaces = Arc::new(FakeWorkspaces::new(provider.clone()));
-        let runtime = Arc::new(
-            Runtime::new(RuntimeDeps {
-                persistence: persistence.clone(),
-                backend: backend.clone(),
-                workspaces: workspaces.clone(),
-                policy,
-                ids: Arc::new(ScriptedIds::default()),
-                clock: Arc::new(FakeClock::default()),
-                runtime_version: "0.1.0-test".into(),
-                rules: PlatformRules::Posix,
-                probe: crate::confine::Probe::unavailable("no backend in tests"),
-                secrets: vec![],
-                context_chars: crate::limits::LIM_C1_CONTEXT_CHARS,
-                output_bytes: crate::limits::LIM_S4_OUTPUT_BYTES as usize,
-            })
-            .unwrap(),
-        );
+        let runtime = Runtime::new(RuntimeDeps {
+            persistence: persistence.clone(),
+            backend: backend.clone(),
+            workspaces: workspaces.clone(),
+            policy,
+            ids: Arc::new(ScriptedIds::default()),
+            clock: Arc::new(FakeClock::default()),
+            runtime_version: "0.1.0-test".into(),
+            rules: PlatformRules::Posix,
+            probe: crate::confine::Probe::unavailable("no backend in tests"),
+            secrets: vec![],
+            context_chars: crate::limits::LIM_C1_CONTEXT_CHARS,
+            output_bytes: crate::limits::LIM_S4_OUTPUT_BYTES as usize,
+        })
+        .unwrap();
+        let runtime = Arc::new(match admission {
+            Some(admission) => runtime.with_admission(admission),
+            None => runtime,
+        });
         let session = provider.session.clone();
         let task = runtime
             .create_task(

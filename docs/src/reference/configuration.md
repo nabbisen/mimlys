@@ -31,6 +31,7 @@ config_version = 1
 
 [runtime]
 data_dir = "/home/me/.local/share/mimlys"   # platform default when absent
+admission_slots = 2             # LIM-X5, 1–16: executions of yours at once across all runtimes; beyond it an execution waits
 
 [backend]
 kind = "fake"                   # "fake" (scripted) or "openai_compatible" (a local model)

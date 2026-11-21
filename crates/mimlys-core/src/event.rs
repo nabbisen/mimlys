@@ -57,6 +57,18 @@ pub enum RecoveryDisposition {
     UnknownOutcome,
 }
 
+/// What changed in a task's admission (`task.admission_changed`, external design §19.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionState {
+    /// No slot was free: the execution waits for one.
+    Waiting,
+    /// The execution got its slot after waiting.
+    Admitted,
+    /// The registry could not be used within its bound: the execution went on as if alone.
+    Unadmitted,
+}
+
 /// The installation's tier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,6 +112,23 @@ pub enum Event {
         /// back (from 0.11; absent, and read as `false`, in earlier records).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         rollback_failed: bool,
+    },
+    /// The task's execution waited for a slot, got one, or went on without the registry (from
+    /// 0.12; external design §19.3, RFC 013 decision 5). The task stays `running` meanwhile.
+    #[serde(rename = "task.admission_changed")]
+    TaskAdmissionChanged {
+        /// What changed.
+        state: AdmissionState,
+        /// Slots of the user taken at that moment (`waiting`: the limit; `admitted`: this one
+        /// included).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slots_taken: Option<u32>,
+        /// Why the registry was not used (`unadmitted` only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// How long the wait lasted, in milliseconds (`admitted` after a wait only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waited_ms: Option<u64>,
     },
     /// The user requested a pause; it takes effect at the next step boundary.
     #[serde(rename = "task.pause_requested")]
@@ -335,6 +364,7 @@ impl Event {
         match self {
             Event::TaskCreated => "task.created",
             Event::TaskStateChanged { .. } => "task.state_changed",
+            Event::TaskAdmissionChanged { .. } => "task.admission_changed",
             Event::TaskPauseRequested => "task.pause_requested",
             Event::TaskDeleted { .. } => "task.deleted",
             Event::StepStarted => "step.started",

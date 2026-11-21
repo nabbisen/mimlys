@@ -26,6 +26,7 @@ tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "io-std"] }
 cap-std.workspace = true
 sha2.workspace = true
+url.workspace = true
 similar = "2"
 reqwest.workspace = true
 
@@ -40,7 +41,7 @@ wat = "1"
 
 [target.'cfg(unix)'.dependencies]
 # `O_NONBLOCK` for the open of a project file (a named pipe never blocks it).
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # A pseudo-terminal and a signal for the tests of the prompts (REQ-CLI-005),
@@ -127,4 +128,8 @@ required-features = ["test-bins"]
 
 [[test]]
 name = "task_output"
+required-features = ["test-bins"]
+
+[[test]]
+name = "admission"
 required-features = ["test-bins"]

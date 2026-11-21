@@ -5,7 +5,6 @@
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 mod common;
 use common::run_bounded;
@@ -30,7 +29,7 @@ struct Run {
 }
 
 fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
+    let mut cmd = common::mimlys_testloop();
     cmd.args(args);
     // REQ-PRIV-003: an explicit allow-listed environment for the child.
     cmd.env_clear();

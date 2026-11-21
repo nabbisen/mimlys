@@ -44,6 +44,8 @@ struct Status<'a> {
     /// The store as a reader finds it: free, in use by another runtime (and
     /// which), needing recovery, or not created yet (REQ-PERS-013).
     store: StoreView,
+    /// The user's runtimes, the slots and the engine gates (RFC 013 decision 8).
+    machine: crate::machine::Machine,
 }
 
 /// One declared host tool: its command, whether it is the dependency step
@@ -117,6 +119,15 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         out.line(warning);
     }
     for line in messages::store_lines(&store) {
+        out.line(line);
+    }
+    // The user's other runtimes, the slots and the engine gates, from the registry (RFC 013
+    // decision 8). A registry that cannot be used is said here, as a task would meet it.
+    let machine = crate::machine::view(
+        crate::registry::default_dir(),
+        config.runtime.admission_slots,
+    );
+    for line in messages::machine_lines(&machine) {
         out.line(line);
     }
     let backend = BackendView {
@@ -263,6 +274,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         read_set: app.read_set(),
         dependency_step_read_set_extra: app.dependency_step_read_set_extra(),
         store,
+        machine,
         interpreters: app
             .interpreters
             .iter()

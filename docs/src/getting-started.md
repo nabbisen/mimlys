@@ -178,19 +178,42 @@ see [Storage](./reference/storage.md): `mimlys status --storage` and
   cancel` …) from a second terminal waits one second and then says `store
   locked by another runtime`. Finish or stop the first job, or approve from
   the terminal that runs it.
-- **Two runtimes on two data directories do not know each other.** If you point
-  two configurations at two directories (`runtime.data_dir`), each runtime
-  keeps its own bounds on memory, processes and time, but neither knows what
-  the other is running, so two jobs at once can use the machine's memory or
-  cores together. Nothing limits them across runtimes yet; that is part two of
-  RFC 013, which is not in this release.
-- **Why a task waits.** A task that cannot start waits for one of two reasons.
-  `concurrency`: a runtime runs at most one task at a time (LIM-X1), so
-  resuming a second is refused with `conflict: 1 task(s) already running; LIM-X1
-  allows 1` and the task stays as it was (a command drives one task, so you
-  rarely meet this). `admission`: a cap on how many executions all your
-  runtimes together may run, which comes with part two of RFC 013; today it
-  never applies.
+- **Two runtimes, on one data directory or on two, share the machine fairly.**
+  Each runtime keeps its own bounds on memory, processes and time, and all of
+  your runtimes together run at most `admission_slots` executions at once (two
+  by default; `[runtime]` in the [configuration](./reference/configuration.md)).
+  An execution is the stretch in which a tool runs: an idle runtime, a
+  `follow`, and a task that waits for your approval cost nothing and take no
+  slot. The runtimes find each other through a small registry that mimlys keeps
+  under your own runtime directory (`$XDG_RUNTIME_DIR/mimlys` on Linux,
+  `~/Library/Application Support/mimlys/run` on macOS,
+  `%LOCALAPPDATA%\mimlys\run` on Windows); it holds one tiny file for each slot
+  taken, no task content, and nothing else on your machine, a tool a task runs
+  included, can write to it.
+- **What `waiting` means.** When every slot is taken, the next execution
+  waits for one. The task stays `running`, and `mimlys task show <id>` says why,
+  for example `waiting: admission (LIM-X5 = 2 slots taken by runtimes 4242,
+  4343)`; `mimlys status` lists every runtime that is running or waiting, with
+  its process, data directory and task, and the slots taken against the limit.
+  Ctrl-C once ends the wait: the action never starts and the
+  task pauses, as for any action that has not begun. The wait is bounded by
+  nothing but the task's own deadline, which keeps counting while it waits.
+  The words never mean anything else: `running` is a runtime that holds a slot
+  or a gate, `waiting` one that waits for it, and a `slot` is one of the
+  `admission_slots` executions.
+- **If the registry cannot be used,** your work goes on. A runtime that cannot
+  read or write the registry within two seconds runs as if it were alone, says
+  so with a warning, records `task.admission_changed` with the state
+  `unadmitted` and the reason in the task's events, and `mimlys status` shows
+  `admission: unavailable (<reason>)` until the registry works again. A
+  runtime that ended without returning its slot (killed, or the machine lost
+  power) leaves a stale entry; the next runtime that takes a slot removes it,
+  and `mimlys runtime reap` shows and removes what a crash left.
+- **Why a task waits.** A task whose execution cannot start waits for
+  admission, as above. A runtime also runs at most one task at a time
+  (`LIM-X1`), so resuming a second is refused with `conflict: 1 task(s)
+  already running; LIM-X1 allows 1` and the task stays as it was (a command
+  drives one task, so you rarely meet this); that is a refusal, not a wait.
 
 <!-- tested -->
 ```sh

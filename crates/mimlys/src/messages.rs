@@ -831,6 +831,155 @@ pub fn status_pending(task_id: &str, kind: WaitKind) -> String {
         }
     )
 }
+fn plural(count: u32, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+fn pids(items: &[u32]) -> String {
+    items
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn runtimes_word(count: usize) -> &'static str {
+    if count == 1 { "runtime" } else { "runtimes" }
+}
+
+/// What a `running` task waits for among the user's runtimes (external design §19.3): the words of
+/// `task show`, which `status` uses for the same wait.
+pub fn waiting_text(reason: &str, limit: u32, holders: &[u32], url: Option<&str>) -> String {
+    let by = format!("{} {}", runtimes_word(holders.len()), pids(holders));
+    match reason {
+        "engine" => format!(
+            "engine (max_in_flight = {}{} in flight, held by {by})",
+            plural(limit, "request", "requests"),
+            url.map(|u| format!(" to {}", shown(u))).unwrap_or_default(),
+        ),
+        _ => format!(
+            "admission (LIM-X5 = {} taken by {by})",
+            plural(limit, "slot", "slots"),
+        ),
+    }
+}
+
+/// `task show`: the task is `running` and its execution waits.
+pub fn waiting_line(waiting: &mimlys_core::runtime::Waiting) -> String {
+    format!(
+        "waiting: {}",
+        waiting_text(
+            &waiting.reason,
+            waiting.limit,
+            &waiting.holders,
+            waiting.url.as_deref()
+        )
+    )
+}
+
+/// `status`: the machine view (external design §19.3, REQ-OBS-009).
+pub fn machine_lines(machine: &crate::machine::Machine) -> Vec<String> {
+    use crate::machine::{Admission, Holds, RowState};
+    let mut lines = Vec::new();
+    lines.push(match &machine.admission {
+        Admission::Ready => format!(
+            "admission: ready ({} of {} slots taken)",
+            machine.slots.taken, machine.slots.limit
+        ),
+        Admission::Unavailable { reason } => format!(
+            "admission: unavailable ({}); executions go on unadmitted",
+            shown(reason)
+        ),
+    });
+    if machine.runtimes.is_empty() {
+        lines.push("runtimes: none executing or waiting".into());
+    }
+    for row in &machine.runtimes {
+        let what = match (row.state, row.holds, row.waiting_for) {
+            (RowState::Running, Some(Holds::EngineGate), _) => {
+                "running, holds an engine gate".to_owned()
+            }
+            (RowState::Running, _, _) => "running, holds a slot".to_owned(),
+            (RowState::Waiting, _, Some(waiting_for)) => format!(
+                "waiting: {}",
+                waiting_text(
+                    waiting_for.name(),
+                    row.limit.unwrap_or(0),
+                    &row.behind,
+                    None
+                )
+            ),
+            (RowState::Waiting, _, None) => "waiting".to_owned(),
+        };
+        lines.push(format!(
+            "runtime {}: {what}; since {}{}; data {}",
+            row.pid,
+            row.since,
+            row.task_id
+                .as_deref()
+                .map(|t| format!("; task {}", shown(t)))
+                .unwrap_or_default(),
+            shown(&row.data_dir),
+        ));
+    }
+    for gate in &machine.engine_gates {
+        lines.push(format!(
+            "engine gate {}: {} of {} in flight{}{}",
+            shown(&gate.url),
+            gate.in_flight,
+            gate.limit,
+            if gate.holders.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({} {})",
+                    runtimes_word(gate.holders.len()),
+                    pids(&gate.holders)
+                )
+            },
+            if gate.waiting.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; waiting: {} {}",
+                    runtimes_word(gate.waiting.len()),
+                    pids(&gate.waiting)
+                )
+            },
+        ));
+    }
+    if machine.stale_entries > 0 {
+        lines.push(format!(
+            "registry: {} stale {} (mimlys runtime reap removes them)",
+            machine.stale_entries,
+            if machine.stale_entries == 1 {
+                "entry"
+            } else {
+                "entries"
+            }
+        ));
+    }
+    lines
+}
+
+/// `runtime reap`: one line per entry removed.
+pub fn reaped_line(reaped: &crate::registry::Reaped) -> String {
+    let what = match &reaped.entry {
+        Some(entry) => format!(
+            "{} of runtime {} (data {}, since {})",
+            entry.kind.name(),
+            entry.pid,
+            shown(&entry.data_dir),
+            entry.since
+        ),
+        None => format!("file {}", shown(&reaped.stem)),
+    };
+    format!("reaped {what}: {}", shown(&reaped.reason))
+}
+
+/// `runtime reap`: nothing to remove.
+pub const NOTHING_TO_REAP: &str = "nothing to reap: every entry of the registry has a holder";
+
 /// An interpreter row.
 pub fn interpreter_line(
     language: &str,
@@ -1336,6 +1485,9 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         format!("steps     {} of {}", t.counters.steps, t.budgets.steps),
         format!("deadline  {}", t.deadline.to_rfc3339()),
     ];
+    if let Some(waiting) = &view.waiting {
+        lines.push(waiting_line(waiting));
+    }
     if let Some(plan) = &view.plan {
         lines.push(format!("plan      version {}", plan.version));
         for (i, step) in plan.steps.iter().enumerate() {

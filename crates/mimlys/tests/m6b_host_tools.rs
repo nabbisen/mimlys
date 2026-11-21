@@ -174,7 +174,7 @@ network = true
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -898,7 +898,7 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
     )
     .unwrap();
     let run = |args: &[&str]| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&config)
             .arg("--json")

@@ -60,7 +60,7 @@ fn req_sec_011_the_hook_redacts_and_bounds_a_panic_after_the_configuration_loade
     )
     .unwrap();
     let message = format!("boom {SECRET}\nsecond line\u{202e} {}", "x".repeat(1000));
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = common::mimlys();
     cmd.arg("--config")
         .arg(&config)
         .arg("check")

@@ -132,11 +132,12 @@ idempotent = true
             cmd.arg("-c")
                 .arg(format!("ulimit -s {kb} && exec \"$0\" \"$@\""))
                 .arg(env!("CARGO_BIN_EXE_mimlys"))
+                .env("MIMLYS_RUN_DIR", common::run_dir())
                 // As the harness sets it for `mimlys` itself (`common::run_bounded`).
                 .env("MIMLYS_DEBUG_STACK_DIVISOR", "4");
             return cmd;
         }
-        Command::new(env!("CARGO_BIN_EXE_mimlys"))
+        common::mimlys()
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
@@ -1225,7 +1226,7 @@ fn req_cli_001_the_runtime_does_not_use_the_main_threads_stack() {
 fn req_cli_001_the_debug_stack_knob_is_honoured() {
     let dir = tempfile::tempdir().unwrap();
     let ran = |divisor: &str| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--version")
             .env("MIMLYS_DEBUG_STACK_DIVISOR", divisor);
         let out = run_bounded(&mut cmd, dir.path());
@@ -1251,7 +1252,7 @@ fn req_cli_001_the_debug_stack_knob_is_honoured() {
 #[test]
 fn req_cli_001_a_release_build_ignores_the_debug_stack_knob() {
     let dir = tempfile::tempdir().unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = common::mimlys();
     cmd.arg("--version")
         .env("MIMLYS_DEBUG_STACK_DIVISOR", "1024");
     let out = run_bounded(&mut cmd, dir.path());
@@ -1833,7 +1834,7 @@ fn m5_configuration_and_check() {
             ),
         )
         .unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_mimlys"))
+        let out = common::mimlys()
             .arg("--config")
             .arg(&config)
             .arg("check")
@@ -1907,7 +1908,7 @@ destination_arguments = ["url"]
     .unwrap();
     let scope = data.path().join("scope");
     std::fs::create_dir_all(&scope).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = common::mimlys();
     cmd.args([
         "--config",
         config.to_str().unwrap(),

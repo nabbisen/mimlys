@@ -57,7 +57,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .arg("--json")

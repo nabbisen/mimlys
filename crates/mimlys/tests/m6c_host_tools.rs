@@ -159,7 +159,7 @@ read_paths = [{tooldir:?}]
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -1566,7 +1566,7 @@ env = {{ PATH = {path:?} }}
     let run = |args: &[&str]| -> (i32, Value, String) {
         let mut all = vec!["--config", config.to_str().unwrap(), "--json"];
         all.extend_from_slice(args);
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.args(&all)
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));

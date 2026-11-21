@@ -177,12 +177,23 @@ enum Command {
     },
     /// Validate the configuration and print it.
     Check,
+    /// The user's runtimes.
+    #[command(subcommand)]
+    Runtime(RuntimeCommand),
     /// Interpreter builds for `run_script`.
     #[command(subcommand)]
     Interpreters(InterpretersCommand),
     /// The toolchain paths host tools may read (RFC 011).
     #[command(subcommand)]
     Toolchain(ToolchainCommand),
+}
+
+#[derive(Subcommand)]
+enum RuntimeCommand {
+    /// Remove the registry's stale entries (a runtime of yours that ended without returning its slot) and list what was removed.
+    ///
+    /// Every runtime that takes a slot removes them first, so this is for seeing what a crash left, or for tidying when no runtime is about to start. It opens no store and works while other runtimes run.
+    Reap,
 }
 
 #[derive(Subcommand)]
@@ -445,6 +456,10 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     }
     if let Command::Check = &cli.command {
         return commands::check::run(&loaded, out);
+    }
+    // The registry of the user's runtimes belongs to no store: no app is opened for it.
+    if let Command::Runtime(RuntimeCommand::Reap) = &cli.command {
+        return commands::runtime::reap(out);
     }
     // REQ-PERS-013: a command that only reads opens the store as a reader,
     // without the lock, and runs no recovery, reaping or migration. It cannot
@@ -732,6 +747,6 @@ async fn dispatch(
                 commands::interpreters::install_cmd(app, &language, from.as_deref(), out)
             }
         },
-        Command::Check => unreachable!("handled before the app opens"),
+        Command::Check | Command::Runtime(_) => unreachable!("handled before the app opens"),
     }
 }

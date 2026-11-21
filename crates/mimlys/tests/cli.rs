@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 use std::path::Path;
+#[cfg(windows)]
 use std::process::Command;
 
 mod common;
@@ -27,7 +28,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str], stdin: &str) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config").arg(&self.config).args(args);
         cmd.env("MIMLYS_CONFIG", "");
         cmd.stdin(std::process::Stdio::piped());
@@ -59,7 +60,7 @@ impl Env {
     /// A run bounded by `common::run_bounded` (no standard input): the
     /// exit code and both streams.
     fn bounded(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config").arg(&self.config).args(args);
         cmd.env("MIMLYS_CONFIG", "");
         let out = run_bounded(&mut cmd, self.data.path());
@@ -724,7 +725,7 @@ fn req_ws_001_a_data_directory_in_the_temporary_directory_is_warned_about_not_re
         ),
     )
     .unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = common::mimlys();
     cmd.arg("--config").arg(&config).arg("check");
     cmd.env("MIMLYS_CONFIG", "");
     let out = run_bounded(&mut cmd, env.data.path());
@@ -758,7 +759,7 @@ fn req_sbx_001_a_failed_download_is_reported_as_unavailable_download() {
         }
     });
     let env = Env::new("");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = common::mimlys();
     cmd.arg("--config")
         .arg(&env.config)
         .args(["--json", "interpreters", "install", "javascript"])
