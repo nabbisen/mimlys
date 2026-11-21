@@ -444,12 +444,15 @@ one task; the rest are in
 [Limits and defaults](./maintainers/limits-and-defaults.md).
 
 Per runtime, one task runs at a time and one execution is in flight. **Across
-runtimes there is no bound yet.** If you point two configurations at two data
-directories, each keeps its own limits and neither knows about the other; a
-cap on executions across all your runtimes, a bound on a tool's use of the
-processor, and a gate of one request per model server are part two of RFC 013,
-which is not in this release. [Getting started](./getting-started.md#several-projects-several-jobs)
-says what to expect until then.
+your runtimes there is a bound too:** all of them together run at most
+`admission_slots` executions at once (two by default), send at most
+`max_in_flight` model requests at once to one model server (one by default),
+and hold a host tool's tree to `cpu_share` of the cores where the system allows
+it (half, by default; on Linux the system usually does not, and the book
+[says how to bound the runtime instead](./reference/host-tools.md#the-cpu-share)).
+A task that waits for a slot or for the engine stays `running` and says
+`waiting` and why. [Getting started](./getting-started.md#several-projects-several-jobs)
+says what to expect.
 
 Where this is written: [Budgets and halts](./reference/decisions-and-tools.md#budgets-and-halts),
 [counters and convergence](./maintainers/external-design.md#65-counters-and-convergence-req-dec-010),

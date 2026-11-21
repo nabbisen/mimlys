@@ -58,7 +58,7 @@ Other changes:
 
 ### Documentation
 
-- The book: "Getting started" says how several runtimes share the machine (the slots, what `waiting` means, the engine's gate, a registry that cannot be used, `runtime reap`); "Host tools" gains "The CPU share" (what the line says on each system, and `systemd-run` for Linux); "Configuration" lists `admission_slots`, `max_in_flight` and `cpu_share`; "How a task runs", "Command line reference" and "Storage" describe `task output` and the blobs; "Decisions and tools" names LIM-S4's new maximum. The maintainers' pages gain the M7b report (the measurements behind LIM-X5, LIM-H7 and LIM-O12) and the specification of admission, the gate and the machine view. RFC 013 is Implemented.
+- The book: "Getting started" says how several runtimes share the machine (the slots, what `waiting` means, the engine's gate, a registry that cannot be used, `runtime reap`); "Host tools" gains "The CPU share" (what the line says on each system, and `systemd-run` for Linux); "Configuration" lists `admission_slots`, `max_in_flight` and `cpu_share`; "How a task runs" says what holds across your runtimes (it said there was no bound yet) and describes `task output`; "Command line reference" and "Storage" describe `task output` and the blobs; "Decisions and tools" names LIM-S4's new maximum. The maintainers' pages gain the M7b report (the measurements behind LIM-X5, LIM-H7 and LIM-O12) and the specification of admission, the gate and the machine view. RFC 013 is Implemented.
 
 ## [0.11.1] - 2026-11-21
 
