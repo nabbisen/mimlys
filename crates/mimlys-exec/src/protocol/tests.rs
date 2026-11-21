@@ -52,7 +52,7 @@ fn ed_13_1_protocol_messages_round_trip() {
     );
     let response = Response::ProbeResult {
         clauses,
-        engine_version: "50.0.2".into(),
+        engine_version: "50.0.3".into(),
         interpreters: Default::default(),
         interpreter_errors: Default::default(),
         cgroup: None,
