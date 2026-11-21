@@ -89,7 +89,11 @@ pub async fn probe(app: &App, named: Option<&str>, out: &Output) -> Result<(), A
                 "local"
             },
         ));
-        let ended = probe_backend(app, backend, &stop, Arc::clone(&clock)).await?;
+        let remote_named = plan
+            .remote_named
+            .as_ref()
+            .is_some_and(|r| r.backend == backend.name);
+        let ended = probe_backend(app, backend, remote_named, &stop, Arc::clone(&clock)).await?;
         match ended {
             Ended::Measured { last, left } => {
                 left_paths.extend(left);

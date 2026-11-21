@@ -11,7 +11,7 @@ use mimlys_core::clock::Clock;
 use mimlys_core::ids::{IdSource, SystemIds, TaskId};
 use mimlys_core::path::PlatformRules;
 use mimlys_core::runtime::{CreateTask, Runtime, RuntimeDeps};
-use mimlys_core::spi::{Locality, WorkspaceProvider};
+use mimlys_core::spi::WorkspaceProvider;
 use mimlys_core::task::ScopeSpec;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -100,9 +100,16 @@ impl Drop for Scope {
 ///
 /// An error is a probe that could not be run (the scope could not be made, the store refused):
 /// nothing is recorded, and what was made is removed.
+///
+/// `remote_named` is true for the one backend the user named, that is remote, and that the
+/// administrator allowed ([`super::Plan::remote_named`]), and for no other: it is the only thing
+/// that sets `external` in the probe's profile, so a remote backend that reached here without it
+/// (which the plan never lets) is refused by REQ-SEC-010 when the task is created, and nothing is
+/// sent.
 pub async fn probe_backend(
     app: &App,
     backend: &Backend,
+    remote_named: bool,
     stop: &Arc<Stop>,
     clock: Arc<dyn Clock>,
 ) -> Result<Ended, AppError> {
@@ -111,8 +118,7 @@ pub async fn probe_backend(
     // The one place the probe's profile departs from granting nothing: a remote backend, named
     // for the probe and allowed (`super::plan` decided), is permitted by `external`, so that
     // REQ-SEC-010's rule, asked again at every start of the task, lets it send its fixed request.
-    let external = backend.section.locality == Locality::Remote
-        || backend.adapter.describe().locality == Locality::Remote;
+    let external = remote_named;
     let mut scope = Scope::make(&app.data_dir, &ids)?;
     let policy = super::policy(external);
     let patterns: Vec<String> = policy
