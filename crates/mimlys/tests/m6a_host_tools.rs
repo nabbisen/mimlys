@@ -53,7 +53,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tooldir:?}]
-allowed_args = ["ok", "cwd", "read", "list", "write", "remove", "chmod", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect", "detach", "stdin-read"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "remove", "chmod", "write-env", "connect", "env", "setsid-sleep", "fork", "alloc", "alloc-touch", "unix-socket", "unix-connect", "unix-pair", "unix-abstract-connect", "detach", "stdin-read"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 allow_paths = true
 max_args = 3
@@ -265,9 +265,56 @@ fn clauses(env: &Env) -> (String, std::collections::BTreeMap<String, Value>) {
     (tier, map)
 }
 
+/// The cgroup the workers of this run arrange theirs in: the debug-build knob of the delegated
+/// arrangement, else the cgroup the test process lives in (where a worker makes its own).
+fn worker_cgroup_base() -> Option<PathBuf> {
+    if let Some(base) = std::env::var_os("MIMLYS_PROBE_CGROUP_BASE") {
+        return Some(PathBuf::from(base));
+    }
+    let own = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let relative = own.lines().find_map(|l| l.strip_prefix("0::"))?;
+    Some(Path::new("/sys/fs/cgroup").join(relative.trim().trim_start_matches('/')))
+}
+
+/// Whether the memory a tool may touch is bounded by `memory.max` alone, with no swap to absorb
+/// the excess (013d-4): the machine has no swap, or a cgroup from `base` up to the root caps
+/// swap at zero (`memory.swap.max` is hierarchical). `memory.max` counts resident pages and
+/// the limit sends the kernel to swap before it kills.
+fn swap_cannot_absorb(base: &Path) -> bool {
+    let swap_total = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|m| {
+            m.lines()
+                .find_map(|l| l.strip_prefix("SwapTotal:").map(str::to_owned))
+        })
+        .and_then(|l| {
+            l.split_whitespace()
+                .next()
+                .and_then(|n| n.parse::<u64>().ok())
+        });
+    if swap_total == Some(0) {
+        return true;
+    }
+    let mut dir = Some(base);
+    while let Some(d) = dir {
+        if std::fs::read_to_string(d.join("memory.swap.max")).is_ok_and(|v| v.trim() == "0") {
+            return true;
+        }
+        dir = d.parent().filter(|p| p.starts_with("/sys/fs/cgroup"));
+    }
+    false
+}
+
 /// REQ-TEST-013 / RFC 011 §2: for every clause the probe reports enforced,
 /// the forbidden thing fails as expected inside a host tool, and the
 /// allowed thing works.
+///
+/// Clause M is tried with `alloc-touch` (every page written): `memory.max` of the cgroup rung
+/// counts resident memory, which the old `alloc` (one byte a MiB) never reached (013d-4).
+/// `RLIMIT_AS` and a limit on committed memory stop either; the cgroup rung ends a tool that
+/// touches more than the limit only where swap cannot absorb the excess. On the delegated job
+/// (`MIMLYS_TEST_CGROUP_BASE` names a cgroup that passes `memory` on) the rung must be the
+/// cgroup's and swap must be off: that is checked, not assumed.
 #[test]
 fn m6a_clauses_hold_inside_a_host_tool() {
     let outside = outside();
@@ -284,7 +331,7 @@ fn m6a_clauses_hold_inside_a_host_tool() {
             probe(&["env", "MIMLYS_TEST_SECRET"]),
             probe(&["env", "PROBE_OK"]),
             probe(&["fork", "100"]),
-            probe(&["alloc", "3000"]),
+            probe(&["alloc-touch", "3000"]),
             complete(),
         ],
         "",
@@ -353,12 +400,48 @@ fn m6a_clauses_hold_inside_a_host_tool() {
             stdout_of(&obs[8])
         );
     }
-    assert_ne!(
-        exit_code_of(&obs[9]),
-        0,
-        "3000 MiB above LIM-H2 ends the tool: {}",
-        stdout_of(&obs[9])
+    // M: 3000 MiB touched is above LIM-H2 (2 GiB) on every rung. The cgroup rung is the one
+    // `memory.max` holds, and it ends the tool only where swap cannot absorb the excess.
+    let on_cgroup = table["memory"]["primitive"] == "cgroup_memory_max";
+    let base = worker_cgroup_base();
+    let swap_off = base.as_deref().is_some_and(swap_cannot_absorb);
+    let delegated = std::env::var_os("MIMLYS_TEST_CGROUP_BASE").map(PathBuf::from);
+    let delegated_with_memory = delegated.is_some();
+    if let Some(delegated) = &delegated {
+        let offered = std::fs::read_to_string(delegated.join("cgroup.controllers"))
+            .unwrap_or_else(|e| panic!("{}: {e}", delegated.display()));
+        assert!(
+            offered.split_whitespace().any(|c| c == "memory"),
+            "the delegated cgroup under test passes memory on (scripts/with-delegated-cgroup.sh): {offered}"
+        );
+    }
+    eprintln!(
+        "clause M: {} (cgroup rung: {on_cgroup}; swap cannot absorb: {swap_off}; worker cgroup base: {base:?})",
+        table["memory"]
     );
+    if delegated_with_memory {
+        assert!(
+            on_cgroup,
+            "the delegated cgroup passes memory on, so clause M takes its cgroup rung: {}",
+            table["memory"]
+        );
+        assert!(
+            swap_off,
+            "swap must be off below the delegated base ({base:?}): the script sets memory.swap.max"
+        );
+    }
+    if !on_cgroup || swap_off {
+        assert_ne!(
+            exit_code_of(&obs[9]),
+            0,
+            "3000 MiB above LIM-H2 ends the tool: {}",
+            stdout_of(&obs[9])
+        );
+    } else {
+        eprintln!(
+            "not asserted: memory.max with swap that may absorb the excess does not end the tool"
+        );
+    }
     let finished: Vec<String> = env
         .events(&id)
         .iter()

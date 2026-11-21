@@ -66,8 +66,12 @@ jobs:
       # rung in a systemd unit with delegation, owned by the runner user
       # (scripts/with-delegated-cgroup.sh): the worker in its leaf and `cpu.max` on
       # `tool` as the kernel holds them, and the tree kill through `cgroup.kill`.
+      # The cgroup passes `memory` on too (handoff 013d-4 item 4), so clause M takes
+      # its cgroup rung (`memory.max`, with swap disabled below the base): the
+      # second run prints the clause table, whose `memory` line names the rung, and
+      # the test itself fails if the rung is not `cgroup_memory_max` here.
       # A step of the job, not a job: it adds no check of its own to the count.
-      - name: the CPU part and the tree kill in a delegated cgroup
+      - name: the CPU part, clause M and the tree kill in a delegated cgroup
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo systemd-run --wait --pipe --collect -p Delegate=yes -p User="$USER" \
@@ -76,8 +80,9 @@ jobs:
             --setenv=CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
             --setenv=RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
             --setenv=MIMLYS_QJS_WASM="$MIMLYS_QJS_WASM" \
-            sh scripts/with-delegated-cgroup.sh \
-            cargo test --workspace --all-features --test m7b_cpu_part --test m6a_host_tools
+            sh scripts/with-delegated-cgroup.sh sh -ec '
+              cargo test --workspace --all-features --test m7b_cpu_part --test m6a_host_tools
+              cargo test --workspace --all-features --test m6a_host_tools m6a_clauses_hold_inside_a_host_tool -- --nocapture'
       - name: skipped tests, counted per platform
         if: always()
         shell: bash
