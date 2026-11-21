@@ -48,10 +48,12 @@ use windows_sys::Win32::Security::{
     WinLowLabelSid,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
+    JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectCpuRateControlInformation,
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject,
 };
@@ -78,14 +80,20 @@ unsafe impl Sync for Job {}
 impl Job {
     /// Creates an anonymous job with kill-on-close; breakaway flags are not set, so no child may leave it.
     pub fn new() -> Result<Self, String> {
-        Self::with_limits(None, None)
+        Self::with_limits(None, None, None)
     }
 
     /// A job with kill-on-close and, when given, the tree's memory ceiling
-    /// (LIM-H2, clause M) and its process count (LIM-H3, clause C).
+    /// (LIM-H2, clause M), its process count (LIM-H3, clause C) and its CPU
+    /// rate (LIM-H7, the CPU part of clause C: `cpu::job_cpu_rate`, a share
+    /// of **the whole machine** in hundredths of a percent). A rate
+    /// the system refuses leaves the job without one and the job otherwise
+    /// whole: the part is then reported unavailable by the worker, which reads
+    /// its own job back, and the tier never changes because of it.
     pub fn with_limits(
         memory_bytes: Option<u64>,
         max_processes: Option<u32>,
+        cpu_rate: Option<u32>,
     ) -> Result<Self, String> {
         // SAFETY: CreateJobObjectW takes optional security attributes (null means default) and an
         // optional name (null means anonymous); it returns a null handle on failure, checked below.
@@ -122,7 +130,18 @@ impl Job {
             unsafe { CloseHandle(handle) };
             return Err(format!("SetInformationJobObject failed: {err}"));
         }
+        if let Some(rate) = cpu_rate
+            && let Err(e) = set_cpu_rate(handle, rate)
+        {
+            tracing::warn!(target: "mimlys_worker", "the CPU rate of the worker's job was not set: {e}");
+        }
         Ok(Self { handle })
+    }
+
+    /// The CPU rate the job holds, read back from the system: `Some` only
+    /// when a hard cap is in force (hundredths of a percent of the machine).
+    pub fn cpu_rate(&self) -> Option<u32> {
+        query_cpu_rate(self.handle)
     }
 
     /// Puts a process (and so its descendants) into the job.
@@ -1078,6 +1097,25 @@ pub fn inspect(spec: &ConfinementSpec) -> BTreeMap<String, ClauseState> {
     report.insert("K".into(), k);
     report.insert("M".into(), m);
     report.insert("C".into(), c);
+    // The CPU part of clause C (REQ-CONF-013), beside the clauses: the rate the
+    // worker finds on its own job, which must be the share's conversion.
+    let wanted = super::cpu::job_cpu_rate(super::cpu::machine_cores(), spec.cpu_share);
+    report.insert(
+        mimlys_core::confine::CPU_PART_KEY.into(),
+        if spec.cpu_share == 0 {
+            ClauseState::unavailable("no_cpu_share_requested")
+        } else if job.is_none() {
+            ClauseState::unavailable("not in a job")
+        } else {
+            match query_cpu_rate(std::ptr::null_mut()) {
+                Some(rate) if rate == wanted => ClauseState::enforced("job_object"),
+                Some(rate) => {
+                    ClauseState::unavailable(&format!("job CPU rate is {rate}, not {wanted}"))
+                }
+                None => ClauseState::unavailable("job CPU rate not set"),
+            }
+        },
+    );
     report
 }
 
@@ -1149,6 +1187,54 @@ fn has_capability(token: &OwnedHandle, kind: i32) -> bool {
             .iter()
             .any(|g| EqualSid(g.Sid, wanted.as_ptr() as PSID) != 0)
     }
+}
+
+/// Sets a hard CPU cap of `rate` (hundredths of a percent of all processors,
+/// 1 to 10 000) on a job.
+fn set_cpu_rate(job: HANDLE, rate: u32) -> Result<(), String> {
+    // SAFETY: a zeroed JOBOBJECT_CPU_RATE_CONTROL_INFORMATION is a valid value of this plain C struct.
+    let mut info: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = unsafe { std::mem::zeroed() };
+    info.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+    info.Anonymous.CpuRate = rate;
+    // SAFETY: the pointer and the length describe one fully initialised struct of the class given.
+    let ok = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectCpuRateControlInformation,
+            (&info as *const JOBOBJECT_CPU_RATE_CONTROL_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "SetInformationJobObject (CPU rate) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// The hard CPU cap of a job, or of the calling process's own job when
+/// `job` is null: `Some` only when the cap is enabled as a hard cap.
+fn query_cpu_rate(job: HANDLE) -> Option<u32> {
+    // SAFETY: a zeroed JOBOBJECT_CPU_RATE_CONTROL_INFORMATION is a valid value of this plain C struct.
+    let mut info: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the job handle is valid or null (the calling process's job); the buffer matches the class.
+    let ok = unsafe {
+        QueryInformationJobObject(
+            job,
+            JobObjectCpuRateControlInformation,
+            (&mut info as *mut JOBOBJECT_CPU_RATE_CONTROL_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    let wanted = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+    if ok == 0 || info.ControlFlags & wanted != wanted {
+        return None;
+    }
+    // SAFETY: with the hard cap enabled the union holds the rate (the weight and the min/max pair are other flags').
+    Some(unsafe { info.Anonymous.CpuRate })
 }
 
 fn own_job_limits() -> Option<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {

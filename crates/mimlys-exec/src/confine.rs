@@ -503,7 +503,12 @@ impl Confinement for Platform {
         spec: Option<&ConfinementSpec>,
     ) -> Result<ConfinedChild, ConfineError> {
         let job = match spec {
-            Some(s) => windows::Job::with_limits(Some(s.memory_bytes), Some(s.max_processes)),
+            Some(s) => windows::Job::with_limits(
+                Some(s.memory_bytes),
+                Some(s.max_processes),
+                // LIM-H7: the share is converted to the rate of the whole machine.
+                (s.cpu_share > 0).then(|| cpu::job_cpu_rate(cpu::machine_cores(), s.cpu_share)),
+            ),
             None => windows::Job::new(),
         }
         .map_err(ConfineError::Tree)?;
