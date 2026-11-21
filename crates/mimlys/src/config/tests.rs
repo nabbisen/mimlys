@@ -108,6 +108,45 @@ fn req_cfg_001_ranges_stated() {
     assert_eq!(c.validate().unwrap_err().key, "logging.level");
 }
 
+/// REQ-SCHED-006, REQ-SCHED-007, LIM-X5, LIM-O12: `admission_slots` and `max_in_flight` default to
+/// the register's values, are checked at load against its ranges, and the refusal names the key
+/// and the range, at both ends.
+#[test]
+fn req_sched_006_admission_slots_and_max_in_flight_are_checked_at_load() {
+    let c = Config::load(None).unwrap().config;
+    assert_eq!(c.runtime.admission_slots, 2);
+    assert_eq!(c.backend.max_in_flight, 1);
+    for (text, key) in [
+        (
+            "[runtime]\nadmission_slots = 0\n",
+            "runtime.admission_slots",
+        ),
+        (
+            "[runtime]\nadmission_slots = 17\n",
+            "runtime.admission_slots",
+        ),
+        ("[backend]\nmax_in_flight = 0\n", "backend.max_in_flight"),
+        ("[backend]\nmax_in_flight = 17\n", "backend.max_in_flight"),
+    ] {
+        let c = Config::parse(&format!("config_version = 1\n{text}")).unwrap();
+        let err = c.validate().unwrap_err();
+        assert_eq!(err.key, key, "{text}");
+        assert!(err.reason.contains("1..=16"), "{err}");
+    }
+    for (text, slots, width) in [
+        ("[runtime]\nadmission_slots = 1\n", 1, 1),
+        ("[runtime]\nadmission_slots = 16\n", 16, 1),
+        ("[backend]\nmax_in_flight = 16\n", 2, 16),
+    ] {
+        let c = Config::parse(&format!("config_version = 1\n{text}")).unwrap();
+        c.validate().unwrap();
+        assert_eq!(
+            (c.runtime.admission_slots, c.backend.max_in_flight),
+            (slots, width)
+        );
+    }
+}
+
 /// REQ-SEC-010: a remote backend needs the administrator's permission.
 /// REQ-MDL-005 ("Locality": see REQ-SEC-010): a configured `locality = "remote"` is refused
 /// unless `policy.remote_backend_allowed` is set.

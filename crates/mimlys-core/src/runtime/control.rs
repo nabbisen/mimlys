@@ -87,6 +87,29 @@ pub struct TaskView {
     /// workspace was not rolled back: from the halt's event.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rollback_failed: bool,
+    /// What the task's execution or model request waits for among the user's runtimes (RFC 013;
+    /// external design §19.3), while it waits. The runtime does not know it: the host that reads
+    /// the registry fills it in. The task is `running` meanwhile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<Waiting>,
+}
+
+/// What a `running` task waits for among the user's runtimes (external design §19.3).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Waiting {
+    /// `admission` (a slot) or `engine` (the gate of the backend's endpoint).
+    pub reason: String,
+    /// The limit it waits against: `admission_slots` or `max_in_flight`.
+    pub limit: u32,
+    /// Slots or gates held now.
+    pub taken: u32,
+    /// The processes that hold them.
+    pub holders: Vec<u32>,
+    /// Since when the task waits.
+    pub since: crate::clock::Instant,
+    /// The endpoint, for `engine`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// An action whose outcome is unknown (REQ-CLI-005).

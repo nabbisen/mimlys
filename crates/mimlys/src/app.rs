@@ -663,6 +663,16 @@ impl App {
         loaded: Loaded,
         backend: Option<Arc<dyn ModelBackend>>,
     ) -> Result<Self, AppError> {
+        Self::open_in(loaded, backend, None)
+    }
+
+    /// As [`App::open_with`], the registry of the user's runtimes being the directory `registry`
+    /// instead of the platform's (the tests of two runtimes of one user in one process).
+    pub fn open_in(
+        loaded: Loaded,
+        backend: Option<Arc<dyn ModelBackend>>,
+        registry: Option<PathBuf>,
+    ) -> Result<Self, AppError> {
         let confinement = mimlys_exec::confine::platform();
         let config = loaded.config.clone();
         let data_dir = config.data_dir()?;
@@ -882,6 +892,19 @@ impl App {
         mimlys_persist::integrity::check(&store, now)?;
         let (backend, openai) = make_backend(&config, &loaded, backend)?;
         let store: Arc<dyn Persistence> = Arc::new(store);
+        // RFC 013 decision 5: the executions of the user's runtimes share LIM-X5 slots, counted
+        // in a registry of the user's own. A registry that cannot be found is an admission that
+        // says so and lets the execution go on, like one that cannot be used.
+        let admission = crate::registry::slots_in(
+            registry
+                .map(Ok)
+                .unwrap_or_else(crate::registry::default_dir),
+            config.runtime.admission_slots,
+            crate::registry::Owner {
+                pid: std::process::id(),
+                data_dir: data_dir.to_string_lossy().into_owned(),
+            },
+        );
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store,
             backend,
@@ -895,7 +918,8 @@ impl App {
             secrets: loaded.secrets.clone(),
             context_chars: config.backend.context_chars,
             output_bytes: config.sandbox.output_bytes as usize,
-        })?;
+        })?
+        .with_admission(admission);
         runtime.record_started()?;
         if orphans > 0 {
             runtime.record_server_events(&[mimlys_core::event::Event::RuntimeOrphansKilled {

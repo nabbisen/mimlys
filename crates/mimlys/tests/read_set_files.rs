@@ -8,7 +8,6 @@
 
 use mimlys_exec::interpreters::Configured;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 mod common;
 use common::run_bounded;
@@ -78,7 +77,7 @@ fn req_conf_011_the_read_sets_hold_the_worker_and_the_modules_as_files() {
 fn check(config: &str, dir: &Path) -> (i32, String, String) {
     let file = dir.join("config.toml");
     std::fs::write(&file, config).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = common::mimlys();
     cmd.arg("--config")
         .arg(&file)
         .arg("check")

@@ -143,6 +143,7 @@ pub(super) fn get_task(
         unreadable,
         unreadable_kind,
         rollback_failed,
+        waiting: None,
     })
 }
 

@@ -135,6 +135,19 @@ pub const LIM_M2_MAX_TOKENS_RANGE: (u32, u32) = (256, 65_536);
 pub const LIM_X1_RUNNING_TASKS: usize = 1;
 /// LIM-X2: executions in flight, whole runtime.
 pub const LIM_X2_EXECUTIONS: usize = 1;
+/// LIM-X5: executions of one user at once across runtimes (`[runtime] admission_slots`,
+/// RFC 013 decision 5, M7b report §3).
+pub const LIM_X5_ADMISSION_SLOTS: usize = 2;
+/// LIM-X5 range.
+pub const LIM_X5_ADMISSION_SLOTS_RANGE: (usize, usize) = (1, 16);
+/// LIM-O12: model requests in flight per backend endpoint per user (`[backend] max_in_flight`,
+/// RFC 013 decision 7).
+pub const LIM_O12_MAX_IN_FLIGHT: usize = 1;
+/// LIM-O12 range.
+pub const LIM_O12_MAX_IN_FLIGHT_RANGE: (usize, usize) = (1, 16);
+/// LIM-O11: the bound of one admission-registry operation (take, return, reap), in
+/// milliseconds; past it the runtime runs unadmitted and says so (RFC 013 decision 7).
+pub const LIM_O11_REGISTRY_MS: u64 = 2_000;
 /// LIM-O1: time to exit after a stop signal, in milliseconds.
 pub const LIM_O1_STOP_MS: i64 = 5_000;
 /// LIM-W1: workspace size in bytes (1 GiB), best effort.

@@ -12,7 +12,7 @@ mod loop_;
 mod read;
 mod storage;
 
-pub use control::{CreateTask, RuntimeStatus, TaskView, UnknownAction};
+pub use control::{CreateTask, RuntimeStatus, TaskView, UnknownAction, Waiting};
 pub use loop_::{PROMPT_LOG_TARGET, StepResultView};
 pub use read::{Activity, Reader};
 pub use storage::{Holdings, TaskHolding};
@@ -255,9 +255,24 @@ pub struct Runtime {
     /// External tools unpinned per task in this process (RFC 009 §7).
     unpinned:
         std::sync::Mutex<std::collections::HashMap<TaskId, std::collections::BTreeSet<String>>>,
+    /// The admission of executions across the user's runtimes (RFC 013 decision 5); none in a
+    /// runtime built without one (the tests of the core, a host with no registry).
+    admission: Option<Arc<dyn crate::spi::Admission>>,
+    /// The tasks whose last execution went on unadmitted, so that the event and the warning are
+    /// made once while it lasts, not at every execution.
+    unadmitted: std::sync::Mutex<std::collections::HashSet<TaskId>>,
 }
 
 impl Runtime {
+    /// Adds the admission of executions across the user's runtimes: an execution takes a slot
+    /// before its action is recorded `running` and returns it when the execution ends
+    /// (RFC 013 decision 5; external design §19.3).
+    #[must_use]
+    pub fn with_admission(mut self, admission: Arc<dyn crate::spi::Admission>) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
     /// Builds a runtime; the policy must validate (REQ-CFG-004).
     pub fn new(deps: RuntimeDeps) -> Result<Self, RuntimeError> {
         deps.policy
@@ -287,6 +302,8 @@ impl Runtime {
             last_requests: std::sync::Mutex::new(std::collections::HashMap::new()),
             unpinned: std::sync::Mutex::new(std::collections::HashMap::new()),
             interruptions: std::sync::Mutex::new(std::collections::HashMap::new()),
+            admission: None,
+            unadmitted: std::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -454,6 +471,10 @@ impl Runtime {
         self.unpinned
             .lock()
             .expect("unpinned lock")
+            .remove(&task_id);
+        self.unadmitted
+            .lock()
+            .expect("unadmitted lock")
             .remove(&task_id);
     }
 

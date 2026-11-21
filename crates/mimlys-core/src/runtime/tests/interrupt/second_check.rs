@@ -134,7 +134,7 @@ fn req_cli_005_a_first_signal_made_as_the_check_is_reached_is_seen_by_it() {
 /// What both checks leave when they saw the request: no call reached the tool, it
 /// was never executed, the action is `cancelled` and none `unknown`, and the one
 /// observation says the stop came before it began, with no execution recorded.
-fn assert_closed_not_begun(rig: &Rig, name: &str) {
+pub(super) fn assert_closed_not_begun(rig: &Rig, name: &str) {
     assert_eq!(rig.calls(), 0, "{name}: no call reached the tool");
     assert!(rig.saw().is_empty(), "{name}: it was never executed");
     assert_eq!(rig.action().status, ActionStatus::Cancelled, "{name}");

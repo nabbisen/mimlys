@@ -19,6 +19,35 @@ use std::time::{Duration, Instant};
 /// The bound of one run.
 pub const BOUND: Duration = Duration::from_secs(180);
 
+static REGISTRIES: AtomicU64 = AtomicU64::new(0);
+
+/// A registry directory of its own, for one command (RFC 013): the user's runtimes share
+/// `admission_slots`, so tests that run in parallel on one machine would wait for each other's
+/// executions (and write to the user's real registry) if they used the platform's. A suite that
+/// is about the registry names its own with `MIMLYS_RUN_DIR`.
+pub fn run_dir() -> std::path::PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "registry-{}-{}",
+        std::process::id(),
+        REGISTRIES.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// A `mimlys` command alone in the world: its registry is its own ([`run_dir`]).
+pub fn mimlys() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    cmd.env("MIMLYS_RUN_DIR", run_dir());
+    cmd
+}
+
+/// The test harness's runtime (`mimlys-testloop`), with a registry of its own.
+#[cfg(feature = "test-bins")]
+pub fn mimlys_testloop() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
+    cmd.env("MIMLYS_RUN_DIR", run_dir());
+    cmd
+}
+
 /// What a bounded run produced.
 pub struct Bounded {
     /// The exit status.

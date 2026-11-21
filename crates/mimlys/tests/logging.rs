@@ -48,7 +48,7 @@ impl Env {
 
     /// The stored events of a task, as JSON.
     fn events(&self, task: &str) -> Value {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(["--json", "events", task])
@@ -62,7 +62,7 @@ impl Env {
     /// The exit code, standard output and standard error of a run of the
     /// goal over the project.
     fn run(&self) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(["--json", "run", GOAL, "--scope"])
@@ -380,7 +380,7 @@ impl Fake {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

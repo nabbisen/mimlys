@@ -5,7 +5,6 @@
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 mod common;
 use common::run_bounded;
@@ -35,7 +34,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -140,7 +139,7 @@ fn req_pers_010_nothing_is_deleted_by_age_only_by_command() {
     let mut text = std::fs::read_to_string(&env.config).unwrap();
     text.push_str("[workspace]\nretention_days = 30\n");
     std::fs::write(&with_timer, text).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = common::mimlys();
     cmd.arg("--config")
         .arg(&with_timer)
         .arg("check")

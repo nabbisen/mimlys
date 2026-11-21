@@ -27,6 +27,8 @@ pub mod context;
 pub mod decision;
 pub mod effect;
 pub mod event;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake_admission;
 pub mod grant;
 pub mod hash;
 pub mod hooks;

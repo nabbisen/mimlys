@@ -16,6 +16,7 @@ pub mod reject;
 pub mod revoke;
 pub mod rollback;
 pub mod run;
+pub mod runtime;
 pub mod status;
 pub mod storage;
 pub mod task;

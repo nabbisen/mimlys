@@ -57,6 +57,17 @@ pub(super) const PROVIDER: &str = super::TOOL_PROVIDER;
 /// log setup of the binary enables this target only when the option is on.
 pub const PROMPT_LOG_TARGET: &str = "mimlys_prompt";
 
+/// How the wait for an execution's slot ended (RFC 013 decision 5).
+enum Admit {
+    /// Go on: with the slot to hold, or with none when the runtime has no admission or the
+    /// registry could not be used.
+    Go(Option<crate::spi::Held>),
+    /// The first stop request ended the wait.
+    Stopped,
+    /// The task's deadline passed during the wait.
+    DeadlinePassed,
+}
+
 /// What a step did, for callers of the loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepResultView {
@@ -1311,6 +1322,117 @@ impl Runtime {
         Ok(())
     }
 
+    /// Takes the execution's slot among the user's runtimes (RFC 013 decision 5; external design
+    /// §19.3). The wait is one more wait before the send: it observes the weakest stop request,
+    /// and a slot is never held for an action that is then not begun. Each change of the wait is
+    /// recorded as `task.admission_changed` (the task stays `running`), and a registry that cannot
+    /// be used is said once at `warn` and once in the task's events while it lasts (the
+    /// fail-open: the user's work is never stopped by a liveness defect of the registry).
+    async fn admit_execution(
+        &self,
+        task: &Task,
+        step: &Step,
+        action: &Action,
+    ) -> Result<Admit, RuntimeError> {
+        let Some(admission) = &self.admission else {
+            return Ok(Admit::Go(None));
+        };
+        let task_id = task.task_id;
+        let record = |change: crate::spi::WaitChange| -> Result<(), crate::spi::PersistenceError> {
+            use crate::event::AdmissionState;
+            use crate::spi::WaitChange;
+            let event = match change {
+                WaitChange::Waiting {
+                    slots_taken,
+                    holders,
+                } => {
+                    tracing::info!(
+                        target: "mimlys_core",
+                        %task_id,
+                        slots_taken,
+                        holders = ?holders,
+                        "the execution waits for a slot: every slot of the user is taken"
+                    );
+                    Event::TaskAdmissionChanged {
+                        state: AdmissionState::Waiting,
+                        slots_taken: Some(slots_taken),
+                        reason: None,
+                        waited_ms: None,
+                    }
+                }
+                WaitChange::Admitted {
+                    slots_taken,
+                    waited_ms,
+                } => {
+                    tracing::info!(
+                        target: "mimlys_core",
+                        %task_id,
+                        slots_taken,
+                        waited_ms,
+                        "the execution has its slot"
+                    );
+                    Event::TaskAdmissionChanged {
+                        state: AdmissionState::Admitted,
+                        slots_taken: Some(slots_taken),
+                        reason: None,
+                        waited_ms: Some(waited_ms),
+                    }
+                }
+                WaitChange::Unadmitted { reason } => {
+                    // Once while it lasts: a task of fifty executions says it once.
+                    if !self
+                        .unadmitted
+                        .lock()
+                        .expect("unadmitted lock")
+                        .insert(task_id)
+                    {
+                        return Ok(());
+                    }
+                    let reason = bounded_message(&reason, Some(&self.redactor));
+                    tracing::warn!(
+                        target: "mimlys_core",
+                        %task_id,
+                        %reason,
+                        "the registry of the user's runtimes cannot be used: the execution goes on unadmitted"
+                    );
+                    Event::TaskAdmissionChanged {
+                        state: AdmissionState::Unadmitted,
+                        slots_taken: None,
+                        reason: Some(reason),
+                        waited_ms: None,
+                    }
+                }
+            };
+            self.deps.persistence.append_event(&self.event(
+                Actor::Runtime,
+                Some(task_id),
+                Some(step.step_id),
+                Some(action.action_id),
+                event,
+            ))
+        };
+        let request = crate::spi::AdmissionRequest {
+            task_id,
+            remaining_ms: task.remaining_ms(self.deps.clock.now()),
+        };
+        let outcome = admission
+            .admit(request, self.boundary_interruption(task_id), &record)
+            .await?;
+        Ok(match outcome {
+            crate::spi::AdmissionOutcome::Admitted { held, .. } => {
+                if held.is_some() {
+                    self.unadmitted
+                        .lock()
+                        .expect("unadmitted lock")
+                        .remove(&task_id);
+                }
+                Admit::Go(held)
+            }
+            crate::spi::AdmissionOutcome::Stopped { .. } => Admit::Stopped,
+            crate::spi::AdmissionOutcome::DeadlinePassed { .. } => Admit::DeadlinePassed,
+        })
+    }
+
     /// Lines 5–7 with runtime retries (REQ-TOOL-009). Returns the step, the
     /// action's outcome (`None` only when the execution was cancelled) and
     /// the task, halted when the disposition says so.
@@ -1341,6 +1463,34 @@ impl Runtime {
             // ran, so the record is exact. The stronger requests imply the
             // weakest, so a request of either kind is met here too.
             if self.no_new_action_requested(task.task_id) {
+                self.close_not_started(&task, &mut step, &action, authorized, now)?;
+                return Ok((step, None, task));
+            }
+            // The slot, before the action is recorded `running` (RFC 013 decision 5): an
+            // execution that waits for one is not begun, so a first stop request ends the
+            // wait with the action closed as one that never began, and nothing `running` is
+            // ever written for it. The slot is returned when the call below ends, however it
+            // ends: a guard dropped on every path out of this iteration.
+            let slot = match self.admit_execution(&task, &step, &action).await? {
+                Admit::Go(slot) => slot,
+                Admit::Stopped => {
+                    self.close_not_started(&task, &mut step, &action, authorized, now)?;
+                    return Ok((step, None, task));
+                }
+                // The task's deadline passed while the execution waited: the action is closed
+                // as one that never began, and the task halts as it would at the next step
+                // boundary.
+                Admit::DeadlinePassed => {
+                    self.close_not_started(&task, &mut step, &action, authorized, now)?;
+                    let halted =
+                        task.transition(TaskInput::Halt(HaltReason::BudgetDeadline), now)?;
+                    return Ok((step, Some(ActionOutcome::Failed), halted));
+                }
+            };
+            // A request that came while the slot was being taken: the slot is returned
+            // (dropped with `slot`) and the action never begins, with nothing `running` written.
+            if self.no_new_action_requested(task.task_id) {
+                drop(slot);
                 self.close_not_started(&task, &mut step, &action, authorized, now)?;
                 return Ok((step, None, task));
             }
@@ -1404,6 +1554,8 @@ impl Runtime {
                     )
                 }
             };
+            // The execution has ended: its slot goes back, before the record of the outcome.
+            drop(slot);
             // A provider that stopped at the start gate's token in a wait made
             // before anything was sent has made no call: the action is closed
             // as one that never began, not as a cancellation of a call (which

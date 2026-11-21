@@ -5,7 +5,6 @@
 
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::process::Command;
 
 mod common;
 use common::run_bounded;
@@ -47,7 +46,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+        let mut cmd = common::mimlys();
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
