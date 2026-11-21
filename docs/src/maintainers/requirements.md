@@ -395,7 +395,7 @@ A declared read path (`read_paths`, `toolchain grant`) shall be refused, with th
 The Linux seccomp filter shall always deny `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `process_vm_readv` and `process_vm_writev`, in every worker including the dependency step's. Where Landlock ABI 4 or later exists and network is denied, TCP `bind` and `connect` shall be handled with an empty allow-set as a second layer. The runtime and the worker shall mark themselves non-dumpable at start, so that a same-user process that is not itself inside a Landlock domain cannot read their memory, environment or descriptors through `/proc` or `process_vm_readv` (Landlock already refuses this to a confined process that is outside the target's domain; the flag covers the rest). A clause test per denied route shall show the attempt failing from inside a host tool. (THR-11, THR-23, THR-24; added 2026-11-03, 0.7.1)
 
 ### REQ-CONF-013 CPU part of clause C — M7b · T
-Clause C shall gain a CPU part, best effort allowed on every platform (it never lowers the tier): on Linux `cpu.max` of the `tool` cgroup, with the worker in a leaf cgroup beside `tool` (cgroup v2 admits a controller only below a cgroup that holds no process), else `unavailable` with the reason; the Job Object's CPU rate on Windows (a share of the whole machine, converted from LIM-H7); on macOS `setpriority` (a lowered nice value), never the background policy, which starved a tree that shared the machine, reported `best_effort (priority)`; the share is LIM-H7, a budget a task may raise within the ceiling. (RFC 013; amended 2026-11-20 from the M7b report: RFC 013 Amendment 2)
+Clause C shall gain a CPU part, best effort allowed on every platform (it never lowers the tier): on Linux `cpu.max` of the `tool` cgroup, with the worker in a leaf cgroup beside `tool` (cgroup v2 admits a controller only below a cgroup that holds no process), else `unavailable` with the reason; the Job Object's CPU rate on Windows (a share of the whole machine, converted from LIM-H7); on macOS `setpriority` (a lowered nice value), never the background policy, which starved a tree that shared the machine, reported `best_effort (priority)`; the share is LIM-H7, one value for every task (`[policy.ceiling] cpu_share`, whole percent of the cores). On Linux the part is `unavailable` in practice, because the runtime's own cgroup holds the runtime; the book shows how to bound the whole runtime. (RFC 013; amended 2026-11-20 and 2026-11-21: RFC 013 Amendments 2 and 3)
 
 ---
 
@@ -546,7 +546,7 @@ Cancellation of a task shall reach its model request, its execution and its work
 A terminal task shall hold no worker, backend, lock or scheduler resource.
 
 ### REQ-SCHED-006 Admission per user — M7b · T
-At most LIM-X5 executions of one operating-system user shall run at once across all runtimes, counted in an owner-only registry under the user's runtime directory; a runtime without a free slot waits with its task queued (`reason: admission`), says so in `status` and records `task.admission_changed`; a stale entry is reaped at every open; a registry that cannot be used within LIM-O11 lets the runtime run unadmitted, shown in `status` and the task's events. (RFC 013)
+At most LIM-X5 executions of one operating-system user shall run at once across all runtimes, counted in an owner-only registry under the user's runtime directory; a runtime without a free slot waits, its task `running` and its view saying `waiting: admission (…)`, says so in `status` and records `task.admission_changed`; a stale entry is reaped at every open; a registry that cannot be used within LIM-O11 lets the runtime run unadmitted, shown in `status` and the task's events. (RFC 013)
 
 ### REQ-SCHED-007 Engine gate — M7b · T
 At most `max_in_flight` model requests (default 1) of one user shall be in flight per backend endpoint across runtimes; the wait is a metric and a log line and is bounded by the request's own deadline. (RFC 013)
@@ -583,7 +583,7 @@ A task's persisted decisions and tool results shall be replayable through the fa
 Rejections by code, denials by grant kind and halts by reason shall be counted; the documentation names a rising rejection rate as an interface defect. (CLR-12)
 
 ### REQ-OBS-009 Machine view — M7b · T
-`status` shall show the user's runtimes executing or waiting (pid, data directory, task, since when), the engine gates held and the slots taken against LIM-X5; `metrics` gains `admission_wait_ms` and `engine_wait_ms` per task. (RFC 013)
+`status` shall show the user's runtimes executing or waiting (pid, data directory, task, since when), the engine gates held and the slots taken against LIM-X5; `metrics` gains `admission_wait_ms`, `admission_waits`, `engine_wait_ms` and `engine_waits`, per task and over all. (RFC 013)
 
 ### REQ-OBS-010 Cost visibility — M8 · T
 `task show` shall answer what a task cost: its effort level, the steps used of its envelope, model time, prompt and completion tokens where reported, and the backend; `metrics` aggregates per level. (RFC 015)

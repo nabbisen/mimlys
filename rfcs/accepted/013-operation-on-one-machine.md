@@ -85,6 +85,13 @@ The measurement report (`docs/src/maintainers/m7b-report.md`) fixed the defaults
 5. **LIM-X5 stays 2 where the CPU part is not a bound** (the second slot then costs ×1.2 to ×2.0): one default and one rule everywhere; a user may set 1.
 6. **There is no queued flag to extend.** Decision 5 and the cross-cutting vocabulary speak of a task "queued" with `reason: concurrency` "as today", but no such state exists: a runtime runs one task at a time (LIM-X1 is fixed at 1), and nothing queues. So a task that waits for a slot stays `running`, and its view says `waiting` with the reason `admission` (external design §19.3). `concurrency` is not used; the words `waiting` and `slot` keep the one meaning decision 8 gives them.
 
+## Amendment 3 (2026-11-21, the review of handoff 013d)
+
+1. **Linux: the CPU part is `unavailable` in practice.** Amendment 2's leaf frees the worker's cgroup, but cgroup v2 also needs the cgroup above it, the runtime's own, to hold no process before it passes `cpu` on, and that cgroup always holds the runtime. The part is built as Amendment 2 says and reports its reason; the book's `systemd-run --user --scope -p CPUQuota=…` is the way a user bounds the whole runtime. Moving the runtime into a leaf of its own would change the accounting of the user's terminal session, so it is not done.
+2. **One share for every task.** "A budget a task may raise within the ceiling" described a mechanism that no budget of a resource has. `[policy.ceiling] cpu_share` is the value in force for every task.
+3. **The registry has `waiting` entries,** and an entry is stale when its lock is free; the pid is shown, not consulted (external design §19.3).
+4. **The gate's wait ends at once at the first stop request,** since nothing was sent; a request already sent is interrupted at the grace, as before.
+
 ## References
 
 The owner's review package `.git-exclude/reviewed/owner-review-replanning-after-0.8/` (README §2 to §3, the assessment, the theme proposal); the replanning report §3 C, §3 D; requirements REQ-SCHED-001 … 005, REQ-CONF-001 … 012, REQ-WS-008, REQ-WS-009, REQ-PERS-001 … 012, REQ-OBS-001 … 008; external design §13.3, §13.5, §14.6, §16, §17, §19, §20; limits LIM-X1 … X4, LIM-H1 … H6, LIM-O3, LIM-M1, LIM-T5; threats THR-23, THR-32.
