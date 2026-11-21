@@ -155,7 +155,9 @@ pub fn halt_text(reason: HaltReason) -> &'static str {
             "the model backend could not be reached; check the backend and resume"
         }
         HaltReason::ToolUnavailable => "a tool could not be reached; resume to try again",
-        HaltReason::Policy => "the policy did not allow the completion check to run",
+        HaltReason::Policy => {
+            "the policy stopped the task: it did not allow the completion check to run, or the backend is remote and the profile forbids external communication (a line says which)"
+        }
         HaltReason::DefinitionsTooLarge => {
             "the definitions of the tools granted to this task are too large to show the model; revoke a tool grant with `mimlys revoke`, then resume"
         }
@@ -707,6 +709,14 @@ pub fn no_backend_named(name: &str, configured: &[&str]) -> String {
     } else {
         format!("no backend is named `{name}` ({have})")
     }
+}
+/// A task that was halted `policy` because its backend is remote under a profile without
+/// `external` (REQ-SEC-010; external design §20): nothing was sent, and the line says what to
+/// change. The backend's name is the one the task runs on.
+pub fn start_refused(backend: &str, profile: &str) -> String {
+    format!(
+        "nothing was sent: backend `{backend}` is remote and profile `{profile}` forbids external communication (external = false), so the task was halted `policy`; make the backend local, or set external = true in [policy.profiles.{profile}] (with policy.remote_backend_allowed = true), then resume the task"
+    )
 }
 /// `check`: the file is `config_version = 1` (REQ-CFG-007, REQ-MAIN-001): read now, through 0.14.
 pub fn config_version_1_deprecated() -> &'static str {

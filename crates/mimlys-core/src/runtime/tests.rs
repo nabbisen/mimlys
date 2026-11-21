@@ -29,6 +29,7 @@ mod refused_creation;
 mod rejection_feedback;
 mod result_bound;
 mod script_mode;
+mod start_check;
 mod whole_streams;
 
 fn tool(name: &str, kind: EffectKind) -> ToolDefinition {

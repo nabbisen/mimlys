@@ -1171,7 +1171,7 @@ pub mod fake {
         panicking_methods: PanickingMethods,
         responses: Mutex<VecDeque<Result<Vec<u8>, BackendError>>>,
         requests: Mutex<Vec<GenerateRequest>>,
-        remote: bool,
+        remote: std::sync::atomic::AtomicBool,
         transport: Mutex<DecisionTransport>,
         transport_error: Mutex<Option<BackendError>>,
         text_chars: Mutex<VecDeque<Option<u64>>>,
@@ -1191,7 +1191,7 @@ pub mod fake {
                         .collect(),
                 ),
                 requests: Mutex::new(Vec::new()),
-                remote: false,
+                remote: std::sync::atomic::AtomicBool::new(false),
                 transport: Mutex::new(DecisionTransport::Envelope),
                 transport_error: Mutex::new(None),
                 text_chars: Mutex::new(VecDeque::new()),
@@ -1220,9 +1220,16 @@ pub mod fake {
         }
 
         /// The same backend declaring itself `remote` (REQ-SEC-010 tests).
-        pub fn remote(mut self) -> Self {
-            self.remote = true;
+        pub fn remote(self) -> Self {
+            self.set_remote(true);
             self
+        }
+
+        /// From now on the backend declares itself `remote` (or `local`): the configuration was
+        /// edited between two starts of a task (REQ-SEC-010 tests).
+        pub fn set_remote(&self, remote: bool) {
+            self.remote
+                .store(remote, std::sync::atomic::Ordering::SeqCst);
         }
 
         /// From now on, `generate` panics with `message` at `at`.
@@ -1310,7 +1317,7 @@ pub mod fake {
 
         fn locality(&self) -> Locality {
             panic_if_set(&self.panicking_methods, "locality");
-            if self.remote {
+            if self.remote.load(std::sync::atomic::Ordering::SeqCst) {
                 Locality::Remote
             } else {
                 Locality::Local
@@ -1327,7 +1334,7 @@ pub mod fake {
             BackendDescriptor {
                 kind: "scripted".into(),
                 model: None,
-                locality: if self.remote {
+                locality: if self.remote.load(std::sync::atomic::Ordering::SeqCst) {
                     Locality::Remote
                 } else {
                     Locality::Local

@@ -46,6 +46,17 @@ pub async fn finish(
         _ => app.runtime.get_task(task_id)?,
     };
     print_view(&view, out);
+    // REQ-SEC-010: a task halted `policy` because its backend is remote under a profile that
+    // forbids it (the rule is asked again, of what is in force now) is told why, naming both.
+    if matches!(
+        view.task.state,
+        TaskState::Halted {
+            halt_reason: mimlys_core::task::HaltReason::Policy
+        }
+    ) && let Some(refusal) = app.runtime.start_refusal(&view.task)?
+    {
+        out.line(messages::start_refused(&app.backend.name, &refusal.profile));
+    }
     Ok(())
 }
 

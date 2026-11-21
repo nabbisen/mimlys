@@ -477,7 +477,12 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     if runs_steps(&cli.command) {
         app.backend_ready()?;
     }
+    // REQ-SEC-010: a backend that the start of this command's task is refused is not contacted,
+    // not even to be probed; the command goes on and says why (the creation is refused, or the
+    // task halts `policy`).
+    let forbidden = start_is_forbidden(&app, &cli.command);
     if needs_backend(&cli.command)
+        && !forbidden
         && let Some(notice) = app.probe_backend().await?
     {
         out.line(notice);
@@ -512,6 +517,33 @@ fn runs_steps(command: &Command) -> bool {
             | Command::Reject { .. }
             | Command::Answer { .. }
     )
+}
+
+/// Whether the task this command creates or starts is one the profile forbids the backend for
+/// (REQ-SEC-010). An error, or a task that is not there, is "no": the command reports it itself.
+fn start_is_forbidden(app: &App, command: &Command) -> bool {
+    let named = match command {
+        Command::Task(TaskCommand::Resume { task, .. })
+        | Command::Approve { task }
+        | Command::Reject { task, .. }
+        | Command::Answer { task, .. } => Some(task),
+        _ => None,
+    };
+    let forbidden = match named {
+        Some(task) => app
+            .resolve_task(task)
+            .and_then(|id| Ok(app.runtime.get_task(id)?))
+            .and_then(|view| Ok(app.runtime.start_refusal(&view.task)?.is_some())),
+        None => {
+            let profile = match command {
+                Command::Run(args) => args.profile.as_deref(),
+                Command::Task(TaskCommand::New { args, .. }) => args.profile.as_deref(),
+                _ => return false,
+            };
+            Ok(app.runtime.creation_forbidden(profile).unwrap_or(false))
+        }
+    };
+    forbidden.unwrap_or(false)
 }
 
 fn needs_backend(command: &Command) -> bool {

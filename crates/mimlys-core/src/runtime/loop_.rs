@@ -224,6 +224,26 @@ impl Runtime {
             }));
         }
         let now = self.deps.clock.now();
+        // REQ-SEC-010 at every start, before anything is sent. Every start of a task (a creation
+        // that runs, `resume_task`, an approval, a rejection or an answer that sets it running
+        // again, a recovered task under `recovery.auto_resume`) ends in this function for its
+        // first step, and a model request is sent from nowhere else: so one check here covers
+        // them all, and a configuration edited since the task was created cannot send its content
+        // where its profile forbids.
+        if let Some(refusal) = self.start_refusal(&task)? {
+            tracing::warn!(
+                target: "mimlys_core",
+                task = %task_id,
+                profile = %refusal.profile,
+                "the backend is remote and the profile forbids external communication: the task is halted before anything is sent"
+            );
+            let halted = task.transition(TaskInput::Halt(HaltReason::Policy), now)?;
+            self.persist_task(&task, &halted)?;
+            return Ok(StepResultView {
+                outcome: StepOutcome::Halted,
+                state: halted.state,
+            });
+        }
         // The boundary: a stop request, a requested pause, then the deadline (REQ-TASK-005, REQ-TASK-006, REQ-TASK-009).
         // The stop request read here is the weakest one (start no new action,
         // which the two stronger requests imply): no new step begins after a

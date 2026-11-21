@@ -12,7 +12,7 @@ mod loop_;
 mod read;
 mod storage;
 
-pub use control::{CreateTask, RuntimeStatus, TaskView, UnknownAction, Waiting};
+pub use control::{CreateTask, RuntimeStatus, StartRefusal, TaskView, UnknownAction, Waiting};
 pub use loop_::{PROMPT_LOG_TARGET, StepResultView};
 pub use read::{Activity, Reader};
 pub use storage::{Holdings, TaskHolding};

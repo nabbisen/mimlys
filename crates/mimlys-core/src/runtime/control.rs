@@ -325,8 +325,7 @@ impl Runtime {
                     self.deps.policy.profiles.keys().collect::<Vec<_>>()
                 ),
             })?;
-        let locality = self.guard(MODEL_BACKEND, || self.deps.backend.locality())?;
-        if locality == crate::spi::Locality::Remote && !profile.external {
+        if self.remote_forbidden(&profile)? {
             return Err(RuntimeError::Denied {
                 detail: format!(
                     "profile {profile_name} forbids external communication (external = false); the backend is remote"
@@ -923,6 +922,41 @@ impl Runtime {
             snapshots,
             promotions,
         )
+    }
+
+    /// Whether the backend that decides is `remote` and `profile` forbids external communication
+    /// (REQ-SEC-010; `external = false`). The one place the rule is evaluated: a task's creation
+    /// and every start of it ask it.
+    pub(crate) fn remote_forbidden(
+        &self,
+        profile: &crate::policy::Profile,
+    ) -> Result<bool, RuntimeError> {
+        let locality = self.guard(MODEL_BACKEND, || self.deps.backend.locality())?;
+        Ok(locality == crate::spi::Locality::Remote && !profile.external)
+    }
+
+    /// Whether a task created under `profile` (the policy's default when `None`) would be refused
+    /// the backend in force (REQ-SEC-010): `false` for a profile the policy does not have, which
+    /// the creation reports by itself. Lets a command that creates a task know, before it
+    /// contacts the backend for anything, that the creation will be refused.
+    pub fn creation_forbidden(&self, profile: Option<&str>) -> Result<bool, RuntimeError> {
+        let name = profile.unwrap_or(&self.deps.policy.default_profile);
+        match self.deps.policy.profile(name) {
+            Some(profile) => self.remote_forbidden(profile),
+            None => Ok(false),
+        }
+    }
+
+    /// Whether `task` may not start: its backend is `remote` under a profile without `external`
+    /// (REQ-SEC-010). It is the answer the next step gives: the task halts `policy` before any
+    /// request is sent (external design §20). The rule is asked of the backend and the profile *in
+    /// force*, not of the ones the task was created under: the configuration may have been edited
+    /// since, and a task never sends where its profile forbids.
+    pub fn start_refusal(&self, task: &Task) -> Result<Option<StartRefusal>, RuntimeError> {
+        let profile = self.profile_of(task)?;
+        Ok(self.remote_forbidden(&profile)?.then(|| StartRefusal {
+            profile: task.profile.clone(),
+        }))
     }
 
     /// Resumes from `created`, `paused` or `halted` (REQ-TASK-005).
@@ -1633,4 +1667,12 @@ impl Runtime {
     pub fn now(&self) -> Instant {
         self.deps.clock.now()
     }
+}
+
+/// A start the profile forbids (REQ-SEC-010): the backend is `remote` and the task's profile has
+/// `external = false`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartRefusal {
+    /// The task's profile.
+    pub profile: String,
 }
