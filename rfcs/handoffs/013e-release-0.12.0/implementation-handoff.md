@@ -6,7 +6,7 @@
 
 ## 1. Versions and the CHANGELOG
 
-- **Versions:** the workspace version `0.12.0` in `Cargo.toml` and every inter-crate pin. `Cargo.lock` follows by `cargo update -w` only.
+- **Versions:** already `0.12.0` on `main` (the architect's commit after 0.11.1: with 0.11.1 on crates.io, `main`'s `0.11.0` requirements resolved to the published 0.11.1 and the packaging dry-run failed). Check that every inter-crate pin and `Cargo.lock` agree.
 - **The section:** `## [0.12.0] - <date of the green run>` holds "Unreleased". The engine's update already shipped in `## [0.11.1]` (2026-11-21), and "Unreleased" refers to it in one line; keep it so.
 - **Lead with `### Security`,** one paragraph per finding that affects 0.11.1, each with its id (0.11.1 is the release a user upgrades from). Look at least at:
   - the worker's frame: a stream above about 600 KB ended the worker, and on an action that cannot be undone that is `unknown_outcome`;
