@@ -469,6 +469,11 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
         return dispatch_read(&app, read, out).await;
     }
     let app = App::open(loaded)?;
+    // A task runs on the backend named `default`, and no command picks another when there is
+    // none (REQ-CFG-007; RFC 015, Amendment 1): this is said before anything is created or run.
+    if needs_backend(&cli.command) {
+        app.loaded.config.default_backend()?;
+    }
     if runs_steps(&cli.command) {
         app.backend_ready()?;
     }

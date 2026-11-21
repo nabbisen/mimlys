@@ -6,6 +6,7 @@
 //! (`mimlys-testloop`) drives the same code as the commands.
 
 pub mod app;
+pub mod backends;
 pub mod commands;
 pub mod config;
 pub mod download;

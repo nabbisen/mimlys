@@ -124,7 +124,7 @@ The body of a marker is JSON, so a tool's output cannot forge a marker.
 
 **History is summarised by rules, only when needed.** The request is kept
 within a budget (32 000 characters by default; `context_chars` under
-`[backend]` changes it). While it fits, every step is sent in full. If it does
+`[backends.default]` changes it). While it fits, every step is sent in full. If it does
 not, mimlys applies these rules in order until it does: repeated lines in an
 output are collapsed to one with a count; every step older than the last six
 becomes a fixed summary of at most 300 characters (built from the step's

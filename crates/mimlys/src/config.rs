@@ -1,18 +1,19 @@
 //! Configuration (external design §19.1; REQ-CFG-001 … REQ-CFG-005).
 //!
-//! One TOML file with `config_version = 1`. Every section refuses unknown
+//! One TOML file with `config_version = 2` (1 is read through 0.14: its
+//! `[backend]` is `backends.default`, REQ-CFG-007). Every section refuses unknown
 //! keys; secrets are references (`env:NAME`, `file:PATH`); every default is
 //! a value of the limits register; every range error states the range.
 
 use mimlys_core::limits::{
-    LIM_C1_CONTEXT_CHARS, LIM_C1_CONTEXT_CHARS_RANGE, LIM_H1_HOST_DEADLINE_MS,
-    LIM_H1_HOST_DEADLINE_MS_RANGE, LIM_M1_REQUEST_MS, LIM_M1_REQUEST_MS_RANGE, LIM_M2_MAX_TOKENS,
-    LIM_M2_MAX_TOKENS_RANGE, LIM_O5_EXTERNAL_DEADLINE_MS, LIM_O5_EXTERNAL_DEADLINE_MS_RANGE,
-    LIM_O6_SERVER_STARTUP_MS, LIM_O6_SERVER_STARTUP_MS_RANGE, LIM_O16_SERVER_SHUTDOWN_MS,
-    LIM_O16_SERVER_SHUTDOWN_MS_RANGE, LIM_O16_SERVER_SHUTDOWN_WARN_BELOW_MS, LIM_S1_FUEL,
-    LIM_S1_FUEL_RANGE, LIM_S2_DEADLINE_MS, LIM_S2_DEADLINE_MS_RANGE, LIM_S3_MEMORY_MIB,
-    LIM_S3_MEMORY_MIB_RANGE, LIM_S4_OUTPUT_BYTES, LIM_S4_OUTPUT_BYTES_RANGE,
-    LIM_W1_WORKSPACE_BYTES, LIM_W1_WORKSPACE_BYTES_RANGE, LIM_W2_WORKSPACE_FILES,
+    LIM_C1_CONTEXT_CHARS, LIM_H1_HOST_DEADLINE_MS, LIM_H1_HOST_DEADLINE_MS_RANGE,
+    LIM_M1_REQUEST_MS, LIM_M2_MAX_TOKENS, LIM_O5_EXTERNAL_DEADLINE_MS,
+    LIM_O5_EXTERNAL_DEADLINE_MS_RANGE, LIM_O6_SERVER_STARTUP_MS, LIM_O6_SERVER_STARTUP_MS_RANGE,
+    LIM_O16_SERVER_SHUTDOWN_MS, LIM_O16_SERVER_SHUTDOWN_MS_RANGE,
+    LIM_O16_SERVER_SHUTDOWN_WARN_BELOW_MS, LIM_S1_FUEL, LIM_S1_FUEL_RANGE, LIM_S2_DEADLINE_MS,
+    LIM_S2_DEADLINE_MS_RANGE, LIM_S3_MEMORY_MIB, LIM_S3_MEMORY_MIB_RANGE, LIM_S4_OUTPUT_BYTES,
+    LIM_S4_OUTPUT_BYTES_RANGE, LIM_W1_WORKSPACE_BYTES, LIM_W1_WORKSPACE_BYTES_RANGE,
+    LIM_W2_WORKSPACE_FILES,
 };
 use mimlys_core::policy::{OnCancel, OnReject, Policy, Profile, Recovery};
 use mimlys_core::spi::Locality;
@@ -20,8 +21,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The configuration schema version this binary understands.
-pub const CONFIG_VERSION: u32 = 1;
+/// The configuration schema version this binary writes and understands (REQ-CFG-007, from 0.13).
+pub const CONFIG_VERSION: u32 = 2;
+/// The oldest version still read: one `[backend]`, read as `backends.default`, through 0.14. The
+/// release that prepares 1.0 removes it, before the freeze (RFC 015, Amendment 1).
+pub const CONFIG_VERSION_OLDEST: u32 = 1;
 /// The environment variable naming the configuration file.
 pub const CONFIG_ENV: &str = "MIMLYS_CONFIG";
 /// The file name under the platform configuration directory.
@@ -55,7 +59,7 @@ impl ConfigError {
     }
 }
 
-fn range<T: PartialOrd + std::fmt::Display>(
+pub(crate) fn range<T: PartialOrd + std::fmt::Display>(
     key: &str,
     value: T,
     (min, max): (T, T),
@@ -105,22 +109,17 @@ impl SecretRef {
         }
     }
 
-    /// Reads the secret. Never logged, never printed.
+    /// Reads the secret. Never logged, never printed. The error has no key: the caller, which
+    /// knows where the reference was written, names it.
     pub fn resolve(&self) -> Result<String, ConfigError> {
         match self {
             SecretRef::Env(name) => std::env::var(name).map_err(|_| {
-                ConfigError::new(
-                    "backend.api_key",
-                    format!("environment variable {name} is not set"),
-                )
+                ConfigError::new("", format!("environment variable {name} is not set"))
             }),
             SecretRef::File(path) => std::fs::read_to_string(path)
                 .map(|s| s.trim_end().to_owned())
                 .map_err(|e| {
-                    ConfigError::new(
-                        "backend.api_key",
-                        format!("cannot read the secret file: {}", e.kind()),
-                    )
+                    ConfigError::new("", format!("cannot read the secret file: {}", e.kind()))
                 }),
         }
     }
@@ -148,9 +147,15 @@ pub struct Config {
     /// `[runtime]`.
     #[serde(default)]
     pub runtime: RuntimeSection,
-    /// `[backend]`.
-    #[serde(default)]
-    pub backend: BackendSection,
+    /// `[backends.<name>]` (REQ-CFG-007): one entry per backend, named by a short identifier
+    /// ([`crate::backends::name_problem`]). A version-1 file's `[backend]` is the entry
+    /// [`crate::backends::DEFAULT`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub backends: BTreeMap<String, BackendSection>,
+    /// `[backend]` of a version-1 file, as parsed: [`Config::parse`] moves it into `backends`, so
+    /// this is `None` in every configuration it returns.
+    #[serde(default, skip_serializing)]
+    backend: Option<BackendSection>,
     /// `[policy]`.
     #[serde(default)]
     pub policy: PolicySection,
@@ -179,7 +184,12 @@ impl Default for Config {
         Self {
             config_version: CONFIG_VERSION,
             runtime: RuntimeSection::default(),
-            backend: BackendSection::default(),
+            // No file: the fake backend without a script, as before 0.13.
+            backends: BTreeMap::from([(
+                crate::backends::DEFAULT.to_owned(),
+                BackendSection::default(),
+            )]),
+            backend: None,
             policy: PolicySection::default(),
             sandbox: SandboxSection::default(),
             workspace: WorkspaceSection::default(),
@@ -565,7 +575,7 @@ pub enum DecisionTransport {
     Envelope,
 }
 
-/// `[backend]`.
+/// `[backends.<name>]` (`[backend]` of a version-1 file).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackendSection {
@@ -775,7 +785,8 @@ impl PolicySection {
         declared_host_tools: &[String],
     ) -> Result<Policy, ConfigError> {
         let mut policy = Policy::shipped();
-        policy.config_version = CONFIG_VERSION;
+        // The policy's own schema version (REQ-CAP-010) is not the file's: it stays 1, so that the
+        // policy hash of a task made before 0.13 is the hash of the same policy now.
         if let Some(p) = &self.default_profile {
             policy.default_profile = p.clone();
         }
@@ -1012,9 +1023,19 @@ pub struct Loaded {
     /// The file, or `None` for the built-in defaults.
     pub path: Option<PathBuf>,
     /// Every configured secret, resolved once, as `(name, value)`
-    /// (REQ-CFG-003): the backend's key under `backend.api_key`. They feed
+    /// (REQ-CFG-003): each backend's key under `backends.<name>.api_key`. They feed
     /// the redactor (REQ-CTX-007) and never appear in a log.
     pub secrets: Vec<(String, String)>,
+    /// What the file uses that a later release stops reading: `check` says each once.
+    pub deprecations: Vec<Deprecation>,
+}
+
+/// Something the file uses that is read now and will not be (REQ-MAIN-001).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Deprecation {
+    /// `config_version = 1`: one `[backend]`, read as `backends.default`; read through 0.14
+    /// (REQ-CFG-007).
+    ConfigVersion1,
 }
 
 impl Config {
@@ -1102,14 +1123,14 @@ impl Config {
     /// Reads and validates the file at `path`, or the defaults when there
     /// is none (REQ-CFG-002).
     pub fn load(path: Option<&Path>) -> Result<Loaded, ConfigError> {
-        let config = match path {
+        let (config, deprecations) = match path {
             Some(p) => {
                 let text = std::fs::read_to_string(p).map_err(|e| {
                     ConfigError::new("", format!("cannot read {}: {}", p.display(), e.kind()))
                 })?;
-                Self::parse(&text)?
+                Self::parse_noting(&text)?
             }
-            None => Config::default(),
+            None => (Config::default(), Vec::new()),
         };
         config.validate()?;
         let secrets = config.resolve_secrets()?;
@@ -1117,6 +1138,7 @@ impl Config {
             config,
             path: path.map(Path::to_path_buf),
             secrets,
+            deprecations,
         })
     }
 
@@ -1124,18 +1146,22 @@ impl Config {
     /// is refused (REQ-CTX-007, `MIN_SECRET_CHARS`).
     pub fn resolve_secrets(&self) -> Result<Vec<(String, String)>, ConfigError> {
         let mut out = Vec::new();
-        if let Some(key) = &self.backend.api_key {
-            let value = key.resolve()?;
+        for (name, b) in &self.backends {
+            let Some(key) = &b.api_key else { continue };
+            let secret = format!("backends.{name}.api_key");
+            let value = key
+                .resolve()
+                .map_err(|e| ConfigError::new(&secret, e.reason))?;
             if value.chars().count() < mimlys_core::limits::MIN_SECRET_CHARS {
                 return Err(ConfigError::new(
-                    "backend.api_key",
+                    &secret,
                     format!(
                         "the resolved value is shorter than {} characters and could not be redacted safely",
                         mimlys_core::limits::MIN_SECRET_CHARS
                     ),
                 ));
             }
-            out.push(("backend.api_key".to_owned(), value));
+            out.push((secret, value));
         }
         for (name, s) in &self.servers {
             for (var, reference) in &s.env_secrets {
@@ -1160,7 +1186,16 @@ impl Config {
 
     /// Parses TOML; an unknown key or an inline secret is an error naming the key.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-        toml::from_str::<Config>(text).map_err(|e| {
+        Self::parse_noting(text).map(|(config, _)| config)
+    }
+
+    /// As [`Config::parse`], with what the file uses that a later release stops reading
+    /// (REQ-CFG-007). A version-1 file's `[backend]` is returned as `backends.default` and the
+    /// configuration says `config_version = 2`: what `check` prints is the version-2 form, which
+    /// reads back as the same value. A form that belongs to the other version is refused, naming
+    /// the version it needs; a version that is neither is refused, naming both.
+    pub fn parse_noting(text: &str) -> Result<(Self, Vec<Deprecation>), ConfigError> {
+        let mut config = toml::from_str::<Config>(text).map_err(|e| {
             let message = e.message().to_owned();
             if message.contains("retention_days") {
                 ConfigError::new(
@@ -1170,7 +1205,47 @@ impl Config {
             } else {
                 ConfigError::new("", message)
             }
-        })
+        })?;
+        let version_one_backend = config.backend.take();
+        let mut deprecations = Vec::new();
+        match config.config_version {
+            CONFIG_VERSION => {
+                if version_one_backend.is_some() {
+                    return Err(ConfigError::new(
+                        "backend",
+                        format!(
+                            "`[backend]` is the form of config_version {CONFIG_VERSION_OLDEST}; with config_version = {CONFIG_VERSION} write `[backends.default]` (or another name) instead"
+                        ),
+                    ));
+                }
+            }
+            CONFIG_VERSION_OLDEST => {
+                if !config.backends.is_empty() {
+                    return Err(ConfigError::new(
+                        "backends",
+                        format!(
+                            "`[backends]` is the form of config_version {CONFIG_VERSION}; set config_version = {CONFIG_VERSION}, or write the one backend as `[backend]`"
+                        ),
+                    ));
+                }
+                // A version-1 file without `[backend]` had the default section (the fake backend).
+                config.backends.insert(
+                    crate::backends::DEFAULT.to_owned(),
+                    version_one_backend.unwrap_or_default(),
+                );
+                config.config_version = CONFIG_VERSION;
+                deprecations.push(Deprecation::ConfigVersion1);
+            }
+            other => {
+                return Err(ConfigError::new(
+                    "config_version",
+                    format!(
+                        "{other} is not supported; this version reads {CONFIG_VERSION}, and {CONFIG_VERSION_OLDEST} through 0.14"
+                    ),
+                ));
+            }
+        }
+        Ok((config, deprecations))
     }
 
     /// Checks versions, ranges and cross-field rules (REQ-CFG-001, CLR-3).
@@ -1179,7 +1254,7 @@ impl Config {
             return Err(ConfigError::new(
                 "config_version",
                 format!(
-                    "{} is not supported; this version reads {CONFIG_VERSION}",
+                    "{} is not supported; this version reads {CONFIG_VERSION}, and {CONFIG_VERSION_OLDEST} through 0.14",
                     self.config_version
                 ),
             ));
@@ -1195,72 +1270,12 @@ impl Config {
                 ));
             }
         }
-        let b = &self.backend;
-        range("backend.timeout_ms", b.timeout_ms, LIM_M1_REQUEST_MS_RANGE)?;
-        range(
-            "backend.max_in_flight",
-            b.max_in_flight,
-            mimlys_core::limits::LIM_O12_MAX_IN_FLIGHT_RANGE,
-        )?;
         range(
             "runtime.admission_slots",
             self.runtime.admission_slots,
             mimlys_core::limits::LIM_X5_ADMISSION_SLOTS_RANGE,
         )?;
-        range("backend.max_tokens", b.max_tokens, LIM_M2_MAX_TOKENS_RANGE)?;
-        range(
-            "backend.context_chars",
-            b.context_chars,
-            LIM_C1_CONTEXT_CHARS_RANGE,
-        )?;
-        if !(0.0..=2.0).contains(&b.temperature) || b.temperature.is_nan() {
-            return Err(ConfigError::new(
-                "backend.temperature",
-                format!("{} is outside 0.0–2.0", b.temperature),
-            ));
-        }
-        if b.locality == Locality::Remote && !self.policy.remote_backend_allowed {
-            return Err(ConfigError::new(
-                "backend.locality",
-                "`remote` needs policy.remote_backend_allowed = true",
-            ));
-        }
-        match b.kind {
-            BackendKind::Fake => {
-                if b.url.is_some() || b.model.is_some() || b.api_key.is_some() {
-                    return Err(ConfigError::new(
-                        "backend.kind",
-                        "`fake` takes no url, model or api_key; use `script` for a script file",
-                    ));
-                }
-                if b.decision_transport == DecisionTransport::ToolCalls {
-                    return Err(ConfigError::new(
-                        "backend.decision_transport",
-                        "the `fake` backend answers from a script and has no `tool_calls` transport",
-                    ));
-                }
-            }
-            BackendKind::OpenaiCompatible => {
-                if b.url.is_none() {
-                    return Err(ConfigError::new(
-                        "backend.url",
-                        "required for `openai_compatible`",
-                    ));
-                }
-                if b.model.is_none() {
-                    return Err(ConfigError::new(
-                        "backend.model",
-                        "required for `openai_compatible`",
-                    ));
-                }
-                if b.script.is_some() {
-                    return Err(ConfigError::new(
-                        "backend.script",
-                        "only the `fake` backend reads a script",
-                    ));
-                }
-            }
-        }
+        self.validate_backends()?;
         for (name, s) in &self.servers {
             if name.is_empty()
                 || !name.chars().next().is_some_and(|c| c.is_ascii_lowercase())

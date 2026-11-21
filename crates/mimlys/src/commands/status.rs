@@ -1,6 +1,7 @@
 //! `mimlys status` (REQ-OBS-006).
 
-use crate::app::{AppError, ReadApp, StoreView, make_backend, probe_backend_of, probe_confinement};
+use crate::app::{AppError, ReadApp, StoreView, probe_confinement};
+use crate::backends::Backend;
 use crate::messages;
 use crate::output::Output;
 use serde::Serialize;
@@ -80,11 +81,23 @@ struct BackendView {
 pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     let config = &app.loaded.config;
     let policy = config.resolve_policy()?;
-    let (backend_adapter, openai) = make_backend(config, &app.loaded, None)?;
-    let (backend_probe, notice) = probe_backend_of(&app.loaded, openai.as_ref()).await?;
-    if let Some(notice) = notice {
-        out.line(notice);
-    }
+    let backend = Backend::make_default(&app.loaded, None)?;
+    // No backend named `default`: there is none to probe, and the line says so (the other
+    // commands that need one refuse, and say the same).
+    let no_default = config.default_backend().err();
+    let backend_probe = match &no_default {
+        None => {
+            let (probe, notice) = backend.probe().await?;
+            if let Some(notice) = notice {
+                out.line(notice);
+            }
+            Some(probe)
+        }
+        Some(error) => {
+            out.line(error.reason.clone());
+            None
+        }
+    };
     let (confinement, outside_sweep_unavailable) = probe_confinement(
         config,
         &app.data_dir,
@@ -95,7 +108,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     let activity = app.reader.activity()?;
     let mut status = mimlys_core::runtime::RuntimeStatus {
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        backend: backend_adapter.describe(),
+        backend: backend.adapter.describe(),
         tier: confinement.tier_with(&policy.accept_best_effort).describe(),
         clauses: confinement.clauses.clone(),
         unavailable_clauses: confinement.unavailable_lines(),
@@ -103,7 +116,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         running: activity.running,
         pending: activity.pending,
     };
-    let probe = Some(backend_probe);
+    let probe = backend_probe;
     let store = app.store_view()?;
     let locality = serde_json::to_value(status.backend.locality)
         .ok()
@@ -136,7 +149,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     for line in messages::machine_lines(&machine) {
         out.line(line);
     }
-    let backend = BackendView {
+    let backend_view = BackendView {
         kind: std::mem::take(&mut status.backend.kind),
         model: status.backend.model.take(),
         locality: status.backend.locality,
@@ -223,7 +236,10 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     // The model sees only the tools that can be functions of the transport; the user
     // is told which are left out, and why, here and not by the model (REQ-MDL-009).
     if matches!(
-        backend.probe.as_ref().and_then(|p| p.decision_transport),
+        backend_view
+            .probe
+            .as_ref()
+            .and_then(|p| p.decision_transport),
         Some(mimlys_core::native::DecisionTransport::ToolCalls)
     ) {
         mark_function_name_unavailable(&mut servers);
@@ -257,7 +273,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     }
     out.value(&Status {
         runtime: &status,
-        backend,
+        backend: backend_view,
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         data_dir_in_temporary_directory: data_dir_in_temp,
         xcrun_cache_missing: xcrun_missing,

@@ -100,11 +100,19 @@ fn req_cfg_001_check_and_exit_codes() {
     let (code, stdout, _) = env.run(&["check"], "");
     assert_eq!(code, 0);
     assert!(stdout.contains("configuration ok"));
-    assert!(stdout.contains("config_version = 1"));
+    assert!(
+        stdout.contains("config_version = 2"),
+        "check prints the version-2 form: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("deprecated: config_version = 1").count(),
+        1,
+        "{stdout}"
+    );
     let (code, value) = env.json(&["check"]);
     assert_eq!(code, 0);
     assert_eq!(value["ok"], true);
-    assert_eq!(value["config"]["backend"]["kind"], "fake");
+    assert_eq!(value["config"]["backends"]["default"]["kind"], "fake");
 
     let bad = Env::new("[backend]\nkind = \"fake\"\ncolour = \"blue\"\n");
     let (code, _, stderr) = bad.run(&["check"], "");
@@ -153,7 +161,7 @@ fn req_cli_004_json_and_task_control() {
         refused["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("backend.script"),
+            .contains("backends.default.script"),
         "{refused}"
     );
     drop(bare);

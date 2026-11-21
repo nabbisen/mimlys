@@ -2,7 +2,7 @@
 //! resolved, secrets as references.
 
 use crate::app::AppError;
-use crate::config::Loaded;
+use crate::config::{Deprecation, Loaded};
 use crate::messages;
 use crate::output::Output;
 
@@ -19,6 +19,18 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         &loaded.config.data_dir()?.to_string_lossy(),
     ));
     out.line(messages::CHECK_OK);
+    // REQ-CFG-007: one line for a version-1 file, which shows the version-2 form.
+    for deprecation in &loaded.deprecations {
+        match deprecation {
+            Deprecation::ConfigVersion1 => out.line(messages::config_version_1_deprecated()),
+        }
+    }
+    // REQ-CFG-007: no backend named `default` is not an error here (`status` and the commands that
+    // run no step work), and it is said: the commands that run steps refuse, with this line.
+    let no_default = loaded.config.default_backend().err();
+    if let Some(error) = &no_default {
+        out.line(format!("warning: {}", error.reason));
+    }
     let in_temp = loaded.config.data_dir_in_temp_dir();
     if in_temp {
         out.line(messages::data_dir_in_temp_warning(
@@ -60,6 +72,10 @@ pub fn run(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         "data_dir": loaded.config.data_dir()?.to_string_lossy(),
         "data_dir_in_temporary_directory": in_temp,
         "config": loaded.config,
+        "default_backend": no_default.is_none(),
+        "deprecations": loaded.deprecations.iter().map(|d| match d {
+            Deprecation::ConfigVersion1 => "config_version_1",
+        }).collect::<Vec<_>>(),
         "external_tools": loaded.config.declared_external_tools().into_iter().map(|(t, s)| serde_json::json!({"tool": t, "declared_by": s})).collect::<Vec<_>>(),
         "undeclared_external_tools": loaded.config.undeclared_external_tools(),
         "short_shutdown_servers": loaded.config.short_shutdown_servers().into_iter().map(|(s, ms)| serde_json::json!({"server": s, "shutdown_ms": ms})).collect::<Vec<_>>(),

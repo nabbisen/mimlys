@@ -72,9 +72,9 @@ step; everything below works the same way with a model:
 Point the configuration at it and ask for approval before every write:
 
 ```toml
-config_version = 1
+config_version = 2
 
-[backend]
+[backends.default]
 kind = "fake"
 script = "/path/to/script.json"
 
@@ -203,7 +203,7 @@ see [Storage](./reference/storage.md): `mimlys status --storage` and
   `admission_slots` executions.
 - **One request at a time to your model engine.** The same registry holds a
   gate for each model endpoint: `max_in_flight` model requests of yours (one by
-  default; `[backend]` in the [configuration](./reference/configuration.md)) may
+  default; `[backends.<name>]` in the [configuration](./reference/configuration.md)) may
   be in flight to one URL across all your runtimes. A llama-server started with
   several slots serves several requests in parallel by design, and `max_in_flight`
   is how you tell mimlys so; an engine that swaps models, or queues, by its own

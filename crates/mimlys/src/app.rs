@@ -2,15 +2,14 @@
 //! session (external design §19; RFC 010 deployment v1). One `App` per
 //! command invocation; the store's lock keeps a second process out.
 
-use crate::config::{BackendKind, Config, ConfigError, Loaded};
+use crate::backends::Backend;
+use crate::config::{Config, ConfigError, Loaded};
 use crate::workspace::LocalWorkspaces;
 use mimlys_core::clock::SystemClock;
 use mimlys_core::ids::{IdSource, SystemIds, TaskId};
 use mimlys_core::path::PlatformRules;
 use mimlys_core::runtime::{MODEL_BACKEND, Runtime, RuntimeDeps, RuntimeError, Session};
 use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
-use mimlys_model::fake::FakeBackend;
-use mimlys_model::openai::{Mode, OpenAiBackend, OpenAiConfig, Probe, Resolved, TransportMode};
 use mimlys_persist::recovery::{
     Recovered, RecoveredPromotion, RecoveryContext, recover_all, recover_blob_files,
     recover_deletions, recover_promotions, recover_snapshot_journals,
@@ -18,6 +17,7 @@ use mimlys_persist::recovery::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub use crate::backends::BackendProbe;
 mod read;
 pub use read::{HolderView, ReadApp, StoreState, StoreView, probe_confinement};
 
@@ -217,66 +217,6 @@ fn workspace_component(e: &mimlys_core::spi::WorkspaceError) -> Option<String> {
     .then(|| "permissions".into())
 }
 
-/// The backend's probe result as `status` shows it (RFC 008 §4).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct BackendProbe {
-    /// The server answered the model listing.
-    pub reachable: bool,
-    /// The configured model is listed, when the listing was readable.
-    pub model_listed: Option<bool>,
-    /// The structured-output mode in force; none under the `tool_calls` transport, which does not use it.
-    pub structured_output: Option<Resolved>,
-    /// `auto` ended below `json_schema`.
-    pub fell_back: bool,
-    /// A fixed-vocabulary reason when something was not as configured.
-    pub detail: Option<String>,
-    /// The decision transport in force (REQ-MDL-009), once settled.
-    pub decision_transport: Option<mimlys_core::native::DecisionTransport>,
-    /// Why `auto` chose `envelope`, or why a configured `tool_calls` is refused: the engine's reason.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transport_reason: Option<String>,
-    /// Whether the engine accepts `parallel_tool_calls: false`; under `tool_calls` only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parallel_tool_calls: Option<bool>,
-    /// The engine's context length in tokens, as the engine reports it; null when
-    /// it reports none (REQ-MDL-003). Not applicable to the fake backend.
-    pub context_tokens: Option<u64>,
-    /// The engine that reported it (`llama_cpp`, `ollama`); absent when unknown.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_engine: Option<mimlys_model::openai::context::Engine>,
-    /// llama.cpp: the parallel slots its `-c` is shared among; absent otherwise.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_slots: Option<u64>,
-    /// The tokens a request can need: the budget at the lowest characters per
-    /// token measured for the transport in force, plus the completion bound; null
-    /// for the fake backend.
-    pub context_needed_tokens: Option<u64>,
-}
-
-impl BackendProbe {
-    /// The warning line for a context below the need; `None` when it is
-    /// sufficient or unknown (REQ-MDL-003).
-    pub fn context_warning(&self) -> Option<String> {
-        if !self.context_too_small() {
-            return None;
-        }
-        let (tokens, needed) = (self.context_tokens?, self.context_needed_tokens?);
-        Some(crate::messages::context_too_small_warning(
-            self.context_engine,
-            tokens,
-            needed,
-            self.context_slots,
-        ))
-    }
-
-    /// The engine reports a context length below the need (REQ-MDL-003).
-    pub fn context_too_small(&self) -> bool {
-        self.context_needed_tokens.is_some_and(|need| {
-            mimlys_model::openai::context::is_too_small(self.context_tokens, need)
-        })
-    }
-}
-
 /// The running process.
 pub struct App {
     /// The configuration and where it came from.
@@ -287,10 +227,9 @@ pub struct App {
     pub runtime: Arc<Runtime>,
     /// This process as a session.
     pub session: Session,
-    /// Which backend is configured.
-    pub backend_kind: BackendKind,
-    /// The adapter, when the backend is `openai_compatible`.
-    openai: Option<Arc<OpenAiBackend>>,
+    /// The backend a task runs on: the one named `default` (REQ-CFG-007), until a level names
+    /// another (RFC 015, 015c).
+    pub backend: Backend,
     /// What the backend probe found, once it ran (LIM-M4).
     backend_probe: std::sync::Mutex<Option<BackendProbe>>,
     /// What recovery did at startup.
@@ -507,150 +446,6 @@ fn data_dir_error(data_dir: &Path, e: std::io::Error) -> AppError {
             ),
         },
     }
-}
-
-/// The backend made from the configuration: the backend, and the adapter when
-/// it is `openai_compatible` (for the probe).
-pub(crate) type MadeBackend = (Arc<dyn ModelBackend>, Option<Arc<OpenAiBackend>>);
-
-/// The model backend the configuration names (or the one a test supplies),
-/// and the adapter when it is `openai_compatible` (for the probe).
-pub(crate) fn make_backend(
-    config: &Config,
-    loaded: &Loaded,
-    supplied: Option<Arc<dyn ModelBackend>>,
-) -> Result<MadeBackend, AppError> {
-    let mut openai: Option<Arc<OpenAiBackend>> = None;
-    let backend: Arc<dyn ModelBackend> = match supplied {
-        Some(b) => b,
-        None => match config.backend.kind {
-            BackendKind::Fake => match &config.backend.script {
-                Some(path) => {
-                    Arc::new(FakeBackend::from_script(path).map_err(|e| AppError::Io {
-                        detail: format!(
-                            "cannot read the backend script {}: {}",
-                            path.display(),
-                            e.kind()
-                        ),
-                    })?)
-                }
-                None => Arc::new(FakeBackend::with_decisions(vec![])),
-            },
-            BackendKind::OpenaiCompatible => {
-                let adapter = Arc::new(OpenAiBackend::new(OpenAiConfig {
-                    url: config.backend.url.clone().unwrap_or_default(),
-                    model: config.backend.model.clone().unwrap_or_default(),
-                    api_key: loaded
-                        .secrets
-                        .iter()
-                        .find(|(name, _)| name == "backend.api_key")
-                        .map(|(_, value)| value.clone()),
-                    timeout_ms: config.backend.timeout_ms,
-                    max_tokens: config.backend.max_tokens,
-                    temperature: config.backend.temperature,
-                    decision_transport: match config.backend.decision_transport {
-                        crate::config::DecisionTransport::Auto => TransportMode::Auto,
-                        crate::config::DecisionTransport::ToolCalls => TransportMode::ToolCalls,
-                        crate::config::DecisionTransport::Envelope => TransportMode::Envelope,
-                    },
-                    structured_output: match config.backend.structured_output {
-                        crate::config::StructuredOutput::Auto => Mode::Auto,
-                        crate::config::StructuredOutput::Schema => Mode::Schema,
-                        crate::config::StructuredOutput::None => Mode::None,
-                    },
-                    locality: config.backend.locality,
-                }));
-                openai = Some(Arc::clone(&adapter));
-                adapter
-            }
-        },
-    };
-    Ok((backend, openai))
-}
-
-/// Probes the backend (LIM-M4; RFC 008 §4): the model listing and the
-/// structured-output mode. A `schema` backend whose server refuses the schema
-/// is an error naming the fix. Returns the probe and the notice to print when
-/// `auto` fell back to plain text. Shared by the commands that write and by
-/// `status`, which only reads (REQ-PERS-013).
-pub(crate) async fn probe_backend_of(
-    loaded: &Loaded,
-    openai: Option<&Arc<OpenAiBackend>>,
-) -> Result<(BackendProbe, Option<String>), AppError> {
-    let probe = match openai {
-        Some(adapter) => {
-            let Probe {
-                reachable,
-                model_listed,
-                structured_output,
-                fell_back,
-                detail,
-                decision_transport,
-                transport_reason,
-                parallel_tool_calls,
-                context_tokens,
-                context_engine,
-                context_slots,
-            } = adapter.probe().await;
-            let b = &loaded.config.backend;
-            BackendProbe {
-                reachable,
-                model_listed,
-                structured_output,
-                fell_back,
-                detail,
-                decision_transport,
-                transport_reason,
-                parallel_tool_calls,
-                context_tokens,
-                context_engine,
-                context_slots,
-                context_needed_tokens: Some(mimlys_model::openai::context::need_tokens(
-                    b.context_chars,
-                    b.max_tokens,
-                    decision_transport,
-                )),
-            }
-        }
-        None => {
-            let b = &loaded.config.backend;
-            let no_script = b.kind == crate::config::BackendKind::Fake && b.script.is_none();
-            BackendProbe {
-                reachable: !no_script,
-                model_listed: None,
-                structured_output: Some(Resolved::None),
-                fell_back: false,
-                detail: no_script.then(|| "no_script".to_owned()),
-                decision_transport: Some(mimlys_core::native::DecisionTransport::Envelope),
-                transport_reason: None,
-                parallel_tool_calls: None,
-                context_tokens: None,
-                context_engine: None,
-                context_slots: None,
-                context_needed_tokens: None,
-            }
-        }
-    };
-    if loaded.config.backend.structured_output == crate::config::StructuredOutput::Schema
-        && probe.reachable
-        && probe.detail.as_deref() == Some("format_refused")
-    {
-        return Err(AppError::Io {
-            detail: "backend unusable: the server refuses json_schema; set backend.structured_output = \"none\" or \"auto\"".into(),
-        });
-    }
-    let notice = if probe.detail.as_deref() == Some("tool_calls_refused") {
-        Some(crate::messages::tool_calls_refused(
-            probe
-                .transport_reason
-                .as_deref()
-                .unwrap_or("no reason given"),
-        ))
-    } else {
-        (probe.fell_back && probe.structured_output == Some(Resolved::None))
-            .then(|| crate::messages::structured_output_none().to_owned())
-    };
-    Ok((probe, notice))
 }
 
 impl App {
@@ -893,7 +688,7 @@ impl App {
             );
         }
         mimlys_persist::integrity::check(&store, now)?;
-        let (backend, openai) = make_backend(&config, &loaded, backend)?;
+        let backend = Backend::make_default(&loaded, backend)?;
         let store: Arc<dyn Persistence> = Arc::new(store);
         // RFC 013 decision 5: the executions of the user's runtimes share LIM-X5 slots, counted
         // in a registry of the user's own. A registry that cannot be found is an admission that
@@ -912,15 +707,10 @@ impl App {
         );
         // RFC 013 decision 7: the model requests of the user's runtimes to one endpoint share
         // `max_in_flight` places, in the same registry. The fake backend has no endpoint.
-        let gate = match (config.backend.kind, config.backend.url.as_deref()) {
-            (BackendKind::OpenaiCompatible, Some(url)) => {
-                crate::registry::gate_in(registry_dir, url, config.backend.max_in_flight, owner)
-            }
-            _ => None,
-        };
+        let gate = backend.gate(registry_dir, owner);
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store,
-            backend,
+            backend: Arc::clone(&backend.adapter),
             workspaces,
             policy,
             ids: Arc::new(ids),
@@ -929,7 +719,7 @@ impl App {
             rules: PlatformRules::current(),
             probe: probe.clone(),
             secrets: loaded.secrets.clone(),
-            context_chars: config.backend.context_chars,
+            context_chars: backend.section.context_chars,
             output_bytes: config.sandbox.output_bytes as usize,
         })?
         .with_admission(admission);
@@ -951,8 +741,7 @@ impl App {
                 id: format!("pid:{}", std::process::id()),
                 os_user: os_user(),
             },
-            backend_kind: config.backend.kind,
-            openai,
+            backend,
             backend_probe: std::sync::Mutex::new(None),
             recovered,
             recovered_promotions,
@@ -1009,10 +798,10 @@ impl App {
         if self.backend_probe.lock().expect("probe lock").is_some() {
             return Ok(None);
         }
-        let (probe, notice) = probe_backend_of(&self.loaded, self.openai.as_ref()).await?;
+        let (probe, notice) = self.backend.probe().await?;
         // Ollama chooses its context when it loads the model: where the probe could not
         // read it, it is read once more after the first reply (REQ-MDL-003).
-        if let (Some(adapter), Some(needed)) = (&self.openai, probe.context_needed_tokens)
+        if let (Some(adapter), Some(needed)) = (&self.backend.openai, probe.context_needed_tokens)
             && probe.context_engine == Some(mimlys_model::openai::context::Engine::Ollama)
             && probe.context_tokens.is_none()
         {
@@ -1044,14 +833,10 @@ impl App {
     /// before creating or continuing anything (REQ-CFG-002 lets such a
     /// process run `status`, `check` and the task commands that need no decision).
     pub fn backend_ready(&self) -> Result<(), AppError> {
-        let b = &self.loaded.config.backend;
-        if self.openai.is_none() && b.kind == crate::config::BackendKind::Fake && b.script.is_none()
-        {
-            return Err(AppError::Io {
-                detail: crate::messages::FAKE_BACKEND_NO_SCRIPT.into(),
-            });
-        }
-        Ok(())
+        // A configuration without a backend named `default` has none to run a task on, and no
+        // command picks another (RFC 015, Amendment 1): it says so, and lists the configured ones.
+        self.loaded.config.default_backend()?;
+        self.backend.ready()
     }
 
     /// The probe result, when the probe ran.

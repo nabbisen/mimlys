@@ -45,8 +45,8 @@ an AppContainer the `NUL` device cargo's child processes open); on macOS a Seatb
 cargo install mimlys --locked
 mimlys interpreters install javascript   # the pinned QuickJS build, verified by hash
 cat > ~/.config/mimlys/config.toml <<'EOF'
-config_version = 1
-[backend]
+config_version = 2
+[backends.default]
 kind = "openai_compatible"
 url = "http://127.0.0.1:8080/v1"       # a llama-server or Ollama endpoint on this machine
 model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # as the engine lists it; it needs a 16 384-token context (the book's configuration chapter)

@@ -8,7 +8,8 @@ the fake backend and the `workspace` profile.
 
 Rules (REQ-CFG-001 … 005):
 
-- `config_version = 1` is required.
+- `config_version = 2` is required. A file with `config_version = 1` is still read, through 0.14
+  (see [Several backends](#several-backends)); the release that prepares 1.0 stops reading it.
 - An unknown key anywhere stops the process at startup with exit code 1 and
   names the key.
 - Secrets are references, `env:NAME` or `file:PATH`; an inline value is refused.
@@ -27,26 +28,31 @@ Rules (REQ-CFG-001 … 005):
 ## Reference
 
 ```toml
-config_version = 1
+config_version = 2
 
 [runtime]
 data_dir = "/home/me/.local/share/mimlys"   # platform default when absent
 admission_slots = 2             # LIM-X5, 1–16: executions of yours at once across all runtimes; beyond it an execution waits
 
-[backend]
+[backends.default]              # the backend a task runs on; more entries: see Several backends
 kind = "fake"                   # "fake" (scripted) or "openai_compatible" (a local model)
 script = "decisions.json"       # fake backend: the decisions to return, in order
-locality = "local"              # "remote" needs policy.remote_backend_allowed and a profile with external = true
+locality = "local"              # "local" only for a loopback URL; "remote" needs policy.remote_backend_allowed and a profile with external = true
 decision_transport = "auto"     # auto | tool_calls | envelope; auto is resolved at the probe and shown by `status`
 structured_output = "auto"      # auto | schema | none; the envelope transport only; resolved at the probe and shown by `status`
 timeout_ms = 600000             # LIM-M1, 10000–3600000
-max_in_flight = 1               # LIM-O12, 1–16: model requests of yours in flight to this URL at once across all runtimes; more only for an engine that serves requests in parallel (llama-server with several slots)
+max_in_flight = 1               # LIM-O12, 1–16: model requests of yours in flight to this URL at once across all runtimes; more only for an engine that serves requests in parallel (llama-server with several slots); entries on one URL must agree
 max_tokens = 4096               # LIM-M2, 256–65536
 context_chars = 32000           # LIM-C1, 4000–1000000; `mimlys metrics` shows chars per prompt token
 temperature = 0.0               # 0.0–2.0; 0 for the most repeatable decisions the engine allows
 # url = "http://127.0.0.1:8080/v1"     openai_compatible only
 # model = "…"
 # api_key = "env:MIMLYS_BACKEND_KEY"   by reference only; at least 8 characters, redacted everywhere
+
+# [backends.small]              # another backend: one section each, the same keys
+# kind = "openai_compatible"
+# url = "http://127.0.0.1:11434/v1"
+# model = "qwen2.5:3b-instruct"
 
 [policy]
 default_profile = "workspace"
@@ -146,6 +152,81 @@ request. They pass the same redaction as every line: the backend key and every
 a reply is written, at any level. The option warns at start because the goal,
 file content and the model's output are then in the log.
 
+## Several backends
+
+`[backends.<name>]` is a table: one section for each model you may want to
+run, with the keys shown above. A name is lowercase letters, digits, `_` and
+`-`, at most 32 characters, starting with a letter or a digit (`default`,
+`small`, `qwen-7b`).
+
+```toml
+config_version = 2
+
+[backends.default]                       # the backend a task runs on
+kind = "openai_compatible"
+url = "http://127.0.0.1:8080/v1"
+model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+
+[backends.small]                         # another, on the same machine
+kind = "openai_compatible"
+url = "http://127.0.0.1:11434/v1"
+model = "qwen2.5:3b-instruct"
+```
+
+- **A task runs on the backend named `default`.** Nothing chooses another for
+  you, and nothing falls back to one: in a file without a `default`, `check`
+  and `status` work and say that there is none, and every command that creates a
+  task or runs a step stops with that line, which lists the backends that are
+  configured. (A level of effort that names a backend arrives in a later release;
+  until then a task runs on `default` only, and the other entries are for
+  `status`.)
+- **Two entries on one URL must agree on `max_in_flight`.** The limit is counted
+  for the URL (one gate for all your runtimes), so two limits for one count cannot
+  both hold; `check` refuses the file and names both entries. Two URLs are
+  one when they have the same scheme, host and port: the path, the case of the
+  host and a user name do not make another. `localhost` and `127.0.0.1` are two
+  URLs to mimlys, which does not resolve names.
+- **Version 1.** A file with `config_version = 1` has one `[backend]`, which is
+  read as `[backends.default]`. It loads and runs as before; `check` says once
+  that the form is deprecated and prints the configuration in version 2. It is
+  read through 0.14. Mixing the forms is refused, naming the version each needs:
+  `[backend]` under `config_version = 2`, or `[backends]` under
+  `config_version = 1`. To move a file, set `config_version = 2` and write
+  `[backends.default]` where `[backend]` was. Messages name keys in the version-2
+  form (`backends.default.timeout_ms`).
+
+### Where a backend is: `locality`
+
+`locality` says whether the model runs on this machine (`local`, the default) or
+elsewhere (`remote`). Since 0.13 mimlys **checks the declaration against the URL**,
+and refuses a configuration that says `local` for a server that is not on this
+machine:
+
+- `local` is allowed only for a loopback host: `localhost`, an address of
+  `127.0.0.0/8` (`127.0.0.1`, `127.1.2.3`), or `::1`. The host is read as it is
+  written in the URL, after the parse the HTTP client itself makes, and **never
+  resolved**: a name that resolves to a loopback address is not loopback.
+- Anything else must be `remote`, or the file does not load: the error names the
+  backend and the host (`192.168.1.20`, `api.example.org`). That includes a
+  server in your own network, `0.0.0.0` (the address a server listens on, not one
+  to send to), `localhost.` with a dot at its end and `box.localhost` (other
+  names, which a resolver decides), and `::ffff:127.0.0.1` (an IPv4 address in an
+  IPv6 form: write `127.0.0.1`). A user name in the URL is not the host:
+  `http://127.0.0.1@example.org/` is `example.org`. A URL that has no host, is not
+  `http` or `https`, or has an IPv6 zone (`[fe80::1%eth0]`) is refused whatever is
+  declared.
+- `remote` is allowed for any host, a loopback one too: a tunnel to a machine
+  elsewhere (`ssh -L 8080:gpu-box:8080`) looks loopback and is not, so you say
+  `remote` for it. `remote` needs `policy.remote_backend_allowed = true`, and a
+  task whose profile has `external = false` (every shipped profile) is refused
+  a remote backend: when it is created, and again whenever it starts.
+- A 0.12 file that declared a LAN address `local` stops loading and says so. The
+  fix is `locality = "remote"` (with the permission and a profile that has
+  `external = true`), or a loopback URL.
+
+The `fake` backend has no URL and sends nothing anywhere: there is nothing to
+compare its declaration with.
+
 ## A local model
 
 `kind = "openai_compatible"` talks to any server with the chat-completions
@@ -170,7 +251,9 @@ ollama create qwen2.5-7b-instruct-16k -f Modelfile
 ```
 
 ```toml
-[backend]
+config_version = 2
+
+[backends.default]
 kind = "openai_compatible"
 url = "http://127.0.0.1:8080/v1"      # Ollama: http://127.0.0.1:11434/v1
 model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"   # Ollama: qwen2.5-7b-instruct-16k

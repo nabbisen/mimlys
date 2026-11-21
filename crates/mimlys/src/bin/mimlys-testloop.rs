@@ -196,6 +196,7 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
                 .filter_map(|s| s.split_once('='))
                 .map(|(name, value)| (name.to_owned(), value.to_owned()))
                 .collect(),
+            deprecations: Vec::new(),
         },
         Some(backend.clone()),
     )?;

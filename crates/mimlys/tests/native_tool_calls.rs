@@ -224,13 +224,16 @@ fn req_mdl_009_configuration_values() {
         ));
         let (code, v) = env.json(&["check"]);
         assert_eq!(code, 0, "{value}: {v}");
-        assert_eq!(v["config"]["backend"]["decision_transport"], value);
+        assert_eq!(
+            v["config"]["backends"]["default"]["decision_transport"],
+            value
+        );
     }
     let env =
         Env::new("kind = \"openai_compatible\"\nurl = \"http://127.0.0.1:9/v1\"\nmodel = \"m\"");
     let (_, v) = env.json(&["check"]);
     assert_eq!(
-        v["config"]["backend"]["decision_transport"], "auto",
+        v["config"]["backends"]["default"]["decision_transport"], "auto",
         "the default"
     );
     let env = Env::new("decision_transport = \"native\"");
@@ -240,7 +243,10 @@ fn req_mdl_009_configuration_values() {
     let env = Env::new("kind = \"fake\"\ndecision_transport = \"tool_calls\"");
     let (code, _, stderr) = env.run(&["check"]);
     assert_eq!(code, 1);
-    assert!(stderr.contains("backend.decision_transport"), "{stderr}");
+    assert!(
+        stderr.contains("backends.default.decision_transport"),
+        "{stderr}"
+    );
 }
 
 /// REQ-MDL-009 (handoff 012, correction 1): in the `tool_calls` transport,

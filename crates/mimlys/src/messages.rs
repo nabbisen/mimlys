@@ -679,7 +679,39 @@ pub fn host_tool_allow_paths_warning(name: &str) -> String {
     )
 }
 /// A command that runs steps was given the fake backend without a script.
-pub const FAKE_BACKEND_NO_SCRIPT: &str = "no backend to decide with: the fake backend needs `backend.script` (a file of decisions), or configure a model with `backend.kind = \"openai_compatible\"`, `url` and `model`";
+pub fn fake_backend_no_script(name: &str) -> String {
+    format!(
+        "no backend to decide with: the fake backend `{name}` needs `backends.{name}.script` (a file of decisions), or configure a model with `backends.{name}.kind = \"openai_compatible\"`, `url` and `model`"
+    )
+}
+/// A backend was asked for by a name the configuration does not have (REQ-CFG-007; RFC 015,
+/// Amendment 1). Nothing falls back to another: the user is told which there are. For `default`,
+/// the backend a task runs on, the line says that no command picks one.
+pub fn no_backend_named(name: &str, configured: &[&str]) -> String {
+    let have = if configured.is_empty() {
+        "none is configured".to_owned()
+    } else {
+        format!(
+            "configured: {}",
+            configured
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    if name == crate::backends::DEFAULT {
+        format!(
+            "no backend is named `{name}`, the one a task runs on ({have}); a command never picks another: name one `[backends.{name}]` (config_version = 2)"
+        )
+    } else {
+        format!("no backend is named `{name}` ({have})")
+    }
+}
+/// `check`: the file is `config_version = 1` (REQ-CFG-007, REQ-MAIN-001): read now, through 0.14.
+pub fn config_version_1_deprecated() -> &'static str {
+    "deprecated: config_version = 1 is read through 0.14: its [backend] is read as [backends.default]; write it as config_version = 2 with [backends.default] in place of [backend] (the configuration below is that form; keys in messages are named by it)"
+}
 /// `check`: an external tool admitted without a declaration.
 pub fn ceiling_undeclared_warning(tool: &str) -> String {
     format!(
@@ -698,9 +730,9 @@ pub fn structured_output_none() -> &'static str {
 }
 /// `decision_transport = "tool_calls"` is configured and the engine refuses `tools`
 /// (REQ-MDL-009): the backend is unavailable; there is no fallback.
-pub fn tool_calls_refused(reason: &str) -> String {
+pub fn tool_calls_refused(name: &str, reason: &str) -> String {
     format!(
-        "decision transport: tool_calls is configured and the engine refuses it ({reason}); the task will halt backend_unavailable. Set backend.decision_transport = \"auto\" or \"envelope\", or fix the engine"
+        "decision transport: tool_calls is configured and the engine refuses it ({reason}); the task will halt backend_unavailable. Set backends.{name}.decision_transport = \"auto\" or \"envelope\", or fix the engine"
     )
 }
 /// Status: a clause that is unavailable.

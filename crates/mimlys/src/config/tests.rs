@@ -8,9 +8,9 @@ fn req_cfg_002_defaults_from_limits() {
     let loaded = Config::load(None).unwrap();
     assert_eq!(loaded.path, None);
     let c = loaded.config;
-    assert_eq!(c.backend.kind, BackendKind::Fake);
-    assert_eq!(c.backend.timeout_ms, LIM_M1_REQUEST_MS);
-    assert_eq!(c.backend.max_tokens, LIM_M2_MAX_TOKENS);
+    assert_eq!(c.default_backend().unwrap().kind, BackendKind::Fake);
+    assert_eq!(c.default_backend().unwrap().timeout_ms, LIM_M1_REQUEST_MS);
+    assert_eq!(c.default_backend().unwrap().max_tokens, LIM_M2_MAX_TOKENS);
     assert_eq!(c.workspace.max_bytes, LIM_W1_WORKSPACE_BYTES);
     let policy = c.policy.resolve().unwrap();
     assert_eq!(policy.default_profile, "workspace");
@@ -54,22 +54,35 @@ fn req_cfg_001_unknown_keys_named() {
     assert!(err.reason.contains("step"), "{err}");
 }
 
-/// REQ-CFG-001: the version must be 1.
+/// REQ-CFG-001, REQ-CFG-007: the version must be 2, or 1 (read through 0.14); another is refused
+/// naming both; `config_version` is required.
 #[test]
 fn req_cfg_001_version() {
-    let c = Config::parse("config_version = 2\n").unwrap();
-    let err = c.validate().unwrap_err();
-    assert_eq!(err.key, "config_version");
+    for text in ["config_version = 0\n", "config_version = 3\n"] {
+        let err = Config::parse(text).unwrap_err();
+        assert_eq!(err.key, "config_version", "{text}");
+        assert!(err.reason.contains("reads 2, and 1 through 0.14"), "{err}");
+    }
     assert!(
-        Config::parse("[backend]\nkind = \"fake\"\n").is_err(),
+        Config::parse("[backends.default]\nkind = \"fake\"\n").is_err(),
         "config_version is required"
     );
+    Config::parse("config_version = 2\n")
+        .unwrap()
+        .validate()
+        .unwrap();
+    // A configuration that was built by hand with another version is refused at validation too.
+    let c = Config {
+        config_version: 1,
+        ..Config::default()
+    };
+    assert_eq!(c.validate().unwrap_err().key, "config_version");
 }
 
 /// REQ-CFG-003: secrets by reference only; the key is named.
 #[test]
 fn req_cfg_003_secrets_by_reference() {
-    let inline = "config_version = 1\n[backend]\nkind = \"openai_compatible\"\nurl = \"http://x\"\nmodel = \"m\"\napi_key = \"sk-abc\"\n";
+    let inline = "config_version = 1\n[backend]\nkind = \"openai_compatible\"\nurl = \"http://127.0.0.1:8080/v1\"\nmodel = \"m\"\napi_key = \"sk-abc\"\n";
     let err = Config::parse(inline).unwrap_err();
     assert!(err.reason.contains("env:NAME"), "{err}");
     assert!(
@@ -79,7 +92,7 @@ fn req_cfg_003_secrets_by_reference() {
     let ok = inline.replace("sk-abc", "env:MIMLYS_BACKEND_KEY");
     let c = Config::parse(&ok).unwrap();
     assert_eq!(
-        c.backend.api_key,
+        c.default_backend().unwrap().api_key,
         Some(SecretRef::Env("MIMLYS_BACKEND_KEY".into()))
     );
     c.validate().unwrap();
@@ -96,7 +109,7 @@ fn req_cfg_003_secrets_by_reference() {
 fn req_cfg_001_ranges_stated() {
     let c = Config::parse("config_version = 1\n[backend]\ntimeout_ms = 5\n").unwrap();
     let err = c.validate().unwrap_err();
-    assert_eq!(err.key, "backend.timeout_ms");
+    assert_eq!(err.key, "backends.default.timeout_ms");
     assert!(err.reason.contains("10000..=3600000"), "{err}");
     let c =
         Config::parse("config_version = 1\n[policy.profiles.workspace]\nsteps = 5000\n").unwrap();
@@ -115,7 +128,7 @@ fn req_cfg_001_ranges_stated() {
 fn req_sched_006_admission_slots_and_max_in_flight_are_checked_at_load() {
     let c = Config::load(None).unwrap().config;
     assert_eq!(c.runtime.admission_slots, 2);
-    assert_eq!(c.backend.max_in_flight, 1);
+    assert_eq!(c.default_backend().unwrap().max_in_flight, 1);
     for (text, key) in [
         (
             "[runtime]\nadmission_slots = 0\n",
@@ -125,8 +138,14 @@ fn req_sched_006_admission_slots_and_max_in_flight_are_checked_at_load() {
             "[runtime]\nadmission_slots = 17\n",
             "runtime.admission_slots",
         ),
-        ("[backend]\nmax_in_flight = 0\n", "backend.max_in_flight"),
-        ("[backend]\nmax_in_flight = 17\n", "backend.max_in_flight"),
+        (
+            "[backend]\nmax_in_flight = 0\n",
+            "backends.default.max_in_flight",
+        ),
+        (
+            "[backend]\nmax_in_flight = 17\n",
+            "backends.default.max_in_flight",
+        ),
     ] {
         let c = Config::parse(&format!("config_version = 1\n{text}")).unwrap();
         let err = c.validate().unwrap_err();
@@ -141,7 +160,10 @@ fn req_sched_006_admission_slots_and_max_in_flight_are_checked_at_load() {
         let c = Config::parse(&format!("config_version = 1\n{text}")).unwrap();
         c.validate().unwrap();
         assert_eq!(
-            (c.runtime.admission_slots, c.backend.max_in_flight),
+            (
+                c.runtime.admission_slots,
+                c.default_backend().unwrap().max_in_flight
+            ),
             (slots, width)
         );
     }
@@ -154,7 +176,7 @@ fn req_sched_006_admission_slots_and_max_in_flight_are_checked_at_load() {
 fn req_sec_010_remote_needs_permission() {
     let text = "config_version = 1\n[backend]\nkind = \"openai_compatible\"\nurl = \"https://api\"\nmodel = \"m\"\nlocality = \"remote\"\n";
     let err = Config::parse(text).unwrap().validate().unwrap_err();
-    assert_eq!(err.key, "backend.locality");
+    assert_eq!(err.key, "backends.default.locality");
     let allowed = format!("{text}[policy]\nremote_backend_allowed = true\n");
     Config::parse(&allowed).unwrap().validate().unwrap();
 }
@@ -212,7 +234,7 @@ fn req_cfg_001_location_order() {
 fn rfc_007_context_chars_and_short_secret() {
     let c = Config::load(None).unwrap().config;
     assert_eq!(
-        c.backend.context_chars,
+        c.default_backend().unwrap().context_chars,
         mimlys_core::limits::LIM_C1_CONTEXT_CHARS
     );
     let err = Config::parse(
@@ -221,7 +243,7 @@ fn rfc_007_context_chars_and_short_secret() {
     .unwrap()
     .validate()
     .unwrap_err();
-    assert_eq!(err.key, "backend.context_chars");
+    assert_eq!(err.key, "backends.default.context_chars");
     assert!(err.reason.contains("4000"), "{err}");
 
     let dir = tempfile::tempdir().unwrap();
@@ -233,13 +255,16 @@ fn rfc_007_context_chars_and_short_secret() {
         key.display()
     );
     let err = Config::parse(&text).unwrap().resolve_secrets().unwrap_err();
-    assert_eq!(err.key, "backend.api_key");
+    assert_eq!(err.key, "backends.default.api_key");
     assert!(err.reason.contains("8 characters"), "{err}");
     std::fs::write(&key, "long-enough-key\n").unwrap();
     let secrets = Config::parse(&text).unwrap().resolve_secrets().unwrap();
     assert_eq!(
         secrets,
-        vec![("backend.api_key".to_owned(), "long-enough-key".to_owned())]
+        vec![(
+            "backends.default.api_key".to_owned(),
+            "long-enough-key".to_owned()
+        )]
     );
 }
 
@@ -248,7 +273,7 @@ fn rfc_007_context_chars_and_short_secret() {
 #[test]
 fn rfc_008_temperature_and_external() {
     let c = Config::load(None).unwrap().config;
-    assert_eq!(c.backend.temperature, 0.0);
+    assert_eq!(c.default_backend().unwrap().temperature, 0.0);
     let policy = c.policy.resolve().unwrap();
     assert!(policy.profiles.values().all(|p| !p.external));
     let err = Config::parse(
@@ -257,7 +282,7 @@ fn rfc_008_temperature_and_external() {
     .unwrap()
     .validate()
     .unwrap_err();
-    assert_eq!(err.key, "backend.temperature");
+    assert_eq!(err.key, "backends.default.temperature");
     assert!(err.reason.contains("0.0–2.0"), "{err}");
     let c = Config::parse(
         "config_version = 1\n[policy]\nremote_backend_allowed = true\n[policy.profiles.workspace]\nexternal = true\n[policy.profiles.open]\ntools = [\"read_file\"]\nexternal = true\n",
