@@ -73,7 +73,7 @@ fn req_sec_011_the_hook_redacts_and_bounds_a_panic_after_the_configuration_loade
     let line = assert_one_hook_line(&out.stderr);
     let text = line["fields"]["panic_message"].as_str().unwrap();
     assert!(
-        text.starts_with("boom [redacted:backend.api_key] second line"),
+        text.starts_with("boom [redacted:backends.default.api_key] second line"),
         "{text}"
     );
     assert!(text.chars().count() <= LIM_I5_MESSAGE_CHARS, "{text}");
