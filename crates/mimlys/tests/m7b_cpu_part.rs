@@ -352,3 +352,56 @@ mod linux {
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::*;
+
+    /// REQ-CONF-013, RFC 013 Amendment 2 point 3: the worker's priority is
+    /// lowered with `setpriority`, as the system itself shows it from outside (the
+    /// nice value of the held probe worker), the worker reports `best_effort
+    /// (priority)` and never `enforced`. The background policy is not used: it
+    /// leaves the nice value as it was.
+    #[test]
+    fn req_conf_013_the_worker_runs_at_a_lowered_nice_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        for sub in ["tmp", "workspaces", "interpreters"] {
+            std::fs::create_dir_all(data.join(sub)).unwrap();
+        }
+        let spec = mimlys::app::confinement_spec(&data, &[], &[], true);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mimlys-worker"))
+            .args(["--probe", "--hold", "--confine"])
+            .arg(serde_json::to_string(&spec).unwrap())
+            .env_clear()
+            .env("MIMLYS_WORKER", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // The answer is the first line; the worker is then held alive by its input.
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let ps = Command::new("ps")
+            .args(["-o", "nice=", "-p", &child.id().to_string()])
+            .output()
+            .unwrap();
+        let nice = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+        drop(child.stdin.take());
+        let _ = child.wait();
+        let json: Value =
+            serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{e}: {line}"));
+        assert_eq!(
+            nice,
+            mimlys_exec::confine::cpu::NICE.to_string(),
+            "the worker's nice value, as the system shows it"
+        );
+        assert_eq!(json["clauses"]["C.cpu"]["state"], "best_effort", "{json}");
+        assert_eq!(json["clauses"]["C.cpu"]["primitive"], "priority");
+    }
+}

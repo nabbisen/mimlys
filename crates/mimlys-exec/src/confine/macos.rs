@@ -815,13 +815,59 @@ fn start_sweeper() -> Result<(), String> {
     Ok(())
 }
 
+/// The CPU part of clause C on macOS (REQ-CONF-013; RFC 013 Amendment 2 point
+/// 3): the worker lowers its own priority with `setpriority` to
+/// [`super::cpu::NICE`], and its tools inherit it (an unprivileged process
+/// cannot raise it again). It is **not a bound** (an idle machine still gives
+/// the tree every core, M7b report §4.3), so it is reported `best_effort
+/// (priority)` and nothing more. The background policy (`taskpolicy -b`) is
+/// not used: under contention it starved the tree for minutes. `set` is what
+/// `setpriority` answered and `read` what `getpriority` reads back after it:
+/// the part is `best_effort` only if the value read is the value asked for.
+pub fn priority_state(
+    share: u32,
+    set: Result<(), String>,
+    read: Result<i32, String>,
+) -> ClauseState {
+    if share == 0 {
+        return ClauseState::unavailable("no_cpu_share_requested");
+    }
+    if let Err(reason) = set {
+        return ClauseState::unavailable(&format!("setpriority: {reason}"));
+    }
+    match read {
+        Ok(nice) if nice == super::cpu::NICE => ClauseState::best_effort("priority"),
+        Ok(nice) => {
+            ClauseState::unavailable(&format!("priority reads {nice}, not {}", super::cpu::NICE))
+        }
+        Err(reason) => ClauseState::unavailable(&format!("getpriority: {reason}")),
+    }
+}
+
+/// Lowers the calling process's priority and reports it ([`priority_state`]).
+/// Done before the profile is applied, while the call is still the worker's
+/// to make; a worker that cannot do it runs at the priority it had.
+#[cfg(target_os = "macos")]
+fn lower_priority(spec: &ConfinementSpec) -> ClauseState {
+    if spec.cpu_share == 0 {
+        return priority_state(0, Ok(()), Ok(0));
+    }
+    let set =
+        rustix::process::setpriority_process(None, super::cpu::NICE).map_err(|e| e.to_string());
+    let read = rustix::process::getpriority_process(None).map_err(|e| e.to_string());
+    priority_state(spec.cpu_share, set, read)
+}
+
 /// Applies the backend to the calling process and reports what held
 /// (Amendment 2 point 2). Called by the worker at start, before any thread
 /// exists.
 #[cfg(target_os = "macos")]
 pub fn apply(spec: &ConfinementSpec) -> Applied {
+    let cpu = lower_priority(spec);
+    let mut report = report(spec.deny_network, &apply_outcome(spec));
+    report.insert(mimlys_core::confine::CPU_PART_KEY.into(), cpu);
     Applied {
-        report: report(spec.deny_network, &apply_outcome(spec)),
+        report,
         cgroup: None,
         tool_cgroup: None,
         rlimit_memory: false,

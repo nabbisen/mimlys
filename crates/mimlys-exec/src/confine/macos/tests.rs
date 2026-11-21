@@ -1083,3 +1083,39 @@ fn req_conf_009_fresh_markers_differ_and_the_canary_is_another_name() {
         assert!(!generate(&with_marker(m)).unwrap().contains(&canary));
     }
 }
+
+/// REQ-CONF-013, RFC 013 Amendment 2 point 3: the CPU part on macOS is
+/// `best_effort (priority)` when the lowered priority is the one that reads
+/// back, and in no other case; it is never reported as a bound (`enforced`).
+#[test]
+fn req_conf_013_the_priority_part_is_best_effort_and_read_back() {
+    use super::super::cpu::NICE;
+    assert_eq!(
+        priority_state(50, Ok(()), Ok(NICE)),
+        ClauseState::best_effort("priority")
+    );
+    assert_eq!(
+        priority_state(50, Ok(()), Ok(NICE)).describe(),
+        "best effort (priority)"
+    );
+    // A call that failed, a value that did not stick, a value that cannot be read,
+    // and a share not asked for are each unavailable, with the reason.
+    assert_eq!(
+        priority_state(50, Err("EPERM".into()), Ok(NICE)),
+        ClauseState::unavailable("setpriority: EPERM")
+    );
+    assert_eq!(
+        priority_state(50, Ok(()), Ok(0)),
+        ClauseState::unavailable(&format!("priority reads 0, not {NICE}"))
+    );
+    assert_eq!(
+        priority_state(50, Ok(()), Err("EACCES".into())),
+        ClauseState::unavailable("getpriority: EACCES")
+    );
+    assert_eq!(
+        priority_state(0, Ok(()), Ok(NICE)),
+        ClauseState::unavailable("no_cpu_share_requested")
+    );
+    // The value: lowered, so that it only yields; the highest nice value is 19.
+    assert!((1..=19).contains(&NICE));
+}
