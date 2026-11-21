@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.11.0"
+version = "0.11.1"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
@@ -71,6 +71,6 @@ directories = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "fmt", "std", "env-filter"] }
 # REQ-ARCH-007: the engine is pinned to an exact version; updates are reviewed changes.
-wasmtime = { version = "=50.0.1", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation", "wat"] }
-wasmtime-wasi = { version = "=50.0.1", default-features = false, features = ["p1"] }
+wasmtime = { version = "=50.0.3", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation", "wat"] }
+wasmtime-wasi = { version = "=50.0.3", default-features = false, features = ["p1"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset"] }

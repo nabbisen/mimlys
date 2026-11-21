@@ -1,6 +1,6 @@
 # Getting started
 
-mimlys 0.11.0 (milestones M1 to M7a, with decisions as native tool calls, the read-only open and the storage view, and the fixes of an independent audit) is the deterministic core with the sandbox,
+mimlys 0.11.1 (0.11.0, milestones M1 to M7a, with decisions as native tool calls, the read-only open and the storage view, and the fixes of an independent audit) is the deterministic core with the sandbox,
 the transactional workspace, a local model, external tools and confined host
 tools (on Linux with `cargo test` as the demonstration; on macOS a Seatbelt
 profile with every mandatory clause enforced and no clause to accept, and

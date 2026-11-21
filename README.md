@@ -28,7 +28,7 @@ Model Context Protocol.
 
 ## Quick start
 
-mimlys is pre-release. Release 0.11.0 (milestones M1 to M7a, with decisions as native tool calls, the read-only open and the storage view of RFC 013 part one, and the fixes of an independent audit, which 0.11.0 completes; upgrade from 0.10.0) is the deterministic core, the sandbox, the transactional workspace, a local model behind any
+mimlys is pre-release. Release 0.11.1 (0.11.0 with the WebAssembly engine's security update: see the changelog; 0.11.0 is milestones M1 to M7a, with decisions as native tool calls, the read-only open and the storage view of RFC 013 part one, and the fixes of an independent audit, which 0.11.0 completes; upgrade from 0.10.0) is the deterministic core, the sandbox, the transactional workspace, a local model behind any
 OpenAI-compatible server (llama-server, Ollama), external tools over the
 Model Context Protocol with [rypsok](https://github.com/nabbisen/rypsok) as
 the first server, and declared host tools under the platform's confinement:

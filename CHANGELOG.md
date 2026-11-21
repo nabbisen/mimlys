@@ -9,6 +9,18 @@ announced here under "Changed".
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-21
+
+A patch release of 0.11.0 for the WebAssembly engine alone: nothing else changes.
+
+### Security
+
+- `mimlys-exec` (REQ-ARCH-007; THR-17): **the WebAssembly engine is Wasmtime 50.0.3** (0.11.0 pinned 50.0.1 exactly, so every install of it has the issues below; only Wasmtime's own packages move, all patch versions).
+  - **Windows: a script could reach a file outside its folder** (RUSTSEC-2026-0587, published 2026-11-20). The engine's file-system sandbox could be escaped through a path component with a drive prefix. mimlys gives a script (`run_script`, `run_wasm`) its task's tree, and on Windows the worker that runs it is an AppContainer process holding only its task's permission (0.11.0, handoff 011o). So such a path reached at most what that worker may: its task's `tree` and `tmp`, the read set (the interpreters, the worker's binary, the declared toolchain paths) and `<data>/tmp` to read. It never reached another task's tree or the user's other files. Linux and macOS were not affected.
+  - **Every platform: a script could make the engine abort its process** (RUSTSEC-2026-0567 and -0570, published 2026-11-19; they apply to how mimlys builds the engine, without its `threads` and `gc` features). That process is the confined worker, so such a script ended its own execution as `worker_died` and spent one of the worker's restarts (LIM-X3); nothing outside the worker was reached. The six other advisories of that day (RUSTSEC-2026-0566, -0568, -0569, -0571 to -0573) concern features mimlys does not build.
+
+**Upgrade:** `cargo install mimlys --locked` gives 0.11.1. Nothing else changes: no configuration, store, command or output.
+
 ## [0.11.0] - 2026-11-18
 
 0.11.0 closes what the independent audit before 0.10.0 left open: the two residuals 0.10.0 stated (a host tool of one task reaching another task's tree on Windows, a tool outliving its worker on macOS), the audit's smaller findings, and the gaps the reviews of this release found on the way. **Read the Security section first, and upgrade; on Windows, read what the first start does (Changed).** The store's schema does not change (`SCHEMA_VERSION` stays 4), so 0.10.0 can still open a store 0.11.0 has written; see Changed.
