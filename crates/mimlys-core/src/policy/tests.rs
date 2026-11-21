@@ -255,3 +255,23 @@ fn req_mcp_009_shipped_policy_grants_no_external_tool() {
             .is_err()
     );
 }
+
+/// REQ-CONF-013, LIM-H7: `ceiling.cpu_share` is a whole percent of the machine's
+/// cores, half by default, and a value outside one to a hundred is refused
+/// naming the key and the range (CLR-3).
+#[test]
+fn req_conf_013_the_ceiling_names_the_cpu_share_within_its_range() {
+    let mut p = Policy::shipped();
+    assert_eq!(p.ceiling.cpu_share, 50, "half the cores (LIM-H7)");
+    p.validate().unwrap();
+    for ok in [1, 50, 100] {
+        p.ceiling.cpu_share = ok;
+        p.validate().unwrap();
+    }
+    for bad in [0, 101, 4000] {
+        p.ceiling.cpu_share = bad;
+        let e = p.validate().unwrap_err();
+        assert_eq!(e.key, "ceiling.cpu_share");
+        assert!(e.reason.contains("1..=100"), "{e}");
+    }
+}

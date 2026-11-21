@@ -85,8 +85,13 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     if let Some(notice) = notice {
         out.line(notice);
     }
-    let (confinement, outside_sweep_unavailable) =
-        probe_confinement(config, &app.data_dir, &app.interpreters, &app.host_tools);
+    let (confinement, outside_sweep_unavailable) = probe_confinement(
+        config,
+        &app.data_dir,
+        &app.interpreters,
+        &app.host_tools,
+        policy.ceiling.cpu_share,
+    );
     let activity = app.reader.activity()?;
     let mut status = mimlys_core::runtime::RuntimeStatus {
         version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -94,6 +99,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         tier: confinement.tier_with(&policy.accept_best_effort).describe(),
         clauses: confinement.clauses.clone(),
         unavailable_clauses: confinement.unavailable_lines(),
+        cpu: confinement.cpu.clone(),
         running: activity.running,
         pending: activity.pending,
     };
@@ -166,6 +172,10 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
             clause.name(),
             &state,
         ));
+    }
+    // The CPU part of clause C, beside the clauses; never part of the tier (REQ-CONF-013).
+    if let Some(cpu) = &status.cpu {
+        out.line(messages::status_cpu_part(&cpu.describe()));
     }
     for i in &app.interpreters {
         let installed = i.module.is_file();

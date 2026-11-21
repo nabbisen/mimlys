@@ -1017,6 +1017,11 @@ pub fn interpreter_installed(language: &str, path: &str) -> String {
 pub fn status_clause(letter: char, name: &str, state: &str) -> String {
     format!("clause {letter} {name:<12} {state}")
 }
+/// Status: the CPU part of clause C, listed beside the clauses (REQ-CONF-013).
+/// It is not a clause and never changes the tier.
+pub fn status_cpu_part(state: &str) -> String {
+    format!("clause C {:<12} {state}", "cpu")
+}
 /// Status: the engine.
 pub fn status_engine(version: &str) -> String {
     format!("engine          wasmtime {version}")

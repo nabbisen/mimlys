@@ -143,6 +143,9 @@ pub struct RuntimeStatus {
     pub clauses: std::collections::BTreeMap<crate::confine::Clause, crate::confine::ClauseState>,
     /// Clauses not enforced here, with reasons.
     pub unavailable_clauses: Vec<String>,
+    /// The CPU part of clause C, beside the clauses; it is never part of the tier (REQ-CONF-013).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<crate::confine::ClauseState>,
     /// Tasks in `running`.
     pub running: Vec<TaskId>,
     /// Tasks waiting for the user, with what they wait for.
@@ -1591,6 +1594,7 @@ impl Runtime {
                 .describe(),
             clauses: self.deps.probe.clauses.clone(),
             unavailable_clauses: self.deps.probe.unavailable_lines(),
+            cpu: self.deps.probe.cpu.clone(),
             running: activity.running,
             pending: activity.pending,
         })

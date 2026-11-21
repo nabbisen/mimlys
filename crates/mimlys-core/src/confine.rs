@@ -164,17 +164,29 @@ impl TierReport {
     }
 }
 
+/// The key under which a backend reports the CPU part of clause C (REQ-CONF-013)
+/// beside the clauses' letters. It is not a clause: the contract has no clause
+/// for it, and no tier ever reads it ([`Probe::tier_with`]).
+pub const CPU_PART_KEY: &str = "C.cpu";
+
 /// The probe's result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Probe {
     /// Per clause.
     pub clauses: BTreeMap<Clause, ClauseState>,
+    /// The CPU part of clause C (REQ-CONF-013): `enforced` by a CPU bound,
+    /// `best_effort` by a priority, or `unavailable` with the reason. Reported
+    /// beside the clauses and **never part of the tier**; `None` before a probe
+    /// ran or when the backend does not report one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<ClauseState>,
 }
 
 impl Probe {
     /// Every clause unavailable for one reason (the state before a probe ran).
     pub fn unavailable(reason: &str) -> Self {
         Self {
+            cpu: Some(ClauseState::unavailable(reason)),
             clauses: Clause::ALL
                 .iter()
                 .map(|c| {

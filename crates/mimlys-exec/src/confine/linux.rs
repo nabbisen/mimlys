@@ -56,6 +56,14 @@ pub fn apply(spec: &ConfinementSpec) -> Applied {
             Err(_) => ClauseState::best_effort("wall_clock"),
         },
     );
+    // The CPU part of clause C (REQ-CONF-013): beside the clauses, never one of them.
+    report.insert(
+        mimlys_core::confine::CPU_PART_KEY.into(),
+        match &cgroup.cpu {
+            Ok(()) => ClauseState::enforced("cgroup_cpu_max"),
+            Err(reason) => ClauseState::unavailable(reason),
+        },
+    );
 
     // K: the subreaper always (the walk reaches re-parented orphans); the
     // `tool` sub-cgroup's `cgroup.kill` is the stronger primitive when it
@@ -220,12 +228,22 @@ fn network_state(
 /// The sub-cgroup of the worker's cgroup that holds every host tool's tree.
 pub const TOOL_CGROUP: &str = "tool";
 
+/// The leaf of the worker's cgroup that holds the worker itself, beside
+/// [`TOOL_CGROUP`] (REQ-CONF-013, RFC 013 Amendment 2 point 1): cgroup v2
+/// enables a controller below a cgroup only while that cgroup holds no
+/// process of its own, so the worker leaves it for this leaf, and `cpu.max`
+/// goes on `tool` alone. The memory and process limits stay on the parent and
+/// cover both leaves.
+pub const WORKER_CGROUP: &str = "worker";
+
 /// What the cgroup rung produced: the worker's own cgroup when it could be
 /// created and joined, and each limit on its own.
 struct Cgroup {
     dir: Option<PathBuf>,
     memory: Result<(), String>,
     pids: Result<(), String>,
+    /// The CPU part of clause C: `cpu.max` held on `tool`, or why not.
+    cpu: Result<(), String>,
 }
 
 impl Cgroup {
@@ -234,6 +252,7 @@ impl Cgroup {
             dir: None,
             memory: Err(reason.to_owned()),
             pids: Err(reason.to_owned()),
+            cpu: Err(reason.to_owned()),
         }
     }
 }
@@ -302,6 +321,7 @@ pub fn limit_child_address_space(cmd: &mut std::process::Command, bytes: u64) {
 /// kill first).
 pub fn remove_cgroup(dir: &Path) -> bool {
     let _ = std::fs::remove_dir(dir.join(TOOL_CGROUP));
+    let _ = std::fs::remove_dir(dir.join(WORKER_CGROUP));
     std::fs::remove_dir(dir).is_ok()
 }
 
@@ -333,7 +353,10 @@ pub fn sweep_stale_cgroups() -> usize {
         let populated = |d: &Path| {
             std::fs::read_to_string(d.join("cgroup.procs")).is_ok_and(|s| !s.trim().is_empty())
         };
-        if populated(&dir) || populated(&dir.join(TOOL_CGROUP)) {
+        if populated(&dir)
+            || populated(&dir.join(TOOL_CGROUP))
+            || populated(&dir.join(WORKER_CGROUP))
+        {
             continue;
         }
         if remove_cgroup(&dir) {
@@ -350,10 +373,17 @@ fn own_cgroup_dir() -> Option<PathBuf> {
     Some(PathBuf::from("/sys/fs/cgroup").join(rel.trim_start_matches('/')))
 }
 
-/// Creates `<own cgroup>/mimlys-<pid>` and its `tool` sub-cgroup, moves
-/// this process into the former, and sets each limit on its own: a session
-/// that refuses a controller (the "no internal processes" rule of a scope
-/// that still holds the terminal) keeps the directory and `cgroup.kill`.
+/// The environment variable that names the directory the worker's cgroup is
+/// made in instead of its own cgroup, in a test build only (like the other
+/// `MIMLYS_PROBE_*` knobs, REQ-TEST-013): the CPU part needs a cgroup that
+/// holds no process and passes `cpu` on, which no cgroup a test process lives
+/// in is (the "no internal processes" rule), so the test makes one.
+pub const CGROUP_BASE_VARIABLE: &str = "MIMLYS_PROBE_CGROUP_BASE";
+
+/// Creates `<own cgroup>/mimlys-<pid>` with its two leaves, `worker` and
+/// `tool`, moves this process into `worker`, and sets each limit on its own: a
+/// session that refuses a controller (the "no internal processes" rule of a
+/// scope that still holds the terminal) keeps the directory and `cgroup.kill`.
 fn join_cgroup(spec: &ConfinementSpec) -> Cgroup {
     // Test builds: `MIMLYS_PROBE_NO_CGROUP` skips the rung, so that the
     // `subreaper` rung of clause K (what a runner without a delegated cgroup
@@ -361,17 +391,40 @@ fn join_cgroup(spec: &ConfinementSpec) -> Cgroup {
     if cfg!(debug_assertions) && std::env::var_os("MIMLYS_PROBE_NO_CGROUP").is_some() {
         return Cgroup::none("injected (MIMLYS_PROBE_NO_CGROUP)");
     }
-    let Some(base) = own_cgroup_dir() else {
+    let injected = cfg!(debug_assertions)
+        .then(|| std::env::var_os(CGROUP_BASE_VARIABLE))
+        .flatten()
+        .map(PathBuf::from);
+    let Some(base) = injected.or_else(own_cgroup_dir) else {
         return Cgroup::none("cgroup_v1");
     };
+    arrange_cgroup(&base, std::process::id(), spec, super::cpu::machine_cores())
+}
+
+/// The arrangement of a worker's cgroup below `base`, for the process `pid`
+/// (the calling process): `mimlys-<pid>` with its leaves `worker` (where the
+/// process goes) and `tool` (where every host tool's tree goes, and which
+/// `cgroup.kill` ends). The memory and process limits are written on
+/// `mimlys-<pid>`, which holds both leaves; `cpu.max` is written on `tool`
+/// alone (REQ-CONF-013). `cores` is the machine's, given so that a test sets it.
+fn arrange_cgroup(base: &Path, pid: u32, spec: &ConfinementSpec, cores: u32) -> Cgroup {
     let Ok(controllers) = std::fs::read_to_string(base.join("cgroup.controllers")) else {
         return Cgroup::none("cgroup_not_delegated");
     };
-    let dir = base.join(format!("mimlys-{}", std::process::id()));
+    let dir = base.join(format!("mimlys-{pid}"));
     if std::fs::create_dir(&dir).is_err() {
         return Cgroup::none("cgroup_not_writable");
     }
-    if std::fs::write(dir.join("cgroup.procs"), std::process::id().to_string()).is_err() {
+    // The worker's leaf beside `tool`. Where it cannot be made the worker
+    // stays in the directory itself, as before 0.12, and the CPU part says so.
+    let leaf = std::fs::create_dir(dir.join(WORKER_CGROUP)).is_ok();
+    let home = if leaf {
+        dir.join(WORKER_CGROUP)
+    } else {
+        dir.clone()
+    };
+    if std::fs::write(home.join("cgroup.procs"), pid.to_string()).is_err() {
+        let _ = std::fs::remove_dir(dir.join(WORKER_CGROUP));
         let _ = std::fs::remove_dir(&dir);
         return Cgroup::none("cgroup_move_failed");
     }
@@ -388,10 +441,66 @@ fn join_cgroup(spec: &ConfinementSpec) -> Cgroup {
         );
         std::fs::write(dir.join(file), value).map_err(|e| format!("{file}: {}", e.kind()))
     };
+    let cpu = if leaf {
+        limit_cpu(base, &controllers, &dir, spec.cpu_share, cores)
+    } else {
+        Err("cgroup_worker_leaf_not_made".to_owned())
+    };
     Cgroup {
         memory: limit("memory", "memory.max", spec.memory_bytes.to_string()),
         pids: limit("pids", "pids.max", spec.max_processes.to_string()),
+        cpu,
         dir: Some(dir),
+    }
+}
+
+/// `cpu.max` of the `tool` sub-cgroup of `dir`, from the share (LIM-H7), and
+/// the proof that it holds: the file is read back. The worker is already in
+/// its leaf, so `dir` holds no process and may enable `cpu` for its children;
+/// `cpu` reaches `dir` only if `base` passes it on, which it can while it
+/// holds no process of its own. Where either refusal comes, the reason names
+/// it and the part is unavailable (the tier never changes because of it).
+fn limit_cpu(
+    base: &Path,
+    controllers: &str,
+    dir: &Path,
+    share: u32,
+    cores: u32,
+) -> Result<(), String> {
+    if share == 0 {
+        return Err("no_cpu_share_requested".to_owned());
+    }
+    if !controllers.split_whitespace().any(|c| c == "cpu") {
+        return Err("cgroup_cpu_not_delegated".to_owned());
+    }
+    let parent = std::fs::write(base.join("cgroup.subtree_control"), "+cpu");
+    std::fs::write(dir.join("cgroup.subtree_control"), "+cpu").map_err(|e| {
+        match &parent {
+            // The usual refusal: the cgroup the runtime lives in holds the
+            // runtime, and the kernel passes a controller on only below a
+            // cgroup with no process of its own.
+            Err(p) if p.kind() == std::io::ErrorKind::ResourceBusy => {
+                "cgroup_cpu_not_enabled (the runtime's cgroup holds processes)".to_owned()
+            }
+            Err(p) => format!(
+                "cgroup_cpu_not_enabled (cgroup.subtree_control: {}, the parent: {})",
+                e.kind(),
+                p.kind()
+            ),
+            Ok(()) => format!(
+                "cgroup_cpu_not_enabled (cgroup.subtree_control: {})",
+                e.kind()
+            ),
+        }
+    })?;
+    let wanted = super::cpu::cgroup_cpu_max(cores, share);
+    let file = dir.join(TOOL_CGROUP).join("cpu.max");
+    std::fs::write(&file, &wanted).map_err(|e| format!("cpu.max: {}", e.kind()))?;
+    // Held only if the kernel says so.
+    match std::fs::read_to_string(&file) {
+        Ok(read) if read.trim() == wanted => Ok(()),
+        Ok(read) => Err(format!("cpu.max: reads `{}`", read.trim())),
+        Err(e) => Err(format!("cpu.max: {}", e.kind())),
     }
 }
 

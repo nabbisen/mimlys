@@ -67,6 +67,7 @@ network_domains = []
 # host_read_roots = []          reserved: no tool reads host paths through host_read grants yet; refused when non-empty
 # host_write_roots = []         reserved likewise
 max_steps = 200                 # LIM-T1 range
+cpu_share = 50                  # LIM-H7, 1–100: percent of the machine's cores a host tool's tree may take (at least one core)
 
 [policy.profiles.workspace]     # overlays on a shipped profile; a new profile needs `tools`
 tools = ["read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm"]
@@ -322,6 +323,13 @@ it to ask you before any host tool runs. A host tool writes only inside the
 workspace in this release. `mimlys status` shows the tier and every clause
 with the primitive that holds it; `mimlys toolchain list` shows the read set
 the worker runs under.
+
+`[policy.ceiling] cpu_share` is the share of the machine's cores a host tool's
+tree may take, as a whole percent from 1 to 100 (the default, 50, is half the
+cores; a tree always has at least one core). A value outside the range is
+refused at load, with the key and the range. It is the CPU part of clause C
+and never changes the tier; what it does on each system, and what to do where
+the system cannot enforce it, is in [Host tools](./host-tools.md#the-cpu-share).
 
 ## External tools
 

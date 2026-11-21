@@ -196,6 +196,7 @@ pub fn probe_confinement(
     data_dir: &Path,
     interpreters: &[mimlys_exec::interpreters::Configured],
     host_tools: &[mimlys_core::host_tool::HostToolDeclaration],
+    cpu_share: u32,
 ) -> (mimlys_core::confine::Probe, Option<String>) {
     let limits = mimlys_exec::sandbox::Limits {
         fuel: config.sandbox.fuel,
@@ -208,12 +209,10 @@ pub fn probe_confinement(
         interpreters: interpreters.to_vec(),
         confinement: mimlys_exec::confine::platform(),
         limits,
-        spec: Some(super::confinement_spec(
-            data_dir,
-            interpreters,
-            host_tools,
-            true,
-        )),
+        spec: Some(mimlys_exec::confine::ConfinementSpec {
+            cpu_share,
+            ..super::confinement_spec(data_dir, interpreters, host_tools, true)
+        }),
         host_tools: host_tools.to_vec(),
         record: None,
     });

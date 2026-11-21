@@ -139,6 +139,7 @@ fn spec_denying_network(tmp: &Path) -> ConfinementSpec {
         deny_network: true,
         memory_bytes: 1 << 30,
         max_processes: 64,
+        cpu_share: 0,
         data_dir: tmp.to_path_buf(),
         marker: None,
     }
@@ -644,4 +645,142 @@ fn req_conf_006_a_tool_layer_is_refused_for_paths_that_are_not_one_task() {
     let mut no_data_dir = spec.clone();
     no_data_dir.data_dir = PathBuf::new();
     assert!(crate::confine::task_spec(&no_data_dir, &a_tree, &a_tmp).is_err());
+}
+
+/// A stand-in for the cgroup the worker is made in: a directory with the file
+/// a cgroup shows (`cgroup.controllers`), where every write is a plain file.
+/// What it holds afterwards is what the arrangement wrote and where.
+fn fake_base(controllers: &str) -> tempfile::TempDir {
+    let base = tempfile::tempdir().unwrap();
+    std::fs::write(base.path().join("cgroup.controllers"), controllers).unwrap();
+    base
+}
+
+fn spec_with_share(share: u32) -> ConfinementSpec {
+    ConfinementSpec {
+        memory_bytes: 1 << 30,
+        max_processes: 64,
+        cpu_share: share,
+        ..ConfinementSpec::default()
+    }
+}
+
+fn read(path: PathBuf) -> String {
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// REQ-CONF-013, RFC 013 Amendment 2 point 1: the worker is in a leaf `worker`
+/// beside `tool`, the memory and process limits are on their parent (which
+/// covers both), and `cpu.max` is on `tool` and on nothing else.
+#[test]
+fn req_conf_013_the_worker_is_in_a_leaf_and_cpu_max_is_on_tool_alone() {
+    let base = fake_base("cpu memory pids\n");
+    let cgroup = arrange_cgroup(base.path(), 4242, &spec_with_share(50), 8);
+    let dir = base.path().join("mimlys-4242");
+    assert_eq!(cgroup.dir.as_deref(), Some(dir.as_path()));
+    assert_eq!(cgroup.cpu, Ok(()));
+    assert_eq!(cgroup.memory, Ok(()));
+    assert_eq!(cgroup.pids, Ok(()));
+    // The worker's leaf holds the worker; the cgroup above holds no process.
+    assert_eq!(read(dir.join(WORKER_CGROUP).join("cgroup.procs")), "4242");
+    assert!(
+        !dir.join("cgroup.procs").exists(),
+        "no process in the parent"
+    );
+    // `cpu.max` on `tool`: half of 8 cores in a 100 ms period.
+    assert_eq!(read(dir.join(TOOL_CGROUP).join("cpu.max")), "400000 100000");
+    assert!(
+        !dir.join("cpu.max").exists(),
+        "not on the worker's own cgroup"
+    );
+    assert!(
+        !dir.join(WORKER_CGROUP).join("cpu.max").exists(),
+        "not on the worker's leaf"
+    );
+    // The controller was enabled for the leaves, below a cgroup with no process.
+    assert_eq!(read(dir.join("cgroup.subtree_control")), "+cpu");
+    // The memory and process limits stay on the parent, where both leaves are counted.
+    assert_eq!(read(dir.join("memory.max")), (1u64 << 30).to_string());
+    assert_eq!(read(dir.join("pids.max")), "64");
+    assert!(!dir.join(TOOL_CGROUP).join("memory.max").exists());
+    assert!(!dir.join(WORKER_CGROUP).join("pids.max").exists());
+}
+
+/// REQ-CONF-013: the quota follows the share and the machine's cores, at least
+/// one core, at most all of them.
+#[test]
+fn req_conf_013_the_quota_follows_the_share() {
+    for (share, cores, expected) in [
+        (50, 4, "200000 100000"),
+        (100, 4, "400000 100000"),
+        (25, 4, "100000 100000"),
+        (1, 32, "100000 100000"),
+        (50, 1, "100000 100000"),
+    ] {
+        let base = fake_base("cpu\n");
+        arrange_cgroup(base.path(), 7, &spec_with_share(share), cores);
+        assert_eq!(
+            read(
+                base.path()
+                    .join("mimlys-7")
+                    .join(TOOL_CGROUP)
+                    .join("cpu.max")
+            ),
+            expected,
+            "{share} % of {cores} cores"
+        );
+    }
+}
+
+/// REQ-CONF-013: where the controller cannot be had, the CPU part is
+/// `unavailable` with the reason, `cpu.max` is written nowhere, and the rest of
+/// the cgroup (the leaf, `tool`, the memory and process limits) is as it was.
+#[test]
+fn req_conf_013_the_part_is_unavailable_where_cpu_is_not_delegated() {
+    let base = fake_base("memory pids\n");
+    let cgroup = arrange_cgroup(base.path(), 9, &spec_with_share(50), 4);
+    assert_eq!(cgroup.cpu, Err("cgroup_cpu_not_delegated".to_owned()));
+    let dir = base.path().join("mimlys-9");
+    assert!(!dir.join(TOOL_CGROUP).join("cpu.max").exists());
+    assert!(!dir.join("cpu.max").exists());
+    // K and M are untouched by it: the leaves exist and the limits are written.
+    assert!(dir.join(TOOL_CGROUP).is_dir());
+    assert_eq!(read(dir.join(WORKER_CGROUP).join("cgroup.procs")), "9");
+    assert_eq!(cgroup.memory, Ok(()));
+    assert_eq!(cgroup.pids, Ok(()));
+    // No share asked for: the same, with its own words.
+    let base = fake_base("cpu memory pids\n");
+    let cgroup = arrange_cgroup(base.path(), 9, &spec_with_share(0), 4);
+    assert_eq!(cgroup.cpu, Err("no_cpu_share_requested".to_owned()));
+    assert!(
+        !base
+            .path()
+            .join("mimlys-9")
+            .join(TOOL_CGROUP)
+            .join("cpu.max")
+            .exists()
+    );
+}
+
+/// REQ-CONF-013: a refusal of the kernel (the controller cannot be enabled
+/// below the cgroup, as when it still holds a process) is the reason, and the
+/// part is not reported as a bound; nor is a `cpu.max` the kernel does not hold.
+#[test]
+fn req_conf_013_a_refusal_is_the_reason_and_never_a_bound() {
+    let base = fake_base("cpu\n");
+    let dir = base.path().join("mimlys-5");
+    // The refusal: `cgroup.subtree_control` of the worker's cgroup cannot be written.
+    std::fs::create_dir_all(dir.join("cgroup.subtree_control")).unwrap();
+    let held = limit_cpu(base.path(), "cpu\n", &dir, 50, 4);
+    let reason = held.unwrap_err();
+    assert!(
+        reason.starts_with("cgroup_cpu_not_enabled (cgroup.subtree_control: "),
+        "{reason}"
+    );
+    // `cpu.max` unwritable: the reason names the file.
+    let base = fake_base("cpu\n");
+    let dir = base.path().join("mimlys-6");
+    std::fs::create_dir_all(dir.join(TOOL_CGROUP).join("cpu.max")).unwrap();
+    let reason = limit_cpu(base.path(), "cpu\n", &dir, 50, 4).unwrap_err();
+    assert!(reason.starts_with("cpu.max: "), "{reason}");
 }

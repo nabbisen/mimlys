@@ -373,6 +373,8 @@ pub fn confinement_spec(
         deny_network,
         memory_bytes: mimlys_core::limits::LIM_H2_HOST_MEMORY_BYTES,
         max_processes: mimlys_core::limits::LIM_H3_HOST_PROCESSES,
+        // LIM-H7; the policy's `[policy.ceiling] cpu_share` replaces it where the policy is known.
+        cpu_share: mimlys_core::limits::LIM_H7_CPU_SHARE_PERCENT,
         data_dir: data_dir.to_path_buf(),
         marker: None,
     }
@@ -747,7 +749,10 @@ impl App {
         // REQ-CONF-009: what a previous runtime left behind dies first.
         let record = data_dir.join("worker.json");
         let orphans = mimlys_exec::worker::reap_orphans(&record);
-        let spec = confinement_spec(&data_dir, &interpreters, &host_tools, true);
+        let spec = mimlys_exec::confine::ConfinementSpec {
+            cpu_share: policy.ceiling.cpu_share,
+            ..confinement_spec(&data_dir, &interpreters, &host_tools, true)
+        };
         let limits = mimlys_exec::sandbox::Limits {
             fuel: config.sandbox.fuel,
             deadline_ms: config.sandbox.deadline_ms.max(1) as u64,
@@ -770,12 +775,10 @@ impl App {
                 interpreters: vec![],
                 confinement: mimlys_exec::confine::platform(),
                 limits,
-                spec: Some(confinement_spec(
-                    &data_dir,
-                    &interpreters,
-                    &host_tools,
-                    false,
-                )),
+                spec: Some(mimlys_exec::confine::ConfinementSpec {
+                    cpu_share: policy.ceiling.cpu_share,
+                    ..confinement_spec(&data_dir, &interpreters, &host_tools, false)
+                }),
                 host_tools: host_tools.clone(),
                 record: None,
             })

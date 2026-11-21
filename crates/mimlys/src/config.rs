@@ -699,6 +699,10 @@ pub struct CeilingSection {
     /// Highest step budget any profile may set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
+    /// The CPU share of a host tool's tree, in percent of the machine's cores
+    /// (LIM-H7; clause C's CPU part, REQ-CONF-013).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_share: Option<u32>,
 }
 
 /// `[policy.profiles.<name>]`: a shipped profile is overlaid; a new one
@@ -829,6 +833,9 @@ impl PolicySection {
         }
         if let Some(v) = c.max_steps {
             policy.ceiling.max_steps = v;
+        }
+        if let Some(v) = c.cpu_share {
+            policy.ceiling.cpu_share = v;
         }
         if let Some(v) = &self.exclusions.materialize {
             policy.exclusions.materialize = v.clone();
