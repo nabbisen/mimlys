@@ -110,6 +110,9 @@ struct Decided {
     measures: Option<StepMeasures>,
     transport: DecisionTransport,
     text_chars: Option<u64>,
+    /// The task's deadline passed while the request waited for the engine's gate: nothing was
+    /// sent, so the engine did not fail and the task halts `budget_deadline` (013d-4).
+    deadline_in_gate: bool,
 }
 
 /// What the user is shown of an action that needs approval (REQ-APR-002).
@@ -460,6 +463,7 @@ impl Runtime {
                     measures: None,
                     transport: DecisionTransport::Envelope,
                     text_chars: None,
+                    deadline_in_gate: false,
                 });
             }
         };
@@ -547,6 +551,7 @@ impl Runtime {
         let started = self.deps.clock.now();
         let mut attempt = 0;
         let mut engine_wait_ms: i64 = 0;
+        let mut deadline_in_gate = false;
         let result = loop {
             // The engine's gate, before the request is sent (RFC 013 decision 7): a wait before
             // the send, ended by the first stop request (the request is then not sent, and the
@@ -559,7 +564,12 @@ impl Runtime {
                     held
                 }
                 EngineGate::Stopped => break Err(BackendError::Cancelled),
-                EngineGate::DeadlinePassed => break Err(BackendError::Timeout),
+                // Nothing was sent: the engine did not fail, the task's time ran out
+                // (`Decided::deadline_in_gate`).
+                EngineGate::DeadlinePassed => {
+                    deadline_in_gate = true;
+                    break Err(BackendError::Timeout);
+                }
             };
             request.deadline_ms =
                 LIM_M1_REQUEST_MS.min(task.remaining_ms(self.deps.clock.now()).max(1));
@@ -630,6 +640,7 @@ impl Runtime {
             measures: Some(measures),
             transport,
             text_chars,
+            deadline_in_gate,
         })
     }
 
@@ -697,6 +708,7 @@ impl Runtime {
             measures,
             transport,
             text_chars,
+            deadline_in_gate,
         } = self.decide(&task, env, now).await?;
         step.measures = measures;
         let raw = match decided {
@@ -711,8 +723,14 @@ impl Runtime {
                 );
             }
             Err(_) => {
-                let halted =
-                    task.transition(TaskInput::Halt(HaltReason::BackendUnavailable), now)?;
+                // A deadline that ended the wait for the engine's gate is the task's, not the
+                // engine's: the request was never sent (as in the wait for a slot).
+                let reason = if deadline_in_gate {
+                    HaltReason::BudgetDeadline
+                } else {
+                    HaltReason::BackendUnavailable
+                };
+                let halted = task.transition(TaskInput::Halt(reason), now)?;
                 return self.finish_step_into(task, halted, step, StepOutcome::Halted, now);
             }
         };
