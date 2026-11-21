@@ -1673,6 +1673,149 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
     lines
 }
 
+/// `model probe <name>` of a remote backend when `policy.remote_backend_allowed` is not set
+/// (REQ-MDL-011, REQ-SEC-010): nothing is sent.
+pub fn probe_remote_not_allowed(name: &str) -> String {
+    format!(
+        "backend `{name}` is remote and `policy.remote_backend_allowed` is not set: it is not probed, and nothing was sent to it"
+    )
+}
+/// `model probe <name>` of a remote backend, said first (REQ-MDL-011, THR-40): what the probe
+/// sends, and what it never does.
+pub fn probe_remote_notice(name: &str, host: Option<&str>) -> String {
+    let at = host.map(|h| format!(" ({h})")).unwrap_or_default();
+    format!(
+        "backend `{name}` is remote{at}: the probe sends it one fixed mini-task (a made-up file of one line and a fixed goal to edit it) and nothing of yours: no file, goal, task or setting of your own"
+    )
+}
+/// `model probe` begins on a backend (a probe takes up to the time of LIM-E3).
+pub fn probe_start(name: &str, kind: &str, model: Option<&str>, locality: &str) -> String {
+    let what = match model {
+        Some(m) => format!("{kind} {m}"),
+        None => kind.to_owned(),
+    };
+    format!(
+        "probing backend `{name}`: {what} ({locality}); at most {} steps and {} seconds",
+        mimlys_core::limits::LIM_E2_PROBE_STEPS,
+        mimlys_core::limits::LIM_E3_PROBE_MS / 1000
+    )
+}
+/// One backend's result (REQ-MDL-011): the class and how it was measured.
+pub fn probe_result(name: &str, last: &crate::probe_results::LastProbe) -> String {
+    let class = match &last.detail {
+        Some(detail) => format!("{} ({detail})", last.class),
+        None => last.class.clone(),
+    };
+    let mut parts = vec![format!(
+        "{} {}",
+        last.steps,
+        if last.steps == 1 { "step" } else { "steps" }
+    )];
+    if let Some(ms) = last.model_ms_per_step {
+        parts.push(format!("{ms} ms of model time per step"));
+    }
+    if let Some(transport) = &last.transport {
+        parts.push(format!("transport {transport}"));
+    }
+    if let Some(model) = &last.model {
+        parts.push(format!("model {model}"));
+    }
+    format!(
+        "backend `{name}`: {class}; {}; measured on this machine on {}",
+        parts.join(", "),
+        last.date()
+    )
+}
+/// What each class says, for a user who does not know the words (REQ-MDL-011): one line under the
+/// result.
+pub fn probe_class_meaning(class: &str, detail: Option<&str>) -> &'static str {
+    match (class, detail) {
+        ("acts", _) => "it made the edit, completed the task, and the file was found as asked",
+        ("incomplete", Some("asked_user")) => {
+            "it acted, then asked the user, whom nobody answers in a probe"
+        }
+        ("incomplete", Some("gave_up")) => "it acted, then gave up",
+        ("incomplete", _) => {
+            "it acted, but did not finish and verify the edit within the steps and the time of the probe, or said it was done when the file was not as asked"
+        }
+        ("plans_only", _) => "it never made a call that acts: it planned, asked, or gave up",
+        ("no_structured_call", _) => {
+            "every reply was malformed: it does not return the structured call the runtime reads"
+        }
+        ("unreachable", _) => "no reply came from the backend",
+        _ => "",
+    }
+}
+/// `model probe` with no name left remote backends out (REQ-MDL-011).
+pub fn probe_left_out(left: &[crate::probe::LeftOut]) -> Vec<String> {
+    left.iter()
+        .map(|l| {
+            let at = l
+                .host
+                .as_deref()
+                .map(|h| format!(" ({h})"))
+                .unwrap_or_default();
+            format!(
+                "left out: backend `{0}` is remote{at}; a probe sends it a fixed mini-task, so it is probed only when you name it: `mimlys model probe {0}`",
+                l.backend
+            )
+        })
+        .collect()
+}
+/// `model probe` with no name and no local backend.
+pub fn probe_no_local_backend() -> &'static str {
+    "no local backend is configured, so there is nothing to probe without a name"
+}
+/// A stop signal ended the probe (REQ-MDL-011): what was made is deleted, and nothing is recorded
+/// for the backend it ended on.
+pub fn probe_stopped(name: &str, not_probed: &[String]) -> String {
+    let rest = if not_probed.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; not probed: {}",
+            not_probed
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    format!(
+        "stopped: what the probe of backend `{name}` made is deleted and no class was recorded for it{rest}"
+    )
+}
+/// The probe measured nothing of the model, because the engine's gate stayed held by another
+/// runtime of the user's for the whole time (LIM-E3): nothing is recorded.
+pub fn probe_not_measured_gate(name: &str) -> String {
+    format!(
+        "backend `{name}` was not measured: no request could be sent within the time of the probe, because another runtime of yours kept the engine's gate (`mimlys status` shows who); nothing was recorded"
+    )
+}
+/// The mini-task ended in a state a probe does not reach.
+pub fn probe_fault(name: &str, end: &str) -> String {
+    format!(
+        "backend `{name}`: the probe's task ended in a state a probe does not reach ({end}) without a reply from the model; nothing was recorded"
+    )
+}
+/// What a probe could not remove (REQ-MDL-011): the next start that writes removes it.
+pub fn probe_left_paths(paths: &[String]) -> String {
+    format!(
+        "warning: {} path(s) of the probe could not be removed and will be removed by the next command that writes: {}",
+        paths.len(),
+        paths.join(", ")
+    )
+}
+/// `model probe` while another process holds the store (LIM-O3): who, and what to do.
+pub fn probe_store_in_use(holder: Option<(u32, &str)>) -> String {
+    match holder {
+        Some((pid, since)) => format!(
+            "the store is in use by runtime {pid} since {since}: `mimlys model probe` writes (a scope, a task, a record) and does not run beside another runtime of this data directory; run it when that runtime has ended"
+        ),
+        None => "the store is in use by another runtime: `mimlys model probe` writes (a scope, a task, a record) and does not run beside another runtime of this data directory; run it when that runtime has ended".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

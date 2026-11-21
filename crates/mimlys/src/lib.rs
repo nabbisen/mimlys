@@ -15,6 +15,7 @@ pub mod logging;
 pub mod machine;
 pub mod messages;
 pub mod output;
+pub mod probe;
 pub mod probe_results;
 pub mod prompt;
 pub mod registry;

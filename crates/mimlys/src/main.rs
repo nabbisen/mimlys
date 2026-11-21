@@ -180,6 +180,9 @@ enum Command {
     /// The user's runtimes.
     #[command(subcommand)]
     Runtime(RuntimeCommand),
+    /// The models: whether one acts on this machine.
+    #[command(subcommand)]
+    Model(ModelCommand),
     /// Interpreter builds for `run_script`.
     #[command(subcommand)]
     Interpreters(InterpretersCommand),
@@ -194,6 +197,25 @@ enum RuntimeCommand {
     ///
     /// Every runtime that takes a slot removes them first, so this is for seeing what a crash left, or for tidying when no runtime is about to start. It opens no store and works while other runtimes run.
     Reap,
+}
+
+#[derive(Subcommand)]
+enum ModelCommand {
+    /// Run one small scripted task against a model and record whether it acts on this machine.
+    ///
+    /// The probe makes a scope of its own under the data directory with one small file, asks the
+    /// model for one small edit with three built-in tools and nothing else, and judges the file
+    /// itself: the model's word that it is done is never the verdict. The class is `acts`,
+    /// `incomplete` (it acted and did not finish, asked or gave up), `plans_only`,
+    /// `no_structured_call` or `unreachable`, recorded per backend and shown by `status`. The
+    /// probe's task and scope are deleted when it ends. Without a name, every local backend is
+    /// probed, one after the other; a remote backend is probed only when you name it, and then
+    /// only a fixed mini-task is sent, nothing of yours. It writes, so it does not run beside
+    /// another runtime of this data directory.
+    Probe {
+        /// The backend (a name in `[backends]`); every local backend by default.
+        backend: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -468,7 +490,16 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
         let app = ReadApp::open(loaded)?;
         return dispatch_read(&app, read, out).await;
     }
-    let app = App::open(loaded)?;
+    // `model probe` writes, so it is refused while another process holds the store, naming it.
+    let probing_in = matches!(&cli.command, Command::Model(_))
+        .then(|| loaded.config.data_dir())
+        .transpose()?;
+    let app = match (App::open(loaded), probing_in) {
+        (Err(AppError::Persistence(mimlys_core::spi::PersistenceError::Locked)), Some(dir)) => {
+            return Err(commands::model::store_in_use(&dir));
+        }
+        (opened, _) => opened?,
+    };
     // A task runs on the backend named `default`, and no command picks another when there is
     // none (REQ-CFG-007; RFC 015, Amendment 1): this is said before anything is created or run.
     if needs_backend(&cli.command) {
@@ -784,6 +815,9 @@ async fn dispatch(
                 commands::interpreters::install_cmd(app, &language, from.as_deref(), out)
             }
         },
+        Command::Model(ModelCommand::Probe { backend }) => {
+            commands::model::probe(app, backend.as_deref(), out).await
+        }
         Command::Check | Command::Runtime(_) => unreachable!("handled before the app opens"),
     }
 }

@@ -265,6 +265,13 @@ pub const LIM_C5_FORK_HISTORY_STEPS: usize = 20;
 pub const LIM_M3_BACKEND_RETRIES: u32 = 2;
 /// LIM-M4: backend health probe timeout, in milliseconds.
 pub const LIM_M4_PROBE_MS: i64 = 5000;
+/// LIM-E2: steps of the fitness probe's mini-task (REQ-MDL-011). Provisional (RFC 015): the
+/// measurement report (015-0) sets it.
+pub const LIM_E2_PROBE_STEPS: u32 = 8;
+/// LIM-E3: wall time of the fitness probe's mini-task, in milliseconds (REQ-MDL-011). It is the
+/// task's deadline, so it is within LIM-T5's range. Provisional (RFC 015): the measurement report
+/// (015-0) sets it.
+pub const LIM_E3_PROBE_MS: i64 = 120_000;
 /// Shortest secret value the redactor scans for (REQ-CTX-007): shorter
 /// values would redact noise, so the configuration refuses them.
 pub const MIN_SECRET_CHARS: usize = 8;

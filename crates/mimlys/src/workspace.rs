@@ -25,6 +25,15 @@ mod snapshot;
 mod walk;
 use walk::{Flow, Found, Node, walk};
 
+/// Removes a directory the runtime made under the data directory (the fitness probe's scope),
+/// nothing in it followed if it is a link: every removal is attempted. Returns the paths that
+/// stayed, relative to the data directory; nothing for a directory that is not there.
+pub fn remove_made_dir(dir: &Path, data_dir: &Path) -> Vec<String> {
+    let mut failed = Vec::new();
+    snapshot::remove_tree(dir, data_dir, &mut failed);
+    failed
+}
+
 /// The metadata file beside a task's tree.
 const INFO_FILE: &str = "workspace.json";
 /// The case probe's file name (created in the tree, removed at once).
@@ -40,6 +49,10 @@ pub struct LocalWorkspaces {
     sandbox: Option<SandboxTools>,
     external: Option<Arc<mimlys_mcp::tools::Servers>>,
     files: mimlys_persist::snapshots::SnapshotFiles,
+    /// The one directory inside the data directory that this provider takes as a scope: the
+    /// fitness probe's, made by the runtime for that one probe (REQ-MDL-011). `None` for every
+    /// provider a user's command uses: a scope inside the data directory is refused for them.
+    probe_scope: Option<PathBuf>,
     /// Test only: called with the path of each entry a promotion is about to apply; an error stops it there.
     #[cfg(test)]
     apply_hook: Mutex<Option<ApplyHook>>,
@@ -138,6 +151,7 @@ impl LocalWorkspaces {
             sandbox: None,
             external: None,
             files,
+            probe_scope: None,
             #[cfg(test)]
             apply_hook: Mutex::new(None),
         })
@@ -157,6 +171,7 @@ impl LocalWorkspaces {
             sandbox: None,
             external: None,
             files,
+            probe_scope: None,
             #[cfg(test)]
             apply_hook: Mutex::new(None),
         }
@@ -167,6 +182,17 @@ impl LocalWorkspaces {
             detail: "workspace_info".into(),
         })?;
         std::fs::write(self.task_dir(task_id).join(INFO_FILE), text).map_err(Self::storage("write"))
+    }
+
+    /// Admits one directory inside the data directory as a scope: the fitness probe's, which the
+    /// runtime makes under `<data_dir>/tmp/probe-<id>/` for that one probe (REQ-MDL-011). A scope
+    /// inside the data directory is otherwise refused ([`WorkspaceError::InsideDataDir`]); this
+    /// provider takes **exactly** `scope` (compared as the paths resolve) and nothing else inside
+    /// it. It is made by the probe for its own use and shared with no command of the user's.
+    #[must_use]
+    pub fn admitting_probe_scope(mut self, scope: PathBuf) -> Self {
+        self.probe_scope = Some(scope);
+        self
     }
 
     /// Adds the worker-backed `run_script` and `run_wasm` (M2).
@@ -517,7 +543,12 @@ impl WorkspaceProvider for LocalWorkspaces {
         }
         let data_dir =
             std::fs::canonicalize(&self.data_dir).unwrap_or_else(|_| self.data_dir.clone());
-        if root.starts_with(&data_dir) {
+        let probe_scope = self
+            .probe_scope
+            .as_ref()
+            .and_then(|scope| std::fs::canonicalize(scope).ok())
+            .is_some_and(|scope| scope == root);
+        if root.starts_with(&data_dir) && !probe_scope {
             return Err(WorkspaceError::InsideDataDir);
         }
         if data_dir.starts_with(&root) {

@@ -396,6 +396,68 @@ and `status`, the task's versions and the `runtime.started` event all say
 so. The key is a reference, never a value; its resolved value is redacted
 from observations and logs.
 
+### Is this model appropriate? `mimlys model probe`
+
+A model that answers is not the same as a model that acts. Some models never
+return the structured call the runtime reads, and a task with one of them plans
+for as long as its budget lasts. `status`
+tells you whether the engine answers and accepts tools; **`mimlys model probe`
+tells you whether the model acts**, on this machine, under the transport in
+force, before you wait on a task to find out.
+
+<!-- tested -->
+```sh
+mimlys model probe                    # every local backend, one after the other
+mimlys status                         # shows the last result of each, with its date
+```
+
+```sh
+mimlys model probe small              # one backend, by the name in [backends.<name>]
+```
+
+The probe runs one small task against the real model, in a scope that mimlys
+makes for it under the data directory (`tmp/probe-<id>/`) with one file of one
+line, `color: red`. The goal is fixed: *Change the word red to blue in the file
+probe.txt.* The model has three built-in tools, `read_file`, `write_file` and
+`replace_in_file`, and nothing else: no promotion, no host tool, no server, no
+network, and nothing of your projects or your tasks. It may take at most 8 steps
+and 120 seconds (provisional limits LIM-E2 and LIM-E3, set by a measurement
+before 1.0). When it ends, **mimlys reads the file itself**: the model's word that
+it is done is never the answer.
+
+| Class | What it says |
+|---|---|
+| `acts` | The model made the edit and said it was done, and the file was found as asked. |
+| `incomplete` | It acted, but did not get there. The detail says how: `not_finished` (it did not finish within the steps and the time, or it said it was done and the file was not as asked), `asked_user` (it asked you a question, and nobody answers in a probe) or `gave_up`. |
+| `plans_only` | It never made a call that acts: it planned, asked or gave up first, or said it was done without doing anything. |
+| `no_structured_call` | Every reply was malformed. The model does not return the structured call the runtime reads; try the other `decision_transport`, or another model. |
+| `unreachable` | No reply came from the backend. |
+
+With each class the probe records the steps it took, the model's time per step,
+the transport, the model's name and the date, in `probe-results.json` in the data
+directory, one entry per backend (the latest). `status` shows it as *measured on
+this machine on* the day, and says so when the result was measured with another
+model than the backend names now. The probe's task, its workspace and its scope
+are deleted when it ends, whatever the class; it writes no event into the history
+of your tasks, and it never touches your projects. A probe that a crash cut short
+is removed by the next command that writes.
+
+- **Without a name** every local backend is probed, `default` first, and the
+  remote ones are left out: the command says which, and how to probe one.
+- **A remote backend** is probed only when you name it (and
+  `policy.remote_backend_allowed` is set). The command first says that it sends one
+  fixed mini-task, the file of one line and the goal above, **and nothing of
+  yours**. The probe's profile then says `external = true` for that one task; every
+  other profile is unchanged.
+- **It writes**, so it does not run beside another runtime of this data
+  directory: while another process holds the store it is refused, with that
+  process's id and the time it began. Its requests take the engine's gate like a
+  task's (`max_in_flight`), and Ctrl-C ends the wait for it, or the request in
+  flight, within five seconds; the probe's task and scope are deleted, no class is
+  recorded, and one line says so.
+- A result is a measurement of one model on one machine on one day. It is not a
+  guarantee: a model that `acts` on this task may still fail yours.
+
 ## Host tools
 
 Every `[host_tools.<name>]` section declares a program the model may run

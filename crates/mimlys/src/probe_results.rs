@@ -1,9 +1,9 @@
 //! The fitness probe's record, as `status` reads it (REQ-MDL-010, REQ-MDL-011; RFC 015 decision 5
 //! and Amendment 1): one entry per backend, the latest, in `<data_dir>/probe-results.json`.
 //!
-//! This module reads. The command that writes the file (`mimlys model probe`, handoff 015a item
-//! 5) writes the shape below, atomically and owner-only, and a reader never writes: `status` is a
-//! read command (REQ-PERS-013).
+//! [`read`] reads, and a reader never writes: `status` is a read command (REQ-PERS-013).
+//! [`record`] is the one writer, which `mimlys model probe` calls (handoff 015a item 5): the shape
+//! below, written atomically and owner-only, one entry per backend, the latest.
 //!
 //! ```json
 //! {
@@ -91,6 +91,13 @@ struct File {
     backends: BTreeMap<String, LastProbe>,
 }
 
+/// The file as it is written.
+#[derive(Serialize)]
+struct FileOut<'a> {
+    version: u32,
+    backends: &'a BTreeMap<String, LastProbe>,
+}
+
 /// The record, or why it cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Results {
@@ -130,6 +137,82 @@ pub fn read(data_dir: &Path) -> Results {
         )),
         Err(_) => Results::Unreadable(format!("{FILE} is not a record of the fitness probe")),
     }
+}
+
+/// Why [`record`] could not write.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RecordError {
+    /// The file is there and cannot be read as a record of this release. It is not replaced: what
+    /// it holds may be another release's, and a writer does not repair what it cannot read.
+    #[error(
+        "{0}; `mimlys model probe` does not replace a record it cannot read: move the file aside or remove it, and probe again"
+    )]
+    Unreadable(String),
+    /// The record could not be written.
+    #[error("cannot write {FILE}: {0}")]
+    Write(String),
+}
+
+/// The record as a writer takes it before it changes one entry: what the file holds, nothing when
+/// there is no file, and the reason when it is there and cannot be read.
+pub fn read_for_update(data_dir: &Path) -> Result<BTreeMap<String, LastProbe>, RecordError> {
+    match read(data_dir) {
+        Results::Read(map) => Ok(map),
+        Results::Unreadable(reason) => Err(RecordError::Unreadable(reason)),
+    }
+}
+
+/// Records `last` as the latest probe of the backend `name`, keeping every other entry as it is:
+/// the whole file is written to a temporary file of its own (owner-only from its creation on Unix;
+/// on Windows it has the data directory's protected, owner-only entries), flushed to disk, and
+/// renamed over `<data_dir>/probe-results.json`, so that a reader sees the old record or the new
+/// one and never part of either. The caller holds the store (the one writer).
+pub fn record(data_dir: &Path, name: &str, last: LastProbe) -> Result<(), RecordError> {
+    let mut backends = read_for_update(data_dir)?;
+    backends.insert(name.to_owned(), last);
+    let text = serde_json::to_string_pretty(&FileOut {
+        version: VERSION,
+        backends: &backends,
+    })
+    .map_err(|e| RecordError::Write(e.to_string()))?;
+    write_atomic(data_dir, FILE, text.as_bytes()).map_err(|e| RecordError::Write(e.to_string()))
+}
+
+/// Writes `bytes` to `<dir>/<name>` through `<dir>/<name>.tmp`, as [`record`] says.
+fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let target = dir.join(name);
+    let temporary = dir.join(format!("{name}.tmp"));
+    // The one writer holds the store, so a temporary file that is here is a crash's: it goes.
+    match std::fs::remove_file(&temporary) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = (|| {
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return written;
+    }
+    // The rename itself is made durable where a directory can be flushed.
+    #[cfg(unix)]
+    if let Ok(directory) = std::fs::File::open(dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ pub mod events;
 pub mod grant;
 pub mod interpreters;
 pub mod metrics;
+pub mod model;
 pub mod promote;
 pub mod prune;
 pub mod reject;

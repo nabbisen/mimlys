@@ -74,6 +74,15 @@ pub enum AppError {
         /// The error kind of external design §18.
         kind: &'static str,
     },
+    /// A command that writes was refused because another process holds the store, and the
+    /// message names the holder (LIM-O3; `mimlys model probe`).
+    #[error("{detail}")]
+    StoreInUse {
+        /// Who holds it, and what to do.
+        detail: String,
+        /// The holder's process id, when it recorded itself.
+        pid: Option<u32>,
+    },
     /// A task reference matched nothing or more than one task.
     #[error("{detail}")]
     TaskRef {
@@ -109,6 +118,7 @@ impl AppError {
             ) => "state",
             AppError::Workspace(_) => "internal",
             AppError::Output { kind, .. } => kind,
+            AppError::StoreInUse { .. } => "conflict",
             AppError::TaskRef {
                 not_found: true, ..
             } => "not_found",
@@ -133,6 +143,7 @@ impl AppError {
             | AppError::Io { .. }
             | AppError::Partial { .. }
             | AppError::Output { .. }
+            | AppError::StoreInUse { .. }
             | AppError::TaskRef { .. } => None,
         }
     }
@@ -180,6 +191,7 @@ impl AppError {
                 };
                 serde_json::json!({ "paths": paths, "kept": kept })
             }
+            AppError::StoreInUse { pid, .. } => serde_json::json!({ "holder_pid": pid }),
             _ => serde_json::json!({}),
         };
         // Every `unavailable` names the component that was not reachable.
@@ -232,6 +244,15 @@ pub struct App {
     pub backend: Backend,
     /// What the backend probe found, once it ran (LIM-M4).
     backend_probe: std::sync::Mutex<Option<BackendProbe>>,
+    /// The store, as the runtime holds it: the fitness probe builds a runtime of its own over it
+    /// (REQ-MDL-011).
+    pub(crate) store: Arc<dyn Persistence>,
+    /// What the confinement probe found at the start, which the probe's runtime is given too.
+    pub(crate) confinement: mimlys_core::confine::Probe,
+    /// The registry of the user's runtimes, where the engine gates are (RFC 013 decision 7).
+    pub(crate) registry_dir: Result<PathBuf, String>,
+    /// This process as an owner of an entry of the registry.
+    pub(crate) owner: crate::registry::Owner,
     /// What recovery did at startup.
     pub recovered: Vec<Recovered>,
     /// The promotions found `applying` at startup, restored from their backups and recorded
@@ -618,6 +639,26 @@ impl App {
             })
             .with_external(Arc::clone(&servers)),
         );
+        // A fitness probe that a crash cut short is not the user's: its task, its workspace and
+        // its scope go before recovery, which would otherwise report the task as recovered
+        // (REQ-MDL-011, THR-40).
+        let probe_left =
+            crate::probe::leftovers::remove(&store, &*workspaces, &data_dir, &SystemClock);
+        if probe_left.found() {
+            tracing::info!(
+                "removed what a fitness probe left when it ended in the middle of its work: {} task(s), {} unfinished workspace copy(ies), {} scope(s)",
+                probe_left.tasks,
+                probe_left.copies,
+                probe_left.scopes.len()
+            );
+        }
+        if !probe_left.left.is_empty() {
+            tracing::warn!(
+                "{} path(s) of a fitness probe could not be removed and will be tried at the next start: {}",
+                probe_left.left.len(),
+                probe_left.left.join(", ")
+            );
+        }
         let recovered = recover_all(
             &store,
             &RecoveryContext {
@@ -707,7 +748,9 @@ impl App {
         );
         // RFC 013 decision 7: the model requests of the user's runtimes to one endpoint share
         // `max_in_flight` places, in the same registry. The fake backend has no endpoint.
-        let gate = backend.gate(registry_dir, owner);
+        let gate = backend.gate(registry_dir.clone(), owner.clone());
+        let confinement = probe.clone();
+        let shared_store = Arc::clone(&store);
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store,
             backend: Arc::clone(&backend.adapter),
@@ -743,6 +786,10 @@ impl App {
             },
             backend,
             backend_probe: std::sync::Mutex::new(None),
+            store: shared_store,
+            confinement,
+            registry_dir,
+            owner,
             recovered,
             recovered_promotions,
             worker,

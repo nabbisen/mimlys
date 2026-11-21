@@ -335,6 +335,62 @@ fn req_task_001_scope_rules() {
     assert_eq!(p.open(task).unwrap_err(), WorkspaceError::Missing);
 }
 
+/// THR-40, REQ-TASK-001: a scope inside the data directory is refused for every provider but the
+/// probe's own, and that one takes exactly the directory the probe made, nothing else inside the
+/// data directory: not the directory beside it, not the one above it, not one below it, not the
+/// data directory itself, and not the probe's directory through a provider that was not given it.
+#[test]
+fn thr_40_the_probes_provider_admits_its_own_scope_and_no_other_inside_the_data_directory() {
+    let data = tempfile::tempdir().unwrap();
+    let tmp = data.path().join("tmp");
+    let own = tmp.join("probe-own");
+    let beside = tmp.join("probe-beside");
+    let below = own.join("below");
+    for dir in [&own, &beside, &below] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(own.join("probe.txt"), "color: red\n").unwrap();
+    let spec = |dir: &std::path::Path| ScopeSpec {
+        root: dir.to_string_lossy().into_owned(),
+        include: vec![],
+    };
+    let ids = ScriptedIds::default();
+    // A provider of a user's command: the probe's directory is inside the data directory.
+    assert_eq!(
+        provider(data.path())
+            .materialize(TaskId::new(&ids), &spec(&own))
+            .unwrap_err(),
+        WorkspaceError::InsideDataDir
+    );
+    // The probe's provider takes its own.
+    let probes = provider(data.path()).admitting_probe_scope(own.clone());
+    let task = TaskId::new(&ids);
+    let info = probes.materialize(task, &spec(&own)).unwrap();
+    assert_eq!(info.files, 1);
+    // And only that one.
+    for (what, dir) in [
+        ("the directory beside it", &beside),
+        ("one below it", &below),
+        ("`tmp`", &tmp),
+        ("the data directory", &data.path().to_owned()),
+    ] {
+        assert_eq!(
+            probes
+                .materialize(TaskId::new(&ids), &spec(dir))
+                .unwrap_err(),
+            WorkspaceError::InsideDataDir,
+            "{what}"
+        );
+    }
+    // A scope outside the data directory is as it was for every provider.
+    let outside = tempfile::tempdir().unwrap();
+    assert!(
+        probes
+            .materialize(TaskId::new(&ids), &spec(outside.path()))
+            .is_ok()
+    );
+}
+
 mod snapshots {
     use super::*;
     use mimlys_core::clock::Instant;

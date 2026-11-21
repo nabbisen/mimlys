@@ -364,14 +364,14 @@ fn grace() -> std::time::Duration {
 
 /// The listeners for the stop signals, made once.
 #[cfg(unix)]
-struct StopSignals {
+pub(crate) struct StopSignals {
     interrupt: tokio::signal::unix::Signal,
     terminate: tokio::signal::unix::Signal,
 }
 
 #[cfg(unix)]
 impl StopSignals {
-    fn new() -> std::io::Result<Self> {
+    pub(crate) fn new() -> std::io::Result<Self> {
         use tokio::signal::unix::{SignalKind, signal};
         Ok(Self {
             interrupt: signal(SignalKind::interrupt())?,
@@ -380,7 +380,7 @@ impl StopSignals {
     }
 
     /// Waits for the next SIGINT or SIGTERM; an error when neither can come.
-    async fn recv(&mut self) -> std::io::Result<()> {
+    pub(crate) async fn recv(&mut self) -> std::io::Result<()> {
         tokio::select! {
             r = self.interrupt.recv() => r.ok_or_else(closed),
             r = self.terminate.recv() => r.ok_or_else(closed),
@@ -394,15 +394,15 @@ fn closed() -> std::io::Error {
 }
 
 #[cfg(not(unix))]
-struct StopSignals;
+pub(crate) struct StopSignals;
 
 #[cfg(not(unix))]
 impl StopSignals {
-    fn new() -> std::io::Result<Self> {
+    pub(crate) fn new() -> std::io::Result<Self> {
         Ok(Self)
     }
 
-    async fn recv(&mut self) -> std::io::Result<()> {
+    pub(crate) async fn recv(&mut self) -> std::io::Result<()> {
         tokio::signal::ctrl_c().await
     }
 }

@@ -101,3 +101,151 @@ fn req_mdl_010_a_record_that_cannot_be_read_is_said() {
     std::fs::create_dir(dir.path().join(FILE)).unwrap();
     assert!(matches!(read(dir.path()), Results::Unreadable(_)));
 }
+
+fn last(class: &str, at: &str) -> LastProbe {
+    LastProbe {
+        class: class.to_owned(),
+        detail: None,
+        steps: 3,
+        model_ms_per_step: Some(900),
+        transport: Some("tool_calls".into()),
+        model: Some("m".into()),
+        at: at.to_owned(),
+    }
+}
+
+/// REQ-MDL-011: the record written is the record read: one entry per backend, the latest; another
+/// backend's entry is kept as it is; the file is the shape the reader documents; and no temporary
+/// file stays beside it.
+#[test]
+fn req_mdl_011_the_record_written_is_the_record_read_one_entry_per_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    record(
+        dir.path(),
+        "default",
+        last("acts", "2026-11-20T10:00:00.000Z"),
+    )
+    .unwrap();
+    record(
+        dir.path(),
+        "small",
+        last("plans_only", "2026-11-21T10:00:00.000Z"),
+    )
+    .unwrap();
+    // The latest replaces the one before it, and only for its backend.
+    record(
+        dir.path(),
+        "default",
+        last("incomplete", "2026-11-22T10:00:00.000Z"),
+    )
+    .unwrap();
+    let results = read(dir.path());
+    assert_eq!(results.of("default").unwrap().class, "incomplete");
+    assert_eq!(results.of("default").unwrap().date(), "2026-11-22");
+    assert_eq!(results.of("small").unwrap().class, "plans_only");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(FILE)).unwrap()).unwrap();
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["backends"].as_object().unwrap().len(), 2);
+    assert_eq!(value["backends"]["small"]["steps"], 3);
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, [FILE], "no temporary file is left: {names:?}");
+}
+
+/// REQ-MDL-011: an entry of a class this release does not know, written by a later one under the
+/// same version, survives the rewrite of another backend's entry.
+#[test]
+fn req_mdl_011_an_entry_the_release_does_not_know_survives_another_backends_record() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        r#"{"version": 1, "backends": {"old": {"class": "reasons_aloud", "steps": 2, "at": "2026-01-01T00:00:00Z"}}}"#,
+    );
+    record(
+        dir.path(),
+        "default",
+        last("acts", "2026-11-22T10:00:00.000Z"),
+    )
+    .unwrap();
+    let results = read(dir.path());
+    assert_eq!(results.of("old").unwrap().class, "reasons_aloud");
+    assert_eq!(results.of("default").unwrap().class, "acts");
+}
+
+/// REQ-MDL-011: a record that cannot be read is never replaced: a writer does not repair what it
+/// cannot read (a later release's file, or one that is not a record), and says what to do.
+#[test]
+fn req_mdl_011_a_record_that_cannot_be_read_is_not_replaced() {
+    for text in [
+        r#"{"version": 2, "backends": {}}"#,
+        "not json at all",
+        r#"["a", "list"]"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), text);
+        let error = record(
+            dir.path(),
+            "default",
+            last("acts", "2026-11-22T10:00:00.000Z"),
+        )
+        .unwrap_err();
+        assert!(matches!(error, RecordError::Unreadable(_)), "{error:?}");
+        assert!(error.to_string().contains("move the file aside"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(FILE)).unwrap(),
+            text,
+            "the file is as it was"
+        );
+        assert!(read_for_update(dir.path()).is_err());
+    }
+}
+
+/// REQ-MDL-011: a temporary file a crash left is not in the way, and it goes.
+#[test]
+fn req_mdl_011_a_temporary_file_a_crash_left_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(format!("{FILE}.tmp")), "half a rec").unwrap();
+    record(
+        dir.path(),
+        "default",
+        last("acts", "2026-11-22T10:00:00.000Z"),
+    )
+    .unwrap();
+    assert!(!dir.path().join(format!("{FILE}.tmp")).exists());
+    assert_eq!(read(dir.path()).of("default").unwrap().class, "acts");
+}
+
+/// REQ-SEC-008, REQ-MDL-011: the record is owner-only from its creation (Unix; on Windows it has
+/// the data directory's protected entries, which CI checks for the data directory itself).
+#[cfg(unix)]
+#[test]
+fn req_sec_008_the_record_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    record(
+        dir.path(),
+        "default",
+        last("acts", "2026-11-22T10:00:00.000Z"),
+    )
+    .unwrap();
+    let mode = std::fs::metadata(dir.path().join(FILE))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+    // A second write keeps it so (the new file is renamed over the old).
+    record(
+        dir.path(),
+        "small",
+        last("acts", "2026-11-22T10:00:00.000Z"),
+    )
+    .unwrap();
+    let mode = std::fs::metadata(dir.path().join(FILE))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+}
