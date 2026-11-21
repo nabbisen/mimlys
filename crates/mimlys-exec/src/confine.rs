@@ -507,7 +507,8 @@ impl Confinement for Platform {
                 Some(s.memory_bytes),
                 Some(s.max_processes),
                 // LIM-H7: the share is converted to the rate of the whole machine.
-                (s.cpu_share > 0).then(|| cpu::job_cpu_rate(cpu::machine_cores(), s.cpu_share)),
+                // MUTATION (throwaway, never merge): a core count used as the rate.
+                (s.cpu_share > 0).then(|| cpu::machine_cores() * s.cpu_share / 100),
             ),
             None => windows::Job::new(),
         }
