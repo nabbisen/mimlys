@@ -92,7 +92,7 @@ script = {script:?}
 tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
-allowed_args = ["ok", "cwd", "read", "list", "write", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "sandbox-nested", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find", "fill"]
+allowed_args = ["ok", "cwd", "read", "list", "write", "remove", "write-env", "connect", "connect-name", "getaddrinfo", "unix-socket", "unix-connect", "id", "sudo-id", "procargs", "procinfo", "signal0", "proclist", "sandbox-nested", "env", "setsid-sleep", "orphan", "fork", "alloc-touch", "xcrun-find", "fill"]
 arg_pattern = "[A-Za-z0-9_./:=-]+"
 allow_paths = true
 max_args = 3
@@ -2083,4 +2083,55 @@ fn req_pers_005_a_host_tool_that_prints_exactly_its_bound_is_carried_whole() {
     let stored = std::fs::read(&blobs[0]).unwrap();
     assert_eq!(stored.len(), bound);
     assert!(stored.iter().all(|b| *b == b'x'));
+}
+
+/// THR-38, REQ-SCHED-006, RFC 013 Amendment 1 (macOS): the registry of the user's runtimes is
+/// outside every write set. A host tool, running under the seatbelt profile while its own runtime
+/// holds a slot in the same registry, cannot create an entry, change one, or remove one or either
+/// of its lock files: every attempt fails `permission denied`, and the registry is as it was.
+#[test]
+fn thr_38_a_host_tool_cannot_create_change_or_remove_a_registry_entry() {
+    let test = "thr_38_a_host_tool_cannot_create_change_or_remove_a_registry_entry";
+    let registry =
+        common::HeldRegistry::new(outside().join(format!("registry-{}", std::process::id())));
+    let [forged, entry, lock, mutex] = registry.paths();
+    let path = |p: &Path| p.to_string_lossy().into_owned();
+    let env = Env::new(
+        &[
+            probe(&["write", &path(&forged)]),
+            probe(&["ok"]),
+            probe(&["write", &path(&entry)]),
+            probe(&["write", &path(&lock)]),
+            probe(&["ok"]),
+            probe(&["write", &path(&mutex)]),
+            probe(&["remove", &path(&entry)]),
+            probe(&["ok"]),
+            probe(&["remove", &path(&lock)]),
+            probe(&["ok"]),
+            complete(),
+        ],
+        "",
+    )
+    .env("MIMLYS_RUN_DIR", &path(&registry.dir));
+    let Some(obs) = run_probe_script(test, &env) else {
+        return;
+    };
+    assert_eq!(obs.len(), 10, "{}", obs.len());
+    // The attempts are the observations that are not the `ok` between them (a run of five
+    // failures halts a task, LIM-T6).
+    for (i, what) in [
+        (0, "create"),
+        (2, "change the text"),
+        (3, "change the lock file"),
+        (5, "change the writers' lock"),
+        (6, "remove the text"),
+        (8, "remove the lock file"),
+    ] {
+        let said = stdout_of(&obs[i]);
+        assert!(
+            said.contains("failed: permission denied"),
+            "{what}: the tool was not refused: {said}"
+        );
+    }
+    registry.assert_untouched();
 }

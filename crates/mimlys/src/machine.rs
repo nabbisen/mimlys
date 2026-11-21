@@ -304,3 +304,6 @@ pub fn waiting_of(
         url: entry.url.clone(),
     })
 }
+
+#[cfg(test)]
+mod tests;

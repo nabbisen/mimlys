@@ -2,7 +2,7 @@
 //! tries what its first argument says and reports in its exit code and
 //! output. Built only with the `test-bins` feature; never part of a release.
 //!
-//! `read <path>`, `list <dir>`, `write <path>`, `write-env <VAR> <name>`, `connect <addr>`, `env <name>`,
+//! `read <path>`, `list <dir>`, `write <path>`, `remove <path>`, `write-env <VAR> <name>`, `connect <addr>`, `env <name>`,
 //! `sleep <secs>`, `setsid-sleep <secs>`, `detach <secs>` (Unix but macOS: a sleeper in a session of its own, then the tool ends), `fork <n> [hold_ms]`, `alloc <mib>`,
 //! `alloc-touch <mib>` (resident memory: every page written), `connect-name
 //! <host:port>` (resolve and connect), `cwd`, `ok`, `fs-cycle <dir>` (create,
@@ -369,6 +369,18 @@ fn main() {
                 }
             }
         }
+        // `remove <path>`: unlink a file (the registry's tests: a tool cannot remove an entry).
+        Some("remove") => match std::fs::remove_file(args.get(1).map(String::as_str).unwrap_or(""))
+        {
+            Ok(()) => {
+                println!("removed");
+                0
+            }
+            Err(e) => {
+                println!("remove failed: {}", e.kind());
+                3
+            }
+        },
         Some("connect") => {
             let addr = args.get(1).map(String::as_str).unwrap_or("127.0.0.1:9");
             match std::net::TcpStream::connect_timeout(

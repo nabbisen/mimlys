@@ -96,7 +96,7 @@ tools = [{builtin}]
 [host_tools.probe]
 command = {tool:?}
 read_paths = [{tools_dir:?}]
-allowed_args = ["ok", "cwd", "read", "write", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle", "exit", "stdin-read", "list", "fill"]
+allowed_args = ["ok", "cwd", "read", "write", "remove", "connect", "env", "setsid-sleep", "fork", "alloc", "open-rights", "fs-cycle", "exit", "stdin-read", "list", "fill"]
 arg_pattern = "[A-Za-z0-9_./:=~\\\\-]+"
 allow_paths = true
 max_args = 3
@@ -2245,4 +2245,67 @@ fn req_pers_005_a_host_tool_that_prints_exactly_its_bound_is_carried_whole() {
     let stored = std::fs::read(&blobs[0]).unwrap();
     assert_eq!(stored.len(), bound);
     assert!(stored.iter().all(|b| *b == b'x'));
+}
+
+/// THR-38, REQ-SCHED-006, RFC 013 Amendment 1 (Windows): the registry of the user's runtimes is
+/// outside every write set. A host tool, running in the AppContainer while its own runtime holds a
+/// slot in the same registry, cannot create an entry, change one, or remove one or either of its
+/// lock files: every attempt fails, and the registry is as it was.
+#[test]
+fn thr_38_a_host_tool_cannot_create_change_or_remove_a_registry_entry() {
+    let registry =
+        common::HeldRegistry::new(outside().join(format!("registry-{}", std::process::id())));
+    let [forged, entry, lock, mutex] = registry.paths();
+    let path = |p: &Path| p.to_string_lossy().into_owned();
+    let env = Env::new(
+        &[
+            probe(&["write", &path(&forged)]),
+            probe(&["ok"]),
+            probe(&["write", &path(&entry)]),
+            probe(&["write", &path(&lock)]),
+            probe(&["ok"]),
+            probe(&["write", &path(&mutex)]),
+            probe(&["remove", &path(&entry)]),
+            probe(&["ok"]),
+            probe(&["remove", &path(&lock)]),
+            probe(&["ok"]),
+            complete(),
+        ],
+        "",
+    )
+    .env("MIMLYS_RUN_DIR", &path(&registry.dir))
+    .ready();
+    let (tier, table) = clauses(&env);
+    assert_eq!(tier, "full", "{table:?}");
+    let scope = env.scope();
+    let (code, value) = env.json(&[
+        "run",
+        "try the registry",
+        "--scope",
+        scope.to_str().unwrap(),
+        "--grant",
+        "host_tool:probe",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "completed", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let obs = env.observations(&id);
+    assert_eq!(obs.len(), 10, "{}", account(&obs));
+    // The attempts are the observations that are not the `ok` between them (a run of five
+    // failures halts a task, LIM-T6).
+    for (i, what) in [
+        (0, "create"),
+        (2, "change the text"),
+        (3, "change the lock file"),
+        (5, "change the writers' lock"),
+        (6, "remove the text"),
+        (8, "remove the lock file"),
+    ] {
+        let said = stdout_of(&obs[i]);
+        assert!(
+            said.contains(" failed"),
+            "{what}: the tool was not refused: {said}"
+        );
+    }
+    registry.assert_untouched();
 }
