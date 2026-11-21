@@ -20,6 +20,7 @@ clause K termination  enforced (cgroup_kill)
 clause P privilege    enforced (no_new_privs+seccomp)
 clause M memory       best effort (rlimit_as (memory.max: permission denied))
 clause C count        best effort (wall_clock)
+clause C cpu          unavailable: cgroup_cpu_not_delegated
 ```
 
 `full` means every mandatory clause (F, N, E, K, P) is enforced by the
@@ -38,7 +39,9 @@ sees), from Landlock ABI 4 (Linux 6.7) a rule set that denies TCP `bind` and
 write set (see "Unix sockets, the workspace and the end of a tool" below); on
 an older kernel without the Landlock rule set the TCP layer is the filter's
 alone, and complete all the same. The probe is a real worker's report of its
-own confinement, not a guess.
+own confinement, not a guess. The last line, `clause C cpu`, is the CPU
+part of clause C: it is listed beside the clauses, it is not one of them, and
+it never changes the tier (see "The CPU share" below).
 
 ## Unix sockets, the workspace and the end of a tool
 
@@ -215,6 +218,72 @@ reads `full (K best-effort, accepted by policy.accept_best_effort)`, and so
 does the `Tier` line of every approval of a host tool. Nothing is accepted
 by default, and a clause that is unavailable can never be accepted.
 
+## The CPU share
+
+A test run or a build can take every core of the machine. mimlys therefore
+limits the CPU a host tool's tree may take, to **half the machine's cores, and
+never less than one core** (`[policy.ceiling] cpu_share = 50`, a whole percent
+of the cores from 1 to 100; 100 is no limit in effect, every core). It is the
+CPU part of clause C, listed by `mimlys status` as `clause C cpu` and, with
+`--json`, as `cpu`. **It is not a clause and it never changes the tier**: where
+it cannot be had, the tier is what it was and host tools run all the same; the
+line says why. The share is the same for every task: this release does not let
+a task ask for more than `cpu_share` (the ceiling is the value in force).
+
+What the line says depends on the system, because the systems offer different
+things:
+
+| System | The line | What it means |
+|---|---|---|
+| Linux, where the system allows the arrangement | `enforced (cgroup_cpu_max)` | a real bound: the tree runs under a CPU quota (`cpu.max`) of the share, in 100 ms periods |
+| Linux, otherwise (the usual case) | `unavailable: <reason>` | no bound; the reason is the system's |
+| Windows | `enforced (job_object)` | a real bound: the Job Object that holds the worker and every tool has a hard CPU rate |
+| macOS | `best effort (priority)` | **not a bound**: the worker and its tools run at a lowered priority and nothing more |
+
+**Linux.** The worker runs in a cgroup of its own with two leaves, `worker` for
+itself and `tool` for every host tool's tree, and the quota is set on `tool`
+alone, so the model's scripts and the worker itself are not slowed by it.
+(cgroup v2 passes a controller on to a cgroup's children only while that
+cgroup holds no process of its own, which is why the worker has a leaf.) The
+kernel asks the same of the cgroup above: it must pass `cpu` on, and it must
+hold no process. The cgroup the runtime itself lives in holds the runtime, so
+on a usual session, a terminal's scope or a service, even one with delegation,
+the line reads `unavailable: cgroup_cpu_not_enabled (the runtime's cgroup holds
+processes)`; `unavailable: cgroup_cpu_not_delegated` says the cgroup does not
+offer `cpu` at all, and `unavailable: cgroup_not_writable` that there is no
+cgroup to arrange (as on most CI runners). Expect `unavailable` on Linux today:
+it is the honest report, and the tier is not affected. **To bound the CPU
+anyway, bound the whole runtime** with the system's own tool, which works on
+every Linux machine with systemd:
+
+```sh
+systemd-run --user --scope -p CPUQuota=200% mimlys run "fix the failing test"
+```
+
+`CPUQuota=200%` is two cores (`CPUQuota=<n>00%` is *n* cores). The quota covers
+everything the runtime starts, the worker and the engine's own work included,
+and mimlys still says `unavailable` on that line because it did not set it. A
+quota of half the cores is the one that was measured (the example of M6a takes
+about 1.5 times as long on four cores, and two bounded runtimes at once do not
+slow each other).
+
+**Windows.** The rate of a Job Object is a share of the *whole machine*, not a
+number of cores, so mimlys converts: half the cores is 50 % of the machine on
+any machine, and one core is one *n*th of it on a machine of *n* cores. The job
+holds the worker and the tools it starts, so the worker's own work is bounded
+with them.
+
+**macOS.** The system offers no CPU limit to a process without privileges.
+mimlys lowers the priority of the worker (`nice` 10, set with `setpriority`,
+which its tools inherit and cannot raise again), so the tree gives way to
+your own work when the machine is busy, and says `best effort (priority)` so
+that nobody reads it as a bound. It was measured on a runner that a lowered
+priority did not make a build slower on an idle machine (the tree still has
+every core), and that under another process's load it gave the tree no
+smaller share. mimlys does **not** use the background policy (`taskpolicy -b`):
+under load it starved a tree for minutes, up to a hundred times slower than at
+normal priority, until the tool's deadline ended it.
+
 ## On macOS
 
 Host tools run on macOS (Apple silicon; 0.8). **No clause needs to be
@@ -230,6 +299,7 @@ clause K termination  enforced (seatbelt_membership)
 clause P privilege    enforced (seatbelt)
 clause M memory       best effort (rss_watchdog)
 clause C count        best effort (process_count_watchdog)
+clause C cpu          best effort (priority)
 ```
 
 mimlys confines the worker with one Seatbelt profile, and every host tool
@@ -599,6 +669,7 @@ clause K termination  enforced (job_object)
 clause P privilege    enforced (appcontainer)
 clause M memory       enforced (job_object)
 clause C count        enforced (job_object)
+clause C cpu          enforced (job_object)
 ```
 
 The profile paths a toolchain writes to (`USERPROFILE`, `LOCALAPPDATA`,

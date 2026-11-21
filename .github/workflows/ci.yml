@@ -60,6 +60,24 @@ jobs:
       - run: rm -f target/tmp/skips.log
         shell: bash
       - run: cargo test --workspace --all-features --no-fail-fast
+      # REQ-CONF-013 (handoff 013d item 3): the CPU part of clause C on a real
+      # cgroup. The job's own cgroup is not writable, so the suites above run on
+      # the subreaper rung. This step runs the two suites that touch the cgroup
+      # rung in a systemd unit with delegation, owned by the runner user
+      # (scripts/with-delegated-cgroup.sh): the worker in its leaf and `cpu.max` on
+      # `tool` as the kernel holds them, and the tree kill through `cgroup.kill`.
+      # A step of the job, not a job: it adds no check of its own to the count.
+      - name: the CPU part and the tree kill in a delegated cgroup
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo systemd-run --wait --pipe --collect -p Delegate=yes -p User="$USER" \
+            -p WorkingDirectory="$PWD" \
+            --setenv=HOME="$HOME" --setenv=PATH="$PATH" \
+            --setenv=CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+            --setenv=RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            --setenv=MIMLYS_QJS_WASM="$MIMLYS_QJS_WASM" \
+            sh scripts/with-delegated-cgroup.sh \
+            cargo test --workspace --all-features --test m7b_cpu_part --test m6a_host_tools
       - name: skipped tests, counted per platform
         if: always()
         shell: bash

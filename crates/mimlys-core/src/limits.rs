@@ -195,6 +195,12 @@ pub const LIM_H5_CREDENTIAL_NAMES: [&str; 6] = [
 /// over the sandbox's members), in milliseconds. Provisional (RFC 011
 /// Amendment 2, settled): the shorter, the fewer short excursions are missed.
 pub const LIM_H6_TRACK_INTERVAL_MS: u64 = 100;
+/// LIM-H7: the CPU share of a host tool tree, in percent of the machine's
+/// cores (half the cores; at least one core is taken whatever the percent).
+pub const LIM_H7_CPU_SHARE_PERCENT: u32 = 50;
+/// LIM-H7: configurable range, in percent of the machine's cores (one core to
+/// all cores is the register's range; a percent below one core is one core).
+pub const LIM_H7_CPU_SHARE_PERCENT_RANGE: (u32, u32) = (1, 100);
 /// LIM-O5: deadline of an external (MCP) tool invocation, in milliseconds.
 pub const LIM_O5_EXTERNAL_DEADLINE_MS: i64 = 60_000;
 /// LIM-O5: configurable range in milliseconds; never below a server's declared maximum.

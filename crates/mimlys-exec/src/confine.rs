@@ -14,6 +14,7 @@ use mimlys_core::confine::{Clause, ClauseState, Probe};
 use serde::{Deserialize, Serialize};
 
 pub mod acl_rules;
+pub mod cpu;
 pub mod dacl_wait;
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -44,6 +45,11 @@ pub struct ConfinementSpec {
     pub memory_bytes: u64,
     /// LIM-H3.
     pub max_processes: u32,
+    /// LIM-H7, clause C's CPU part (REQ-CONF-013): the share of the machine's
+    /// cores a host tool's tree may take, in whole percent (1 to 100); 0 asks
+    /// for none, and the part is then reported unavailable with that reason.
+    #[serde(default)]
+    pub cpu_share: u32,
     /// The data directory the tree belongs to: Windows derives the
     /// AppContainer profile from it and finds the permission record there.
     #[serde(default)]
@@ -456,6 +462,7 @@ impl Confinement for Platform {
     fn probe(&self) -> Probe {
         Probe {
             clauses: base_probe(),
+            cpu: None,
         }
     }
 

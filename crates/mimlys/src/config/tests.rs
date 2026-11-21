@@ -646,3 +646,23 @@ fn req_cfg_001_lim_s4_the_maximum_is_16_mib() {
     assert_eq!(err.key, "sandbox.output_bytes");
     assert!(err.reason.contains("65536"), "{err}");
 }
+
+/// REQ-CONF-013, LIM-H7: `[policy.ceiling] cpu_share` replaces the shipped half,
+/// and a value outside its range is refused with the key and the range.
+#[test]
+fn req_conf_013_cpu_share_is_read_and_checked() {
+    let shipped = Config::parse("config_version = 1\n").unwrap();
+    assert_eq!(shipped.resolve_policy().unwrap().ceiling.cpu_share, 50);
+    let c = Config::parse("config_version = 1\n[policy.ceiling]\ncpu_share = 100\n").unwrap();
+    c.validate().unwrap();
+    assert_eq!(c.resolve_policy().unwrap().ceiling.cpu_share, 100);
+    for bad in ["0", "101"] {
+        let c = Config::parse(&format!(
+            "config_version = 1\n[policy.ceiling]\ncpu_share = {bad}\n"
+        ))
+        .unwrap();
+        let err = c.validate().unwrap_err();
+        assert!(err.key.contains("cpu_share"), "{err}");
+        assert!(err.reason.contains("1..=100"), "{err}");
+    }
+}

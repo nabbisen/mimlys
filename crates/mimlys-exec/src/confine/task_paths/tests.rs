@@ -20,6 +20,7 @@ fn spec(data: &Path) -> ConfinementSpec {
         deny_network: true,
         memory_bytes: 0,
         max_processes: 0,
+        cpu_share: 0,
         data_dir: data.to_path_buf(),
         marker: None,
     }

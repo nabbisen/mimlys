@@ -87,3 +87,51 @@ fn req_conf_003_tier_rule() {
     let back: Probe = serde_json::from_str(&json).unwrap();
     assert_eq!(back, probe);
 }
+
+/// REQ-CONF-013: the CPU part of clause C is reported beside the clauses and is
+/// never part of the tier: whatever it says, or whether it says anything, the
+/// tier, the shortfall of a report and the unavailable lines are the same.
+#[test]
+fn req_conf_013_the_cpu_part_never_changes_the_tier() {
+    let mut probe = Probe::unavailable("not applied");
+    for c in Clause::ALL {
+        probe.clauses.insert(c, ClauseState::ENFORCED);
+    }
+    for cpu in [
+        None,
+        Some(ClauseState::enforced("cgroup_cpu_max")),
+        Some(ClauseState::enforced("job_object")),
+        Some(ClauseState::best_effort("priority")),
+        Some(ClauseState::unavailable("cgroup_cpu_not_delegated")),
+    ] {
+        probe.cpu = cpu.clone();
+        assert_eq!(probe.tier(), Tier::Full, "{cpu:?}");
+        assert_eq!(probe.tier_with(&[]).describe(), "full", "{cpu:?}");
+        assert!(probe.short_of_mandatory(&[], &[]).is_empty(), "{cpu:?}");
+        assert!(probe.unavailable_lines().is_empty(), "{cpu:?}");
+    }
+    // And a core machine stays core with the best CPU part there is.
+    probe
+        .clauses
+        .insert(Clause::Network, ClauseState::unavailable("no"));
+    probe.cpu = Some(ClauseState::enforced("cgroup_cpu_max"));
+    assert_eq!(probe.tier(), Tier::Core);
+    // The words: a bound, a priority that is not one, and the reason.
+    assert_eq!(
+        ClauseState::enforced("cgroup_cpu_max").describe(),
+        "enforced (cgroup_cpu_max)"
+    );
+    assert_eq!(
+        ClauseState::best_effort("priority").describe(),
+        "best effort (priority)"
+    );
+    assert_eq!(
+        ClauseState::unavailable("cgroup_cpu_not_delegated").describe(),
+        "unavailable: cgroup_cpu_not_delegated"
+    );
+    // JSON: the part is a field of its own, absent when not reported.
+    let json = serde_json::to_value(&probe).unwrap();
+    assert_eq!(json["cpu"]["state"], "enforced");
+    probe.cpu = None;
+    assert!(serde_json::to_value(&probe).unwrap().get("cpu").is_none());
+}

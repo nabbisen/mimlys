@@ -6,7 +6,8 @@
 use crate::grant::GrantKind;
 use crate::hash::{Hash, hash_canonical};
 use crate::limits::{
-    LIM_T1_STEPS_RANGE, LIM_T2_CONSECUTIVE_REJECTIONS_RANGE, LIM_T3_EXECUTIONS_PER_ACTION_RANGE,
+    LIM_H7_CPU_SHARE_PERCENT, LIM_H7_CPU_SHARE_PERCENT_RANGE, LIM_T1_STEPS_RANGE,
+    LIM_T2_CONSECUTIVE_REJECTIONS_RANGE, LIM_T3_EXECUTIONS_PER_ACTION_RANGE,
     LIM_T4_IDENTICAL_DECISIONS_RANGE, LIM_T6_CONSECUTIVE_FAILURES_RANGE,
     LIM_W4_MATERIALIZE_EXCLUSIONS, LIM_W5_SECRET_PATTERNS,
 };
@@ -59,6 +60,25 @@ pub struct Ceiling {
     pub host_tools: Vec<String>,
     /// Highest step budget any profile may set (LIM-T1 range).
     pub max_steps: u32,
+    /// The CPU share a host tool's tree may take, in percent of the
+    /// machine's cores (LIM-H7, clause C's CPU part; REQ-CONF-013).
+    ///
+    /// Not written while it is the default (LIM-H7), so that the shipped
+    /// policy's content hash is the one of 0.9.0 and later (LIM-U6, a
+    /// golden test): a policy that sets another share is another policy.
+    #[serde(
+        default = "default_cpu_share",
+        skip_serializing_if = "is_default_cpu_share"
+    )]
+    pub cpu_share: u32,
+}
+
+fn default_cpu_share() -> u32 {
+    LIM_H7_CPU_SHARE_PERCENT
+}
+
+fn is_default_cpu_share(share: &u32) -> bool {
+    *share == LIM_H7_CPU_SHARE_PERCENT
 }
 
 /// A refusal by the ceiling.
@@ -278,6 +298,7 @@ impl Policy {
                 tools: all.clone(),
                 host_tools: vec![],
                 max_steps: LIM_T1_STEPS_RANGE.1.min(200),
+                cpu_share: LIM_H7_CPU_SHARE_PERCENT,
             },
             profiles,
             exclusions: Exclusions {
@@ -320,6 +341,11 @@ impl Policy {
             "ceiling.max_steps",
             i64::from(self.ceiling.max_steps),
             LIM_T1_STEPS_RANGE,
+        )?;
+        in_range(
+            "ceiling.cpu_share",
+            i64::from(self.ceiling.cpu_share),
+            LIM_H7_CPU_SHARE_PERCENT_RANGE,
         )?;
         if self
             .ceiling

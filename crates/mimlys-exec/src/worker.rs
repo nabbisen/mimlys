@@ -393,7 +393,14 @@ impl Worker {
                 .unwrap_or_else(|| ClauseState::unavailable("not reported"));
             clauses.insert(c, state);
         }
-        Ok(Probe { clauses })
+        // The CPU part of clause C, beside the clauses and never one of them.
+        let cpu = Some(
+            letters
+                .get(mimlys_core::confine::CPU_PART_KEY)
+                .cloned()
+                .unwrap_or_else(|| ClauseState::unavailable("not reported")),
+        );
+        Ok(Probe { clauses, cpu })
     }
 
     /// From now on every worker this handle spawns must report, in its own
@@ -1167,6 +1174,7 @@ pub fn report_shortfall(
     exempt: &[Clause],
 ) -> Vec<String> {
     let probe = Probe {
+        cpu: None,
         clauses: Clause::ALL
             .iter()
             .map(|c| {
@@ -1298,6 +1306,7 @@ fn worker_env() -> Vec<(String, String)> {
             "MIMLYS_PROBE_FAIL",
             "MIMLYS_PROBE_BEST_EFFORT",
             "MIMLYS_PROBE_NO_CGROUP",
+            "MIMLYS_PROBE_CGROUP_BASE",
             "MIMLYS_PROBE_MAX_LANDLOCK_ABI",
             "MIMLYS_PROBE_FAIL_SERVING",
             "MIMLYS_PROBE_NO_TREE_KILL",
