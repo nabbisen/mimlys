@@ -1,7 +1,7 @@
 //! Metrics derived from events and records (REQ-OBS-003, REQ-OBS-008).
 
 use crate::sqlite::{poisoned, storage};
-use mimlys_core::event::{Event, EventRecord};
+use mimlys_core::event::{AdmissionState, Event, EventRecord};
 use mimlys_core::ids::TaskId;
 use mimlys_core::rejection::RejectionCode;
 use mimlys_core::spi::{ContextSums, Metrics, PersistenceError};
@@ -87,6 +87,15 @@ pub fn metrics(
                 Event::ActionFinished { status, .. } => {
                     *m.actions_by_status.entry(status.clone()).or_default() += 1
                 }
+                // REQ-OBS-009: the waits for a slot that ended in an admission.
+                Event::TaskAdmissionChanged {
+                    state: AdmissionState::Admitted,
+                    waited_ms: Some(waited_ms),
+                    ..
+                } => {
+                    m.admission_wait_ms += waited_ms;
+                    m.admission_waits += 1;
+                }
                 _ => {}
             }
         }
@@ -103,6 +112,11 @@ pub fn metrics(
             let text = row.map_err(storage("row"))?;
             if let Ok(step) = serde_json::from_str::<Step>(&text) {
                 sums.add(&step);
+                // REQ-OBS-009: the requests that waited for the engine's gate.
+                if let Some(waited) = step.measures.as_ref().and_then(|m| m.engine_wait_ms) {
+                    m.engine_wait_ms += waited.max(0) as u64;
+                    m.engine_waits += 1;
+                }
             }
         }
         m.context = sums.finish();

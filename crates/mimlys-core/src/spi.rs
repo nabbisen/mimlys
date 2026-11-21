@@ -892,6 +892,19 @@ pub struct Metrics {
     /// The context and model measures over measured steps.
     #[serde(default)]
     pub context: ContextMetrics,
+    /// Milliseconds the executions waited for a slot among the user's runtimes (REQ-OBS-009): the
+    /// waits that ended in an admission, summed over the task, or over every task.
+    #[serde(default)]
+    pub admission_wait_ms: u64,
+    /// How many such waits there were.
+    #[serde(default)]
+    pub admission_waits: u64,
+    /// Milliseconds the model requests waited for the engine's gate (REQ-OBS-009), summed.
+    #[serde(default)]
+    pub engine_wait_ms: u64,
+    /// How many requests waited for it.
+    #[serde(default)]
+    pub engine_waits: u64,
 }
 
 /// Averages and ratios over the steps that carry measures (REQ-CTX-010).

@@ -68,6 +68,20 @@ enum Admit {
     DeadlinePassed,
 }
 
+/// How the wait for the engine's gate ended (RFC 013 decision 7).
+enum EngineGate {
+    /// Go on: with the gate to hold until the answer is read, or with none when the runtime has
+    /// no gate or the registry could not be used.
+    Entered {
+        held: Option<crate::spi::Held>,
+        waited_ms: u64,
+    },
+    /// The first stop request ended the wait: nothing was sent.
+    Stopped,
+    /// The task's deadline passed during the wait.
+    DeadlinePassed,
+}
+
 /// What a step did, for callers of the loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepResultView {
@@ -508,6 +522,7 @@ impl Runtime {
             context: assembled.measures,
             model_ms: None,
             usage: None,
+            engine_wait_ms: None,
         };
         {
             // The prefix is measured over the request as sent: the `tools`
@@ -521,7 +536,7 @@ impl Runtime {
             last.insert(task.task_id, sent);
         }
         let messages = assembled.messages;
-        let request = GenerateRequest {
+        let mut request = GenerateRequest {
             messages,
             schema_version: DECISION_SCHEMA_VERSION,
             max_bytes: LIM_D1_DECISION_BYTES,
@@ -531,7 +546,23 @@ impl Runtime {
         };
         let started = self.deps.clock.now();
         let mut attempt = 0;
+        let mut engine_wait_ms: i64 = 0;
         let result = loop {
+            // The engine's gate, before the request is sent (RFC 013 decision 7): a wait before
+            // the send, ended by the first stop request (the request is then not sent, and the
+            // step ends cancelled as an interrupted request does) and by the task's deadline.
+            // The request's own deadline starts when it is sent, so it is worked out after the
+            // wait. The gate is returned when the answer has been read, whatever it was.
+            let gate = match self.enter_engine_gate(task).await? {
+                EngineGate::Entered { held, waited_ms } => {
+                    engine_wait_ms += waited_ms as i64;
+                    held
+                }
+                EngineGate::Stopped => break Err(BackendError::Cancelled),
+                EngineGate::DeadlinePassed => break Err(BackendError::Timeout),
+            };
+            request.deadline_ms =
+                LIM_M1_REQUEST_MS.min(task.remaining_ms(self.deps.clock.now()).max(1));
             // A panic in the adapter is contained here (REQ-SEC-011): that
             // request is `backend_unavailable`, and it is not repeated, since
             // the adapter's state after a panic is unknown.
@@ -547,7 +578,9 @@ impl Runtime {
                 || self.deps.backend.generate(request.clone(), cancel.clone()),
                 |panicked| self.log_contained_panic(MODEL_BACKEND, panicked),
             );
-            match call.await {
+            let answered = call.await;
+            drop(gate);
+            match answered {
                 Err(panicked) => {
                     self.log_contained_panic(MODEL_BACKEND, &panicked);
                     break Err(BackendError::Unavailable {
@@ -560,6 +593,9 @@ impl Runtime {
                 Ok(other) => break other,
             }
         };
+        if engine_wait_ms > 0 {
+            measures.engine_wait_ms = Some(engine_wait_ms);
+        }
         if let Ok(reply) = &result {
             tracing::debug!(
                 target: PROMPT_LOG_TARGET,
@@ -568,7 +604,9 @@ impl Runtime {
             );
         }
         if result.is_ok() {
-            measures.model_ms = Some(started.millis_until(self.deps.clock.now()).max(0));
+            // The model's time: what the request took, not what it waited for the gate.
+            measures.model_ms =
+                Some((started.millis_until(self.deps.clock.now()) - engine_wait_ms).max(0));
             measures.usage = match contained_call(|| self.deps.backend.last_usage()) {
                 Ok(usage) => usage,
                 Err(panicked) => {
@@ -1431,6 +1469,97 @@ impl Runtime {
             crate::spi::AdmissionOutcome::Stopped { .. } => Admit::Stopped,
             crate::spi::AdmissionOutcome::DeadlinePassed { .. } => Admit::DeadlinePassed,
         })
+    }
+
+    /// Enters the gate of the backend's endpoint among the user's runtimes (RFC 013 decision 7;
+    /// external design §19.3): at most `max_in_flight` requests of the user at once. The wait is
+    /// a log line and the step's `engine_wait_ms`; it observes the weakest stop request and
+    /// the task's deadline. A registry that cannot be used is said once, as for the slots, and
+    /// the request goes on.
+    async fn enter_engine_gate(&self, task: &Task) -> Result<EngineGate, RuntimeError> {
+        let Some(gate) = &self.engine_gate else {
+            return Ok(EngineGate::Entered {
+                held: None,
+                waited_ms: 0,
+            });
+        };
+        let task_id = task.task_id;
+        let record = |change: crate::spi::WaitChange| -> Result<(), crate::spi::PersistenceError> {
+            use crate::event::AdmissionState;
+            use crate::spi::WaitChange;
+            match change {
+                WaitChange::Waiting {
+                    slots_taken,
+                    holders,
+                } => tracing::info!(
+                    target: "mimlys_core",
+                    %task_id,
+                    in_flight = slots_taken,
+                    holders = ?holders,
+                    "the model request waits for the engine: the requests of the user's other runtimes are in flight"
+                ),
+                WaitChange::Admitted { waited_ms, .. } => tracing::info!(
+                    target: "mimlys_core",
+                    %task_id,
+                    waited_ms,
+                    "the model request has the engine's gate"
+                ),
+                WaitChange::Unadmitted { reason } => {
+                    if self
+                        .unadmitted
+                        .lock()
+                        .expect("unadmitted lock")
+                        .insert(task_id)
+                    {
+                        let reason = bounded_message(
+                            &format!("engine gate: {reason}"),
+                            Some(&self.redactor),
+                        );
+                        tracing::warn!(
+                            target: "mimlys_core",
+                            %task_id,
+                            %reason,
+                            "the registry of the user's runtimes cannot be used: the model request goes on without the engine's gate"
+                        );
+                        return self.deps.persistence.append_event(&self.event(
+                            Actor::Runtime,
+                            Some(task_id),
+                            None,
+                            None,
+                            Event::TaskAdmissionChanged {
+                                state: AdmissionState::Unadmitted,
+                                slots_taken: None,
+                                reason: Some(reason),
+                                waited_ms: None,
+                            },
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        };
+        let request = crate::spi::AdmissionRequest {
+            task_id,
+            remaining_ms: task.remaining_ms(self.deps.clock.now()),
+        };
+        Ok(
+            match gate
+                .admit(request, self.boundary_interruption(task_id), &record)
+                .await?
+            {
+                crate::spi::AdmissionOutcome::Admitted { held, waited_ms } => {
+                    if held.is_some() {
+                        self.unadmitted
+                            .lock()
+                            .expect("unadmitted lock")
+                            .remove(&task_id);
+                    }
+                    EngineGate::Entered { held, waited_ms }
+                }
+                crate::spi::AdmissionOutcome::Stopped { .. } => EngineGate::Stopped,
+                crate::spi::AdmissionOutcome::DeadlinePassed { .. } => EngineGate::DeadlinePassed,
+            },
+        )
     }
 
     /// Lines 5–7 with runtime retries (REQ-TOOL-009). Returns the step, the

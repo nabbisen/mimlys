@@ -258,12 +258,23 @@ pub struct Runtime {
     /// The admission of executions across the user's runtimes (RFC 013 decision 5); none in a
     /// runtime built without one (the tests of the core, a host with no registry).
     admission: Option<Arc<dyn crate::spi::Admission>>,
+    /// The gate of the backend's endpoint among the user's runtimes (RFC 013 decision 7); none in
+    /// a runtime built without one (the fake backend has no endpoint).
+    engine_gate: Option<Arc<dyn crate::spi::Admission>>,
     /// The tasks whose last execution went on unadmitted, so that the event and the warning are
     /// made once while it lasts, not at every execution.
     unadmitted: std::sync::Mutex<std::collections::HashSet<TaskId>>,
 }
 
 impl Runtime {
+    /// Adds the gate of the backend's endpoint: a model request takes it before it is sent and
+    /// returns it when its answer is read (RFC 013 decision 7; external design §19.3).
+    #[must_use]
+    pub fn with_engine_gate(mut self, gate: Arc<dyn crate::spi::Admission>) -> Self {
+        self.engine_gate = Some(gate);
+        self
+    }
+
     /// Adds the admission of executions across the user's runtimes: an execution takes a slot
     /// before its action is recorded `running` and returns it when the execution ends
     /// (RFC 013 decision 5; external design §19.3).
@@ -303,6 +314,7 @@ impl Runtime {
             unpinned: std::sync::Mutex::new(std::collections::HashMap::new()),
             interruptions: std::sync::Mutex::new(std::collections::HashMap::new()),
             admission: None,
+            engine_gate: None,
             unadmitted: std::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }

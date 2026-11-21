@@ -40,6 +40,7 @@ locality = "local"              # "remote" needs policy.remote_backend_allowed a
 decision_transport = "auto"     # auto | tool_calls | envelope; auto is resolved at the probe and shown by `status`
 structured_output = "auto"      # auto | schema | none; the envelope transport only; resolved at the probe and shown by `status`
 timeout_ms = 600000             # LIM-M1, 10000–3600000
+max_in_flight = 1               # LIM-O12, 1–16: model requests of yours in flight to this URL at once across all runtimes; more only for an engine that serves requests in parallel (llama-server with several slots)
 max_tokens = 4096               # LIM-M2, 256–65536
 context_chars = 32000           # LIM-C1, 4000–1000000; `mimlys metrics` shows chars per prompt token
 temperature = 0.0               # 0.0–2.0; 0 for the most repeatable decisions the engine allows

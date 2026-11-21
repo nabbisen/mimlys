@@ -853,8 +853,8 @@ pub fn waiting_text(reason: &str, limit: u32, holders: &[u32], url: Option<&str>
     let by = format!("{} {}", runtimes_word(holders.len()), pids(holders));
     match reason {
         "engine" => format!(
-            "engine (max_in_flight = {}{} in flight, held by {by})",
-            plural(limit, "request", "requests"),
+            "engine (max_in_flight = {limit}; {} in flight{}, held by {by})",
+            plural(holders.len() as u32, "request", "requests"),
             url.map(|u| format!(" to {}", shown(u))).unwrap_or_default(),
         ),
         _ => format!(

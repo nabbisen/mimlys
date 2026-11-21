@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod approval_card;
 mod definitions_bound;
+mod engine_gate;
 mod interrupt;
 mod native;
 mod native_context;
