@@ -219,21 +219,23 @@ machine:
   elsewhere (`ssh -L 8080:gpu-box:8080`) looks loopback and is not, so you say
   `remote` for it. `remote` needs `policy.remote_backend_allowed = true`, and a
   task whose profile has `external = false` (every shipped profile) is refused
-  a remote backend. That is checked when the task is created, and **again at every
-  start of it**: `task resume`, an approval, a rejection or an answer that sets it
-  running again, and a task a restart recovered under `recovery.auto_resume`. The
-  file is read when mimlys starts, so a task made while the backend was local can
-  meet it declared `remote` at its next start; it then halts with the reason
-  `policy`, with a line that names the backend and the profile, and nothing is
-  sent to the backend, not even the probe. To go on, make the backend local again,
-  or set `external = true` in the profile (with `policy.remote_backend_allowed =
-  true`) and resume.
+  a remote backend when it is created.
 - A 0.12 file that declared a LAN address `local` stops loading and says so. The
   fix is `locality = "remote"` (with the permission and a profile that has
   `external = true`), or a loopback URL.
 
 The `fake` backend has no URL and sends nothing anywhere: there is nothing to
 compare its declaration with.
+
+**At every start, not only at the creation.** The rule about a remote backend and a
+profile with `external = false` is checked again at every start of a task: `task
+resume`, an approval, a rejection or an answer that sets it running again, and a
+task a restart recovered under `recovery.auto_resume`. The file is read when mimlys
+starts, so a task made while the backend was local can meet it declared `remote` at
+its next start; it then halts with the reason `policy`, with a line that names the
+backend and the profile, and nothing is sent to the backend, not even the probe. To
+go on, make the backend local again, or set `external = true` in the profile (with
+`policy.remote_backend_allowed = true`) and resume.
 
 ## A local model
 
