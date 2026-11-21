@@ -99,7 +99,20 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | Phase 2, the operation theme | **013d**: admission per user (the registry, LIM-X5), the CPU part of clause C (LIM-H7), the engine gate (LIM-O12), the machine view, `runtime reap`, the visible fail-open (LIM-O11) |
 | Cut point | If the spike or M7b runs long, 0.12 ships after phase 1 and M7b is 0.13, with the later releases moved by one |
 | Done when | each handoff's acceptance; two runtimes, the second waiting and saying why; a build within its CPU share; `task output` showing a stream's and a result's whole copy; every CI job green with skips counted; the threat register's review for 0.12; the CHANGELOG |
-| Next | 0.13: adaptive effort, part one (RFC 015, M8). 0.14: the local daemon (RFC 014, M9). Then the release that prepares 1.0: the contract's inventory, review and freeze (condition 3), a tested example in the book for every command (condition 4), the M4 task with a small pinned model on all three platforms in CI (condition 1), and the dependency refresh before the freeze; then 1.0.0 |
+| Next | 0.13: adaptive effort, part one (RFC 015, M8; scoped below). 0.14: the local daemon (RFC 014, M9). Then the release that prepares 1.0: the contract's inventory, review and freeze (condition 3), a tested example in the book for every command (condition 4), the M4 task with a small pinned model on all three platforms in CI (condition 1), the removal of `config_version` 1, and the dependency refresh before the freeze; then 1.0.0 |
+
+## Release 0.13 (scoped 2026-11-21: adaptive effort, part one)
+
+| | |
+|---|---|
+| Objective | A task costs what it is worth: three effort levels, each an envelope of budgets on a named backend; a fitness probe that says whether a model acts on this machine; a plan shown before anything acts (RFC 015 with its Amendment 1, M8: 1.0's condition 6) |
+| Scope | `.git-exclude/reviewed/scope-0.13/README.md`, every item checked against 0.12.0's code. Amendment 1 reads RFC 015 against that code and the owner's philosophy: a level is an overlay of `backend`, `steps`, `deadline`, `context_chars` and `recent_steps`; a level never changes where a task's data goes; locality is checked against the URL and the profile's rule at every start; nothing is chosen silently; no store migration |
+| Phase 1, steady | **015a**: `[backends.<name>]` and `config_version` 2 (version 1 read), `status` per backend, locality checked against the URL and REQ-SEC-010 at every start, `mimlys model probe`. **004e**: readers show a newer release's events and values by name instead of failing (REQ-MAIN-006), and output to a closed pipe ends quietly (REQ-CLI-009), both carried from 0.12. **015b**: `--plan-first`, the `plan` wait, `plan_required`, the plan in `task show` |
+| Phase 2, measure | **015-0**, the M8 report on the machine of run B: the M4 task at each level, the swap between a smaller and a larger model, the probe's class for the models measured so far; it sets LIM-E2, LIM-E3 and the `quick` and `deep` envelopes |
+| Phase 3, the levels | **015c**: `[effort.<level>]`, `--effort`, `effort_max`, the backend, model and transport per step, the cost in `task show`, `metrics` per level |
+| Cut point | If phase 3 runs long, 0.13 ships after phase 2, and the levels move to 0.14 with the daemon after them |
+| Done when | each handoff's acceptance; the M4 task under each level, measured; the probe classifies the models measured so far; a 0.12 configuration loads unchanged (one with a non-loopback URL declared `local` refused, saying why); every CI job green with skips counted; the threat register's review for 0.13; the CHANGELOG |
+| Next | 0.14: the local daemon (RFC 014, M9). Then the release that prepares 1.0, then 1.0.0 |
 
 ## After 0.11 (the themes; their releases set in the scope of 0.12, 2026-11-18)
 
@@ -130,7 +143,7 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | 011 | Confinement backends | M6a–M6c | D-06 v2, D-07 v2 |
 | 012 | Decisions as native tool calls | 0.9 | M4 report §6, spike S2 |
 | 013 (accepted) | Operation on one machine (part one in 0.10: read-only open, storage view, prune; part two after: admission, CPU bound, engine gate, machine view) | 0.10 and after | owner's review of 2026-11-08 |
-| 015 (accepted) | Adaptive effort, part one (effort levels, a backend per level, the fitness probe, the plan-first gate) | after 0.10 | owner's direction of 2026-11-10 (D-E1 to D-E4) |
+| 015 (accepted) | Adaptive effort, part one (effort levels, a backend per level, the fitness probe, the plan-first gate; Amendment 1, 2026-11-21) | 0.13 | owner's direction of 2026-11-10 (D-E1 to D-E4) |
 | 014 (accepted) | The local daemon (per user and store, local socket) | decided at 0.10's disposition | owner's review of 2026-11-08; DR-002 in part |
 
 RFCs enter `rfcs/proposed/`, move to `rfcs/accepted/` on the owner's sign-off, and to `rfcs/done/` when the release that ships them is tagged (an RFC whose milestones span several releases stays in `accepted/` with a Status line saying what shipped) (RFC 000, five-folder variant).

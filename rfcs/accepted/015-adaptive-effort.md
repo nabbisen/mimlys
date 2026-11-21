@@ -1,6 +1,6 @@
 # RFC 015 — Adaptive effort, part one: effort levels, a model per level, the fitness probe, the restatement gate
 
-**Status.** Accepted (2026-11-10, by the owner). Milestone M8, after 0.10. Normative text written 2026-11-10 (requirements, limits, threat register). Drafted by the owner with the startup architect; reviewed by the architect, whose changes are marked *[review]* and argued in `.git-exclude/reviewed/rfc-013-015-review/README.md`. For the owner's sign-off after RFC 013. The owner's decision of 2026-11-10 (D-E1 to D-E4 of the expansion proposal): adopt the theme; this RFC is its first part; the automatic choice and movement of the level (Phase C) and parallel attempts (Phase D) are a later RFC that cites this one.
+**Status.** Accepted (2026-11-10, by the owner); Amendment 1 (2026-11-21, the scope of 0.13). Milestone M8, after 0.10. Normative text written 2026-11-10 (requirements, limits, threat register). Drafted by the owner with the startup architect; reviewed by the architect, whose changes are marked *[review]* and argued in `.git-exclude/reviewed/rfc-013-015-review/README.md`. For the owner's sign-off after RFC 013. The owner's decision of 2026-11-10 (D-E1 to D-E4 of the expansion proposal): adopt the theme; this RFC is its first part; the automatic choice and movement of the level (Phase C) and parallel attempts (Phase D) are a later RFC that cites this one.
 **Tracks.** The expansion proposal `.git-exclude/reviewed/owner-expansion-2026-11/README.md`; the M4 report §7 (run B); spike S2 (the Coder models never returned a structured call); the owner's discussion of the request-to-response flow (2026-11-10).
 **Touches.** `mimlys-core` (the effort level on the task; budgets per level; the backend recorded per step; the restatement gate), `mimlys-model` (several backends; the fitness probe), `mimlys-exec` (the sandbox's optimisation level per effort), `mimlys` (configuration `[effort.<level>]` and `[backends.<name>]`, `run --effort`, `model probe`, `task show`, the book); requirements §5, §6, §7, §13, §14, §19, §21; external design §4, §5, §6, §9, §12, §15, §17, §19, §22; the limits register (new LIM-E2, LIM-E3); the threat register (new THR-40).
 **Release.** 0.13, before 1.0 (the owner's decision in the scope of 0.12, 2026-11-18; 1.0's condition 6). RFC 013's admission is a prerequisite for `deep` only insofar as `deep` consumes more; nothing here depends on RFC 014.
@@ -52,3 +52,57 @@ A task should cost what it is worth. This RFC gives the user one visible knob, *
 ## References
 
 The expansion proposal `.git-exclude/reviewed/owner-expansion-2026-11/README.md`; the M4 report §7; spike S2; RFC 006 (fork, for the later RFC), RFC 007 and RFC 008 (context and backend), RFC 012 (transport), RFC 013; requirements REQ-TASK-001 … 012, REQ-DEC-003, REQ-CAP-001 … 010, REQ-CTX-001 … 010, REQ-MDL-001 … 009, REQ-PERS-012, REQ-CFG-001 … 006, REQ-CLI-001 … 006; external design §5, §6, §9, §12, §15, §17, §19, §22; limits LIM-T1 … T6, LIM-C1 … C5, LIM-M1 … M4, LIM-S*; invariants INV-01, INV-13.
+
+## Amendment 1 (2026-11-21, the scope of 0.13)
+
+The decisions were written against 0.9's code. Read against 0.12.0's code, and reviewed with the owner's philosophy (`.git-exclude/reviewed/scope-0.13/README.md`, §2), they read as follows. The owner authorized them on 2026-11-21.
+
+1. **A level's envelope (decision 1).** It is `backend`, `steps` (LIM-T1), `deadline` (LIM-T5), `context_chars` (LIM-C1) and `recent_steps` (LIM-C3).
+   - `executions` is removed: the code has no task-wide count of executions, and LIM-T3 is an action's retries, a profile's guard and not effort.
+   - `compression = normal | eager` becomes `recent_steps`, a number the user can read. LIM-C4 is fixed, so it had nothing else to set.
+   - A level's `context_chars` is at most its backend's, which is sized to the engine's window. `check` refuses a larger one, naming both.
+   - **A level is an overlay:** a flag (`--steps`, `--deadline`) wins over the level, the level over the profile, and the profile over the register's default; the ceiling bounds all of them.
+   - The guard counters (LIM-T2, T3, T4, T6) stay the profile's.
+   - `standard` ships with no keys, so it is today's behaviour exactly.
+   - **A fork takes its source's level** unless `--effort` is given.
+2. **A level never changes where a task's data goes (decision 3).** D-E2 keeps *escalation* local-only until 1.0; part one has no escalation, and a rule for every level would refuse a valid 0.12 configuration. Allowing every backend REQ-SEC-010 permits would let one knob choose both how much and where, and effort is a budget, never a permission. Therefore:
+   - every level's backend is local, or every level's backend has the same remote endpoint (one URL); `check` refuses anything else, naming the levels and their endpoints;
+   - part two's escalation moves between levels, so D-E2 holds by construction.
+3. **Locality is checked, not only declared (REQ-SEC-010).**
+   - A backend whose URL's host is not loopback (`localhost`, `127.0.0.0/8`, `::1`) must be declared `remote`, or `check` refuses it, naming the host.
+   - A loopback URL may be declared `remote` (a tunnel to another machine).
+   - REQ-SEC-010 is checked at every start of a task, not only at its creation: the task's backend is resolved by its name, and a remote backend under a profile without `external` halts the task before anything is sent.
+4. **Nothing is chosen silently (decisions 1 and 3).**
+   - A level that names no backend runs on the backend named `default`; a version-1 file's `[backend]` is that backend.
+   - In a version-2 file without a `default`, `check` refuses a level that names none.
+   - A task whose backend was removed from the configuration is refused at its start, naming it and the configured backends. Nothing falls back to another backend.
+   - A task whose backend's model changed under the same name goes on, with a notice at its start, and each step records its model.
+5. **The backends table (decision 3).**
+   - Entries on one URL must agree on `max_in_flight` (LIM-O12 is counted per URL).
+   - `status` probes the backends at once, within one LIM-M4. Per backend it shows: reachable, model listed, resident (Ollama's `/api/ps`; always for a llama-server, which holds one model; `unknown` otherwise), transport, context, and the last probe result with its date.
+   - `config_version` 1 is read, with a deprecation line in `check`, through 0.14, and it is removed by the release that prepares 1.0, before the freeze.
+   - A version-2 file with `[backend]`, or a version-1 file with `[backends]`, is refused, naming the version that form needs.
+6. **No store migration (decision 4).**
+   - Steps and tasks are JSON records whose types accept unknown fields, so the backend, model and transport per step, the task's set of backends, and `effort` are optional record fields.
+   - `SCHEMA_VERSION` stays 4, and 0.12.0 can still open a 0.13 store. The *[review]* and *[note]* sentences of decision 4 are superseded.
+   - The probe's results are a file under the data directory, not a table.
+7. **The fitness probe (decision 5).**
+   - Open question 3 is settled by LIM-O3: one store has one writer, so the probe is refused while another process holds the store, and the refusal names the holder.
+   - The probe's requests pass RFC 013's engine gate, and its built-in tools take no admission slot.
+   - Without a name, `model probe` probes the local backends only. A remote backend is probed only when named, and only under `remote_backend_allowed`. The command says that it sends a fixed mini-task and nothing of the user's.
+   - The probe's profile cannot promote.
+   - **A fifth class, `incomplete`:** the model acted but the task was not completed and verified within LIM-E2 and LIM-E3, or it asked the user (nobody answers a probe) or gave up; the detail says which. Without it, a model that acts badly would be filed under a class that says something untrue about it.
+   - **The verdict is the runtime's.** The runtime reads the file in the probe's workspace after `complete`; the model's word that it finished is never the verdict.
+8. **Plan first (decision 6).** "The user resumes" collided with `task resume` (paused and halted tasks). Therefore:
+   - the task waits as `waiting_user{wait_kind: plan}`, and the plan is shown as an approval card is;
+   - `approve <task> [--note TEXT]` goes ahead, the note a labelled `user` segment;
+   - `reject <task> --note TEXT` asks for a new plan;
+   - `reject --halt` and `task cancel` act as today, and `run` prompts.
+   - `ask_user` and `give_up` are allowed before the plan, because asking acts on nothing. `act` and `complete` are rejected `state{reason: plan_required}`, which counts toward LIM-T2.
+   - Only the first plan is gated.
+   - `task show` shows the plan in force for every task.
+9. **Open question 4:** `effort_max` is a key of both the profile and the ceiling, and the ceiling bounds the profiles.
+10. **The measurement (decision 8).**
+    - It runs on the machine of run B: the M4 task at each level; the swap between a smaller and a larger instruct model of one family; the probe's class for Qwen2.5-7B-Instruct and spike S2's Coder models.
+    - The models are pinned by hash.
+    - The owner's authorization covers downloading the larger model.

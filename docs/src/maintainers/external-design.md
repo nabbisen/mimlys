@@ -732,16 +732,16 @@ Messages are at most LIM-I5 characters and never carry secrets, file content or 
 One TOML file, located by `--config`, `MIMLYS_CONFIG` or the platform default. Its shape (the exact schema is fixed by RFC 010; every default is the limits register's value):
 
 ```toml
-config_version = 1
+config_version = 2                     # 2 from 0.13; a version-1 file (one `[backend]`) is read through 0.14
 
 [runtime]
 data_dir = "…"                         # platform default when absent
 
-[backend]
+[backends.default]                     # a level that names no backend runs on `default` (RFC 015)
 kind = "openai_compatible"             # or "fake" with `script = "decisions.json"` (the scripted decisions)
 url = "http://127.0.0.1:8080/v1"
 model = "…"
-locality = "local"                     # "remote" needs policy.remote_backend_allowed
+locality = "local"                     # a host that is not loopback must be "remote"; "remote" needs policy.remote_backend_allowed
 decision_transport = "auto"            # auto | tool_calls | envelope (0.9, REQ-MDL-009); `status` shows the one in force
 structured_output = "auto"             # auto | schema | none; the envelope transport only
 timeout_ms = 600000                    # LIM-M1
@@ -749,6 +749,19 @@ max_tokens = 4096                      # LIM-M2
 context_chars = 32000                  # LIM-C1; `metrics` shows chars per prompt token
 temperature = 0.0                      # 0.0–2.0; 0 for the most repeatable decisions
 api_key = "env:MIMLYS_BACKEND_KEY"     # by reference only; at least 8 characters
+
+# [backends.small]                     # more backends: one section each, the same keys
+# url = "http://127.0.0.1:11434/v1"
+# model = "qwen2.5:3b-instruct"
+
+# [effort.quick]                       # RFC 015: an overlay; a key it leaves out is the profile's
+# backend = "small"                    # every level local, or every level on one remote endpoint
+# steps = 20                           # LIM-T1, within the ceiling
+# deadline = "30m"                     # LIM-T5
+# context_chars = 16000                # LIM-C1, at most the backend's
+# recent_steps = 4                     # LIM-C3
+# [effort.standard]                    # ships with no keys: the behaviour before levels
+# [effort.deep]
 
 [policy]
 default_profile = "workspace"
@@ -835,7 +848,7 @@ module = "/path/to/qjs-wasi.wasm"
 sha256 = "…"
 ```
 
-Validation refuses an unknown `config_version`, an unknown key, an inline secret, a budget above its range, a `remote` backend without `remote_backend_allowed`, a resolved secret shorter than eight characters, and a host tool with an undeclared effect. A `remote` backend is further refused at task creation for a profile whose `external` is false (REQ-SEC-010). Before a command that runs steps, and for `status`, the backend is probed within LIM-M4: `GET {url}/models`, then the structured-output mode (`auto`: one-token completions with `json_schema`, then `json_object`, then none; `schema`: verified, and a refusing server is a startup error naming the fix). The outcome is recorded in `runtime.started`, shown by `status`, and announced once by `run` when `auto` ended at plain text. An unreachable backend does not refuse the command: the first step halts `backend_unavailable` (§20).
+Validation refuses an unknown `config_version`, an unknown key, an inline secret, a budget above its range, a `remote` backend without `remote_backend_allowed`, a backend declared `local` whose URL's host is not loopback (`localhost`, `127.0.0.0/8`, `::1`; a loopback URL may be declared `remote`, for a tunnel), a version-2 file with `[backend]` or a version-1 file with `[backends]` (naming the version that form needs), two backends on one URL with different `max_in_flight`, levels whose backends are not all local and not all on one remote endpoint (naming each level and its endpoint), a level that names no backend when there is no `default`, a level whose `context_chars` is above its backend's, a resolved secret shorter than eight characters, and a host tool with an undeclared effect. A `remote` backend is further refused for a profile whose `external` is false (REQ-SEC-010), at a task's creation and again at every start of it, before anything is sent: a configuration edited between two starts cannot send a task's content where its profile forbids. A version-1 file is read with its `[backend]` as `backends.default`, and `check` prints one deprecation line saying how to write it in version 2. Before a command that runs steps, and for `status`, the backend is probed within LIM-M4: `GET {url}/models`, then the structured-output mode (`auto`: one-token completions with `json_schema`, then `json_object`, then none; `schema`: verified, and a refusing server is a startup error naming the fix). The outcome is recorded in `runtime.started`, shown by `status`, and announced once by `run` when `auto` ended at plain text. An unreachable backend does not refuse the command: the first step halts `backend_unavailable` (§20).
 
 ### 19.2 Command line (REQ-CLI-001 to REQ-CLI-006)
 
@@ -846,7 +859,8 @@ Validation refuses an unknown `config_version`, an unknown key, an inline secret
 | `mimlys approve <task>` · `reject <task> [--note T] [--halt]` · `answer <task> <text>` | User items |
 | `mimlys grant <task> tool NAME` · `host_tool NAME` · `network DOMAIN[:PORT]` · `revoke <task> <grant>` | Grants within the ceiling; `host_read` and `host_write` are refused as reserved (§9.1) |
 | `mimlys rollback <task> [--snapshot ID \| --promotion ID]` · `promote <task> [--yes] [--summary] [--patch]` | Workspace: restore, or reverse a promotion; promote after the diff and the confirmation, or print a patch |
-| `mimlys events <task> [--follow]` · `metrics` · `status` · `runtime reap` | Observability (`runtime reap`: the registry's stale entries removed by hand and listed, §19.3); `status` shows the tier and every clause by letter and word with its primitive, the backend with the probe's findings (reachable, model listed, structured-output mode), and every configured server (started for the listing within LIM-O6) with its tools, the tools it refused to import and why, and whether its list changed |
+| `mimlys events <task> [--follow]` · `metrics` · `status` · `runtime reap` | Observability (`runtime reap`: the registry's stale entries removed by hand and listed, §19.3); `status` shows the tier and every clause by letter and word with its primitive, each backend with the probe's findings (from 0.13 every configured backend, probed at once within one LIM-M4: reachable, model listed, resident, the transport in force, the engine's context, and the last fitness probe as `acts, measured on this machine on <date>`; resident is Ollama's word from `/api/ps`, always `yes` for a llama-server, which holds one model, and `unknown` for another engine; structured-output mode for the envelope transport), and every configured server (started for the listing within LIM-O6) with its tools, the tools it refused to import and why, and whether its list changed |
+| `mimlys model probe [<backend>]` | The fitness probe (REQ-MDL-011; RFC 015, from 0.13): per backend, one scripted mini-task against the real model, in a scope the runtime makes under `<data_dir>/tmp/probe-<id>/` with one small file, under a profile of the built-in read and write tools only that cannot promote, within LIM-E2 steps and LIM-E3; the class `acts` (completed, and the runtime found the file as asked), `incomplete` (it acted but did not complete within the bounds, or asked the user, whom no one answers in a probe, or gave up: the detail says which), `plans_only` (no `act` within the budget), `no_structured_call` (only `malformed` replies) or `unreachable`, with the steps, the model time per step and the date, written to `<data_dir>/probe-results.json`; the probe's task and scope are deleted when it ends, and it writes no event of a user's task. Without a name it probes every local backend, one after the other, and says which remote ones it left out; a remote backend is probed only when named and when `remote_backend_allowed`, and the command says first that it sends a fixed mini-task and nothing of the user's. It is a writer: while another process holds the store it is refused, naming the holder. Its requests take the engine gate (§19.3); its tools take no admission slot |
 | `mimlys check` · `--version` | Configuration check; version (`gc` never shipped: deletion is explicit, RFC 006) |
 | `mimlys interpreters list` · `install <language> [--from FILE]` | Interpreter builds for `run_script`: verified by hash, stored under the data directory |
 | `mimlys toolchain list` · `grant <path> [--yes]` · `revoke <path> [--yes]` · `revoke --all [--yes]` | The read set host tools run under and each declared tool's paths (REQ-CONF-008); on Windows whether each carries the container's permission, and the confirmed, reversible grant and revoke of one; `revoke --all` (Windows) removes, after showing the list and asking, every entry mimlys added (the user's and its own, recorded or found on mimlys's directories and the declared read paths) and deletes the installation's AppContainer profile and the record, so that removing mimlys leaves the machine as it was; the next start of mimlys applies its own entries again; elsewhere `grant` and `revoke` say that nothing is needed |
@@ -864,7 +878,7 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 - **A task whose execution waits for a slot stays `running`.** Its view (`task show`, `status`) says `waiting: admission (LIM-X5 = 2 slots taken by runtimes <pids>)`, and the event `task.admission_changed{state: waiting | admitted, slots_taken}` is recorded at each change.
 - **The wait is a wait before the send** (Amendment 1): the first stop request ends it, with the action not begun (`stopped_before_start`) and the task paused. Nothing but the task's own deadline bounds it, and the deadline keeps counting.
 
-**The engine gate (decision 7).** A model request takes the gate of its backend's URL for the user before it is sent (`[backend] max_in_flight`, default LIM-O12, within its range), and returns it when the answer is read.
+**The engine gate (decision 7).** A model request takes the gate of its backend's URL for the user before it is sent (`max_in_flight` of the backend, default LIM-O12, within its range; from 0.13 every `[backends.<name>]` entry on one URL carries the same value, REQ-CFG-007), and returns it when the answer is read.
 - **The wait** is the metric `engine_wait_ms` and a log line.
 - **It ends at the first stop request, at once,** since nothing has been sent (Amendment 1); a request in flight is interrupted at the grace, as before. The task's deadline ends it too, and the task halts `budget_deadline`, as for the slot: never `backend_unavailable`, since the engine never received the request (handoff 013d-4).
 - **The request's own deadline (LIM-M1) starts when the request is sent,** not when it starts waiting. The probe in `status` takes no gate.
@@ -891,6 +905,10 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 | Condition | Visible behaviour | Requirement |
 |---|---|---|
 | Backend unreachable | retries per LIM-M3, then halt `backend_unavailable` | REQ-MDL-003 |
+| An effort level's backend unreachable at creation (from 0.13) | `run --effort <level>` and `task new --effort <level>` refused with the backend's name and the reason; no task is created | REQ-MDL-010 |
+| A task's backend no longer configured at a start (from 0.13) | the start refused, naming the backend and the configured ones; the task stays as it was; nothing moves it to another backend | REQ-MDL-010 |
+| A task's backend now `remote` under a profile without `external`, at a start | the task halts `policy`, naming the backend and the profile, before any request is sent | REQ-SEC-010 |
+| A task's backend serves another model under the same name, at a start (from 0.13) | the task goes on; a notice at the start names both models; each step records its model, and `task show` says the task used more than one | REQ-MDL-010, REQ-PERS-015 |
 | Model output unparsable | rejection `malformed`, feedback; LIM-T2 rejections halt | REQ-DEC-003 |
 | Out-of-scope path | `denied`, no filesystem access, no existence leak | REQ-DEC-007 |
 | Infinite loop in generated code | `fuel_exhausted` or `deadline`; feedback | REQ-SBX-002 |
@@ -957,13 +975,15 @@ Independently versioned:
 - the decision schema (`DECISION_SCHEMA_VERSION`, 1);
 - the action, execution and observation schemas (`ACTION_SCHEMA_VERSION`, 2);
 - the event schema (`EVENT_SCHEMA_VERSION`, 2);
-- the configuration schema (`config_version`);
-- the persistence schema (`SCHEMA_VERSION`, 2);
+- the configuration schema (`config_version`, 1; 2 from 0.13, with 1 still read through 0.14, REQ-CFG-007);
+- the persistence schema (`SCHEMA_VERSION`, 4);
 - the worker protocol.
 
 Every task records the decision, event and action schema versions, the policy hash, the tool-definition hashes and the runtime version in force at creation (`task.versions`). A task written before the event and action versions were recorded reads with the values of its release.
 
 **When a version changes.** An additive field, or a value a reader may ignore, raises nothing. A renamed or removed field, event or code, or a changed meaning, raises the version by one and is announced in the changelog (REQ-MAIN-001). The history before this rule is numbered by release: events 1 up to 0.8.0 and 2 from 0.9.0; actions 1 up to 0.7.1 and 2 from 0.8.0 (handoff 004b). Every name, field, state, effect, code and command in this document is part of the external contract.
+
+**A reader meets a newer release's word (REQ-MAIN-006, from 0.13).** An event, a task state, a wait kind or a reason that a command reading the store does not know was written by a newer release. The command shows it by its name and its raw fields, marked `unknown to this release`, and goes on: a listing never fails for it, and neither does `task show` of the task that holds it. A writer (a command that runs steps) refuses to act on such a task, naming the word and saying which release wrote it is needed. Input from outside the store (the configuration, the model's reply, a tool's result) keeps refusing an unknown value, as every fixed vocabulary does.
 
 ---
 
@@ -1156,6 +1176,7 @@ Every requirement of the baseline and the section of this document that satisfie
 | REQ-WS-014 | Prune | M7a | §14.6 Quotas and lifecycle (RFC 013 decision 3) |
 | REQ-CLI-007 | Storage and operation pages | M7a | §19 Operator interface (RFC 013 decision 4) |
 | REQ-CLI-008 | Daemon lifecycle | M9 | §19 Operator interface (RFC 014 decision 7) |
+| REQ-CLI-009 | Output to a closed pipe | M8 (0.13) | §19.2 Command line |
 | REQ-SCHED-006 | Admission per user | M7b | §19 Operator interface; §20 (RFC 013 decision 5) |
 | REQ-SCHED-007 | Engine gate | M7b | §20 (RFC 013 decision 7) |
 | REQ-SCHED-008 | One scheduler under the daemon | M9 | §4 Control API (RFC 014 decision 6) |
@@ -1164,11 +1185,11 @@ Every requirement of the baseline and the section of this document that satisfie
 | REQ-OBS-010 | Cost visibility | M8 | §17 (RFC 015 decision 7) |
 | REQ-ARCH-009 | Two deployment modes | M9 | §1 System context; §4 (RFC 014 decision 1) |
 | REQ-SEC-016 | The daemon's transport | M9 | §21 Security (RFC 014 decisions 3, 8) |
-| REQ-TASK-013 | Effort levels | M8 | §5 Task state machine (RFC 015 decision 1) |
-| REQ-TASK-015 | Plan first | M8 | §6.4 Rejection vocabulary (RFC 015 decision 6) |
+| REQ-TASK-013 | Effort levels | M8 | §5 Task state machine; §19.1 (RFC 015 decision 1, Amendment 1) |
+| REQ-TASK-015 | Plan first | M8 | §5; §6.4 Rejection vocabulary (RFC 015 decision 6, Amendment 1) |
 | REQ-CFG-007 | Effort and backends configuration | M8 | §19.1 Configuration (RFC 015 decisions 1, 3) |
 | REQ-MDL-010 | Several backends | M8 | §19.1; §20 (RFC 015 decision 3) |
-| REQ-MDL-011 | Fitness probe | M8 | §19 Operator interface (RFC 015 decision 5) |
+| REQ-MDL-011 | Fitness probe | M8 | §19.2 Command line (RFC 015 decision 5, Amendment 1) |
 | REQ-MCP-001 | Servers as children | M5 | §11.1 External tools; §19.1 Configuration (servers) |
 | REQ-MCP-002 | Discovery and pinning | M5 | §11.1 External tools; §19.1 Configuration (servers) |
 | REQ-MCP-003 | Definition import | M5 | §11.1 External tools; §19.1 Configuration (servers) |
@@ -1224,3 +1245,4 @@ Every requirement of the baseline and the section of this document that satisfie
 | REQ-MAIN-003 | Adding a built-in tool | All | §22 Versioning |
 | REQ-MAIN-004 | Adding a confinement backend | All | §22 Versioning |
 | REQ-MAIN-005 | Documents in step | All | §22 Versioning |
+| REQ-MAIN-006 | Readers tolerate newer records | M8 (0.13) | §22 Versioning |

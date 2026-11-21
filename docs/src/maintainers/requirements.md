@@ -167,10 +167,10 @@ A `give_up` decision shall end the task `failed` with `failure_reason = model_ga
 A task whose project scope overlaps a non-terminal task's scope shall be refused with the error kind `conflict`. (A-12)
 
 ### REQ-TASK-013 Effort levels — M8 · T
-A task shall be created at an effort level (`quick`, `standard`, `deep`; default `standard`), each a configured envelope of budgets and context handling within the ceiling and naming its backend; the level and who chose it are recorded and shown, and never change during the task. A level grants nothing. (RFC 015)
+A task shall be created at an effort level (`quick`, `standard`, `deep`; default `standard`, a fork its source's). Each level is an overlay of `backend`, `steps` (LIM-T1), `deadline` (LIM-T5), `context_chars` (LIM-C1, at most its backend's) and `recent_steps` (LIM-C3): a flag wins over the level, the level over the profile, the profile over the register's default, all within the ceiling; `standard` ships with no keys. A profile's and the ceiling's `effort_max` bound the levels allowed. The level, its envelope and who chose it are recorded and shown, and never change during the task. A level grants nothing, and never changes where a task's data goes (REQ-CFG-007). (RFC 015, Amendment 1)
 
 ### REQ-TASK-015 Plan first — M8 · T
-A task created with `--plan-first` shall reject any first decision but a `plan` with `state{reason: plan_required}`, show the plan to the user and act on nothing until the user resumes, with an optional note as a labelled `user` segment; the goal is never rewritten. (RFC 015)
+A task created with `--plan-first` shall reject an `act` or a `complete` before its first `plan` with `state{reason: plan_required}` (counted toward LIM-T2; `ask_user` and `give_up` are allowed), then wait as `waiting_user{wait_kind: plan}` with the plan shown as an approval is; `approve [--note]` goes ahead, the note a labelled `user` segment, `reject --note` asks for a new plan, `reject --halt` and `task cancel` act as for an approval. Only the first plan is gated; nothing acts before it is approved; the goal is never rewritten. `task show` shows the plan in force of every task. (RFC 015, Amendment 1)
 
 ---
 
@@ -524,7 +524,7 @@ Commands that only read (`status`, `events` and `events --follow`, `task list`, 
 A daemon shall hold the store's exclusive lock for its life; a daemon and an embedded runtime never own one store at once, and whichever comes second names the holder and exits. (RFC 014)
 
 ### REQ-PERS-015 The backend recorded per step — M8 · T
-Each step shall record the backend's name, the model and the decision transport it was decided with, and the task the set of backends it used; the persistence schema version rises with a tested migration. (RFC 015)
+Each step shall record the backend's name, the model and the decision transport it was decided with, and the task the set of backends it used, as optional fields of their records; the persistence schema version does not change. (RFC 015, Amendment 1)
 
 ---
 
@@ -620,7 +620,7 @@ Database, blobs, snapshots and workspaces shall be owner-only; the lock prevents
 Model output shall be bounded at LIM-D1 while being read; overflow is `malformed`. (R-19)
 
 ### REQ-SEC-010 Non-local backends — M4 · T
-A backend with `locality = remote` shall be usable only when the administrator sets `remote_backend_allowed`, shall be shown in task status and audit, and shall be refused for profiles that forbid external communication. (D-21, THR-30)
+A backend with `locality = remote` shall be usable only when the administrator sets `remote_backend_allowed`, shall be shown in task status and audit, and shall be refused for profiles that forbid external communication. A backend whose URL's host is not loopback (`localhost`, `127.0.0.0/8`, `::1`) shall be declared `remote`, or the configuration is refused naming the host. The profile's rule is checked at every start of a task, before anything is sent. (D-21, THR-30; RFC 015, Amendment 1)
 
 ### REQ-SEC-011 Process stability — All · T
 No model output, tool result, module or workspace content shall end the runtime process; the worker's death is an execution failure (REQ-ARCH-008). A panic in a model backend or a tool provider is contained at every call the runtime makes into it (a request is `backend_unavailable`, an execution `host_fault{unavailable}`; at a step, a provider panic outside an execution, in its definitions, pins or events, halts the task `tool_unavailable` with its `task.state_changed` event, so the task ends in one stated outcome; before a task exists it is the caller's error), and its message reaches only the log, bounded and redacted, with a crate-relative location (`src/…:line`, never an absolute path, which carries the build machine's home directory), never standard error unredacted. A panic in the persistence or the workspace adapter is not contained: their state on disk is then unknown, so the process ends and the next start recovers (REQ-PERS-007), which is the fail-closed outcome (P4). (Amended 2026-11-07.)
@@ -694,10 +694,10 @@ The core shall call a model only for the step decision. (D-12)
 `decision_transport` shall be `auto`, `tool_calls` or `envelope` (default `auto`). With `tool_calls`, every pinned tool is offered as one function whose parameters are a JSON schema generated deterministically from its pinned descriptor, and the four other decision kinds as the reserved functions `plan`, `ask_user`, `complete` and `give_up`; a tool whose function name is invalid or collides (every tool of a collision) is unavailable in this transport with the reason, computed from the pinned list at each step once the transport is known: the model is told through the `tool_unavailable` feedback and `status` lists it with the same reason. `auto` resolves at the probe: `tool_calls` when the engine accepts `tools`, else `envelope` with the reason; a configured `tool_calls` that the engine refuses is `backend_unavailable` with that reason, never a silent fallback. `status` shows the transport in force. (RFC 012, 0.9.)
 
 ### REQ-MDL-010 Several backends — M8 · T
-`status` shall list every configured backend with its probe result and, where the engine reports it, the model resident; a level whose backend is unreachable makes `run --effort <level>` refuse with the reason. (RFC 015)
+`status` shall probe every configured backend at once within LIM-M4 and show, per backend, reachable, model listed, resident (`unknown` where the engine does not say), transport, context and the last fitness probe with its date. `run --effort <level>` whose backend is unreachable is refused with the reason; a task whose backend is no longer configured is refused at its start, naming the configured ones, never moved to another; a task whose backend's model changed under the same name goes on with a notice at its start. (RFC 015, Amendment 1)
 
 ### REQ-MDL-011 Fitness probe — M8 · T
-`mimlys model probe [<backend>]` shall run one scripted mini-task against the real model in a runtime-created scope under the data directory, with the built-in read and write tools only, within LIM-E2 steps and LIM-E3, and record `acts`, `plans_only`, `no_structured_call` or `unreachable` with the date; it never touches a user's project, deletes its task and scope, and is refused while another process holds the store. (RFC 015)
+`mimlys model probe [<backend>]` shall run one scripted mini-task against the real model in a runtime-created scope under the data directory, with the built-in read and write tools only and a profile that cannot promote, within LIM-E2 steps and LIM-E3, through the engine gate, and record `acts` (completed, the file verified by the runtime), `incomplete` (acted, but not completed and verified within the bounds, or asked the user, or gave up), `plans_only`, `no_structured_call` or `unreachable` with the step count, the model time per step and the date in a file under the data directory; without a name it probes the local backends only, and a remote backend only when named and allowed, saying that a fixed mini-task and nothing of the user's is sent. It never touches a user's project, deletes its task and scope, and is refused while another process holds the store, naming it. (RFC 015, Amendment 1)
 
 ---
 
@@ -756,7 +756,7 @@ Configuration changes apply at restart.
 All user-facing messages live in one catalog so that other languages can be added without redesign. (D-17)
 
 ### REQ-CFG-007 Effort and backends configuration — M8 · T
-`[effort.<level>]` and `[backends.<name>]` shall be configuration sections; each backend passes REQ-SEC-010 on its own; until 1.0 a level's backend must be local; `config_version` 2, with a version-1 `[backend]` read as `backends.default` for one release. (RFC 015)
+`[effort.<level>]` and `[backends.<name>]` shall be configuration sections, `config_version` 2. Each backend passes REQ-SEC-010 on its own; every level's backend is local, or every level's backend has one remote endpoint (URL); entries on one URL agree on `max_in_flight`; a level that names no backend runs on `default`, and without one `check` refuses it. A version-1 file is read with `[backend]` as `backends.default` and a deprecation line in `check` through 0.14; a version-2 file with `[backend]`, or a version-1 file with `[backends]`, is refused naming the version that form needs. (RFC 015, Amendment 1)
 
 ### REQ-CLI-001 Commands — M1 · T
 The `mimlys` binary shall offer the commands of external design §19.2 with exit codes 0 (success), 1 (runtime or configuration error), 2 (usage error).
@@ -781,6 +781,9 @@ The book shall have a page on storage (what lives where, reflinks per filesystem
 
 ### REQ-CLI-008 Daemon lifecycle — M9 · T
 `mimlys daemon start | stop | status` shall exist; without a daemon a client runs embedded; `stop` finishes or checkpoints the running execution within LIM-O2; an idle daemon exits after LIM-O13; a client finding a dead daemon's socket reaps it and says `daemon not running` within LIM-O14. (RFC 014)
+
+### REQ-CLI-009 Output to a closed pipe — M8 · T
+A command whose standard output is closed by its reader (`mimlys events <task> | head`) shall end quietly with the exit code its work earned, never a panic or a broken-pipe message. (Scope of 0.13)
 
 ---
 
@@ -892,6 +895,9 @@ A new backend requires passing REQ-TEST-013 on its platform and a probe entry; t
 
 ### REQ-MAIN-005 Documents in step — All · I
 A release verifies that requirements, external design, limits, threat register, glossary and roadmap match the shipped behaviour (project rules, release deliverables).
+
+### REQ-MAIN-006 Readers tolerate newer records — M8 · T
+A command that reads the store shall show an event, a state, a wait kind or a reason it does not know (written by a newer release) by its name and its raw fields, marked as unknown to this release, and shall never fail a listing or a whole record because of it. Input from outside the store (the configuration, the model, a tool) keeps refusing an unknown value. (Scope of 0.13)
 
 ---
 
