@@ -1,6 +1,6 @@
 # Handoff 013d — Operation on one machine, part two (release 0.12, phase 2; M7b)
 
-**RFC.** [RFC 013](../../accepted/013-operation-on-one-machine.md), decisions 5 to 8, read with Amendments 1 and 2. **Found by.** The scope of 0.12 (`ROADMAP.md`, "Release 0.12", phase 2), and 1.0's condition 5.
+**RFC.** [RFC 013](../../done/013-operation-on-one-machine.md), decisions 5 to 8, read with Amendments 1 and 2. **Found by.** The scope of 0.12 (`ROADMAP.md`, "Release 0.12", phase 2), and 1.0's condition 5.
 
 **Specification** (written before this handoff):
 - external design §19.3 (new: the registry, admission, the engine gate, the fail-open, the CPU part, the machine view), §17.1 (`task.admission_changed`) and §19.2 (`runtime reap`);

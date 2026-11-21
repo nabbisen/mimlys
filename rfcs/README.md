@@ -21,7 +21,6 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 
 | ID | Title | Accepted on |
 |----|-------|-------------|
-| 013 | [Operation on one machine](./accepted/013-operation-on-one-machine.md) | 2026-11-10 (part one, M7a, in 0.10; part two, M7b, after) |
 | 015 | [Adaptive effort, part one](./accepted/015-adaptive-effort.md) | 2026-11-10 (M8, after 0.10) |
 | 014 | [The local daemon](./accepted/014-local-daemon.md) | 2026-11-10 (M9, decided at 0.10's disposition) |
 
@@ -42,6 +41,7 @@ companions live under `handoffs/NNN-slug/` and inherit the state of their RFC.
 | 010 | [CLI and operator interface](./done/010-cli-and-operator-interface.md) | 0.7.0 (M1 to M5) |
 | 011 | [Confinement backends and host tools](./done/011-confinement-backends.md) | 0.8.0 (M6a to M6c) |
 | 012 | [Decisions as native tool calls](./done/012-decisions-as-native-tool-calls.md) | 0.9.0 |
+| 013 | [Operation on one machine](./done/013-operation-on-one-machine.md) | 0.10.0 (part one, M7a) and 0.12.0 (part two, M7b) |
 | 016 | [Formal proofs with Verus, kept narrow](./done/016-formal-proofs-with-verus.md) | 0.10.0 (the permission-lock decision proved; the rules for any other proof) |
 | 017 | [Admit the worker and the interpreter modules by their files, not their directories](./done/017-admit-files-not-their-directories.md) | 0.10.0 |
 

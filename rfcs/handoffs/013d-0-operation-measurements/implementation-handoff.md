@@ -1,6 +1,6 @@
 # Handoff 013d-0 — The operation theme's measurements (release 0.12, phase 1)
 
-**RFC.** [RFC 013](../../accepted/013-operation-on-one-machine.md), part two, with Amendment 1. **Found by.** The scope of 0.12 (`ROADMAP.md`, "Release 0.12", phase 1): RFC 013 says its defaults are measured first, "a report in the book, like the M2 and M4 reports".
+**RFC.** [RFC 013](../../done/013-operation-on-one-machine.md), part two, with Amendment 1. **Found by.** The scope of 0.12 (`ROADMAP.md`, "Release 0.12", phase 1): RFC 013 says its defaults are measured first, "a report in the book, like the M2 and M4 reports".
 
 **Purpose.** This handoff measures and writes the report; it builds nothing for the product. Handoff 013d (decisions 5 to 8) is written from the report, and the defaults are registered at its review. Run it after 004d-5, or beside it if your time allows: they touch different code.
 

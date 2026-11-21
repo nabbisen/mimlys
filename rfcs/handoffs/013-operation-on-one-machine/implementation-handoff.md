@@ -1,6 +1,6 @@
 # Handoff 013 — Operation on one machine, part one (M7a, release 0.10)
 
-**RFC.** [RFC 013](../../accepted/013-operation-on-one-machine.md), decisions 1 to 4 (accepted 2026-11-10) · **Specification.** REQ-PERS-013, REQ-WS-013, REQ-WS-014, REQ-CLI-007 (new); external design §14.6, §16, §19; limits LIM-O3 (unchanged) · **Not here.** Decisions 5 to 8 (admission, the CPU part of clause C, the engine gate, the machine view) are part two, M7b, a later handoff.
+**RFC.** [RFC 013](../../done/013-operation-on-one-machine.md), decisions 1 to 4 (accepted 2026-11-10) · **Specification.** REQ-PERS-013, REQ-WS-013, REQ-WS-014, REQ-CLI-007 (new); external design §14.6, §16, §19; limits LIM-O3 (unchanged) · **Not here.** Decisions 5 to 8 (admission, the CPU part of clause C, the engine gate, the machine view) are part two, M7b, a later handoff.
 
 **Status (2026-11-11, second): merged.** The correction is in: `status` starts no server without a data directory, and says `not_started` with the declared tools. The CHANGELOG names the library API change. The stack landed linearly with 011j and 004b; see the review. Part two (M7b) is a later handoff.
 
