@@ -852,8 +852,17 @@ fn lower_priority(spec: &ConfinementSpec) -> ClauseState {
     if spec.cpu_share == 0 {
         return priority_state(0, Ok(()), Ok(0));
     }
-    let set =
-        rustix::process::setpriority_process(None, super::cpu::NICE).map_err(|e| e.to_string());
+    // MUTATION (throwaway, never merge): the background policy instead of setpriority.
+    #[allow(unsafe_code)]
+    let set = {
+        // SAFETY: a plain system call that changes this process's own policy.
+        let r = unsafe { libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG) };
+        if r == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error().to_string())
+        }
+    };
     let read = rustix::process::getpriority_process(None).map_err(|e| e.to_string());
     priority_state(spec.cpu_share, set, read)
 }
