@@ -99,9 +99,10 @@ pub enum Notice {
         /// Why: the command, its temporary directory or the spawn.
         reason: String,
     },
-    /// The user's stop signal came before the action began: it was closed
-    /// `cancelled` without starting, so nothing ran (REQ-CLI-005, external
-    /// design §19.2). There is no execution behind this observation.
+    /// A stop signal or the task's deadline came first, before the action
+    /// began: it was closed `cancelled` without starting, so nothing ran
+    /// (REQ-CLI-005, external design §19.2; RFC 013 decision 5). There is no
+    /// execution behind this observation.
     StoppedBeforeStart,
 }
 

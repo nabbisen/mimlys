@@ -241,13 +241,38 @@ fn req_sched_007_the_requests_deadline_starts_when_it_is_sent() {
     );
 }
 
-/// REQ-SCHED-007: the task's deadline ends the wait for the gate with nothing sent; the step
-/// halts the task as a request that outlasted its time does (`backend_unavailable`).
+/// REQ-SCHED-007 (013d-4): the task's deadline ends the wait for the gate with nothing sent, and
+/// the task halts `budget_deadline`, as it does in the wait for a slot: the engine never received
+/// the request, so it is not told that the engine failed (`backend_unavailable`).
 #[test]
-fn req_sched_007_the_deadline_ends_the_wait() {
+fn req_sched_007_the_deadline_ends_the_wait_and_halts_as_a_deadline() {
     let rig = rig(vec![Script::WaitUntilDeadline], vec![complete()]);
     let result = step(&rig);
     assert_eq!(result.outcome, StepOutcome::Halted);
+    assert!(
+        matches!(
+            result.state,
+            TaskState::Halted {
+                halt_reason: HaltReason::BudgetDeadline
+            }
+        ),
+        "{:?}",
+        result.state
+    );
+    let last_change = rig
+        .persistence
+        .events()
+        .into_iter()
+        .filter(|e| e.task_id == Some(rig.task))
+        .filter_map(|e| match e.event {
+            Event::TaskStateChanged { to, reason, .. } => Some((to, reason)),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(
+        last_change,
+        Some(("halted".into(), Some(HaltReason::BudgetDeadline)))
+    );
     assert!(rig.backend.held_when_sent.lock().unwrap().is_empty());
     assert_eq!(rig.gate.held(), 0);
 }
