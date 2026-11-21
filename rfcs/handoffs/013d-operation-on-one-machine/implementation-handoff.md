@@ -88,3 +88,31 @@ Each of these must be killed:
 - the PRs and their CI runs;
 - the mutations;
 - the design questions.
+
+## After review: 013d-4
+
+The review of 2026-11-21 (`.git-exclude/reviewed/handoff-013d/README.md`) approved items 1 to 4 and landed them. Four small changes follow, as one PR.
+
+1. **A deadline that ends a wait halts as a deadline.**
+   - **Today:** a deadline reached in the admission wait halts `budget_deadline`, which is right. One reached in the engine gate's wait is `BackendError::Timeout`, which halts `backend_unavailable`: the user is told the engine failed when it never received the request.
+   - **The change:** both halt `budget_deadline`. The doc of `stopped_before_start` says "a stop signal or the task's deadline came first", which needs no new variant.
+2. **`status` writes nothing in the registry** (your question 5).
+   - **Today:** `status` makes the registry's directory and writes and removes a probe file to say `admission: ready`.
+   - **The change:** a read command only reads. The directory present and usable gives `ready`. Absent gives `not yet used (no runtime of yours has taken a slot)`, which counts as ready. Unusable gives `unavailable (<reason>)`, judged from its metadata, and the first take still decides for real.
+3. **`MIMLYS_RUN_DIR` is a test seam, not a user setting** (your question 7). Read it only in debug builds, as the `MIMLYS_PROBE_*` knobs are, and remove it from the book's configuration page and the CHANGELOG. A user who set it for one runtime and not another would split the registry without seeing it.
+4. **Clause M's cgroup rung is tested** (013d-3's question 5).
+   - **Today:** in a cgroup that passes `memory` on, `m6a_clauses_hold_inside_a_host_tool` fails because the probe's `alloc` touches one byte a MiB, which `memory.max` does not count. The rung has never run in any suite.
+   - **The change:**
+     - the test uses `alloc-touch`, with an expectation that holds under `memory.max` (swap counted or disabled, as the delegated unit allows);
+     - the delegated CI step passes `memory` too;
+     - the rung's `enforced` is verified on the job.
+
+**Tests (by state):**
+- a deadline during the gate's wait halts `budget_deadline`;
+- `status` against a missing registry and against an unusable one changes no file;
+- `MIMLYS_RUN_DIR` is ignored by a release build;
+- clause M through the cgroup rung on the delegated job.
+
+**Mutations:** each change undone must be killed.
+
+**Return:** `.git-exclude/review-requests/013d-4-operation-on-one-machine/README.md`.
