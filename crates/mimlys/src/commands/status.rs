@@ -11,8 +11,13 @@ use serde::Serialize;
 struct Status<'a> {
     #[serde(flatten)]
     runtime: &'a mimlys_core::runtime::RuntimeStatus,
-    /// The backend: kind, model, locality, and the probe's findings.
-    backend: BackendView,
+    /// The backend a task runs on, the entry named `default`: what `backends` holds for it, as
+    /// it was before several backends; `null` when no backend is named `default`. **Deprecated**
+    /// (RFC 015, Amendment 1): kept until the release that prepares 1.0; read `backends`.
+    backend: Option<BackendView>,
+    /// Every configured backend, `default` first, then by name: each probed at once within one
+    /// LIM-M4 (REQ-MDL-010).
+    backends: Vec<BackendView>,
     data_dir: String,
     /// The configured data directory is inside the temporary directory (REQ-WS-001).
     data_dir_in_temporary_directory: bool,
@@ -64,15 +69,18 @@ struct HostToolView {
     unavailable: Option<String>,
 }
 
-/// `backend` in the status: the descriptor and the probe (RFC 008 §4).
-#[derive(Serialize)]
+/// One backend in the status: its name, the descriptor, the probe's findings (RFC 008 §4,
+/// REQ-MDL-010) and the last fitness probe (REQ-MDL-011), `null` when it was never probed.
+#[derive(Clone, Serialize)]
 struct BackendView {
+    name: String,
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     locality: mimlys_core::spi::Locality,
     #[serde(flatten)]
     probe: Option<crate::app::BackendProbe>,
+    last_probe: Option<crate::probe_results::LastProbe>,
 }
 
 /// Prints the status. `status` only reads (REQ-PERS-013): it opens the store
@@ -81,23 +89,65 @@ struct BackendView {
 pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     let config = &app.loaded.config;
     let policy = config.resolve_policy()?;
-    let backend = Backend::make_default(&app.loaded, None)?;
-    // No backend named `default`: there is none to probe, and the line says so (the other
-    // commands that need one refuse, and say the same).
+    // Every configured backend, probed at once: all the probes are started before any is waited
+    // for, so the whole is bounded by one LIM-M4 however many backends there are (REQ-MDL-010).
+    let backends = Backend::make_all(&app.loaded)?;
+    let probed = crate::backends::probe_all(&backends).await;
+    let last_probes = crate::probe_results::read(&app.data_dir);
+    let several = backends.len() > 1;
+    let mut views = Vec::new();
+    let mut backend_lines = Vec::new();
+    let mut warnings = Vec::new();
+    for (backend, probed) in backends.iter().zip(probed) {
+        // An error here is a backend that cannot be used as configured (`schema` against a
+        // server that refuses it): it stops the status with the reason, as it always did.
+        let (probe, notice) = probed?;
+        if let Some(notice) = notice {
+            out.line(if several {
+                messages::for_backend(&backend.name, &notice)
+            } else {
+                notice
+            });
+        }
+        let described = backend.adapter.describe();
+        let locality = serde_json::to_value(described.locality)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        backend_lines.push(messages::status_backend_line(
+            &backend.name,
+            &described.kind,
+            described.model.as_deref(),
+            &locality,
+            Some(&probe),
+            &messages::last_probe_text(&last_probes, &backend.name, described.model.as_deref()),
+        ));
+        // The run goes on: a context below the need is a warning, never an error (REQ-MDL-003).
+        if let Some(warning) = probe.context_warning() {
+            warnings.push(if several {
+                messages::for_backend(&backend.name, &warning)
+            } else {
+                warning
+            });
+        }
+        views.push(BackendView {
+            name: backend.name.clone(),
+            kind: described.kind,
+            model: described.model,
+            locality: described.locality,
+            probe: Some(probe),
+            last_probe: last_probes.of(&backend.name).cloned(),
+        });
+    }
+    // No backend named `default`: the line says so, as every command that needs one does.
     let no_default = config.default_backend().err();
-    let backend_probe = match &no_default {
-        None => {
-            let (probe, notice) = backend.probe().await?;
-            if let Some(notice) = notice {
-                out.line(notice);
-            }
-            Some(probe)
-        }
-        Some(error) => {
-            out.line(error.reason.clone());
-            None
-        }
-    };
+    if let Some(error) = &no_default {
+        out.line(error.reason.clone());
+    }
+    let default_view = views
+        .iter()
+        .find(|v| v.name == crate::backends::DEFAULT)
+        .cloned();
     let (confinement, outside_sweep_unavailable) = probe_confinement(
         config,
         &app.data_dir,
@@ -106,9 +156,15 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         policy.ceiling.cpu_share,
     );
     let activity = app.reader.activity()?;
-    let mut status = mimlys_core::runtime::RuntimeStatus {
+    let status = mimlys_core::runtime::RuntimeStatus {
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        backend: backend.adapter.describe(),
+        // Shown through `backend` and `backends`; this field of the runtime's own status is
+        // emptied (the object is flattened into this one).
+        backend: mimlys_core::spi::BackendDescriptor {
+            kind: String::new(),
+            model: None,
+            locality: mimlys_core::spi::Locality::Local,
+        },
         tier: confinement.tier_with(&policy.accept_best_effort).describe(),
         clauses: confinement.clauses.clone(),
         unavailable_clauses: confinement.unavailable_lines(),
@@ -116,25 +172,15 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         running: activity.running,
         pending: activity.pending,
     };
-    let probe = backend_probe;
     let store = app.store_view()?;
-    let locality = serde_json::to_value(status.backend.locality)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default();
-    for line in messages::status_lines(
-        &status.version,
-        &app.data_dir.to_string_lossy(),
-        &status.backend.kind,
-        status.backend.model.as_deref(),
-        &locality,
-        probe.as_ref(),
-        &status.tier,
-    ) {
+    for line in messages::status_head_lines(&status.version, &app.data_dir.to_string_lossy()) {
         out.line(line);
     }
-    // The run goes on: a context below the need is a warning, never an error (REQ-MDL-003).
-    if let Some(warning) = probe.as_ref().and_then(|p| p.context_warning()) {
+    for line in backend_lines {
+        out.line(line);
+    }
+    out.line(messages::status_tier_line(&status.tier));
+    for warning in warnings {
         out.line(warning);
     }
     for line in messages::store_lines(&store) {
@@ -149,12 +195,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     for line in messages::machine_lines(&machine) {
         out.line(line);
     }
-    let backend_view = BackendView {
-        kind: std::mem::take(&mut status.backend.kind),
-        model: status.backend.model.take(),
-        locality: status.backend.locality,
-        probe,
-    };
+    let backend_view = default_view;
     let data_dir_in_temp = app.loaded.config.data_dir_in_temp_dir();
     if data_dir_in_temp {
         out.line(messages::data_dir_in_temp_warning(
@@ -237,8 +278,8 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     // is told which are left out, and why, here and not by the model (REQ-MDL-009).
     if matches!(
         backend_view
-            .probe
             .as_ref()
+            .and_then(|v| v.probe.as_ref())
             .and_then(|p| p.decision_transport),
         Some(mimlys_core::native::DecisionTransport::ToolCalls)
     ) {
@@ -274,6 +315,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     out.value(&Status {
         runtime: &status,
         backend: backend_view,
+        backends: views,
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         data_dir_in_temporary_directory: data_dir_in_temp,
         xcrun_cache_missing: xcrun_missing,

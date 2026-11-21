@@ -186,6 +186,7 @@ model = "qwen2.5:3b-instruct"
   one when they have the same scheme, host and port: the path, the case of the
   host and a user name do not make another. `localhost` and `127.0.0.1` are two
   URLs to mimlys, which does not resolve names.
+- **`status` shows each of them**: whether it answers, whether its model is listed and in memory, the transport in force, the engine's context against what a request needs, and the last fitness probe with its date. The backends are probed at once, so `status` takes no longer with three than with one (the limit is five seconds for all of them). See [`status`](./cli.md).
 - **Version 1.** A file with `config_version = 1` has one `[backend]`, which is
   read as `[backends.default]`. It loads and runs as before; `check` says once
   that the form is deprecated and prints the configuration in version 2. It is

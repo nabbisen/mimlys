@@ -301,6 +301,10 @@ pub struct BackendProbe {
     /// token measured for the transport in force, plus the completion bound; null
     /// for the fake backend.
     pub context_needed_tokens: Option<u64>,
+    /// Whether the engine holds the configured model in memory (REQ-MDL-010): Ollama's
+    /// `/api/ps`; always `true` for a llama-server; null (unknown) for another engine and for the
+    /// fake backend.
+    pub resident: Option<bool>,
 }
 
 impl BackendProbe {
@@ -422,6 +426,20 @@ impl Backend {
         })
     }
 
+    /// Every configured backend, made: the one named [`DEFAULT`] first when there is one, the others
+    /// by name. Nothing is contacted.
+    pub fn make_all(loaded: &Loaded) -> Result<Vec<Self>, AppError> {
+        let mut names = loaded.config.backend_names();
+        if let Some(at) = names.iter().position(|n| *n == DEFAULT) {
+            let default = names.remove(at);
+            names.insert(0, default);
+        }
+        names
+            .into_iter()
+            .map(|name| Self::make(loaded, name, None))
+            .collect()
+    }
+
     /// The endpoint the engine gate is keyed by (RFC 013 decision 7): `None` for a backend with no
     /// URL, which has nothing to share a gate over.
     pub fn endpoint(&self) -> Option<(String, String)> {
@@ -483,6 +501,7 @@ impl Backend {
                     context_tokens,
                     context_engine,
                     context_slots,
+                    resident,
                 } = adapter.probe().await;
                 BackendProbe {
                     reachable,
@@ -501,6 +520,7 @@ impl Backend {
                         b.max_tokens,
                         decision_transport,
                     )),
+                    resident,
                 }
             }
             None => {
@@ -518,6 +538,7 @@ impl Backend {
                     context_engine: None,
                     context_slots: None,
                     context_needed_tokens: None,
+                    resident: None,
                 }
             }
         };
@@ -546,6 +567,39 @@ impl Backend {
         };
         Ok((probe, notice))
     }
+}
+
+/// What probing one backend gave: the probe, and the notice to print for it, or why it could not
+/// be probed.
+pub type Probed = Result<(BackendProbe, Option<String>), AppError>;
+
+/// Probes every backend **at once** (REQ-MDL-010, LIM-M4): each probe is bounded by LIM-M4 by
+/// itself ([`Backend::probe`]) and all of them are started before any is waited for, so the whole
+/// is bounded by one LIM-M4, whatever the number of backends. The results are in the order of
+/// `backends`. A probe that panics is an error naming nothing of its own: the caller knows
+/// which backend it was by the position.
+pub async fn probe_all(backends: &[Backend]) -> Vec<Probed> {
+    let mut set = tokio::task::JoinSet::new();
+    for (position, backend) in backends.iter().enumerate() {
+        let backend = backend.clone();
+        set.spawn(async move { (position, backend.probe().await) });
+    }
+    let mut results: Vec<Option<Probed>> = backends.iter().map(|_| None).collect();
+    while let Some(joined) = set.join_next().await {
+        if let Ok((position, probed)) = joined {
+            results[position] = Some(probed);
+        }
+    }
+    results
+        .into_iter()
+        .map(|probed| {
+            probed.unwrap_or_else(|| {
+                Err(AppError::Io {
+                    detail: "the probe of a backend ended without an answer".to_owned(),
+                })
+            })
+        })
+        .collect()
 }
 
 /// The backend of a configuration that has none named [`DEFAULT`]: it never sends. A command that

@@ -106,6 +106,19 @@ pub fn from_ollama_ps(body: &Value, is_configured: impl Fn(&str) -> bool) -> Opt
     }))
 }
 
+/// Ollama's `GET /api/ps`: whether the configured model (`is_configured` judges each listed
+/// name) is among the models in memory. `None` when the body is not shaped as Ollama's, so
+/// another server's 200 is never read as an answer about residence.
+pub fn resident_in_ollama_ps(body: &Value, is_configured: impl Fn(&str) -> bool) -> Option<bool> {
+    let models = body.get("models")?.as_array()?;
+    Some(models.iter().any(|m| {
+        ["model", "name"]
+            .iter()
+            .filter_map(|k| m.get(*k).and_then(Value::as_str))
+            .any(&is_configured)
+    }))
+}
+
 /// Ollama's `POST /api/show`: the `num_ctx` of the model's parameters (the
 /// text of its Modelfile's `PARAMETER` lines, `num_ctx 16384`). `None` when
 /// the body is not shaped as Ollama's answer, so another server's 200 is never

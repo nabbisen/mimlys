@@ -146,6 +146,11 @@ pub struct Probe {
     pub context_engine: Option<context::Engine>,
     /// llama.cpp: the parallel slots the context is shared among.
     pub context_slots: Option<u64>,
+    /// Whether the configured model is in the engine's memory, as the engine says it (REQ-MDL-010):
+    /// Ollama's `GET /api/ps` (read before the probe's own request, which makes Ollama load the
+    /// model); always `true` for a llama-server, which holds the one model it was started with;
+    /// `None` (unknown) for any other engine, and when the engine is not reachable.
+    pub resident: Option<bool>,
 }
 
 /// A read of the engine's context after its first reply, asked for once.
@@ -514,8 +519,13 @@ impl OpenAiBackend {
     /// bound, and kept only where the engine is reachable.
     pub async fn probe_within(&self, deadline: Duration) -> Probe {
         let started = tokio::time::Instant::now();
-        let (mut probe, mut context) =
-            tokio::join!(self.probe_core(deadline), self.read_context(deadline));
+        // Before the probe's own request, which loads the model in Ollama: whether the model was
+        // in memory when `status` asked is what `resident` says. The read is one local request,
+        // bounded by half the probe's deadline, and the rest of the probe has what is left, so
+        // the whole stays within `deadline`.
+        let resident = self.read_resident(deadline / 2).await;
+        let left = deadline.saturating_sub(started.elapsed());
+        let (mut probe, mut context) = tokio::join!(self.probe_core(left), self.read_context(left));
         // The probe's own completion request loads the model in Ollama, which
         // then reports the context in force: read it again, inside the bound.
         if probe.reachable
@@ -534,8 +544,25 @@ impl OpenAiBackend {
             probe.context_tokens = context.tokens;
             probe.context_engine = context.engine;
             probe.context_slots = context.slots;
+            probe.resident = match context.engine {
+                Some(context::Engine::LlamaCpp) => Some(true),
+                _ => resident,
+            };
         }
         probe
+    }
+
+    /// Whether the configured model is among the models Ollama holds in memory
+    /// (`GET /api/ps`), within `deadline`; `None` when the engine does not answer as Ollama does.
+    async fn read_resident(&self, deadline: Duration) -> Option<bool> {
+        let body = self
+            .engine_json(
+                self.client.get(self.engine_endpoint("api/ps")),
+                deadline,
+                &Cancellation::new(),
+            )
+            .await?;
+        context::resident_in_ollama_ps(&body, |name| model_matches(name, &self.config.model))
     }
 
     /// The engine's endpoint outside the API prefix: the configured URL
@@ -723,6 +750,7 @@ impl OpenAiBackend {
             context_tokens: None,
             context_engine: None,
             context_slots: None,
+            resident: None,
         };
         if !reachable {
             probe.detail = detail;

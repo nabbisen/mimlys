@@ -88,6 +88,52 @@ impl Reply {
     }
 }
 
+/// A meeting point for the model listings (`GET /models`) of several servers: each listing waits
+/// until `parties` listings have arrived, across every server that shares the point, and only
+/// then is answered. A test that must show that several probes were *started before any
+/// finished* gives one point to several servers: the probes are concurrent exactly when the
+/// listings are answered. A listing that waits more than the cap (a probe that was run after
+/// another, for instance) is answered then, and the test reads [`Rendezvous::met`] and what the
+/// probes found: nothing here reads the time to decide.
+#[derive(Clone, Debug)]
+pub struct Rendezvous {
+    inner: Arc<(Mutex<usize>, std::sync::Condvar)>,
+    parties: usize,
+    cap: Duration,
+}
+
+impl Rendezvous {
+    /// A point for `parties` listings; a listing waits at most `cap` for the others.
+    pub fn new(parties: usize, cap: Duration) -> Self {
+        Self {
+            inner: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
+            parties,
+            cap,
+        }
+    }
+
+    /// How many listings have arrived.
+    pub fn arrived(&self) -> usize {
+        *self.inner.0.lock().expect("rendezvous lock")
+    }
+
+    /// Whether all `parties` arrived.
+    pub fn met(&self) -> bool {
+        self.arrived() >= self.parties
+    }
+
+    /// Arrives, and waits for the others (at most the cap).
+    fn meet(&self) {
+        let (count, all) = &*self.inner;
+        let mut arrived = count.lock().expect("rendezvous lock");
+        *arrived += 1;
+        all.notify_all();
+        let _ = all
+            .wait_timeout_while(arrived, self.cap, |n| *n < self.parties)
+            .expect("rendezvous wait");
+    }
+}
+
 /// How the server answers a request that carries `tools`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolsSupport {
@@ -133,6 +179,12 @@ pub struct MockConfig {
     /// The body of `GET /api/ps` once a decision request has been received
     /// (Ollama loads the model on the first request, and then reports it).
     pub ps_after_decision: Option<Value>,
+    /// Every `GET /models` waits at this point for the others that share it before it is
+    /// answered (see [`Rendezvous`]); the listing is counted when it arrives.
+    pub models_rendezvous: Option<Rendezvous>,
+    /// A `GET /models` is never answered (after the rendezvous, when there is one): a server that
+    /// accepts the connection and says nothing.
+    pub models_hang: bool,
 }
 
 impl Default for MockConfig {
@@ -152,6 +204,8 @@ impl Default for MockConfig {
             api_show: None,
             ps: None,
             ps_after_decision: None,
+            models_rendezvous: None,
+            models_hang: false,
         }
     }
 }
@@ -296,6 +350,13 @@ impl State {
             }
         }
         if line.starts_with("GET ") && line.contains("/models") {
+            if let Some(point) = &self.config.models_rendezvous {
+                point.meet();
+            }
+            if self.config.models_hang {
+                std::thread::sleep(Duration::from_secs(30));
+                return;
+            }
             let data: Vec<Value> = self
                 .config
                 .models

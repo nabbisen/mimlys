@@ -364,19 +364,65 @@ pub const FOLLOW_WAITING_FOR_RUNTIME: &str =
 pub const FOLLOW_RUNTIME_GONE: &str = "the runtime that ran this task is gone; recovery pending: the next command that writes recovers it";
 /// `events`: nothing.
 pub const EVENTS_EMPTY: &str = "no events";
-/// Runtime status lines.
-pub fn status_lines(
-    version: &str,
-    data_dir: &str,
-    backend: &str,
+/// The first lines of `status`: the version and the data directory.
+pub fn status_head_lines(version: &str, data_dir: &str) -> Vec<String> {
+    vec![
+        format!("mimlys {version}"),
+        format!("data directory  {data_dir}"),
+    ]
+}
+/// The tier line of `status`.
+pub fn status_tier_line(tier: &str) -> String {
+    format!("tier            {tier}")
+}
+/// What `status` says of a backend's last fitness probe (REQ-MDL-010, REQ-MDL-011): its class and
+/// the day it was measured on this machine, `not probed` when there is none, and the reason when
+/// the record cannot be read. `model` is the model the backend names now: a result measured with
+/// another model is shown with both, never as the answer for this one.
+pub fn last_probe_text(
+    results: &crate::probe_results::Results,
+    name: &str,
+    model: Option<&str>,
+) -> String {
+    use crate::probe_results::Results;
+    match results {
+        Results::Unreadable(reason) => format!("unreadable ({reason})"),
+        Results::Read(_) => match results.of(name) {
+            None => "not probed".to_owned(),
+            Some(last) => {
+                let class = match (&last.detail, last.class_known()) {
+                    (_, false) => format!("{} (unknown to this release)", last.class),
+                    (Some(detail), true) => format!("{} ({detail})", last.class),
+                    (None, true) => last.class.clone(),
+                };
+                let mut text = format!("{class}, measured on this machine on {}", last.date());
+                if let (Some(measured), Some(now)) = (&last.model, model)
+                    && measured != now
+                {
+                    text.push_str(&format!(
+                        " with model {measured}, which is not the model this backend names now ({now})"
+                    ));
+                }
+                text
+            }
+        },
+    }
+}
+/// One backend's line of `status` (REQ-MDL-010): the name, what it is, where it runs, and what
+/// the probe found: reachable and whether the model is listed, whether it is resident, the
+/// transport in force with its reason, the engine's context against the need, and the last
+/// fitness probe. `last` is [`last_probe_text`].
+pub fn status_backend_line(
+    name: &str,
+    kind: &str,
     model: Option<&str>,
     locality: &str,
-    probe: Option<&crate::app::BackendProbe>,
-    tier: &str,
-) -> Vec<String> {
-    let mut backend_line = match model {
-        Some(m) => format!("backend         {backend} {m} ({locality})"),
-        None => format!("backend         {backend} ({locality})"),
+    probe: Option<&crate::backends::BackendProbe>,
+    last: &str,
+) -> String {
+    let mut line = match model {
+        Some(m) => format!("backend         {name}: {kind} {m} ({locality})"),
+        None => format!("backend         {name}: {kind} ({locality})"),
     };
     if let Some(p) = probe {
         let mode = p
@@ -391,56 +437,72 @@ pub fn status_lines(
         let reach = match (p.reachable, p.model_listed) {
             (false, _) => "unreachable".to_owned(),
             (true, Some(false)) => "reachable, model not listed".to_owned(),
-            (true, _) => "reachable".to_owned(),
+            (true, Some(true)) => "reachable, model listed".to_owned(),
+            (true, None) => "reachable".to_owned(),
         };
-        backend_line.push_str(&format!("; {reach}"));
+        line.push_str(&format!("; {reach}"));
+        // Whether the engine holds the model in memory: Ollama's word, always yes for a
+        // llama-server, unknown for another engine (REQ-MDL-010).
+        if p.reachable && kind == "openai_compatible" {
+            let resident = match p.resident {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unknown",
+            };
+            line.push_str(&format!("; resident {resident}"));
+        }
         // The transport in force, with the engine's reason when `auto` chose the envelope
         // (REQ-MDL-009); structured output belongs to the envelope transport only.
         let transport = match p.decision_transport {
             Some(t) => t.as_str(),
             None => "unresolved",
         };
-        backend_line.push_str(&format!("; decision transport {transport}"));
+        line.push_str(&format!("; decision transport {transport}"));
         if let Some(reason) = &p.transport_reason {
-            backend_line.push_str(&format!(" ({reason})"));
+            line.push_str(&format!(" ({reason})"));
         }
         match p.decision_transport {
             Some(mimlys_core::native::DecisionTransport::ToolCalls) => {
                 if p.parallel_tool_calls == Some(false) {
-                    backend_line.push_str("; parallel_tool_calls not accepted");
+                    line.push_str("; parallel_tool_calls not accepted");
                 }
             }
             Some(mimlys_core::native::DecisionTransport::Envelope) => {
-                backend_line.push_str(&format!("; structured output {mode}"));
+                line.push_str(&format!("; structured output {mode}"));
             }
             None => {}
         }
         // The engine's context length against the need (REQ-MDL-003); never a guess.
         if let Some(needed) = p.context_needed_tokens {
             match (p.context_tokens, p.context_engine) {
-                (Some(n), _) => backend_line.push_str(&format!(
+                (Some(n), _) => line.push_str(&format!(
                     "; context: {n} tokens per request (needs about {needed})"
                 )),
                 (None, Some(mimlys_model::openai::context::Engine::Ollama)) => {
-                    backend_line.push_str(&format!(
+                    line.push_str(&format!(
                         "; context: unknown (Ollama sets it when it loads the model; needs about {needed})"
                     ));
                 }
                 (None, _) => {
-                    backend_line.push_str(&format!("; context: unknown (needs about {needed})"));
+                    line.push_str(&format!("; context: unknown (needs about {needed})"));
                 }
             }
         }
         if let Some(d) = &p.detail {
-            backend_line.push_str(&format!(" ({d})"));
+            line.push_str(&format!(" ({d})"));
         }
     }
-    vec![
-        format!("mimlys {version}"),
-        format!("data directory  {data_dir}"),
-        backend_line,
-        format!("tier            {tier}"),
-    ]
+    line.push_str(&format!("; last probe: {last}"));
+    line
+}
+/// A line about one backend of several, written for `status`: the same line with the backend
+/// named, so that two warnings are not taken for one (`status` names them when there are
+/// several; with one backend the line is what it always was).
+pub fn for_backend(name: &str, line: &str) -> String {
+    match line.strip_prefix("warning: ") {
+        Some(rest) => format!("warning: backend `{name}`: {rest}"),
+        None => format!("backend `{name}`: {line}"),
+    }
 }
 /// One declared host tool in `status` and `toolchain list` (RFC 011 §6);
 /// `unavailable` names why this machine cannot run it yet (RFC 011 §7).

@@ -6,6 +6,7 @@ use mimlys_core::limits::{LIM_D1_DECISION_BYTES, LIM_M2_MAX_TOKENS};
 use serde_json::json;
 
 mod native;
+mod resident;
 
 fn config(url: &str, mode: Mode) -> OpenAiConfig {
     OpenAiConfig {
@@ -122,6 +123,7 @@ fn req_mdl_004_auto_resolves_at_probe() {
             context_tokens: None,
             context_engine: None,
             context_slots: None,
+            resident: None,
         }
     );
     assert_eq!(server.remaining(), 1, "probe completions consume no script");
