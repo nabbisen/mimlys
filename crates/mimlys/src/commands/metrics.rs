@@ -25,6 +25,15 @@ pub fn run(app: &ReadApp, task: Option<&str>, out: &Output) -> Result<(), AppErr
             out.line(messages::metric_line(&format!("{group}.{k}"), *v));
         }
     }
+    // REQ-OBS-009: what the executions waited for a slot and the requests for the engine's gate.
+    for (name, value) in [
+        ("admission_wait_ms", metrics.admission_wait_ms),
+        ("admission_waits", metrics.admission_waits),
+        ("engine_wait_ms", metrics.engine_wait_ms),
+        ("engine_waits", metrics.engine_waits),
+    ] {
+        out.line(messages::metric_line(name, value));
+    }
     let c = &metrics.context;
     out.line(messages::metric_line(
         "context.measured_steps",

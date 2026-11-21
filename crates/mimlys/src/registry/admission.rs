@@ -59,6 +59,30 @@ pub fn slots_in(
     }
 }
 
+/// As [`gate`] over the registry in `dir`, which the platform may not have (see [`slots_in`]).
+pub fn gate_in(
+    dir: Result<std::path::PathBuf, String>,
+    url: &str,
+    max_in_flight: usize,
+    owner: Owner,
+) -> Option<Arc<dyn Admission>> {
+    match dir {
+        Ok(dir) => gate(
+            Registry::new(
+                dir,
+                super::Bounds::default(),
+                Arc::new(mimlys_core::clock::SystemClock),
+            ),
+            url,
+            max_in_flight,
+            owner,
+        ),
+        Err(reason) => {
+            endpoint_of(url).map(|_| Arc::new(Unavailable(reason)) as Arc<dyn Admission>)
+        }
+    }
+}
+
 /// An admission with no registry to use: the reason, at every look.
 struct Unavailable(String);
 

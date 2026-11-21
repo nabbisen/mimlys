@@ -194,13 +194,26 @@ see [Storage](./reference/storage.md): `mimlys status --storage` and
   waits for one. The task stays `running`, and `mimlys task show <id>` says why,
   for example `waiting: admission (LIM-X5 = 2 slots taken by runtimes 4242,
   4343)`; `mimlys status` lists every runtime that is running or waiting, with
-  its process, data directory and task, and the slots taken against the limit.
-  Ctrl-C once ends the wait: the action never starts and the
+  its process, data directory and task, the slots taken against the limit and
+  the engine gates held. Ctrl-C once ends the wait: the action never starts and the
   task pauses, as for any action that has not begun. The wait is bounded by
   nothing but the task's own deadline, which keeps counting while it waits.
   The words never mean anything else: `running` is a runtime that holds a slot
   or a gate, `waiting` one that waits for it, and a `slot` is one of the
   `admission_slots` executions.
+- **One request at a time to your model engine.** The same registry holds a
+  gate for each model endpoint: `max_in_flight` model requests of yours (one by
+  default; `[backend]` in the [configuration](./reference/configuration.md)) may
+  be in flight to one URL across all your runtimes. A llama-server started with
+  several slots serves several requests in parallel by design, and `max_in_flight`
+  is how you tell mimlys so; an engine that swaps models, or queues, by its own
+  rules gets one request at a time. A second runtime's request waits for the
+  gate (the task stays `running`; `task show` says `waiting: engine
+  (max_in_flight = 1; 1 request in flight to <url>, held by runtime <pid>)`,
+  and `mimlys metrics` counts the wait as `engine_wait_ms`), and Ctrl-C once
+  ends the wait with nothing sent. `mimlys status` asks the engine without
+  taking the gate, so it answers whatever is in flight. The request's own
+  deadline starts when it is sent, not when it starts waiting.
 - **If the registry cannot be used,** your work goes on. A runtime that cannot
   read or write the registry within two seconds runs as if it were alone, says
   so with a warning, records `task.admission_changed` with the state

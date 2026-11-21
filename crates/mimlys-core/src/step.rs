@@ -138,6 +138,10 @@ pub struct StepMeasures {
     /// The backend's reported usage, when any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::spi::Usage>,
+    /// How long the request waited for the engine's gate, in milliseconds, when it waited
+    /// (RFC 013 decision 7; from 0.12; absent in earlier records and when nothing waited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_wait_ms: Option<i64>,
 }
 
 impl Step {

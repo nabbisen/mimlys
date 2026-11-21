@@ -895,16 +895,26 @@ impl App {
         // RFC 013 decision 5: the executions of the user's runtimes share LIM-X5 slots, counted
         // in a registry of the user's own. A registry that cannot be found is an admission that
         // says so and lets the execution go on, like one that cannot be used.
+        let registry_dir = registry
+            .map(Ok)
+            .unwrap_or_else(crate::registry::default_dir);
+        let owner = crate::registry::Owner {
+            pid: std::process::id(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
         let admission = crate::registry::slots_in(
-            registry
-                .map(Ok)
-                .unwrap_or_else(crate::registry::default_dir),
+            registry_dir.clone(),
             config.runtime.admission_slots,
-            crate::registry::Owner {
-                pid: std::process::id(),
-                data_dir: data_dir.to_string_lossy().into_owned(),
-            },
+            owner.clone(),
         );
+        // RFC 013 decision 7: the model requests of the user's runtimes to one endpoint share
+        // `max_in_flight` places, in the same registry. The fake backend has no endpoint.
+        let gate = match (config.backend.kind, config.backend.url.as_deref()) {
+            (BackendKind::OpenaiCompatible, Some(url)) => {
+                crate::registry::gate_in(registry_dir, url, config.backend.max_in_flight, owner)
+            }
+            _ => None,
+        };
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store,
             backend,
@@ -920,6 +930,10 @@ impl App {
             output_bytes: config.sandbox.output_bytes as usize,
         })?
         .with_admission(admission);
+        let runtime = match gate {
+            Some(gate) => runtime.with_engine_gate(gate),
+            None => runtime,
+        };
         runtime.record_started()?;
         if orphans > 0 {
             runtime.record_server_events(&[mimlys_core::event::Event::RuntimeOrphansKilled {

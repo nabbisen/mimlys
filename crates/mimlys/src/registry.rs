@@ -25,7 +25,7 @@ mod admission;
 #[cfg(test)]
 mod tests;
 
-pub use admission::{Wait, gate, slots, slots_in};
+pub use admission::{Wait, gate, gate_in, slots, slots_in};
 
 use mimlys_core::clock::{Clock, Instant};
 use mimlys_core::limits::LIM_O11_REGISTRY_MS;
