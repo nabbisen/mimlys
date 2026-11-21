@@ -460,7 +460,12 @@ fn request(remaining_ms: i64) -> AdmissionRequest {
 
 /// Waits (by looking at the directory, not the clock) until `count` runtimes wait.
 async fn until_waiting(registry: &Arc<Registry>, count: usize) {
+    let started = std::time::Instant::now();
     loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "{count} runtime(s) never waited"
+        );
         let waiting = registry
             .list()
             .unwrap()

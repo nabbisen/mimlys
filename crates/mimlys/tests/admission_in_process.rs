@@ -169,7 +169,14 @@ async fn holder(dir: &Path) -> mimlys::registry::Handle {
 /// Until the registry lists process `pid` waiting.
 async fn until_waiting(dir: &Path, pid: u32) {
     let registry = registry_of(dir);
+    // A bound far longer than any wait, so that a runtime that never waits fails the test
+    // instead of hanging it.
+    let started = std::time::Instant::now();
     loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "process {pid} never waited"
+        );
         let waiting = registry
             .list()
             .unwrap()
