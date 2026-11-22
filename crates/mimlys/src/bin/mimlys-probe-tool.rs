@@ -32,6 +32,10 @@
 //! whether `needle` is in its arguments and environment), `procinfo
 //! <PIDVAR>` (`proc_pidinfo`) and `signal0 <PIDVAR>` (signal 0).
 
+// A test tool, not the command line: its output is read by the tests, and it prints and takes
+// the streams as it likes (the crate's `clippy.toml` is for the command's output).
+#![allow(clippy::disallowed_methods)]
+
 use std::io::Write;
 
 /// `vm-read <pid|child> [hex-address]`: `process_vm_readv` of another

@@ -126,7 +126,7 @@ pub async fn probe(app: &App, named: Option<&str>, out: &Output) -> Result<(), A
         }
     }
     if !left_paths.is_empty() {
-        eprintln!("{}", messages::probe_left_paths(&left_paths));
+        crate::output::diag(messages::probe_left_paths(&left_paths));
     }
     if report.not_measured.is_empty() {
         out.value(&report);
@@ -150,7 +150,7 @@ pub async fn probe(app: &App, named: Option<&str>, out: &Output) -> Result<(), A
 /// The stop: said on the terminal, and in the report.
 fn stopped(name: &str, rest: &[Backend], out: &Output, report: &mut Report) {
     let not_probed: Vec<String> = rest.iter().map(|b| b.name.clone()).collect();
-    eprintln!("{}", messages::probe_stopped(name, &not_probed));
+    crate::output::diag(messages::probe_stopped(name, &not_probed));
     let _ = out;
     report.stopped = Some(serde_json::json!({ "backend": name, "not_probed": not_probed }));
 }

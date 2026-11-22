@@ -894,15 +894,12 @@ impl App {
             && probe.context_tokens.is_none()
         {
             adapter.warn_if_loaded_context_is_small(needed, move |tokens| {
-                eprintln!(
-                    "{}",
-                    crate::messages::context_too_small_warning(
-                        Some(mimlys_model::openai::context::Engine::Ollama),
-                        tokens,
-                        needed,
-                        None,
-                    )
-                );
+                crate::output::diag(crate::messages::context_too_small_warning(
+                    Some(mimlys_model::openai::context::Engine::Ollama),
+                    tokens,
+                    needed,
+                    None,
+                ));
             });
         }
         *self.backend_probe.lock().expect("probe lock") = Some(probe);

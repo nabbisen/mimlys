@@ -1,12 +1,23 @@
 //! `mimlys`: the commands of external design §19.2 (REQ-CLI-001 … 005).
 //! Exit codes: 0 success, 1 runtime or configuration error, 2 usage error.
 
+// No direct print: the output is written in `mimlys::output` only, with its error handled
+// (REQ-CLI-009; see `src/lib.rs` and `clippy.toml`).
+#![cfg_attr(
+    not(test),
+    deny(clippy::print_stdout, clippy::print_stderr, clippy::disallowed_methods)
+)]
+#![cfg_attr(
+    test,
+    allow(clippy::print_stdout, clippy::print_stderr, clippy::disallowed_methods)
+)]
+
 use clap::{Args, Parser, Subcommand};
 use mimlys::app::{App, AppError, ReadApp};
 use mimlys::commands::run::NewTask;
 use mimlys::config::Config;
 use mimlys::output::Output;
-use mimlys::prompt::{StdinLines, Terminal};
+use mimlys::prompt::Terminal;
 use mimlys::{commands, logging};
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -408,7 +419,7 @@ fn main() -> ExitCode {
     // REQ-CONF-012: first thing, before any thread exists (the async runtime
     // below starts them). Fail closed: the guarantee is stated in the book.
     if let Err(e) = mimlys_exec::confine::harden_process() {
-        eprintln!("mimlys: cannot mark the process non-dumpable: {e}");
+        mimlys::output::diag(format!("mimlys: cannot mark the process non-dumpable: {e}"));
         return ExitCode::from(1);
     }
     // REQ-SEC-011: replaces the default hook, whose message goes to standard
@@ -469,13 +480,10 @@ fn run_process() -> ExitCode {
     // whose output did not arrive does not end in success.
     match mimlys::output::write_failure() {
         Some(detail) => {
-            eprintln!(
-                "{}",
-                mimlys::messages::error_line(
-                    "internal",
-                    &mimlys::messages::cannot_write_output(&detail)
-                )
-            );
+            mimlys::output::diag(mimlys::messages::error_line(
+                "internal",
+                &mimlys::messages::cannot_write_output(&detail),
+            ));
             ExitCode::from(1)
         }
         None => code,
@@ -492,7 +500,7 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
         panic!("{text}");
     }
     if let Some(warning) = logging::init(&loaded.config.logging, &loaded.secrets) {
-        eprintln!("{warning}");
+        mimlys::output::diag(warning);
     }
     if let Command::Check = &cli.command {
         return commands::check::run(&loaded, out);
@@ -551,13 +559,13 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     if steps.contacts_backend()
         && let Some(warning) = app.context_warning()
     {
-        eprintln!("{warning}");
+        mimlys::output::diag(warning);
     }
     let interactive =
-        !cli.json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        !cli.json && std::io::stdin().is_terminal() && mimlys::output::stdout_is_terminal();
     // Standard input is read on a thread of its own, so that a stop signal at a
     // prompt ends the wait (REQ-CLI-005).
-    let mut terminal = Terminal::with_lines(StdinLines::new(), std::io::stdout(), interactive);
+    let mut terminal = Terminal::on_standard_streams(interactive);
     let result = dispatch(&app, cli.command, &mut terminal, out).await;
     let closed = app.close();
     result.and(closed)
@@ -810,7 +818,7 @@ async fn dispatch_read(app: &ReadApp, command: ReadCommand, out: &Output) -> Res
             action.as_deref(),
             attempt,
             which,
-            std::io::stdout().is_terminal(),
+            mimlys::output::stdout_is_terminal(),
             out,
         ),
         ReadCommand::ToolchainList => commands::toolchain::list(app, out),

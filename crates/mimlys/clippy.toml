@@ -1,0 +1,9 @@
+# The command line's output has two writes, each with its error handled (REQ-CLI-009;
+# `src/output.rs`): no other code of this crate takes a handle to either stream. A module that
+# must (the output module, the prompt's terminal) says so with
+# `#[allow(clippy::disallowed_methods)]`. The crate's library and `mimlys` binary also deny
+# `print_stdout` and `print_stderr` (`src/lib.rs`, `src/main.rs`).
+disallowed-methods = [
+    { path = "std::io::stdout", reason = "write through `output::put` (standard output) or the prompt's terminal: a closed pipe is no panic (REQ-CLI-009)" },
+    { path = "std::io::stderr", reason = "write through `output::diag`: a closed standard error is no panic (REQ-CLI-009)" },
+]

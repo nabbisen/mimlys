@@ -62,9 +62,9 @@ impl Write for RedactingStderr {
         let text = String::from_utf8_lossy(&self.buffer).into_owned();
         self.buffer.clear();
         let (clean, _) = self.redactor.redact(&text);
-        let mut err = std::io::stderr().lock();
-        err.write_all(clean.as_bytes())?;
-        err.flush()
+        // The one write to standard error: a closed one drops the log, and never fails or panics.
+        crate::output::diag_raw(&clean);
+        Ok(())
     }
 }
 

@@ -1,10 +1,64 @@
 //! Human lines or one JSON value per command (REQ-CLI-004).
+//!
+//! This module holds the only two writes of the command line's output: `put` to standard
+//! output and `put_err` to standard error, each with its error handled (REQ-CLI-009). Nothing
+//! else of the crate takes a handle to either stream; `clippy.toml` and the crate's lints say so.
+
+// The two streams are taken here and in the prompt's terminal (`Terminal::on_standard_streams`),
+// and nowhere else (`clippy.toml`).
+#![allow(clippy::disallowed_methods)]
 
 use crate::app::AppError;
 use serde::Serialize;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether standard output is a terminal.
+pub fn stdout_is_terminal() -> bool {
+    std::io::stdout().is_terminal()
+}
+
+/// The reader of standard error has gone (`mimlys ... 2>&1 | head`, or standard error closed from
+/// the start). Set by the first write that finds it so; what is said after it is dropped, since
+/// there is no other place to say it (REQ-CLI-009).
+static STDERR_GONE: AtomicBool = AtomicBool::new(false);
+
+/// The one write to standard error: every line a command says there goes through here (a
+/// warning, an error line, a note, the log), and no other write to it is made by this crate. A
+/// write that fails is not a failure of the command: there is no place to say it, so the line is
+/// dropped and the command goes on to its end with the exit code its work earned (1 for an error
+/// line, 0 for a warning), and never panics, as `eprintln!` does on a closed standard error
+/// (exit 101). A reader that has gone ends the stream (no later write is tried); any other
+/// failure drops that write only.
+fn put_err(bytes: &[u8]) {
+    if STDERR_GONE.load(Ordering::SeqCst) {
+        return;
+    }
+    let mut stderr = std::io::stderr().lock();
+    let written = stderr.write_all(bytes).and_then(|()| stderr.flush());
+    if let Err(e) = written
+        && e.kind() == std::io::ErrorKind::BrokenPipe
+    {
+        STDERR_GONE.store(true, Ordering::SeqCst);
+    }
+}
+
+/// One line on standard error (a warning, a note, an error line), with its error handled
+/// ([`put_err`]). The line is written with one write, so that two commands' lines do not mix in
+/// a pipe.
+pub fn diag(line: impl AsRef<str>) {
+    let line = line.as_ref();
+    let mut text = String::with_capacity(line.len() + 1);
+    text.push_str(line);
+    text.push('\n');
+    put_err(text.as_bytes());
+}
+
+/// Text to standard error exactly as given (the log's writer, which adds its own line ends).
+pub fn diag_raw(text: &str) {
+    put_err(text.as_bytes());
+}
 
 /// The reader of standard output has gone (a closed pipe: `mimlys events <task> | head`).
 /// Set by the first write that finds it so, and by [`Output::reader_gone`] where the
@@ -138,10 +192,10 @@ impl Output {
             text.push('\n');
             put(text.as_bytes(), false);
         } else {
-            eprintln!(
-                "{}",
-                crate::messages::error_line(error.kind(), &error.to_string())
-            );
+            diag(crate::messages::error_line(
+                error.kind(),
+                &error.to_string(),
+            ));
         }
     }
 }

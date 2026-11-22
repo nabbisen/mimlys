@@ -309,6 +309,17 @@ impl<R: BufRead, W: Write> Terminal<Buffered<R>, W> {
     }
 }
 
+impl Terminal<StdinLines, std::io::Stdout> {
+    /// The command line's prompt: standard input, read on a thread of its own, and standard
+    /// output. Every write of a prompt ignores its error (`let _ = write!`), so a closed standard
+    /// output is no panic here. With the output module, this is the one place that takes the
+    /// handle to standard output (`clippy.toml`).
+    #[allow(clippy::disallowed_methods)]
+    pub fn on_standard_streams(interactive: bool) -> Self {
+        Self::with_lines(StdinLines::new(), std::io::stdout(), interactive)
+    }
+}
+
 impl<L: Lines, W: Write> Terminal<L, W> {
     /// A prompt that gets its lines from `input`.
     pub fn with_lines(input: L, output: W, interactive: bool) -> Self {

@@ -26,9 +26,23 @@ struct Env {
     config: PathBuf,
 }
 
+/// The stream(s) a test makes a pipe.
+#[derive(Clone, Copy, Debug)]
+enum Pipe {
+    /// Standard output (`| head`).
+    Stdout,
+    /// Standard error (`2>&1 >file | head`).
+    Stderr,
+    /// Both, the one pipe (`2>&1 | head`).
+    Both,
+}
+
 /// What a command into a pipe did.
 struct Piped {
     code: i32,
+    /// Standard output, when it was not the pipe (read from a file).
+    stdout: String,
+    /// Standard error, when it was not the pipe (read from a file).
     stderr: String,
     /// The lines the reader took before it went (none in the first state).
     lines: Vec<String>,
@@ -36,13 +50,18 @@ struct Piped {
 
 impl Env {
     fn new() -> Self {
+        Self::with_config("")
+    }
+
+    /// With `extra` after the configuration's `[runtime]` table (a section of its own).
+    fn with_config(extra: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
         let config = dir.path().join("config.toml");
         std::fs::write(
             &config,
             format!(
-                "config_version = 1\n[runtime]\ndata_dir = {:?}\n",
+                "config_version = 1\n[runtime]\ndata_dir = {:?}\n{extra}",
                 data.to_string_lossy()
             ),
         )
@@ -86,15 +105,36 @@ impl Env {
     /// goes (0: it is gone before the command starts). Waits for the command to end, within
     /// [`ENDS_WITHIN`]; its standard error is read from a file.
     fn piped(&self, args: &[&str], take: usize) -> Piped {
+        self.piped_on(args, take, Pipe::Stdout)
+    }
+
+    /// The same, with the pipe on the stream(s) `on`; the stream that is not piped is read from a
+    /// file.
+    fn piped_on(&self, args: &[&str], take: usize, on: Pipe) -> Piped {
         let (reader, writer) = std::io::pipe().unwrap();
-        let err_path = self.dir.path().join(format!(
-            "piped-{}.stderr",
+        let base = format!(
+            "piped-{on:?}-{}",
             args.join("_").replace(['/', '\\', ':'], "-")
-        ));
+        );
+        let err_path = self.dir.path().join(format!("{base}.stderr"));
+        let out_path = self.dir.path().join(format!("{base}.stdout"));
         let mut cmd = self.command(args);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::from(writer))
-            .stderr(std::fs::File::create(&err_path).unwrap());
+        cmd.stdin(Stdio::null());
+        match on {
+            Pipe::Stdout => {
+                cmd.stdout(Stdio::from(writer))
+                    .stderr(std::fs::File::create(&err_path).unwrap());
+            }
+            Pipe::Stderr => {
+                cmd.stderr(Stdio::from(writer))
+                    .stdout(std::fs::File::create(&out_path).unwrap());
+            }
+            // `2>&1 | head`: both streams are the one pipe.
+            Pipe::Both => {
+                cmd.stdout(Stdio::from(writer.try_clone().unwrap()))
+                    .stderr(Stdio::from(writer));
+            }
+        }
         let mut lines = Vec::new();
         let mut reader = Some(reader);
         if take == 0 {
@@ -133,6 +173,7 @@ impl Env {
         };
         Piped {
             code: status.code().unwrap_or(-1),
+            stdout: std::fs::read_to_string(&out_path).unwrap_or_default(),
             stderr: std::fs::read_to_string(&err_path).unwrap_or_default(),
             lines,
         }
@@ -318,4 +359,77 @@ fn req_cli_009_a_write_that_fails_for_another_reason_is_said_once_and_fails() {
         "{stderr}"
     );
     assert!(!stderr.contains("panic"), "{stderr}");
+}
+
+/// Standard error closed (REQ-CLI-009, handoff 004e-5): a command that writes an error line (the
+/// code it earns is 1) and one that writes a warning (0), each with `on` the pipe whose reader
+/// takes `take` lines and goes (0: gone before the command starts). Each ends with the code it
+/// earns, not with 101, which a panic of `eprintln!` ends with; what it writes to standard output
+/// is what it writes unpiped; the lines the reader took are the lines it wrote.
+fn standard_error_closed(on: Pipe, take: usize) {
+    // (what it writes, the configuration, the command, the code it earns, what its first line of
+    // standard error starts with)
+    let cases: [(&str, &str, Vec<&str>, i32, &str); 2] = [
+        (
+            "an error line",
+            "",
+            vec!["task", "show", "no-such-task"],
+            1,
+            "error",
+        ),
+        (
+            "a warning",
+            "[logging]\ndebug_prompts = true\n",
+            vec!["status"],
+            0,
+            "warning: logging.debug_prompts",
+        ),
+    ];
+    for (what, config, args, earned, first) in cases {
+        let env = Env::with_config(config);
+        // The command as a user has it, nothing closed: it says what the case says it does.
+        let (code, stdout, stderr) = env.run(&args);
+        assert_eq!(code, earned, "{what}: {stdout}\n{stderr}");
+        let said = stderr.lines().next().unwrap_or_default();
+        assert!(said.starts_with(first), "{what}: {stderr}");
+
+        let piped = env.piped_on(&args, take, on);
+        assert_eq!(
+            piped.code,
+            earned,
+            "{what} (`mimlys {}`, {on:?} closed after {take} line(s)): the exit code its work earned (not a panic's 101, nor a failure for a standard error that went)",
+            args.join(" ")
+        );
+        if matches!(on, Pipe::Stderr) {
+            assert_eq!(piped.stdout, stdout, "{what}: standard output is as it was");
+        }
+        if take > 0 {
+            assert_eq!(piped.lines, [said], "{what}: the line the reader took");
+        }
+    }
+}
+
+/// REQ-CLI-009: standard error is a pipe whose reader is gone before the command starts.
+#[test]
+fn req_cli_009_a_command_with_standard_error_closed_from_the_start_ends_with_its_own_code() {
+    standard_error_closed(Pipe::Stderr, 0);
+}
+
+/// REQ-CLI-009: the reader of standard error takes the first line and goes.
+#[test]
+fn req_cli_009_a_command_whose_standard_error_closes_after_its_first_line_ends_with_its_own_code() {
+    standard_error_closed(Pipe::Stderr, 1);
+}
+
+/// REQ-CLI-009: `mimlys ... 2>&1 | head -1`: both streams are one pipe, closed after the first
+/// line (the warning, or the error line; whatever follows finds the reader gone).
+#[test]
+fn req_cli_009_two_to_one_into_head_one_ends_with_the_code_the_command_earned() {
+    standard_error_closed(Pipe::Both, 1);
+}
+
+/// REQ-CLI-009: both streams are one pipe, closed from the start.
+#[test]
+fn req_cli_009_two_to_one_into_a_pipe_closed_from_the_start_ends_with_the_code_it_earned() {
+    standard_error_closed(Pipe::Both, 0);
 }

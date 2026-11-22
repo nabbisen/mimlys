@@ -235,7 +235,7 @@ impl Signals {
 
     /// Writes one line to standard error and keeps it.
     fn say(&self, line: String) {
-        eprintln!("{line}");
+        crate::output::diag(&line);
         self.said.lock().expect("said lock").push(line);
     }
 
