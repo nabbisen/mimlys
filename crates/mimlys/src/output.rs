@@ -46,9 +46,10 @@ pub fn write_failure() -> Option<String> {
 
 /// Whether standard output is a pipe (or a terminal) whose reader has gone, found without
 /// writing. A write that fails says it for itself; this is for a command that waits and so
-/// writes nothing for a long time (`events --follow`). Only Unix can ask: the poll of the
-/// descriptor reports an error when a pipe has no reader. Windows learns it at the next write.
-#[cfg(unix)]
+/// writes nothing for a long time (`events --follow`). Only Linux asks: the poll of the descriptor
+/// reports an error when a pipe has no reader. On macOS the poll does not (the CI run of the first
+/// version showed it), and Windows has no such call in safe code: both learn it at the next write.
+#[cfg(target_os = "linux")]
 fn reader_gone_by_poll() -> bool {
     use rustix::event::Timespec;
     use rustix::event::{PollFd, PollFlags, poll};
@@ -64,7 +65,7 @@ fn reader_gone_by_poll() -> bool {
         && fds[0].revents().intersects(PollFlags::ERR | PollFlags::HUP)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 fn reader_gone_by_poll() -> bool {
     false
 }
