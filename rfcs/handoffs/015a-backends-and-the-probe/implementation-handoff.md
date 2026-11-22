@@ -180,6 +180,13 @@ The review of 2026-11-22 (`.git-exclude/reviewed/handoff-015a/README.md`) approv
    - **`unreachable`** is said, exits 1, and is not recorded, so the backend's last measurement stays. Remove it from the record's classes. The reader shows an `unreachable` written by this branch's earlier builds as unknown, or drops it: say which.
    - **The book and `--json`** follow these changes.
 8. **The book** on each of the above.
+9. **A test defect of 004d-4, found on `main`'s CI.**
+   - **What failed:** `ed_13_1_a_frame_the_runtime_refuses_ends_as_worker_died` failed once on `ubuntu-24.04-arm` (run `45015424621`) with `HostFault{Unavailable}`, which is the worker's spawn failing (`worker.rs:658`), where `WorkerDied` was expected. The same code passed on the PR's run.
+   - **The likely cause:** `tests/worker.rs`'s `fake_worker` writes a new executable script per test while other tests of the binary fork. A fork holding the write handle makes the `exec` fail with `ETXTBSY`. That is the hazard `xcrun/tests.rs` and `host_tool/tests.rs` already avoid.
+   - **The fix:**
+     - confirm the cause first (make the spawn's reason reach the assertion message);
+     - move every test of the file that writes a script to execute onto one runner written once, which runs its body as data;
+     - search the other test files for the same pattern.
 
 ### Answers to the other questions
 
