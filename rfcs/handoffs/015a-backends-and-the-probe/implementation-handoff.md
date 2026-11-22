@@ -1,5 +1,7 @@
 # Handoff 015a — Several backends, locality that is checked, and the fitness probe (release 0.13, phase 1)
 
+**Status (2026-11-22): done.** Parts 1 and 2 landed at `35348d7`, and 015a-5 at `c488729` (`.git-exclude/reviewed/handoff-015a/README.md`, `.git-exclude/reviewed/handoff-015a-5/README.md`).
+
 **RFC.** [RFC 015](../../accepted/015-adaptive-effort.md), decisions 3 and 5, read with its **Amendment 1** (items 2 to 5 and 7). **From.** The scope of 0.13 (`ROADMAP.md`, "Release 0.13", phase 1).
 
 **Specification** (amended before this handoff):

@@ -86,6 +86,7 @@ Adaptive effort, part one (ROADMAP, "Release 0.13"; RFC 015 with its Amendment 1
 | Order | Handoff | RFC | Depends on |
 |---|---|---|---|
 | 1 | [015a Several backends, locality that is checked, and the fitness probe](./015a-backends-and-the-probe/implementation-handoff.md) | RFC 015 | — |
+| 2 | [004e Readers that tolerate a newer release's records; output to a closed pipe](./004e-readers-of-newer-records/implementation-handoff.md) | RFC 004, RFC 010 | — |
 
 ## Release 0.12
 
@@ -137,6 +138,6 @@ Common rules for every handoff:
 - The specifications are the source of truth: `docs/src/maintainers/requirements.md` (REQ ids), `external-design.md` (ED §), `limits-and-defaults.md` (LIM ids), `glossary.md`. Tests validate the specification, not the code; every test that verifies a `T` requirement names it in its name or doc comment (REQ-TEST-001), for example `req_task_002_illegal_transition_is_refused`.
 - Rust 2024, Rust 2018+ module style (`foo.rs` plus `foo/`), tests in `src/<mod>/tests.rs` (REQ-ENG-003), `unsafe` forbidden (REQ-ENG-001), no I/O or protocol dependency in `mimlys-core` (REQ-ARCH-002; `scripts/check-core-deps.sh`).
 - Every number comes from the limits register as a named constant with the `LIM-` id in its doc comment; nothing is hard-coded twice.
-- Fixed vocabularies are Rust enums with `serde` renames in snake_case (CLR-6); unknown variants are deserialization errors.
+- Fixed vocabularies are Rust enums with `serde` renames in snake_case (CLR-6). An unknown value is an error on input from outside the store (the configuration, the model's reply, a tool's result); a record that a newer release of mimlys wrote is read with the unknown value kept by name and marked, never failing the read (REQ-MAIN-006, external design §22; from 0.13).
 - A design defect found while implementing goes back as a question in the review request, not as a local redesign (project rules).
 - The review request goes to `.git-exclude/review-requests/<id>-<topic>/README.md` (the dev team's outbox; the architect's review comes back under `.git-exclude/reviewed/<id>-<topic>/`), with an entry point that cites the RFC, the handoff, and the REQ ids and ED sections implemented, so a reviewer who did not design the feature can check conformance.
