@@ -921,23 +921,68 @@ fn ed_13_1_a_worker_refuses_a_request_of_another_protocol_version() {
     );
 }
 
-/// A script that stands for a worker, on Unix: it answers the probe (in `version`) and then does
-/// what `after` says. The runtime starts it as it starts the worker, with the same arguments,
-/// which it ignores.
+/// The one executable script of the stand-in workers, written once for the whole binary.
+///
+/// A test that wrote an executable script of its own, and ran it a moment later, while another
+/// test of the binary forked, met `ETXTBSY` ("Text file busy"): the forked child holds the write
+/// handle of the file until it execs, and no program can be executed while one is open for
+/// writing. It failed `ed_13_1_a_frame_the_runtime_refuses_ends_as_worker_died` once on
+/// `ubuntu-24.04-arm` (the spawn's failure reached the test only as `host_fault{unavailable}`).
+/// `xcrun`'s tests of the same crate avoid it the same way: the executable is written once and
+/// never again, and what differs between tests is **data** the runner reads: the file
+/// `<its own path>.body`, run by `sh`. A file that is only read is never held open for writing.
+///
+/// The one remaining window is the write of the runner itself, which a child forked by another
+/// test during it could still hold: so the runner is executed once here, until the system lets it
+/// be, before any test uses it.
+#[cfg(unix)]
+fn shared_runner() -> &'static (tempfile::TempDir, PathBuf) {
+    use std::os::unix::fs::PermissionsExt as _;
+    static RUNNER: std::sync::OnceLock<(tempfile::TempDir, PathBuf)> = std::sync::OnceLock::new();
+    RUNNER.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner");
+        std::fs::write(&path, "#!/bin/sh\nexec sh \"$0.body\" \"$@\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Its body is not there, so it ends at once: only whether it could be executed matters.
+        let mut busy = 0;
+        loop {
+            match std::process::Command::new(&path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                Ok(_) => break,
+                // ETXTBSY: a child forked during the write still holds it, until it execs.
+                Err(e) if e.raw_os_error() == Some(26) && busy < 1000 => {
+                    busy += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(e) => panic!("the stand-in workers' runner cannot be executed: {e}"),
+            }
+        }
+        (dir, path)
+    })
+}
+
+/// A stand-in for a worker, on Unix: it answers the probe (in `version`) and then does what
+/// `after` says. The runtime starts it as it starts the worker, with the same arguments, which it
+/// ignores. It is a link to [`shared_runner`] with its body beside it, as data; nothing executable
+/// is written here.
 #[cfg(unix)]
 fn fake_worker(fx: &Fx, version: u32, after: &str) -> Arc<Worker> {
-    use std::os::unix::fs::PermissionsExt as _;
     let body = format!(
         r#"{{"version":{version},"response":"probe_result","clauses":{{}},"engine_version":"fake","interpreters":{{}},"interpreter_errors":{{}}}}"#
     );
     let len = (body.len() as u32).to_be_bytes();
     let script = format!(
-        "#!/bin/sh\nprintf '\\{:03o}\\{:03o}\\{:03o}\\{:03o}'\nprintf '%s' '{body}'\n{after}\n",
+        "printf '\\{:03o}\\{:03o}\\{:03o}\\{:03o}'\nprintf '%s' '{body}'\n{after}\n",
         len[0], len[1], len[2], len[3]
     );
-    let path = fx._dir.path().join(format!("fake-worker-{version}.sh"));
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = fx._dir.path().join(format!("fake-worker-{version}"));
+    std::os::unix::fs::symlink(&shared_runner().1, &path).unwrap();
+    std::fs::write(path.with_extension("body"), script).unwrap();
     let worker = Worker::new(WorkerConfig {
         program: path,
         interpreters: vec![],
@@ -961,6 +1006,11 @@ fn ed_13_1_a_frame_the_runtime_refuses_ends_as_worker_died() {
     let fx = fx();
     // After the probe: a frame that declares 0x7fffffff bytes, then nothing, and no exit.
     let worker = fake_worker(&fx, 2, "printf '\\177\\377\\377\\377'\nexec sleep 600");
+    // Started first, so that a worker that cannot be started says why (the execution below would
+    // say only `host_fault{unavailable}`, the spawn's reason being a log line).
+    worker
+        .start()
+        .unwrap_or_else(|reason| panic!("the stand-in worker did not start: {reason}"));
     let out = worker.execute(
         execution(
             &fx,
