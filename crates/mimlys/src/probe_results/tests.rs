@@ -41,7 +41,7 @@ fn req_mdl_010_the_record_is_read_per_backend() {
 /// REQ-MDL-010: every class the probe records is known; one this release does not know is
 /// carried as it is, so that a reader never invents a class or drops a result.
 #[test]
-fn req_mdl_010_the_classes_are_the_five_and_an_unknown_one_is_kept() {
+fn req_mdl_010_the_classes_are_the_four_and_an_unknown_one_is_kept() {
     for class in CLASSES {
         let probe = LastProbe {
             class: class.to_owned(),
@@ -69,6 +69,44 @@ fn req_mdl_010_the_classes_are_the_five_and_an_unknown_one_is_kept() {
         "not a date",
         "an instant without a date is shown as it is"
     );
+}
+
+/// REQ-MDL-011 (handoff 015a-5, item 7): `unreachable` is not a class of the record. One that an
+/// earlier build of 0.13 wrote is read, kept and shown as a class this release does not know (it
+/// is neither dropped nor read as "not probed"), and a new record never has it.
+#[test]
+fn req_mdl_011_an_unreachable_from_an_earlier_build_is_an_unknown_class() {
+    assert_eq!(
+        CLASSES,
+        ["acts", "incomplete", "plans_only", "no_structured_call"]
+    );
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        r#"{"version": 1, "backends": {
+            "default": {"class": "unreachable", "steps": 1, "at": "2026-11-22T09:00:00Z"}
+        }}"#,
+    );
+    let results = read(dir.path());
+    let old = results.of("default").expect("the entry is kept");
+    assert!(!old.class_known());
+    let line = crate::messages::last_probe_text(&results, "default", None);
+    assert_eq!(
+        line,
+        "unreachable (unknown to this release), measured on this machine on 2026-11-22"
+    );
+    // The next probe's result replaces it.
+    let acts = LastProbe {
+        class: "acts".into(),
+        detail: None,
+        steps: 2,
+        model_ms_per_step: None,
+        transport: None,
+        model: None,
+        at: "2026-11-23T00:00:00Z".into(),
+    };
+    record(dir.path(), "default", acts.clone()).unwrap();
+    assert_eq!(read(dir.path()).of("default"), Some(&acts));
 }
 
 /// REQ-MDL-010: a record that cannot be read is said, with the reason, and is never repaired or

@@ -17,14 +17,21 @@
 //!       "model": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
 //!       "at": "2026-11-22T10:15:00Z"
 //!     },
-//!     "small": { "class": "incomplete", "detail": "asked_user", "steps": 3, "at": "2026-11-22T10:16:30Z" }
+//!     "small": { "class": "plans_only", "detail": "asked_user", "steps": 3, "at": "2026-11-22T10:16:30Z" }
 //!   }
 //! }
 //! ```
 //!
-//! `class` is one of [`CLASSES`]; `detail` is the reason of an `incomplete` (`not_finished`,
-//! `asked_user`, `gave_up`); `model` is the model the backend named when it was measured, so that a
-//! result is not shown as the answer for another model; `at` is the instant, in UTC.
+//! `class` is one of [`CLASSES`]; `detail` is how an `incomplete` or a `plans_only` probe ended
+//! (`not_finished`, `not_verified`, `asked_user`, `gave_up`); `model` is the model the backend
+//! named when it was measured, so that a result is not shown as the answer for another model;
+//! `at` is the instant, in UTC.
+//!
+//! **`unreachable` is not a class of the record.** A backend that cannot be reached is said by
+//! `mimlys model probe` (exit code 1) and not recorded, so that the last measurement of the model
+//! stays; an `unreachable` that an earlier build of 0.13 wrote is a word this release does not
+//! know, and is shown as such (`unreachable (unknown to this release)`), not dropped and not read as
+//! "not probed": the next probe of the backend replaces it.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -37,20 +44,15 @@ pub const FILE: &str = "probe-results.json";
 pub const VERSION: u32 = 1;
 
 /// The classes of a probe (REQ-MDL-011).
-pub const CLASSES: [&str; 5] = [
-    "acts",
-    "incomplete",
-    "plans_only",
-    "no_structured_call",
-    "unreachable",
-];
+pub const CLASSES: [&str; 4] = ["acts", "incomplete", "plans_only", "no_structured_call"];
 
 /// What one probe found, as the file holds it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastProbe {
     /// One of [`CLASSES`]; a word this release does not know is shown as it is, marked.
     pub class: String,
-    /// For `incomplete`: `not_finished`, `asked_user` or `gave_up`.
+    /// For `incomplete` and `plans_only`: how the probe ended, `not_finished`, `not_verified`,
+    /// `asked_user` or `gave_up`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// The steps the mini-task took.

@@ -99,6 +99,18 @@ pub async fn probe(app: &App, named: Option<&str>, out: &Output) -> Result<(), A
                 }
                 report.probed.push(entry(&backend.name, &last));
             }
+            Ended::Unreachable { left } => {
+                left_paths.extend(left);
+                // Said, and not recorded: the engine's availability is `status`'s to show, and the
+                // last measurement of the model stays. The command does not succeed (exit 1).
+                let reason = messages::probe_unreachable(&backend.name);
+                out.line(reason.clone());
+                report.not_measured.push(serde_json::json!({
+                    "backend": backend.name,
+                    "class": "unreachable",
+                    "reason": reason,
+                }));
+            }
             Ended::NotMeasured { reason, left } => {
                 left_paths.extend(left);
                 out.line(reason.clone());
@@ -116,12 +128,14 @@ pub async fn probe(app: &App, named: Option<&str>, out: &Output) -> Result<(), A
     if !left_paths.is_empty() {
         eprintln!("{}", messages::probe_left_paths(&left_paths));
     }
-    out.value(&report);
     if report.not_measured.is_empty() {
+        out.value(&report);
         return Ok(());
     }
-    // Some backend was not measured: the command did not do what it was asked, and says so by
-    // its exit code; what was measured stays recorded.
+    // Some backend was not measured (it could not be reached, or its time ran out in the engine's
+    // gate): the command did not do what it was asked, and says so by its exit code; what was
+    // measured stays recorded. The report is printed once, by the error that carries it (in
+    // `--json` it is the one document on standard output).
     let names: Vec<String> = report
         .not_measured
         .iter()

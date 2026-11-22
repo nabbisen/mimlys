@@ -447,12 +447,35 @@ it is done is never the answer.
 | Class | What it says |
 |---|---|
 | `acts` | The model made the edit and said it was done, and the file was found as asked. |
-| `incomplete` | It acted, but did not get there. The detail says how: `not_finished` (it did not finish within the steps and the time, or it said it was done and the file was not as asked), `asked_user` (it asked you a question, and nobody answers in a probe) or `gave_up`. |
-| `plans_only` | It never made a call that acts: it planned, asked or gave up first, or said it was done without doing anything. |
+| `incomplete` | It proposed an action, but did not get there. The detail says how it ended (below). |
+| `plans_only` | It never proposed an action: it planned, asked or gave up first, or said it was done without doing anything. The detail says how it ended (below). |
 | `no_structured_call` | Every reply was malformed. The model does not return the structured call the runtime reads; try the other `decision_transport`, or another model. |
-| `unreachable` | No reply came from the backend. |
 
-With each class the probe records the steps it took, the model's time per step,
+**What counts as proposing an action** is the model's decision, not whether the call
+worked: a call to a tool that mimlys refuses (a value of the wrong type, a tool that
+does not exist, a path outside the workspace) is still an action proposed, and a
+model whose every call to `write_file` is invalid is `incomplete`, not `plans_only`:
+it acts, badly, which is not what `plans_only` says. A reply that does not parse as
+a decision at all is not known to be a call.
+
+`incomplete` and `plans_only` both say how the probe ended, in the **detail**:
+
+| Detail | How it ended |
+|---|---|
+| `not_finished` | It did not finish within the steps and the time, or the guards of the task (too many rejected decisions in a row, the same decision again and again) stopped it. |
+| `not_verified` | It said it was done, and the file was not as asked. |
+| `asked_user` | It asked you a question, and nobody answers in a probe. |
+| `gave_up` | It gave up. |
+
+**An engine that cannot be reached is said and not recorded.** When no reply comes
+from the backend, the command says `unreachable`, exits 1, and writes nothing: the
+last measurement of that backend stays, because it says what the *model* does, and
+whether the engine answers is what `status` shows live. (`--json` lists it under
+`not_measured`, with `"class": "unreachable"`.) A record that an earlier build of
+0.13 wrote with `unreachable` in it is shown by `status` as a result of a class this
+release does not know, with its date, and is replaced by the next probe of the backend.
+
+With each recorded class the probe records the steps it took, the model's time per step,
 the transport, the model's name and the date, in `probe-results.json` in the data
 directory, one entry per backend (the latest). `status` shows it as *measured on
 this machine on* the day, and says so when the result was measured with another

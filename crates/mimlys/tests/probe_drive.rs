@@ -186,14 +186,14 @@ fn class(verdict: Verdict) -> (Class, Option<Detail>) {
 }
 
 /// REQ-MDL-011: the steps of a model that acts and completes, read from the store, are `acts`
-/// when the runtime finds the file as asked, and `incomplete` when it does not: the same task and
-/// the same replies, the verdict the runtime's reading. This is the seam the model's word never
-/// crosses.
+/// when the runtime finds the file as asked, and `incomplete` (`not_verified`) when it does not:
+/// the same task and the same replies, the verdict the runtime's reading. This is the seam the
+/// model's word never crosses.
 #[tokio::test]
 async fn req_mdl_011_the_verdict_is_the_runtimes_reading_of_the_file() {
     for (as_asked, expected) in [
         (true, (Class::Acts, None)),
-        (false, (Class::Incomplete, Some(Detail::NotFinished))),
+        (false, (Class::Incomplete, Some(Detail::NotVerified))),
     ] {
         let rig = Rig::new(scripted(vec![edit(), complete()]), false);
         let id = rig.create().unwrap();
@@ -206,15 +206,114 @@ async fn req_mdl_011_the_verdict_is_the_runtimes_reading_of_the_file() {
 }
 
 /// REQ-MDL-011: a model that completes without acting is `plans_only` whatever the file reading
-/// says (the file is the probe's own and was not touched).
+/// says (the file is the probe's own and was not touched), and it says how it ended: it said it
+/// was done, and the file was not as asked (`not_verified`).
 #[tokio::test]
 async fn req_mdl_011_completing_without_acting_is_plans_only() {
     let rig = Rig::new(scripted(vec![complete()]), false);
     let id = rig.create().unwrap();
     assert_eq!(
         class(rig.verdict(id, false).await),
-        (Class::PlansOnly, None)
+        (Class::PlansOnly, Some(Detail::NotVerified))
     );
+}
+
+/// The probe's task run to its end over `replies`, and what it came to.
+async fn rejected_run(replies: Vec<Value>) -> (probe::Observed, (Class, Option<Detail>)) {
+    let rig = Rig::new(scripted(replies), false);
+    let id = rig.create().unwrap();
+    let stop = Stop::new();
+    assert_eq!(drive(&rig.runtime, id, &stop).await.unwrap(), Driven::Ended);
+    let (observed, _) = observe(&rig.runtime, id, || false).unwrap();
+    let verdict = classify(&observed);
+    (observed, class(verdict))
+}
+
+/// REQ-MDL-011 (handoff 015a-5, item 7): a step counts as acting when its decision was an `act`,
+/// accepted or rejected after parsing, not only when an action record was made. A model whose
+/// every call to `write_file` is invalid, whatever the rejection (`schema`, `unknown_tool`,
+/// `invalid_argument`, `denied`), proposed actions, and badly: it is `incomplete`, not
+/// `plans_only`; the guards of the task end it (`not_finished`). The same replies that are not
+/// `act`s are `plans_only`.
+#[tokio::test]
+async fn req_mdl_011_a_rejected_act_is_acting() {
+    let rejected: [(&str, Value); 4] = [
+        (
+            "schema",
+            act("write_file", json!({"path": "probe.txt", "content": 5})),
+        ),
+        (
+            "unknown_tool",
+            act(
+                "write_the_file",
+                json!({"path": "probe.txt", "content": "x"}),
+            ),
+        ),
+        (
+            "invalid_argument",
+            act("write_file", json!({"path": "a\u{0}b", "content": "x"})),
+        ),
+        (
+            "denied",
+            act(
+                "write_file",
+                json!({"path": "../outside.txt", "content": "x"}),
+            ),
+        ),
+    ];
+    for (code, reply) in rejected {
+        let (observed, verdict) = rejected_run(vec![reply; 8]).await;
+        assert!(
+            observed.steps.iter().all(|s| s.replied && s.acted),
+            "{code}: {:?}",
+            observed.steps
+        );
+        assert_eq!(
+            verdict,
+            (Class::Incomplete, Some(Detail::NotFinished)),
+            "{code}: a rejected `act` is acting"
+        );
+    }
+    // Rejected, and then the model says it is done: it acted, and the file was not as asked.
+    let (_, verdict) = rejected_run(vec![
+        act("write_file", json!({"path": "probe.txt", "content": 5})),
+        complete(),
+    ])
+    .await;
+    assert_eq!(verdict, (Class::Incomplete, Some(Detail::NotVerified)));
+    // Rejected, and then asking: it acted first.
+    let (_, verdict) = rejected_run(vec![
+        act("write_the_file", json!({})),
+        json!({"decision": "ask_user", "question": "how?"}),
+    ])
+    .await;
+    assert_eq!(verdict, (Class::Incomplete, Some(Detail::AskedUser)));
+}
+
+/// REQ-MDL-011: what is not an `act` is not acting. A decision that is not an `act` is not, and a
+/// reply that does not parse as a decision is not known to be one: an `act` with no `arguments`
+/// is refused by the envelope's own schema, before any tool is named, and is a reply that was not
+/// accepted (the model said something, it is not `no_structured_call`), without being acting.
+#[tokio::test]
+async fn req_mdl_011_what_is_not_an_act_is_not_acting() {
+    let (observed, verdict) = rejected_run(vec![
+        json!({"decision": "act", "tool": "write_file"}),
+        json!({"decision": "act", "tool": "write_file"}),
+        json!({"decision": "act", "tool": "write_file"}),
+        json!({"decision": "act", "tool": "write_file"}),
+    ])
+    .await;
+    assert!(
+        observed.steps.iter().all(|s| s.replied && !s.malformed),
+        "{:?}",
+        observed.steps
+    );
+    assert!(
+        observed.steps.iter().all(|s| !s.acted),
+        "{:?}",
+        observed.steps
+    );
+    assert_eq!(verdict, (Class::PlansOnly, Some(Detail::NotFinished)));
 }
 
 /// REQ-MDL-011: the classes from the store, one by one: plans until the steps run out, prose, a
@@ -228,7 +327,7 @@ async fn req_mdl_011_each_class_from_what_the_store_holds() {
     let id = rig.create().unwrap();
     assert_eq!(
         class(rig.verdict(id, false).await),
-        (Class::PlansOnly, None)
+        (Class::PlansOnly, Some(Detail::NotFinished))
     );
     let (_, measures) = observe(&rig.runtime, id, || false).unwrap();
     assert_eq!(measures.steps, 8, "LIM-E2: the steps of the budget");
@@ -297,10 +396,8 @@ async fn req_mdl_011_each_class_from_what_the_store_holds() {
     }
     let rig = Rig::new(down, false);
     let id = rig.create().unwrap();
-    assert_eq!(
-        class(rig.verdict(id, false).await),
-        (Class::Unreachable, None)
-    );
+    // No class: it is said, and the command does not record it.
+    assert_eq!(rig.verdict(id, false).await, Verdict::Unreachable);
 }
 
 /// A backend that answers its first request with an `act` and moves the clock past LIM-E3 doing

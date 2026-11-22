@@ -431,7 +431,8 @@ fn req_mdl_011_a_model_that_acts_and_does_not_finish_is_incomplete() {
 
 /// REQ-MDL-011: the verdict is the runtime's, not the model's. A model that writes the wrong
 /// content and then says `complete` completes its task, and its file is not as asked: it is
-/// `incomplete`, never `acts`. One that says `complete` and never acted is `plans_only`.
+/// `incomplete`, never `acts`, and it says how it ended: `not_verified`. One that says `complete`
+/// and never acted is `plans_only`, `not_verified` too.
 #[test]
 fn req_mdl_011_the_models_word_that_it_is_done_is_not_the_verdict() {
     let (rig, _, _) = expect(
@@ -443,10 +444,34 @@ fn req_mdl_011_the_models_word_that_it_is_done_is_not_the_verdict() {
             complete(),
         ],
         "incomplete",
-        Some("not_finished"),
+        Some("not_verified"),
     );
     assert_eq!(rig.record("default")["steps"], 2);
-    expect(vec![complete()], "plans_only", None);
+    expect(vec![complete()], "plans_only", Some("not_verified"));
+}
+
+/// REQ-MDL-011 (handoff 015a-5, item 7): a step counts as acting when its decision was an `act`,
+/// accepted or rejected after parsing. A model whose every call to `write_file` is invalid (a
+/// number for the content, so `schema`) is not `plans_only`: it proposed actions, and badly. The
+/// task ends by the guards on its rejections, and the class is `incomplete`, `not_finished`.
+/// This runs against the real store: what the verdict reads is what the store kept of the steps.
+#[test]
+fn req_mdl_011_a_model_whose_every_call_is_invalid_is_incomplete_not_plans_only() {
+    let script = (0..12)
+        .map(|_| act("write_file", json!({"path": "probe.txt", "content": 5})))
+        .collect();
+    let (rig, server, _) = expect(script, "incomplete", Some("not_finished"));
+    assert!(
+        rig.record("default")["steps"].as_u64().unwrap() >= 2,
+        "{}",
+        rig.record("default")
+    );
+    assert!(!server.decision_requests().is_empty());
+    // Not an `act` that is rejected: a reply the envelope itself refuses is not known to be one.
+    let script = (0..12)
+        .map(|_| Reply::Decision(json!({"decision": "act", "tool": "write_file"})))
+        .collect();
+    expect(script, "plans_only", Some("not_finished"));
 }
 
 /// REQ-MDL-011: a model that acts and then asks the user is `incomplete` (`asked_user`): nobody
@@ -476,13 +501,34 @@ fn req_mdl_011_a_model_that_gives_up_is_incomplete_gave_up() {
     );
 }
 
-/// REQ-MDL-011: a model that plans and never acts, up to the steps it has, is `plans_only`.
+/// REQ-MDL-011: a model that asks the user, or gives up, before it has proposed any action is
+/// `plans_only`, and says how it ended: `asked_user`, `gave_up`.
+#[test]
+fn req_mdl_011_a_model_that_asks_or_gives_up_first_is_plans_only() {
+    expect(
+        vec![Reply::Decision(
+            json!({"decision": "ask_user", "question": "Which colour?"}),
+        )],
+        "plans_only",
+        Some("asked_user"),
+    );
+    expect(
+        vec![Reply::Decision(
+            json!({"decision": "give_up", "reason": "cannot"}),
+        )],
+        "plans_only",
+        Some("gave_up"),
+    );
+}
+
+/// REQ-MDL-011: a model that plans and never acts, up to the steps it has, is `plans_only`
+/// (`not_finished`).
 #[test]
 fn req_mdl_011_a_model_that_only_plans_is_plans_only() {
     let script = (0..12)
         .map(|n| Reply::Decision(json!({"decision": "plan", "steps": [format!("think {n}")]})))
         .collect();
-    let (rig, _, _) = expect(script, "plans_only", None);
+    let (rig, _, _) = expect(script, "plans_only", Some("not_finished"));
     assert_eq!(rig.record("default")["steps"], 8, "the steps of LIM-E2");
 }
 
@@ -495,28 +541,105 @@ fn req_mdl_011_replies_in_prose_are_no_structured_call() {
     expect(script, "no_structured_call", None);
 }
 
-/// REQ-MDL-011: a backend that does not answer is `unreachable`, recorded with the date like the
-/// others (and `status` shows the reachability beside it).
+/// A URL on which nothing listens.
+fn dead_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    format!(
+        "http://127.0.0.1:{}/v1",
+        listener.local_addr().unwrap().port()
+    )
+}
+
+/// REQ-MDL-011 (handoff 015a-5, item 7): a backend that does not answer is `unreachable`, which is
+/// said and **not recorded**: the command exits 1, the JSON says so in `not_measured` (and not in
+/// `probed`), no record is made, and nothing of the probe is left.
 #[test]
-fn req_mdl_011_a_backend_that_does_not_answer_is_unreachable() {
-    let dead = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        format!(
-            "http://127.0.0.1:{}/v1",
-            listener.local_addr().unwrap().port()
-        )
-    };
+fn req_mdl_011_a_backend_that_does_not_answer_is_unreachable_and_nothing_is_recorded() {
     let server = server(vec![]);
     let mut entry = Entry::local("default", &server);
-    entry.url = dead;
+    entry.url = dead_url();
     let rig = Rig::new(&[entry], false);
     rig.user_task();
     let before = rig.state();
-    let (code, printed, record) = probe_one(&rig, None);
-    assert_eq!(code, 0, "{printed}");
-    assert_eq!(class_of(&record), ("unreachable".into(), None), "{record}");
+    let (code, text, stderr) = rig.run(&["model", "probe"]);
+    assert_eq!(code, 1, "{text}\n{stderr}");
+    assert!(text.contains("backend `default`: unreachable"), "{text}");
+    assert!(text.contains("nothing is recorded"), "{text}");
+    let (code, printed) = rig.json(&["model", "probe"]);
+    assert_eq!(code, 1, "{printed}");
+    assert_eq!(printed["probed"], json!([]), "{printed}");
+    assert_eq!(printed["not_measured"][0]["backend"], "default");
+    assert_eq!(printed["not_measured"][0]["class"], "unreachable");
+    assert!(!rig.has_record_file(), "nothing is recorded for it");
     assert_eq!(server.requests().len(), 0, "the other server saw nothing");
     rig.assert_nothing_left(&before, "unreachable");
+}
+
+/// REQ-MDL-011: an engine that was down when it was probed does not erase what the model was
+/// measured to do: `acts` stays in the record and in `status`; the probe that found no engine
+/// exits 1 and changes nothing of the record, byte for byte.
+#[test]
+fn req_mdl_011_an_unreachable_probe_leaves_the_last_measurement() {
+    let server = server(vec![replace_red_with_blue(), complete()]);
+    let up = Entry::local("default", &server);
+    let url = up.url.clone();
+    let rig = Rig::new(&[up], false);
+    let (code, printed, record) = probe_one(&rig, None);
+    assert_eq!(code, 0, "{printed}");
+    assert_eq!(class_of(&record).0, "acts");
+    let kept = std::fs::read(rig.data().join("probe-results.json")).unwrap();
+
+    // The engine is gone: the same configuration, with a URL on which nothing listens.
+    let text = std::fs::read_to_string(&rig.config).unwrap();
+    std::fs::write(&rig.config, text.replace(&url, &dead_url())).unwrap();
+    let (code, printed) = rig.json(&["model", "probe"]);
+    assert_eq!(code, 1, "{printed}");
+    assert_eq!(printed["not_measured"][0]["class"], "unreachable");
+    assert_eq!(
+        std::fs::read(rig.data().join("probe-results.json")).unwrap(),
+        kept,
+        "the record is as it was"
+    );
+    let (_, text, _) = rig.run(&["status"]);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("backend         default:"))
+        .unwrap();
+    assert!(line.contains("unreachable"), "{line}");
+    assert!(
+        line.contains("last probe: acts, measured on this machine on"),
+        "{line}"
+    );
+}
+
+/// REQ-MDL-011: an `unreachable` that an earlier build of 0.13 recorded is a class this release
+/// does not know: `status` shows it as such (not as "not probed", and not dropped), and the next
+/// probe of the backend replaces it.
+#[test]
+fn req_mdl_011_an_unreachable_from_an_earlier_build_is_shown_as_unknown() {
+    let server = server(vec![replace_red_with_blue(), complete()]);
+    let rig = Rig::new(&[Entry::local("default", &server)], false);
+    std::fs::create_dir_all(rig.data()).unwrap();
+    std::fs::write(
+        rig.data().join("probe-results.json"),
+        json!({"version": 1, "backends": {"default": {
+            "class": "unreachable", "steps": 1, "model": "test-model", "at": "2026-11-22T09:00:00Z"
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let (_, text, _) = rig.run(&["status"]);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("backend         default:"))
+        .unwrap();
+    assert!(
+        line.contains("last probe: unreachable (unknown to this release), measured on this machine on 2026-11-22"),
+        "{line}"
+    );
+    let (code, printed, record) = probe_one(&rig, None);
+    assert_eq!(code, 0, "{printed}");
+    assert_eq!(class_of(&record).0, "acts");
 }
 
 // ---- the verdict, the scope, the tools ----

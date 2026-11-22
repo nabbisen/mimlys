@@ -1,23 +1,24 @@
 //! The probe's verdict (REQ-MDL-011): what the runtime found when the mini-task ended, put in one
-//! of five classes. It is a function of what the store and the workspace hold, never of the
-//! model's word that it finished, and it reads no clock.
+//! of four classes, or found that the engine could not be reached, which is no class. It is a
+//! function of what the store and the workspace hold, never of the model's word that it finished,
+//! and it reads no clock.
 
 use mimlys_core::task::HaltReason;
 
-/// The class of a probe (REQ-MDL-011), in the words the record and `status` use.
+/// The class of a probe (REQ-MDL-011), in the words the record and `status` use. A backend that
+/// cannot be reached has none: that is [`Verdict::Unreachable`], said and never recorded (it
+/// measures the engine's availability, which `status` shows live, and not the model).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     /// Completed, and the runtime found the file as asked.
     Acts,
-    /// It acted, but the task was not completed and verified within the bounds, or it asked the
-    /// user or gave up ([`Detail`] says which).
+    /// It proposed an action, accepted or rejected, but did not complete and verify within the
+    /// bounds ([`Detail`] says how it ended).
     Incomplete,
-    /// No `act` within the budget.
+    /// It never proposed an action ([`Detail`] says how it ended).
     PlansOnly,
     /// Every reply was malformed: no structured call.
     NoStructuredCall,
-    /// No reply came from the backend.
-    Unreachable,
 }
 
 impl Class {
@@ -28,17 +29,17 @@ impl Class {
             Class::Incomplete => "incomplete",
             Class::PlansOnly => "plans_only",
             Class::NoStructuredCall => "no_structured_call",
-            Class::Unreachable => "unreachable",
         }
     }
 }
 
-/// Why an `incomplete` probe is incomplete.
+/// How an `incomplete` or a `plans_only` probe ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Detail {
-    /// It did not finish, or what it finished the runtime did not find as asked, within the
-    /// bounds (LIM-E2 steps, LIM-E3 time, or the guards of the task).
+    /// It did not finish within the bounds (LIM-E2 steps, LIM-E3 time, or the guards of the task).
     NotFinished,
+    /// It said `complete`, and the runtime did not find the file as asked.
+    NotVerified,
     /// It asked the user, whom nobody answers in a probe.
     AskedUser,
     /// It gave up.
@@ -50,6 +51,7 @@ impl Detail {
     pub fn as_str(self) -> &'static str {
         match self {
             Detail::NotFinished => "not_finished",
+            Detail::NotVerified => "not_verified",
             Detail::AskedUser => "asked_user",
             Detail::GaveUp => "gave_up",
         }
@@ -80,7 +82,10 @@ pub struct StepFacts {
     pub replied: bool,
     /// The reply was rejected `malformed`.
     pub malformed: bool,
-    /// An action was proposed: the model's `act` went through validation.
+    /// The decision was an `act`: it parsed as one, and it was accepted (an action was proposed) or
+    /// rejected after parsing (`schema`, `unknown_tool`, `invalid_argument`, `denied`, `budget`).
+    /// A reply that did not parse as a decision (`malformed`, or a field the envelope refuses) is
+    /// not known to be an `act`, and a `plan`, a question, `complete` and `give_up` are not.
     pub acted: bool,
 }
 
@@ -99,8 +104,10 @@ pub struct Observed {
 /// What the probe's verdict is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// A class to record.
+    /// A class to record, with how the probe ended for the two classes that carry it.
     Class(Class, Option<Detail>),
+    /// No reply came from the backend: the engine could not be reached. Said, and not recorded.
+    Unreachable,
     /// The probe measured nothing about the model: the task's time ran out before a request was
     /// sent (the engine's gate stayed held by another runtime of the user's). Nothing is recorded.
     NotMeasured,
@@ -111,16 +118,19 @@ pub enum Verdict {
 
 /// The verdict on what the runtime observed.
 ///
-/// In order: no reply at all is `unreachable` when the backend failed (and not measured when the
-/// task's time ran out in the engine's gate); replies that were all `malformed` are
-/// `no_structured_call`; a completed task whose file the runtime found as asked is `acts`; no
-/// `act` at all is `plans_only` (whatever else the model said: planned, asked, gave up, or claimed
-/// to be done); and a model that acted and did not get there is `incomplete`, with how it ended.
+/// In order: no reply at all is [`Verdict::Unreachable`] when the backend failed (and not measured
+/// when the task's time ran out in the engine's gate); replies that were all `malformed` are
+/// `no_structured_call`; a completed task whose file the runtime found as asked is `acts`.
+/// Otherwise the model did not act to the end: it is `incomplete` when some step's decision was an
+/// `act` (accepted or rejected after parsing: a model whose every call is invalid acted, badly),
+/// `plans_only` when none was, and both say how the probe ended: it was `not_finished` (the
+/// bounds), `not_verified` (it said `complete` and the file was not as asked), `asked_user` or
+/// `gave_up`.
 pub fn classify(observed: &Observed) -> Verdict {
     let replies = observed.steps.iter().filter(|s| s.replied).count();
     if replies == 0 {
         return match observed.end {
-            End::Halted(HaltReason::BackendUnavailable) => Verdict::Class(Class::Unreachable, None),
+            End::Halted(HaltReason::BackendUnavailable) => Verdict::Unreachable,
             End::Halted(HaltReason::BudgetDeadline) => Verdict::NotMeasured,
             _ => Verdict::Fault,
         };
@@ -136,15 +146,18 @@ pub fn classify(observed: &Observed) -> Verdict {
     if observed.end == End::Completed && observed.verified {
         return Verdict::Class(Class::Acts, None);
     }
-    if !observed.steps.iter().any(|s| s.acted) {
-        return Verdict::Class(Class::PlansOnly, None);
-    }
     let detail = match observed.end {
         End::AskedUser => Detail::AskedUser,
         End::GaveUp => Detail::GaveUp,
-        End::Completed | End::Halted(_) | End::Other(_) => Detail::NotFinished,
+        End::Completed => Detail::NotVerified,
+        End::Halted(_) | End::Other(_) => Detail::NotFinished,
     };
-    Verdict::Class(Class::Incomplete, Some(detail))
+    let class = if observed.steps.iter().any(|s| s.acted) {
+        Class::Incomplete
+    } else {
+        Class::PlansOnly
+    };
+    Verdict::Class(class, Some(detail))
 }
 
 #[cfg(test)]

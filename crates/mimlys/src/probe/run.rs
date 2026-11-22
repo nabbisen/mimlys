@@ -27,6 +27,12 @@ pub enum Ended {
         /// Paths the removal could not remove.
         left: Vec<String>,
     },
+    /// No reply came from the backend: the engine could not be reached. It is said, and nothing
+    /// is recorded (REQ-MDL-011): the backend's last measurement stays.
+    Unreachable {
+        /// Paths the removal could not remove.
+        left: Vec<String>,
+    },
     /// Nothing was measured of the model, and nothing is recorded: why.
     NotMeasured {
         /// What happened.
@@ -188,6 +194,7 @@ pub async fn probe_backend(
     left.extend(scope.remove());
     match measured? {
         Measuring::Stopped => Ok(Ended::Stopped { left }),
+        Measuring::Unreachable => Ok(Ended::Unreachable { left }),
         Measuring::NotMeasured(reason) => Ok(Ended::NotMeasured { reason, left }),
         Measuring::Found(last) => Ok(Ended::Measured { last, left }),
     }
@@ -196,6 +203,7 @@ pub async fn probe_backend(
 /// What `measure` found.
 enum Measuring {
     Found(LastProbe),
+    Unreachable,
     NotMeasured(String),
     Stopped,
 }
@@ -247,6 +255,7 @@ async fn measure(
     ) = observe(runtime, task.task_id, || file_is_as_asked(&tree))?;
     let (class, detail) = match classify(&observed) {
         Verdict::Class(class, detail) => (class, detail),
+        Verdict::Unreachable => return Ok(Measuring::Unreachable),
         Verdict::NotMeasured => {
             return Ok(Measuring::NotMeasured(
                 crate::messages::probe_not_measured_gate(&backend.name),

@@ -206,8 +206,10 @@ enum ModelCommand {
     /// The probe makes a scope of its own under the data directory with one small file, asks the
     /// model for one small edit with three built-in tools and nothing else, and judges the file
     /// itself: the model's word that it is done is never the verdict. The class is `acts`,
-    /// `incomplete` (it acted and did not finish, asked or gave up), `plans_only`,
-    /// `no_structured_call` or `unreachable`, recorded per backend and shown by `status`. The
+    /// `incomplete` (it proposed an action but did not get there), `plans_only` (it never
+    /// proposed one) or `no_structured_call`, the first two with how it ended (`not_finished`,
+    /// `not_verified`, `asked_user`, `gave_up`), recorded per backend and shown by `status`. An
+    /// engine that cannot be reached is said (`unreachable`), exits 1 and is not recorded. The
     /// probe's task and scope are deleted when it ends. Without a name, every local backend is
     /// probed, one after the other; a remote backend is probed only when you name it, and then
     /// only a fixed mini-task is sent, nothing of yours. It writes, so it does not run beside

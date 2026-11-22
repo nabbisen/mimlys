@@ -1770,19 +1770,37 @@ pub fn probe_class_meaning(class: &str, detail: Option<&str>) -> &'static str {
     match (class, detail) {
         ("acts", _) => "it made the edit, completed the task, and the file was found as asked",
         ("incomplete", Some("asked_user")) => {
-            "it acted, then asked the user, whom nobody answers in a probe"
+            "it proposed an action, then asked the user, whom nobody answers in a probe"
         }
-        ("incomplete", Some("gave_up")) => "it acted, then gave up",
+        ("incomplete", Some("gave_up")) => "it proposed an action, then gave up",
+        ("incomplete", Some("not_verified")) => {
+            "it proposed an action and said it was done, but the file was not as asked"
+        }
         ("incomplete", _) => {
-            "it acted, but did not finish and verify the edit within the steps and the time of the probe, or said it was done when the file was not as asked"
+            "it proposed an action, but did not finish within the steps and the time of the probe"
         }
-        ("plans_only", _) => "it never made a call that acts: it planned, asked, or gave up",
+        ("plans_only", Some("asked_user")) => {
+            "it never proposed an action: it asked the user, whom nobody answers in a probe"
+        }
+        ("plans_only", Some("gave_up")) => "it never proposed an action: it gave up",
+        ("plans_only", Some("not_verified")) => {
+            "it never proposed an action, and said it was done, but the file was not as asked"
+        }
+        ("plans_only", _) => {
+            "it never proposed an action: it planned until the steps or the time of the probe ran out"
+        }
         ("no_structured_call", _) => {
             "every reply was malformed: it does not return the structured call the runtime reads"
         }
-        ("unreachable", _) => "no reply came from the backend",
         _ => "",
     }
+}
+/// `model probe`: no reply came from the backend (REQ-MDL-011). It is said, and nothing is
+/// recorded, so that the last measurement of the backend stays; the command exits 1.
+pub fn probe_unreachable(name: &str) -> String {
+    format!(
+        "backend `{name}`: unreachable: no reply came from the backend, so nothing was measured and nothing is recorded (the last measurement of this backend, if any, stays); check that the engine is running and the url is right (`mimlys status` shows it live), then probe again"
+    )
 }
 /// `model probe` with no name left remote backends out (REQ-MDL-011).
 pub fn probe_left_out(left: &[crate::probe::LeftOut]) -> Vec<String> {

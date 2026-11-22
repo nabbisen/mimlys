@@ -162,7 +162,11 @@ pub fn observe(
         .map(|s| StepFacts {
             replied: s.decision_hash.is_some() || s.rejection.is_some(),
             malformed: s.rejection == Some(RejectionCode::Malformed),
-            acted: s.action_id.is_some(),
+            // An `act` that was accepted has an action; one rejected after parsing (stages 4 to 10
+            // of the validator: the tool, the shape of its arguments, the paths, the grants, the
+            // bounds, the budget) has the decision's hash and the rejection. A decision that was
+            // not an `act` has the hash and no rejection, and one that did not parse has no hash.
+            acted: s.action_id.is_some() || (s.rejection.is_some() && s.decision_hash.is_some()),
         })
         .collect();
     let times: Vec<i64> = steps
