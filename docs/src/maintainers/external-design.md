@@ -639,6 +639,7 @@ A request therefore never ends with an `assistant` message, which both measured 
 - They run no recovery, integrity check, reaping or migration.
 - A store that needs recovery is read as committed, and `status` says `recovery pending: the next command that writes recovers it`.
 - While the lock is held, `status` names the holder (`store: in use by runtime <pid> since <time>`).
+- A writer the lock refuses names the holder in the same words (from 0.13, every writer), with the error kind `conflict`.
 - A reader never reports a store as locked.
 
 ### 16.1 Entities (REQ-PERS-001)
@@ -717,7 +718,7 @@ Structured lines on standard error: timestamp, level, event, durations, counts, 
 | `not_found` | unknown task, action, snapshot or grant | `id` |
 | `state` | the verb is not valid in the current state | `state`, `pending` |
 | `denied` | a grant or budget beyond the ceiling; promotion not allowed | `reason`, `ceiling` |
-| `conflict` | overlapping project scope; promotion conflicts | `with`, `paths` |
+| `conflict` | overlapping project scope; promotion conflicts; the store held by another process (from 0.13) | `with`, `paths`, `holder_pid` |
 | `unavailable` | the model backend (`model_backend`: an adapter's contained panic, or a `BackendError`) or the tools' provider (`tool_provider`: a contained panic) not usable; every `unavailable` carries `detail.component`, and these four words are the whole set (handoff 004d). A worker or an MCP server that cannot be reached is not this error: it is an execution's outcome (`host_fault`) or an import's reason, shown in the observation and by `status`; on Windows, the permissions of a directory being written by another runtime past LIM-O7 or their lock not obtainable, or a new workspace whose per-task entries cannot be written (`component: "permissions"`; retrying later is the remedy; handoff 011o-4); an interpreter download that failed after its retries (`component: "download"`, §12) | `component` |
 | `internal` | a runtime defect | `reference` (an event id; never a stack trace) |
 
@@ -924,7 +925,7 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 | Approval expires | halt `approval_expired` | REQ-APR-006 |
 | Workspace quota | halt `workspace_quota` | REQ-WS-008 |
 | Part of the workspace cannot be read (an action changed its permissions, or another failure of a read) | halt `workspace_unreadable`, the event `workspace.unreadable{path, kind?}`, a line naming the path and the remedy (restore its permissions, then resume, for a permission problem; the failure's own words otherwise); after a rollback that failed, the line also says that the workspace was not rolled back (`rollback_failed` on the halt's state change); never an internal error that leaves the task `running` (review of handoff 002e) | REQ-WS-004 |
-| Second runtime on the data directory | refuses to start | REQ-PERS-001 |
+| Second runtime on the data directory | refuses to start, `conflict`, naming the holder (`the store is in use by runtime <pid> since <time>`) | REQ-PERS-001 |
 | Engine context smaller than one request needs (the budget's tokens at the transport's lowest measured characters per token, plus `max_tokens`) | `status` shows `context: <n> tokens per request (needs about <m>)` and a warning with the engine's remedy (llama.cpp's `-c` for all its slots, or Ollama's `num_ctx`); `run` and the commands that drive steps say it once on standard error; the run goes on. The context is the engine's word (llama.cpp's `/props`; Ollama's `/api/ps` for a loaded model, else the Modelfile's `num_ctx`), else `unknown`, never assumed | REQ-MDL-003 |
 | MCP definition changed | tool unavailable for the task; `tool.unpinned` | REQ-MCP-002 |
 
