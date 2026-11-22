@@ -29,6 +29,42 @@ pub struct Recovered {
     pub state: String,
 }
 
+/// A task that recovery left as it is, because a record of it holds a word that a newer release
+/// of mimlys wrote and this release does not know (REQ-MAIN-006; handoff 004e, item 2): it is
+/// not halted, rewritten or recovered, and the start does not fail. The user goes back to the
+/// release that wrote it to act on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeftAsIs {
+    /// The task.
+    pub task_id: TaskId,
+    /// The kind of record that holds the word (`task`, `action`, `event`, …).
+    pub record: String,
+    /// The word and the field that holds it.
+    pub word: mimlys_core::newer::UnknownWord,
+}
+
+/// What a recovery pass did: the tasks it recovered, and the tasks it left as they are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecoveryPass {
+    /// The tasks recovered.
+    pub recovered: Vec<Recovered>,
+    /// The tasks left as they are, each once.
+    pub left: Vec<LeftAsIs>,
+}
+
+/// The first word a task's records hold that this release does not know, with the kind of record
+/// that holds it. A damaged record is not one: it fails where it is read, as it always did.
+fn first_newer(store: &Store, task_id: TaskId) -> Result<Option<LeftAsIs>, PersistenceError> {
+    Ok(mimlys_core::newer::scan(store, task_id)?
+        .into_iter()
+        .next()
+        .map(|record| LeftAsIs {
+            task_id,
+            record: record.kind.name().to_owned(),
+            word: record.newer.first().clone(),
+        }))
+}
+
 /// Everything recovery needs to write events.
 pub struct RecoveryContext<'a> {
     /// Identifier source.
@@ -84,10 +120,39 @@ pub fn recover_all(
     ctx: &RecoveryContext<'_>,
     workspaces: &dyn mimlys_core::spi::WorkspaceProvider,
 ) -> Result<Vec<Recovered>, PersistenceError> {
+    Ok(recover_all_reporting(store, ctx, workspaces)?.recovered)
+}
+
+/// [`recover_all`], with the tasks it left as they are.
+///
+/// A task that holds a word of a newer release is left exactly as it is: not recovered, not
+/// halted, not expired, and the pass goes on with the others and does not fail (REQ-MAIN-006).
+/// What it would have done to it, only the release that wrote the word can decide.
+pub fn recover_all_reporting(
+    store: &Store,
+    ctx: &RecoveryContext<'_>,
+    workspaces: &dyn mimlys_core::spi::WorkspaceProvider,
+) -> Result<RecoveryPass, PersistenceError> {
     let mut out = Vec::new();
+    let mut left = Vec::new();
+    // A task whose own state this release does not know cannot be classified: it is none of the
+    // tasks below, and is named so that the user knows it is not tended to.
+    for summary in store.list_tasks()? {
+        if let Some(word) = summary.unknown.iter().find(|w| w.field == "state") {
+            left.push(LeftAsIs {
+                task_id: summary.task_id,
+                record: "task".into(),
+                word: word.clone(),
+            });
+        }
+    }
     let mut found = store.tasks_in_state("recovering")?;
     found.extend(store.tasks_in_state("running")?);
     for task_id in found {
+        if let Some(newer) = first_newer(store, task_id)? {
+            left.push(newer);
+            continue;
+        }
         let Some(task) = store.load_task(task_id)? else {
             continue;
         };
@@ -184,8 +249,11 @@ pub fn recover_all(
             state: after.state.name().to_owned(),
         });
     }
-    expire_waiting(store, ctx)?;
-    Ok(out)
+    expire_waiting(store, ctx, &mut left)?;
+    Ok(RecoveryPass {
+        recovered: out,
+        left,
+    })
 }
 
 /// What the start did with the journals of task deletions (RFC 006 §6; handoff 006b).
@@ -210,9 +278,19 @@ pub fn recover_deletions(
 ) -> Result<DeletionReport, PersistenceError> {
     let mut report = DeletionReport::default();
     for (task_id, rows) in files.pending_deletions()? {
-        let committed = store.load_task(task_id)?.is_none()
-            || store.load_workspace_state(task_id)?
-                == Some(mimlys_core::snapshot::WorkspaceState::Deleted);
+        // A task that holds a word of a newer release still holds its rows: its deletion did
+        // not commit (REQ-MAIN-006).
+        let gone = match store.load_task(task_id) {
+            Ok(task) => task.is_none(),
+            Err(PersistenceError::NewerRecord { .. }) => false,
+            Err(e) => return Err(e),
+        };
+        let marked_deleted = match store.load_workspace_state(task_id) {
+            Ok(state) => state == Some(mimlys_core::snapshot::WorkspaceState::Deleted),
+            Err(PersistenceError::NewerRecord { .. }) => false,
+            Err(e) => return Err(e),
+        };
+        let committed = gone || marked_deleted;
         if !committed {
             files.finish_deletion(task_id)?;
             report.discarded += 1;
@@ -294,7 +372,14 @@ pub fn recover_promotions(
 ) -> Result<Vec<RecoveredPromotion>, PersistenceError> {
     let mut out = Vec::new();
     for mut promotion in store.promotions_applying()? {
-        let restored = match store.load_snapshot(promotion.backup_snapshot)? {
+        let backup = match store.load_snapshot(promotion.backup_snapshot) {
+            Ok(backup) => backup,
+            // The backup is a record a newer release wrote: only that release can say how to
+            // restore from it, and the promotion is left as it is (REQ-MAIN-006).
+            Err(PersistenceError::NewerRecord { .. }) => continue,
+            Err(e) => return Err(e),
+        };
+        let restored = match backup {
             Some(backup) => workspaces.revert_promotion(
                 &promotion,
                 &backup,
@@ -380,8 +465,16 @@ pub fn recover_snapshot_journals(
     Ok(report)
 }
 
-fn expire_waiting(store: &Store, ctx: &RecoveryContext<'_>) -> Result<(), PersistenceError> {
+fn expire_waiting(
+    store: &Store,
+    ctx: &RecoveryContext<'_>,
+    left: &mut Vec<LeftAsIs>,
+) -> Result<(), PersistenceError> {
     for task_id in store.tasks_in_state("waiting_user")? {
+        if let Some(newer) = first_newer(store, task_id)? {
+            left.push(newer);
+            continue;
+        }
         let Some(task) = store.load_task(task_id)? else {
             continue;
         };

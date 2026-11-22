@@ -593,12 +593,19 @@ macro_rules! persistence_read {
                     |r| r.get(0),
                 )
                 .ok();
-            Ok(state.and_then(|s| match s.as_str() {
-                "allocated" => Some(WorkspaceState::Allocated),
-                "active" => Some(WorkspaceState::Active),
-                "deleted" => Some(WorkspaceState::Deleted),
-                _ => None,
-            }))
+            match state.as_deref() {
+                None => Ok(None),
+                Some("allocated") => Ok(Some(WorkspaceState::Allocated)),
+                Some("active") => Ok(Some(WorkspaceState::Active)),
+                Some("deleted") => Ok(Some(WorkspaceState::Deleted)),
+                // A state a newer release wrote is no state of this one: it is named, never
+                // read as "no workspace" (REQ-MAIN-006).
+                Some(other) => Err(PersistenceError::NewerRecord {
+                    record: "workspace".into(),
+                    field: "state".into(),
+                    word: other.to_owned(),
+                }),
+            }
         }
 
         fn load_promotions(&self, task_id: TaskId) -> Result<Vec<Promotion>, PersistenceError> {
@@ -609,10 +616,22 @@ macro_rules! persistence_read {
         }
 
         fn promotions_applying(&self) -> Result<Vec<Promotion>, PersistenceError> {
-            self.query(
-                "SELECT record FROM promotions WHERE state = 'applying' ORDER BY applied_at, rowid",
-                &[],
-            )
+            // A promotion a newer release wrote is not returned: the start leaves it as it is
+            // (REQ-MAIN-006); only that release knows what restoring it means.
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn
+                .prepare("SELECT record FROM promotions WHERE state = 'applying' ORDER BY applied_at, rowid")
+                .map_err(storage("prepare"))?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(storage("query"))?;
+            let mut out = Vec::new();
+            for row in rows {
+                if let Read::Known(promotion) = Read::<Promotion>::parse(&row.map_err(storage("row"))?)? {
+                    out.push(promotion);
+                }
+            }
+            Ok(out)
         }
 
         fn object_references(

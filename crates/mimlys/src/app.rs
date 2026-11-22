@@ -11,8 +11,8 @@ use mimlys_core::path::PlatformRules;
 use mimlys_core::runtime::{MODEL_BACKEND, Runtime, RuntimeDeps, RuntimeError, Session};
 use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_persist::recovery::{
-    Recovered, RecoveredPromotion, RecoveryContext, recover_all, recover_blob_files,
-    recover_deletions, recover_promotions, recover_snapshot_journals,
+    LeftAsIs, Recovered, RecoveredPromotion, RecoveryContext, recover_all_reporting,
+    recover_blob_files, recover_deletions, recover_promotions, recover_snapshot_journals,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -256,6 +256,9 @@ pub struct App {
     pub(crate) owner: crate::registry::Owner,
     /// What recovery did at startup.
     pub recovered: Vec<Recovered>,
+    /// The tasks recovery left as they are, because a record of theirs holds a word that a newer
+    /// release wrote (REQ-MAIN-006).
+    pub left_as_is: Vec<LeftAsIs>,
     /// The promotions found `applying` at startup, restored from their backups and recorded
     /// `failed` (external design 16.3).
     pub recovered_promotions: Vec<RecoveredPromotion>,
@@ -681,7 +684,7 @@ impl App {
                 probe_left.left.join(", ")
             );
         }
-        let recovered = recover_all(
+        let pass = recover_all_reporting(
             &store,
             &RecoveryContext {
                 ids: &ids,
@@ -691,6 +694,20 @@ impl App {
             },
             &*workspaces,
         )?;
+        let recovered = pass.recovered;
+        // A task that holds a word of a newer release was left exactly as it is, and the start
+        // said so, once per task (REQ-MAIN-006): the release that wrote the word acts on it.
+        for left in &pass.left {
+            tracing::warn!(
+                "{}",
+                crate::messages::left_by_recovery(
+                    &left.task_id.to_string(),
+                    &left.record,
+                    &left.word
+                )
+            );
+        }
+        let left_as_is = pass.left;
         // A promotion found `applying` did not finish: restored from its backup, recorded
         // `failed` (external design 14.5, 16.3). Its project is not a task's workspace, so the
         // order against the recovery of tasks does not matter.
@@ -814,6 +831,7 @@ impl App {
             registry_dir,
             owner,
             recovered,
+            left_as_is,
             recovered_promotions,
             worker,
             interpreters,

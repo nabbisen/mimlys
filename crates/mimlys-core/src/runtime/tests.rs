@@ -26,6 +26,7 @@ mod halt_detail;
 mod interrupt;
 mod native;
 mod native_context;
+mod newer_records;
 mod refused_creation;
 mod rejection_feedback;
 mod result_bound;

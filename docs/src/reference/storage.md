@@ -152,6 +152,18 @@ reason for a halt, an event. What each release does with the same store:
   does `task show` of the task that holds it. `--json` keeps the record as written
   and adds the key `unknown_to_this_release` to the object that holds the word (see
   [Command line](./cli.md#words-a-newer-release-wrote)).
+- **They refuse to act on it.** A command that would change or run such a task
+  (`task resume`, `pause`, `cancel`, `delete`, `approve`, `reject`, `answer`,
+  `grant`, `revoke`, `rollback`, `promote`, and `--from-task` of a new task) is
+  refused with error kind `state`, naming the word and saying that the release of
+  mimlys that wrote it is needed, before it asks anything, contacts a backend or
+  writes a row. The task is as it was. `task prune` leaves such a task alone and says
+  so, and deletes the others.
+- **The start leaves it as it is.** A command that writes recovers the tasks it finds
+  running and expires what has expired; it does neither for a task that holds such a
+  word, and says so once for each task, on standard error. It never halts, rewrites or
+  recovers it, and the start does not fail. Run the release that wrote the word to
+  go on with the task; nothing is lost by waiting.
 - **0.12.0 and earlier fail as before.** They do not read what a later release wrote:
   `events` of 0.11.1 stopped at `storage failure: deserialize` on 0.12's
   `task.admission_changed`, and 0.12.0 does the same at a word of 0.13. That is a

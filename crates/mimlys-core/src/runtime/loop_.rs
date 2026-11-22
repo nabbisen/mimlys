@@ -2450,6 +2450,63 @@ impl Runtime {
         super::read::load_task(self.deps.persistence.as_ref(), task_id)
     }
 
+    /// The task, for a command that would change or run it: and none of its records holds a word
+    /// that a newer release wrote and this release does not know (REQ-MAIN-006; external design
+    /// §22). The refusal names the word and says that the release that wrote it is needed; the
+    /// store is not touched. Every verb of the control API that acts on a task begins here, and a
+    /// step does not: the check reads every record of the task, which is a command's cost, not a
+    /// step's.
+    pub(crate) fn writable(&self, task_id: TaskId) -> Result<Task, RuntimeError> {
+        let task = self.load(task_id)?;
+        crate::newer::refuse_if_newer(self.deps.persistence.as_ref(), task_id)?;
+        Ok(task)
+    }
+
+    /// What another task holds of the scopes, read from its record as it is written, so that a
+    /// word of a newer release in it neither fails the creation of a task nor lets it go by: a
+    /// task whose state this release cannot classify holds its scope.
+    pub(crate) fn scope_holder(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<ScopeHolder>, RuntimeError> {
+        use crate::newer::{Read, RecordKind};
+        let Some(raw) = self
+            .deps
+            .persistence
+            .raw_records(RecordKind::Task, task_id)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        Ok(match Read::<Task>::parse(&raw.text)? {
+            Read::Known(task) => Some(ScopeHolder {
+                task_id,
+                active: !task.state.is_terminal(),
+                halted: matches!(task.state, TaskState::Halted { .. }),
+                scope: task.scope,
+            }),
+            Read::Newer(newer) => {
+                let scope = newer
+                    .raw
+                    .get("scope")
+                    .and_then(|v| serde_json::from_value::<crate::task::ScopeSpec>(v.clone()).ok());
+                // Only a state this release knows to be terminal lets go of the scope.
+                let terminal = !newer.is_unknown("state")
+                    && matches!(
+                        newer.text("state"),
+                        Some("completed" | "failed" | "cancelled")
+                    );
+                scope.map(|scope| ScopeHolder {
+                    task_id,
+                    active: !terminal,
+                    halted: !newer.is_unknown("state") && newer.text("state") == Some("halted"),
+                    scope,
+                })
+            }
+        })
+    }
+
     pub(crate) fn profile_of(&self, task: &Task) -> Result<Profile, RuntimeError> {
         self.deps
             .policy
@@ -2541,4 +2598,14 @@ fn ordering(e: crate::action::ActionStateError) -> RuntimeError {
     RuntimeError::Persistence(crate::spi::PersistenceError::Ordering {
         detail: e.to_string(),
     })
+}
+
+/// What a task holds of the project scopes (REQ-TASK-012), as [`Runtime::scope_holder`] reads it.
+pub(crate) struct ScopeHolder {
+    pub(crate) task_id: TaskId,
+    pub(crate) scope: crate::task::ScopeSpec,
+    /// The task is not terminal.
+    pub(crate) active: bool,
+    /// The task is `halted`.
+    pub(crate) halted: bool,
 }

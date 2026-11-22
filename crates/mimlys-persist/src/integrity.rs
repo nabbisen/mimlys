@@ -35,6 +35,16 @@ const TASK_STATES: [&str; 9] = [
 ];
 const TERMINAL_TASK_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
 
+/// Whether `word` is, in the record, a word of `field` that this release does not know: the
+/// record reads but for it.
+fn is_newer_word<T: mimlys_core::newer::Stored>(record: &str, field: &str, word: &str) -> bool {
+    matches!(
+        mimlys_core::newer::Read::<T>::parse(record),
+        Ok(mimlys_core::newer::Read::Newer(newer))
+            if newer.words.iter().any(|w| w.field == field && w.word == word)
+    )
+}
+
 fn violation(rule: &str, detail: String) -> PersistenceError {
     PersistenceError::Integrity {
         rule: rule.to_owned(),
@@ -51,18 +61,26 @@ pub fn check(store: &Store, now: Instant) -> Result<(), PersistenceError> {
         if result != "ok" {
             return Err(violation("integrity_check", result));
         }
-        // CONS-07: every status and state is in its vocabulary.
-        let mut stmt = conn.prepare("SELECT action_id, status FROM actions").map_err(storage("prepare"))?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(storage("query"))? {
-            let (id, status) = row.map_err(storage("row"))?;
-            if !ACTION_STATUSES.contains(&status.as_str()) {
+        // CONS-07: every status and state is in its vocabulary. A word that is not, in a record
+        // that reads whole but for that word, is a word a newer release wrote (REQ-MAIN-006): it
+        // is not a violation, and the task that holds it is left as it is.
+        let mut stmt = conn.prepare("SELECT action_id, status, record FROM actions").map_err(storage("prepare"))?;
+        for row in stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .map_err(storage("query"))?
+        {
+            let (id, status, record) = row.map_err(storage("row"))?;
+            if !ACTION_STATUSES.contains(&status.as_str()) && !is_newer_word::<Action>(&record, "status", &status) {
                 return Err(violation("CONS-07", format!("action {id} has status {status}")));
             }
         }
-        let mut stmt = conn.prepare("SELECT task_id, state FROM tasks").map_err(storage("prepare"))?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(storage("query"))? {
-            let (id, state) = row.map_err(storage("row"))?;
-            if !TASK_STATES.contains(&state.as_str()) {
+        let mut stmt = conn.prepare("SELECT task_id, state, record FROM tasks").map_err(storage("prepare"))?;
+        for row in stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .map_err(storage("query"))?
+        {
+            let (id, state, record) = row.map_err(storage("row"))?;
+            if !TASK_STATES.contains(&state.as_str()) && !is_newer_word::<Task>(&record, "state", &state) {
                 return Err(violation("CONS-07", format!("task {id} has state {state}")));
             }
         }
@@ -124,12 +142,27 @@ pub fn check(store: &Store, now: Instant) -> Result<(), PersistenceError> {
             .collect();
         for approval in approvals {
             let mut stmt = conn.prepare("SELECT record FROM grants WHERE task_id = ?1").map_err(storage("prepare"))?;
-            let grants: Vec<Grant> = stmt
+            let texts: Vec<String> = stmt
                 .query_map(params![approval.task_id.to_string()], |r| r.get::<_, String>(0))
                 .map_err(storage("query"))?
                 .filter_map(Result::ok)
-                .filter_map(|s| serde_json::from_str(&s).ok())
                 .collect();
+            let mut grants: Vec<Grant> = Vec::new();
+            let mut newer_grant = false;
+            for text in &texts {
+                match mimlys_core::newer::Read::<Grant>::parse(text) {
+                    Ok(mimlys_core::newer::Read::Known(grant)) => grants.push(grant),
+                    Ok(mimlys_core::newer::Read::Newer(_)) => newer_grant = true,
+                    // A damaged record is left out, as it always was.
+                    Err(_) => {}
+                }
+            }
+            // A grant a newer release wrote (a kind this release does not know) is part of the
+            // set the approval was made under: the hash cannot be computed here, and the check
+            // is not made (REQ-MAIN-006).
+            if newer_grant {
+                continue;
+            }
             let mut set = GrantSet::new();
             for g in grants {
                 set.add(g);

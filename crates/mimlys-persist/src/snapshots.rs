@@ -243,7 +243,13 @@ impl SnapshotFiles {
         let mut pending = self.pending()?;
         pending.sort_by_key(ToString::to_string);
         for snapshot_id in pending {
-            if rows.load_snapshot(snapshot_id)?.is_some() {
+            // A row that a newer release wrote still is a row: the journal is finished.
+            let has_row = match rows.load_snapshot(snapshot_id) {
+                Ok(row) => row.is_some(),
+                Err(PersistenceError::NewerRecord { .. }) => true,
+                Err(e) => return Err(e),
+            };
+            if has_row {
                 self.finish(snapshot_id)?;
                 report.finished += 1;
             } else {

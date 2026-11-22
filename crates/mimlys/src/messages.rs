@@ -1065,6 +1065,32 @@ pub fn show_newer_task_lines(
     lines
 }
 
+/// `task prune`: a task left alone because a record of it holds a word a newer release wrote
+/// (REQ-MAIN-006).
+pub fn prune_newer_task(task: &crate::commands::prune::NewerTask) -> String {
+    let words = task
+        .unknown_to_this_release
+        .iter()
+        .map(|w| format!("{} `{}` {UNKNOWN_MARKER}", w.field, w.word))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "left alone: task {}: a {} record of it holds {words}; the release of mimlys that wrote it is needed to delete it",
+        task.task_id, task.record
+    )
+}
+
+/// A task that recovery left as it is (REQ-MAIN-006): said once, at the start.
+pub fn left_by_recovery(
+    task_id: &str,
+    record: &str,
+    word: &mimlys_core::newer::UnknownWord,
+) -> String {
+    format!(
+        "task {task_id} was left as it is: a {record} record of it holds {} `{}` {UNKNOWN_MARKER}; the release of mimlys that wrote it is needed to act on it",
+        word.field, word.word
+    )
+}
 fn plural(count: u32, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }

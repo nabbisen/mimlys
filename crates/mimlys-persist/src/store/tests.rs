@@ -147,7 +147,7 @@ pub(crate) fn sequence(
 /// [`sequence`], with the approval carrying the hash of the task's real grant
 /// set (`true`) instead of a made-up one, so that every state the sequence
 /// passes through, an open approval included, is consistent (CONS-06).
-fn sequence_with(
+pub(crate) fn sequence_with(
     store: &dyn Persistence,
     fx: &Fx,
     upto: usize,

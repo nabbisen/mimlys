@@ -490,6 +490,12 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     // call a writing method: its handle has none.
     if let Some(read) = ReadCommand::of(&cli.command) {
         let app = ReadApp::open(loaded)?;
+        // `promote --patch` plans a promotion: of a task that holds a word this release does not
+        // know, it refuses as the commands that change the task do (REQ-MAIN-006).
+        if let Some(task) = changes_task(&cli.command) {
+            let id = app.resolve_task(task)?;
+            mimlys_core::newer::refuse_if_newer(app.reader.persistence(), id)?;
+        }
         return dispatch_read(&app, read, out).await;
     }
     // Every writer is refused while another process holds the store, naming it (LIM-O3): the
@@ -501,6 +507,15 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     let steps = Steps::of(&cli.command);
     if steps.needs_default() {
         app.loaded.config.default_backend()?;
+    }
+    // A command that would change or run a task refuses a task that holds a word a newer release
+    // wrote and this one does not know, before it asks, contacts a backend or writes anything
+    // (REQ-MAIN-006; external design §22). The commands are those of `changes_task`. It follows the
+    // check that a backend named `default` exists, which is the configuration's, and comes before
+    // the one that it can answer, which is not a reason to answer for a task that is refused.
+    if let Some(task) = changes_task(&cli.command) {
+        let id = app.resolve_task(task)?;
+        mimlys_core::newer::refuse_if_newer(app.runtime.persistence(), id)?;
     }
     if steps.starts_a_task() {
         app.backend_ready()?;
@@ -530,6 +545,45 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     let result = dispatch(&app, cli.command, &mut terminal, out).await;
     let closed = app.close();
     result.and(closed)
+}
+
+/// The task a command would change or run, as the user named it (REQ-MAIN-006; handoff 004e,
+/// item 2): `resume`, `pause`, `cancel`, `delete`, `approve`, `reject`, `answer`, `grant`,
+/// `revoke`, `rollback`, `promote`, and a fork's source (`--from-task`). The list is not kept by
+/// hand: this matches **every** command, with no wildcard, so that a command that is added does
+/// not compile until it says whether it acts on a task. `prune` acts on many and refuses each
+/// task of them that holds such a word itself (`commands::prune`); recovery at the start is the
+/// store's (`recover_all_reporting`).
+fn changes_task(command: &Command) -> Option<&str> {
+    match command {
+        Command::Run(args) => args.from_task.as_deref(),
+        Command::Task(task) => match task {
+            TaskCommand::New { args, .. } => args.from_task.as_deref(),
+            TaskCommand::Resume { task, .. }
+            | TaskCommand::Pause { task }
+            | TaskCommand::Cancel { task }
+            | TaskCommand::Delete { task, .. } => Some(task),
+            TaskCommand::Show { .. }
+            | TaskCommand::List
+            | TaskCommand::Prune { .. }
+            | TaskCommand::Output { .. } => None,
+        },
+        Command::Approve { task }
+        | Command::Reject { task, .. }
+        | Command::Answer { task, .. }
+        | Command::Grant { task, .. }
+        | Command::Revoke { task, .. }
+        | Command::Rollback { task, .. }
+        | Command::Promote { task, .. } => Some(task),
+        Command::Events { .. }
+        | Command::Metrics { .. }
+        | Command::Status { .. }
+        | Command::Check
+        | Command::Runtime(_)
+        | Command::Model(_)
+        | Command::Interpreters(_)
+        | Command::Toolchain(_) => None,
+    }
 }
 
 /// What a command can lead to, as far as the model backend goes (REQ-CFG-007; handoff 015a-5,

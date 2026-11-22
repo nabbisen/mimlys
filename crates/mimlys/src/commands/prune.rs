@@ -250,23 +250,49 @@ fn orphans(app: &App) -> Result<Vec<Orphan>, AppError> {
 ///
 /// A task already deleted (its audit kept) has nothing left to prune, so it is
 /// not listed again; with `--audit` it is, because its events still go.
+///
+/// A task that holds a word a newer release wrote (REQ-MAIN-006) is not a candidate and does not
+/// fail the run: it is returned apart, to be named. What deleting it would release is read from
+/// its snapshots, and the state that makes it terminal from its record, which this release cannot
+/// read whole.
 fn candidates(
     app: &App,
     filter: &Filter,
     audit: bool,
     now: Instant,
-) -> Result<Vec<Candidate>, AppError> {
+) -> Result<(Vec<Candidate>, Vec<NewerTask>), AppError> {
     let mut out = Vec::new();
+    let mut newer = Vec::new();
     let mut tasks = app.runtime.list_tasks()?;
     tasks.sort_by_key(|t| t.updated_at);
     for t in tasks {
         if !filter.matches(&t.state, t.updated_at, now) {
             continue;
         }
-        if !audit
-            && app.runtime.persistence().load_workspace_state(t.task_id)?
-                == Some(mimlys_core::snapshot::WorkspaceState::Deleted)
-        {
+        let found = mimlys_core::newer::scan(app.runtime.persistence(), t.task_id)?;
+        if let Some(first) = found.first() {
+            newer.push(NewerTask {
+                task_id: t.task_id.to_string(),
+                record: first.kind.name().to_owned(),
+                unknown_to_this_release: first.newer.words.clone(),
+            });
+            continue;
+        }
+        let deleted = match app.runtime.persistence().load_workspace_state(t.task_id) {
+            Ok(state) => state == Some(mimlys_core::snapshot::WorkspaceState::Deleted),
+            Err(mimlys_core::spi::PersistenceError::NewerRecord { field, word, .. }) => {
+                newer.push(NewerTask {
+                    task_id: t.task_id.to_string(),
+                    record: "workspace".to_owned(),
+                    unknown_to_this_release: vec![mimlys_core::newer::UnknownWord::new(
+                        field, word,
+                    )],
+                });
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if !audit && deleted {
             continue;
         }
         let view = app.runtime.get_task(t.task_id)?;
@@ -281,7 +307,27 @@ fn candidates(
             view.footprint,
         ));
     }
-    Ok(out)
+    Ok((out, newer))
+}
+
+/// A task `task prune` leaves alone because a record of it holds a word that a newer release
+/// wrote (REQ-MAIN-006): the release that wrote it is the one that can delete it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NewerTask {
+    /// The task.
+    pub task_id: String,
+    /// The kind of record that holds the word.
+    pub record: String,
+    /// The word, with the field that holds it.
+    pub unknown_to_this_release: Vec<mimlys_core::newer::UnknownWord>,
+}
+
+/// `value` with the tasks left alone added, when there are any.
+fn with_newer(mut value: serde_json::Value, newer: &[NewerTask]) -> serde_json::Value {
+    if !newer.is_empty() {
+        value["newer_tasks"] = serde_json::to_value(newer).unwrap_or_default();
+    }
+    value
 }
 
 /// `task prune`.
@@ -295,12 +341,18 @@ pub fn run(
     out: &Output,
 ) -> Result<(), AppError> {
     let filter = Filter::parse(states, older_than)?;
-    let found = candidates(app, &filter, audit, SystemClock.now())?;
+    let (found, newer) = candidates(app, &filter, audit, SystemClock.now())?;
     let no_task = orphans(app)?;
     let todo = to_delete(&found);
+    for task in &newer {
+        out.line(messages::prune_newer_task(task));
+    }
     if found.is_empty() && no_task.is_empty() {
         out.line(messages::PRUNE_NOTHING);
-        out.value(&serde_json::json!({ "tasks": [], "no_task": [], "total_bytes": 0, "deleted": [], "confirmed": false }));
+        out.value(&with_newer(
+            serde_json::json!({ "tasks": [], "no_task": [], "total_bytes": 0, "deleted": [], "confirmed": false }),
+            &newer,
+        ));
         return Ok(());
     }
     // The plan is shown before anything goes, as `task delete` shows its own.
@@ -317,7 +369,10 @@ pub fn run(
     let no_task_bytes: u64 = no_task.iter().map(|o| o.bytes).sum();
     let total: u64 = todo.iter().map(|c| c.bytes()).sum::<u64>() + no_task_bytes;
     if todo.is_empty() && no_task.is_empty() {
-        out.value(&serde_json::json!({ "tasks": found, "no_task": [], "total_bytes": 0, "deleted": [], "confirmed": false, "audit": audit }));
+        out.value(&with_newer(
+            serde_json::json!({ "tasks": found, "no_task": [], "total_bytes": 0, "deleted": [], "confirmed": false, "audit": audit }),
+            &newer,
+        ));
         return Ok(());
     }
     let confirmed = yes
@@ -329,7 +384,10 @@ pub fn run(
             )));
     if !confirmed {
         out.line(messages::PRUNE_NOT_CONFIRMED);
-        out.value(&serde_json::json!({ "tasks": found, "no_task": no_task, "total_bytes": total, "deleted": [], "confirmed": false, "audit": audit }));
+        out.value(&with_newer(
+            serde_json::json!({ "tasks": found, "no_task": no_task, "total_bytes": total, "deleted": [], "confirmed": false, "audit": audit }),
+            &newer,
+        ));
         return Ok(());
     }
     // The workspaces no task refers to first: they are not tasks, and a task that cannot be
@@ -361,20 +419,23 @@ pub fn run(
         .sum();
     let freed_no_task: u64 = removed_no_task.removed.iter().map(|o| o.bytes).sum();
     let freed = freed_tasks + freed_no_task;
-    let report = serde_json::json!({
-        "tasks": found,
-        "no_task": no_task,
-        "total_bytes": total,
-        "confirmed": true,
-        "audit": audit,
-        "deleted": outcome.deleted.iter().map(|(id, f)| serde_json::json!({ "task_id": id, "footprint": f })).collect::<Vec<_>>(),
-        "no_task_removed": removed_no_task.removed,
-        "freed_bytes": freed,
-        "failed": outcome.failed.as_ref().map(|(id, why)| serde_json::json!({ "task_id": id, "error": why })),
-        "untouched": outcome.untouched,
-        "left": outcome.left.iter().map(|(id, paths)| serde_json::json!({ "task_id": id, "paths": paths })).collect::<Vec<_>>(),
-        "no_task_left": removed_no_task.left.iter().map(|(name, paths)| serde_json::json!({ "name": name, "paths": paths })).collect::<Vec<_>>(),
-    });
+    let report = with_newer(
+        serde_json::json!({
+            "tasks": found,
+            "no_task": no_task,
+            "total_bytes": total,
+            "confirmed": true,
+            "audit": audit,
+            "deleted": outcome.deleted.iter().map(|(id, f)| serde_json::json!({ "task_id": id, "footprint": f })).collect::<Vec<_>>(),
+            "no_task_removed": removed_no_task.removed,
+            "freed_bytes": freed,
+            "failed": outcome.failed.as_ref().map(|(id, why)| serde_json::json!({ "task_id": id, "error": why })),
+            "untouched": outcome.untouched,
+            "left": outcome.left.iter().map(|(id, paths)| serde_json::json!({ "task_id": id, "paths": paths })).collect::<Vec<_>>(),
+            "no_task_left": removed_no_task.left.iter().map(|(name, paths)| serde_json::json!({ "name": name, "paths": paths })).collect::<Vec<_>>(),
+        }),
+        &newer,
+    );
     let done = messages::prune_done(outcome.deleted.len(), removed_no_task.removed.len(), freed);
     // The paths that remain: of tasks (the next start removes them) and of workspaces with no
     // task (the next prune lists them again).

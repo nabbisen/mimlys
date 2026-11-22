@@ -249,6 +249,10 @@ the model's reply, a tool's result) keeps refusing a word it does not know.
   the task that hold one, each with the key in `record`; in `metrics` and `status`, in the object
   itself, with `field` the group (`events_by_name`, `tasks_by_state`, `halts_by_reason`,
   `rejections_by_code`, `approvals_by_decision`, `actions_by_status`) or the field of the status
-  (`pending`, `unknown_state`). In `status`, `pending` has the word as written for a task that waits
+  (`pending`, `unknown_state`); in `task prune`, `newer_tasks: [{task_id, record,
+  unknown_to_this_release}]`. In `status`, `pending` has the word as written for a task that waits
   for a kind this release does not know, and `unknown_state: [[task_id, word]]` lists the tasks
   in a state it does not know.
+- **A command that would change or run the task refuses it,** with error kind `state`, naming the
+  word and saying that the release of mimlys that wrote it is needed (see
+  [Storage](./storage.md#going-back-to-an-older-release)).

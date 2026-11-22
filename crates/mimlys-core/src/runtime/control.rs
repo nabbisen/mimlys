@@ -367,15 +367,16 @@ impl Runtime {
         }
         // One active task per project scope (REQ-TASK-012).
         for summary in self.deps.persistence.list_tasks()? {
-            if let Some(other) = self.deps.persistence.load_task(summary.task_id)?
-                && !other.state.is_terminal()
-                && other.scope.overlaps(&request.scope)
-            {
+            // A task that holds a word of a newer release is read from its record as written:
+            // what it holds of the scope is known even when its state is not, and a state this
+            // release cannot classify holds the scope (REQ-MAIN-006).
+            let Some(other) = self.scope_holder(summary.task_id)? else {
+                continue;
+            };
+            if other.active && other.scope.overlaps(&request.scope) {
                 // A halted source still holds its scope (REQ-TASK-012): its fork on that
                 // scope is refused, and the refusal names both ways on (REQ-TASK-004).
-                let detail = if request.from_task == Some(other.task_id)
-                    && matches!(other.state, TaskState::Halted { .. })
-                {
+                let detail = if request.from_task == Some(other.task_id) && other.halted {
                     format!(
                         "task {source} is halted and still holds this scope, so a fork of it cannot use the same scope; \
                          fork with another --scope, or run `mimlys task cancel {source}` first",
@@ -392,7 +393,7 @@ impl Runtime {
         // Fork (REQ-TASK-004): the source must be terminal or halted; its snapshot becomes the new base.
         let fork = match request.from_task {
             Some(source_id) => {
-                let source = self.load(source_id)?;
+                let source = self.writable(source_id)?;
                 if !(source.state.is_terminal() || matches!(source.state, TaskState::Halted { .. }))
                 {
                     return Err(RuntimeError::State(crate::task::StateError::Illegal {
@@ -604,7 +605,7 @@ impl Runtime {
         task_id: TaskId,
         snapshot_id: Option<SnapshotId>,
     ) -> Result<SnapshotRecord, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         if matches!(task.state, TaskState::Running | TaskState::Recovering) {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
                 from: task.state.name(),
@@ -657,7 +658,7 @@ impl Runtime {
         task_id: TaskId,
         plan: &PromotionPlan,
     ) -> Result<Promotion, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         if matches!(task.state, TaskState::Running | TaskState::Recovering) {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
                 from: task.state.name(),
@@ -839,6 +840,7 @@ impl Runtime {
         promotion_id: crate::ids::PromotionId,
         overwrite_edited: bool,
     ) -> Result<Promotion, RuntimeError> {
+        self.writable(task_id)?;
         let (mut promotion, backup) = self.promotion_to_revert(task_id, promotion_id)?;
         if !overwrite_edited {
             let plan = self
@@ -888,7 +890,7 @@ impl Runtime {
         task_id: TaskId,
         audit: bool,
     ) -> Result<Footprint, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         if !task.state.is_terminal() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
                 from: task.state.name(),
@@ -976,7 +978,7 @@ impl Runtime {
         task_id: TaskId,
         extend: Option<Extension>,
     ) -> Result<Task, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         // At most LIM-X1 tasks run at once (REQ-SCHED-001).
         let running = self.deps.persistence.tasks_in_state("running")?;
         if running.len() >= LIM_X1_RUNNING_TASKS && !running.contains(&task_id) {
@@ -1012,7 +1014,7 @@ impl Runtime {
 
     /// Requests a pause; it takes effect at the next step boundary (REQ-TASK-005).
     pub fn pause_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         let now = self.deps.clock.now();
         let next = task.transition(TaskInput::PauseRequest, now)?;
         self.deps.persistence.record_task_transition(
@@ -1031,7 +1033,7 @@ impl Runtime {
     /// Cancels from any non-terminal state (REQ-TASK-006): an action not
     /// yet terminal is cancelled and a pending approval invalidated.
     pub fn cancel_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         let now = self.deps.clock.now();
         let next = task.transition(TaskInput::Cancel, now)?;
         if let Some(mut approval) = self.deps.persistence.load_pending_approval(task_id)? {
@@ -1190,7 +1192,7 @@ impl Runtime {
         task_id: TaskId,
         answer: &str,
     ) -> Result<Task, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         if !matches!(
             task.state,
             TaskState::WaitingUser {
@@ -1247,7 +1249,7 @@ impl Runtime {
         task_id: TaskId,
         kind: GrantKind,
     ) -> Result<Grant, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         if task.state.is_terminal() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
                 from: task.state.name(),
@@ -1362,7 +1364,7 @@ impl Runtime {
         task_id: TaskId,
         grant_id: GrantId,
     ) -> Result<Grant, RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         let now = self.deps.clock.now();
         let mut set = GrantSet::new();
         for g in self.deps.persistence.load_grants(task_id)? {
@@ -1647,7 +1649,7 @@ impl Runtime {
     }
 
     fn pending_approval(&self, task_id: TaskId) -> Result<(Task, ApprovalRequest), RuntimeError> {
-        let task = self.load(task_id)?;
+        let task = self.writable(task_id)?;
         if !matches!(
             task.state,
             TaskState::WaitingUser {

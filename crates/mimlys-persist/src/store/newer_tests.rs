@@ -532,6 +532,50 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
     );
 }
 
+/// Every column of every row the task owns, as text: what "the store unchanged byte for byte in
+/// its rows" compares.
+fn rows_of(store: &Store, task: &Task) -> String {
+    let id = task.task_id.to_string();
+    store
+        .with_conn(|conn| {
+            let tables: Vec<String> = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let mut out = String::new();
+            for table in tables {
+                let columns: Vec<String> = conn
+                    .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                    .unwrap()
+                    .query_map([], |r| r.get(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                if !columns.iter().any(|c| c == "task_id") {
+                    continue;
+                }
+                let quoted = columns
+                    .iter()
+                    .map(|c| format!("quote({c})"))
+                    .collect::<Vec<_>>()
+                    .join(" || '|' || ");
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {quoted} FROM {table} WHERE task_id = ?1 ORDER BY rowid"
+                    ))
+                    .unwrap();
+                for row in stmt.query_map([&id], |r| r.get::<_, String>(0)).unwrap() {
+                    out.push_str(&format!("{table}: {}\n", row.unwrap()));
+                }
+            }
+            out
+        })
+        .unwrap()
+}
+
 /// Rewrites the task's record and its state column, as a newer release would write it.
 fn write_task(store: &Store, task: &Task, state: &str, patch: &str) {
     store
@@ -745,4 +789,167 @@ fn req_main_006_a_damaged_record_is_still_a_failure_and_still_listed() {
     let listed = store.list_tasks().unwrap();
     assert_eq!(listed.len(), 1);
     assert!(listed[0].unknown.is_empty(), "damage is not a word");
+}
+
+/// REQ-MAIN-006: the start's integrity check (CONS-06, CONS-07) does not take a word of a newer
+/// release for corruption: a state, a status, a grant of a newer kind under an open approval.
+#[test]
+fn req_main_006_the_integrity_check_lets_a_newer_word_pass() {
+    use super::tests::sequence_with;
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(&dir.path().join("data")).unwrap();
+    let fx = Fx::new();
+    // A task waiting for an approval, under the grant set the approval was made under.
+    let (task, _) = sequence_with(&store, &fx, 3, true, true);
+    crate::integrity::check(&store, fx.now()).unwrap();
+    // The grant is of a kind a newer release wrote: the set cannot be hashed here, and the
+    // approval is not held to it.
+    store
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE grants SET record = json_set(record, '$.kind.kind', 'hologram') WHERE task_id = ?1",
+                [task.task_id.to_string()],
+            )
+            .unwrap();
+        })
+        .unwrap();
+    crate::integrity::check(&store, fx.now()).unwrap();
+    write_task(&store, &task, "quarantined", r#"{"state":"quarantined"}"#);
+    store
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE actions SET status = 'held', record = json_set(record, '$.status', 'held') WHERE task_id = ?1",
+                [task.task_id.to_string()],
+            )
+            .unwrap();
+        })
+        .unwrap();
+    crate::integrity::check(&store, fx.now()).unwrap();
+    // A word that is not in the vocabulary, in a record that does not read for another reason,
+    // is still a violation.
+    store
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE tasks SET state = 'garbled', record = json_remove(record, '$.goal') WHERE task_id = ?1",
+                [task.task_id.to_string()],
+            )
+            .unwrap();
+        })
+        .unwrap();
+    assert!(matches!(
+        crate::integrity::check(&store, fx.now()),
+        Err(PersistenceError::Integrity { rule, .. }) if rule == "CONS-07"
+    ));
+}
+
+/// REQ-MAIN-006: a workspace state of a newer release is named, not read as "no workspace".
+#[test]
+fn req_main_006_a_workspace_state_of_a_newer_release_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    store
+        .with_conn(|c| {
+            c.execute(
+                "INSERT INTO workspaces (task_id, state, changed_at) VALUES (?1, 'archived', 'x')",
+                [task.task_id.to_string()],
+            )
+            .unwrap();
+        })
+        .unwrap();
+    assert_eq!(
+        store.load_workspace_state(task.task_id).unwrap_err(),
+        PersistenceError::NewerRecord {
+            record: "workspace".into(),
+            field: "state".into(),
+            word: "archived".into()
+        }
+    );
+}
+
+/// REQ-MAIN-006, recovery at the start: a task found `running` that holds a word of a newer
+/// release is left exactly as it is (its rows byte for byte), once, and the pass recovers the
+/// others and does not fail. A task waiting for something this release does not know is left
+/// too, and so is one whose state it does not know.
+#[test]
+fn req_main_006_recovery_leaves_a_newer_task_as_it_is_and_recovers_the_others() {
+    use crate::recovery::{RecoveryContext, recover_all_reporting};
+    use mimlys_core::policy::Recovery;
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(&dir.path().join("data")).unwrap();
+    // Four tasks, each in a store of this release: one running as any (known), one running
+    // with an event of a newer release, one waiting for a kind of a newer release, one in a
+    // state of a newer release.
+    let fx = Fx::new();
+    let (known, _) = sequence(&store, &fx, 0, false);
+    let (with_event, _) = sequence(&store, &fx, 0, false);
+    let (waiting, _) = sequence(&store, &fx, 0, false);
+    let (stated, _) = sequence(&store, &fx, 0, false);
+    store
+        .with_conn(|c| {
+            c.execute(
+                "INSERT INTO events (event_id, at, name, task_id, step_id, action_id, record)
+                 SELECT '00000000-00ff-7000-8000-0000000000f1', at, 'session.attached', task_id, NULL, NULL,
+                        json_set(record, '$.event', 'session.attached', '$.event_id', '00000000-00ff-7000-8000-0000000000f1')
+                 FROM events WHERE task_id = ?1 ORDER BY position LIMIT 1",
+                [with_event.task_id.to_string()],
+            )
+            .unwrap();
+        })
+        .unwrap();
+    write_task(
+        &store,
+        &waiting,
+        "waiting_user",
+        r#"{"state":"waiting_user","wait_kind":"plan"}"#,
+    );
+    write_task(&store, &stated, "quarantined", r#"{"state":"quarantined"}"#);
+    let untouched = [&with_event, &waiting, &stated].map(|t| (t.task_id, rows_of(&store, t)));
+    let ctx = RecoveryContext {
+        ids: &fx.ids,
+        now: fx.now(),
+        policy_hash: mimlys_core::hash::hash_bytes(b"policy"),
+        recovery: Recovery { auto_resume: false },
+    };
+    let pass = recover_all_reporting(
+        &store,
+        &ctx,
+        &mimlys_core::spi::fake::FakeWorkspaces::new(std::sync::Arc::new(
+            mimlys_core::spi::fake::FakeToolProvider::new(vec![]),
+        )),
+    )
+    .unwrap();
+    // The known task was recovered; none of the others was.
+    assert_eq!(
+        pass.recovered.iter().map(|r| r.task_id).collect::<Vec<_>>(),
+        vec![known.task_id]
+    );
+    // Each of the others is left, named once, with the record that holds the word.
+    let mut left: Vec<_> = pass
+        .left
+        .iter()
+        .map(|l| {
+            (
+                l.task_id,
+                l.record.as_str(),
+                l.word.field.as_str(),
+                l.word.word.as_str(),
+            )
+        })
+        .collect();
+    left.sort();
+    let mut expected = vec![
+        (with_event.task_id, "event", "event", "session.attached"),
+        (waiting.task_id, "task", "wait_kind", "plan"),
+        (stated.task_id, "task", "state", "quarantined"),
+    ];
+    expected.sort();
+    assert_eq!(left, expected);
+    // And what they hold is what it was, byte for byte.
+    for (id, before) in untouched {
+        let task = [&with_event, &waiting, &stated]
+            .into_iter()
+            .find(|t| t.task_id == id)
+            .unwrap();
+        assert_eq!(rows_of(&store, task), before);
+    }
 }
