@@ -104,3 +104,46 @@ Each of these must be killed:
 - the mutations;
 - the flake's evidence;
 - the design questions.
+
+## After review: 004e-5
+
+The review of 2026-11-23 (`.git-exclude/reviewed/handoff-004e/README.md`) approved parts A and B (#195 to #198) and landed them as one linear series (CI of PR #199). Three small items remain before 015b.
+
+**Specification** (amended with the landing): external design §22, the shape of a newer word in text and JSON, the writers' refusal, and free text.
+
+### Items
+
+1. **The free-string test passes by key order.**
+   - **What survived:** my mutation (`find_words` takes the first place that holds the word, with no sentinel check) survived `mimlys-core`'s and `mimlys-persist`'s `newer` tests.
+   - **Why:** `serde_json`'s maps are sorted, and in `req_main_006_the_place_named_is_the_vocabularys_not_a_free_string` the vocabulary field (`code`) sorts before the free one (`reason`).
+   - **The test to add:** a record whose free string sorts *before* its vocabulary field, for example `task.admission_changed` with `reason` equal to an unknown `state` word. Add one in a list as well, if a record has one.
+   - **Then kill the mutation.**
+2. **Standard error never panics either (part B, Q3).**
+   - **The change:** one handled write for standard error, beside `put`. Every `eprintln!` of the `mimlys` crate goes through it.
+   - **When standard error is closed,** the command ends with the exit code it earned (1 for an error line, not 101), with no panic.
+   - **Test:** `2>&1 | head -1`, and standard error closed from the start, on a command that writes an error and on one that writes a warning.
+3. **A guard, so that no direct print comes back (part B, Q2).**
+   - **The guard:** deny `clippy::print_stdout` and `clippy::print_stderr` in the `mimlys` crate's library and binary, with `allow` in its test binaries.
+   - **Direct handles:** add `disallowed_methods` for `std::io::stdout` and `std::io::stderr` outside the output module and the prompt's terminal, if clippy can scope it cleanly. If it cannot, say so, and the two lints are enough.
+   - **Show it works:** the guard fails on one reintroduced `println!` and one `eprintln!`.
+
+### Answers to the other questions
+
+**Part A:**
+- **Q1, the JSON shape:** accepted, and written into §22.
+- **Q2, `task delete` and `prune` refuse such a task:** accepted. The release that wrote it deletes it; the narrow allowance is not worth its rules.
+- **Q3, any record of the task, events included, refuses a writer:** accepted. A writer never acts on a task it cannot read whole.
+- **Q4, said at every start:** accepted.
+- **Q5, error kind `state`:** accepted.
+- **Q6, free text not marked:** accepted for 0.13, and stated in §22. Whether such fields should be typed is carried to the contract's inventory before the freeze.
+- **Q7, Q9 and Q10:** accepted.
+- **Q8, the method relies on serde's message:** accepted. It is pinned by the tests and fails loudly, never by reading wrong.
+
+**Part B:**
+- **Q1, a writer goes on to the end of its task with its output dropped:** accepted. The task's integrity comes before its output.
+- **Q4, `events --follow` on macOS and Windows ends at the next write:** accepted, and stated in the book. No `unsafe` outside `confine/`.
+- **Q5, a failure that is not a pipe ends with 1 and one line:** accepted.
+
+### Return
+
+`.git-exclude/review-requests/004e-5-after-review/README.md`.
