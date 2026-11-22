@@ -1727,6 +1727,10 @@ pub fn metric_line(name: &str, value: u64) -> String {
 pub fn metric_ratio(name: &str, value: f64) -> String {
     format!("{name:<40} {value:.2}")
 }
+/// A write to standard output failed, other than for a reader that has gone (REQ-CLI-009).
+pub fn cannot_write_output(detail: &str) -> String {
+    format!("cannot write to standard output: {detail}")
+}
 /// An error of the control API, for humans.
 pub fn error_line(kind: &str, message: &str) -> String {
     format!("error ({kind}): {message}")

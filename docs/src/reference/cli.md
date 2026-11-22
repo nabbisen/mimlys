@@ -90,6 +90,32 @@ Without a terminal the prompt is not shown: the command prints the pending
 item and exits 0; `approve`, `reject` and `answer` continue the task from
 another invocation.
 
+## When the reader of the output goes
+
+A pipe whose reader has gone (`mimlys events <task> | head -1`) is not an
+error of the command (REQ-CLI-009). The command stops writing, says nothing
+about it, and ends with the exit code its own work earned: 0 for a reader of
+the store (`events`, `status`, `task show`, `task list`, `metrics`, …), 1 for
+one that failed, as without the pipe. It never panics and never prints a
+"broken pipe" line on standard error.
+
+- **A command that does work does it all.** `mimlys run … | head -1` goes on
+  to the end of its task, with its output dropped, and ends with the code the
+  task earned: a closed pipe is not a stop signal, and it never leaves a task
+  half run. To stop a task, stop it (see Signals).
+- **`events <task> --follow` ends.** On Linux and macOS it asks its standard
+  output between its polls, so that it ends within half a second of the reader
+  going, also when the task has nothing more to say, and also with `--json`,
+  which writes nothing until the end. On Windows it learns that the reader has
+  gone from a write that fails, so that a follower with nothing to write
+  goes on until the task ends or it has a line to write.
+- **Any other failure to write** (a full disk, an I/O error) is not a reader
+  that has gone: it is said once on standard error (`error (internal):
+  cannot write to standard output: …`), the rest of the output is dropped, and
+  the exit code is 1 even when the work succeeded.
+
+This is the rule for standard output. Lines on standard error stay there.
+
 ## Signals
 
 At an approval or question prompt, a stop signal ends the wait: `mimlys run`
