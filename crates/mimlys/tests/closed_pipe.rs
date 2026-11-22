@@ -214,11 +214,11 @@ fn req_cli_009_events_follow_into_a_pipe_closed_from_the_start_ends() {
 
 /// REQ-CLI-009: the reader takes every line of the task's history and goes, and the follower,
 /// which has nothing more to write (the task, `created`, says nothing more), ends all the same:
-/// on Unix it asks the descriptor, a write is not needed. The reader takes them all, so that
+/// on Linux it asks the descriptor, a write is not needed. The reader takes them all, so that
 /// the follower cannot learn of the closed pipe from a write that fails: only the poll can end
-/// it. On Windows a follower learns that the reader has gone at its next write only, which is
+/// it. On macOS and Windows a follower learns that the reader has gone at its next write only, which is
 /// not tested here (see the book's page of the command line).
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn req_cli_009_events_follow_ends_when_the_reader_goes_with_nothing_more_to_write() {
     let env = Env::new();
@@ -236,7 +236,7 @@ fn req_cli_009_events_follow_ends_when_the_reader_goes_with_nothing_more_to_writ
 
 /// REQ-CLI-009: `events <task> --follow | head -1`: the reader takes the first line and goes.
 /// The follower ends, as it does when the reader has taken the last one.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn req_cli_009_events_follow_ends_when_the_reader_goes_after_its_first_line() {
     let env = Env::new();
@@ -249,8 +249,8 @@ fn req_cli_009_events_follow_ends_when_the_reader_goes_after_its_first_line() {
 }
 
 /// REQ-CLI-009: in JSON `events --follow` writes nothing until the task ends, so that only the
-/// descriptor can tell that the reader has gone (Unix).
-#[cfg(unix)]
+/// descriptor can tell that the reader has gone (Linux).
+#[cfg(target_os = "linux")]
 #[test]
 fn req_cli_009_events_follow_in_json_ends_when_the_reader_goes() {
     let env = Env::new();

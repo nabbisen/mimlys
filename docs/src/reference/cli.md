@@ -103,11 +103,11 @@ one that failed, as without the pipe. It never panics and never prints a
   to the end of its task, with its output dropped, and ends with the code the
   task earned: a closed pipe is not a stop signal, and it never leaves a task
   half run. To stop a task, stop it (see Signals).
-- **`events <task> --follow` ends.** On Linux and macOS it asks its standard
-  output between its polls, so that it ends within half a second of the reader
-  going, also when the task has nothing more to say, and also with `--json`,
-  which writes nothing until the end. On Windows it learns that the reader has
-  gone from a write that fails, so that a follower with nothing to write
+- **`events <task> --follow` ends.** On Linux it asks its standard output
+  between its polls, so that it ends within half a second of the reader going,
+  also when the task has nothing more to say, and also with `--json`, which
+  writes nothing until the end. On macOS and Windows it learns that the reader
+  has gone from a write that fails, so that a follower with nothing to write
   goes on until the task ends or it has a line to write.
 - **Any other failure to write** (a full disk, an I/O error) is not a reader
   that has gone: it is said once on standard error (`error (internal):
