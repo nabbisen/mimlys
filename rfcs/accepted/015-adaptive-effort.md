@@ -106,3 +106,9 @@ The decisions were written against 0.9's code. Read against 0.12.0's code, and r
     - It runs on the machine of run B: the M4 task at each level; the swap between a smaller and a larger instruct model of one family; the probe's class for Qwen2.5-7B-Instruct and spike S2's Coder models.
     - The models are pinned by hash.
     - The owner's authorization covers downloading the larger model.
+
+**Sharpened at the review of handoff 015a (2026-11-22):**
+- **The probe's classes.** An action proposed and rejected is still acting: `plans_only` means that no action was ever proposed. `incomplete` and `plans_only` both carry how the probe ended (`not_finished`, `not_verified`, `asked_user`, `gave_up`).
+- **`unreachable` is not recorded.** It is said, with exit code 1, and the last measurement stays. It measures the engine's availability, not the model, and `status` shows that live.
+- **A model backend's redirect is never followed** (REQ-SEC-010), so a "local" engine cannot pass a task's content to another host.
+- **A halt `policy` names its rule** in `halt_detail`.

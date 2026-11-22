@@ -142,3 +142,71 @@ Each of these must be killed:
 - the proposed shapes: the backend name rule, `status --json`'s `backends`, and `probe-results.json`;
 - the list of starts;
 - the design questions.
+
+## After review: 015a-5
+
+The review of 2026-11-22 (`.git-exclude/reviewed/handoff-015a/README.md`) approved parts 1 and 2 (#187 to #190) and landed them on `main` as they were tested. Your questions found gaps of the guarantee this handoff builds. They close here, before 004e.
+
+**Specification** (amended with the landing): REQ-SEC-010 and REQ-MDL-011, external design §5.2 (`halt_detail`), §19.2 (the probe's row) and §20 (the redirect row), RFC 015 Amendment 1 (sharpened), and THR-30.
+
+### Items
+
+1. **No redirect is followed by a model backend.**
+   - **The change:** the adapter's HTTP client is built with `redirect::Policy::none()`. This covers the decision requests, `/v1/models`, `/props` and `/api/ps`.
+   - **What a redirect becomes:** the request fails like an unreachable backend, naming the host the `Location` points to, never the URL (it may carry a password). It is retried as LIM-M3 says, then halts `backend_unavailable`, and `status` shows it on the backend's line.
+   - **Test:** the mock answers `307` to a second mock. The second mock receives nothing, and the line names its host.
+   - **Look for other clients** that carry a task's content, and say what you find. The interpreter download is verified by hash and is not in scope.
+2. **`halt_detail` on a halt `policy`.**
+   - **What it holds:** an optional object on the `halted` state of the task's record, in `task show --json` and in the halt's `task.state_changed` event, naming the rule:
+     - `remote_backend_forbidden`, with `backend` and `profile`;
+     - the completion check's refusal, with your word for it (propose it).
+   - **Compatibility:** it is additive and is absent on older records.
+   - **Tests:** both causes, through `--json`.
+3. **Every command that can drive a step checks for a `default` first.**
+   - Derive the set from what can lead to a step (your list of starts, §5 of your request), not from a hand list. `grant` and `revoke` are in it.
+   - **Test:** `grant` and `revoke` with no `default` are refused before anything is driven.
+4. **One backend's failure never hides the others in `status`.**
+   - A refused `schema` mode, an unreadable `fake` script, or any other failure of one entry is said on that entry's line, and the rest are shown.
+   - `status` exits 0, as it does with the context warning. The CHANGELOG says so under Changed.
+5. **An empty `[backends]` header in a version-1 file is refused,** as the mix is. Detect it from the parsed TOML table, not from the typed section.
+6. **The holder is named by every writer** that the store's lock refuses, through the one function `model probe` uses.
+7. **The probe's classes** (REQ-MDL-011 as amended):
+   - **What counts as acting:** a step counts as acting when its decision was an `act`, accepted or rejected after parsing (`schema`, `denied`, …), not only when an action record was made. A model whose every call to `write_file` is invalid is not `plans_only`.
+   - **How it ended:** `incomplete` and `plans_only` both carry how the probe ended:
+     - `not_finished`;
+     - `not_verified` (new: it said `complete`, and the file was not as asked);
+     - `asked_user`;
+     - `gave_up`.
+   - **`unreachable`** is said, exits 1, and is not recorded, so the backend's last measurement stays. Remove it from the record's classes. The reader shows an `unreachable` written by this branch's earlier builds as unknown, or drops it: say which.
+   - **The book and `--json`** follow these changes.
+8. **The book** on each of the above.
+
+### Answers to the other questions
+
+**Part 1:**
+- **Q3, the stricter name rule:** accepted.
+- **Q4, `localhost.` and `*.localhost` refused for `local`:** accepted.
+- **Q5, the `fake` backend may be declared `remote`:** kept. The book says that its declaration is taken as written, because it sends nothing.
+- **Q7, `/api/ps` read once before the probe:** accepted.
+- **Q9, version-1 keys named in the version-2 form:** accepted.
+- **Q11:** answered by the landing, which is the whole stack at once.
+
+**Part 2:**
+- **Q4, exit codes:** accepted (0 for a recorded class; 1 when nothing is measured; a stop exits 0, as a pause does), with `unreachable` now exiting 1 (item 7).
+- **Q5 (not measured), Q6 (the scope exception), Q7 (leftovers at every writing start), Q8 (LIM-X1), Q10 and Q11:** accepted.
+- **Q12, the book's example:** accepted as it is. A tested example that shows each class is for the release that prepares 1.0 (condition 4).
+
+### Mutations
+
+Each of these must be killed:
+- a redirect followed;
+- `halt_detail` absent;
+- `grant` with no `default` driven;
+- one bad backend stopping `status`;
+- an empty `[backends]` in version 1 accepted;
+- a rejected `act` not counted as acting;
+- `unreachable` recorded.
+
+### Return
+
+`.git-exclude/review-requests/015a-5-after-review/README.md`.
