@@ -114,7 +114,13 @@ one that failed, as without the pipe. It never panics and never prints a
   cannot write to standard output: …`), the rest of the output is dropped, and
   the exit code is 1 even when the work succeeded.
 
-This is the rule for standard output. Lines on standard error stay there.
+Lines on standard error stay there, and the same rule holds for them: a
+command whose standard error has been closed (`mimlys … 2>&1 | head -1`, or a
+pipe whose reader has gone) does not panic. A line it cannot write (an error
+line, a warning, a note) is dropped, nothing else is said of it, and the
+command ends with the exit code its work earned: 1 for a command that failed,
+0 for one that succeeded and only had a warning to say. A closed standard
+error is never a reason for a different code.
 
 ## Signals
 
