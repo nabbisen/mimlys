@@ -215,6 +215,140 @@ fn req_main_006_the_place_named_is_the_vocabularys_not_a_free_string() {
     assert_eq!(words(&newer), vec![("code", "plan_required")]);
 }
 
+/// The precondition of the test below, and what it asks: the record holds `word` in the free
+/// place `free` and in the vocabulary's place `field`; the free one is met FIRST (the maps are
+/// sorted by key, so a free string whose key sorts before the vocabulary's is the place that a
+/// reading which takes the first place that holds the word would name); and the place named is
+/// the vocabulary's, and only that.
+fn names_the_vocabulary_not_the_free_string<T: serde::de::DeserializeOwned>(
+    value: &Value,
+    free: &str,
+    field: &str,
+    word: &str,
+) {
+    let mut paths = Vec::new();
+    string_paths(value, word, &mut Vec::new(), &mut paths);
+    let places: Vec<String> = paths.iter().map(|p| field_of(p)).collect();
+    assert_eq!(
+        places.first().map(String::as_str),
+        Some(free),
+        "the free string must be met first, or the test does not tell the places apart: {places:?}"
+    );
+    assert!(places.iter().any(|p| p == field), "{places:?}");
+    assert_eq!(
+        words(&newer_of::<T>(value)),
+        vec![(field, word)],
+        "the place named is the vocabulary's (not `{free}`) in {value}"
+    );
+}
+
+/// REQ-MAIN-006: the same, where the free string sorts BEFORE the vocabulary's field (the maps of
+/// a record are sorted, so a test whose vocabulary field comes first passes by that order alone:
+/// the review of 004e found it). Each record is one a newer release could write, with a free
+/// string that happens to be the unknown word; each case is a test of its own, so that each is
+/// shown to fail alone. A task: the goal (free) before the state.
+#[test]
+fn req_main_006_a_free_string_before_the_state_of_a_task_is_not_the_place_named() {
+    let task_state = written_by_a_newer_release(|v| {
+        v["goal"] = json!("quarantined");
+        v["state"] = json!("quarantined");
+    });
+    names_the_vocabulary_not_the_free_string::<Task>(&task_state, "goal", "state", "quarantined");
+}
+
+/// REQ-MAIN-006: the goal of a task (free) before the kind of its wait.
+#[test]
+fn req_main_006_a_free_string_before_the_wait_kind_of_a_task_is_not_the_place_named() {
+    let task_wait = written_by_a_newer_release(|v| {
+        v["goal"] = json!("plan");
+        v["state"] = json!("waiting_user");
+        v["wait_kind"] = json!("plan");
+    });
+    names_the_vocabulary_not_the_free_string::<Task>(&task_wait, "goal", "wait_kind", "plan");
+}
+
+/// REQ-MAIN-006: `task.admission_changed`: the reason (free) before the state.
+#[test]
+fn req_main_006_a_free_string_before_the_state_of_an_admission_is_not_the_place_named() {
+    let mut admission = json_of(&event(Event::TaskAdmissionChanged {
+        state: crate::event::AdmissionState::Admitted,
+        slots_taken: None,
+        reason: Some("queued_by_daemon".into()),
+        waited_ms: None,
+    }));
+    admission["state"] = json!("queued_by_daemon");
+    names_the_vocabulary_not_the_free_string::<EventRecord>(
+        &admission,
+        "reason",
+        "state",
+        "queued_by_daemon",
+    );
+}
+
+/// REQ-MAIN-006: `task.state_changed`: `from` (free) before the halt reason.
+#[test]
+fn req_main_006_a_free_string_before_the_halt_reason_of_a_change_is_not_the_place_named() {
+    let mut changed = json_of(&event(Event::TaskStateChanged {
+        from: "plan_required".into(),
+        to: "halted".into(),
+        reason: Some(crate::task::HaltReason::Policy),
+        rollback_failed: false,
+        halt_detail: None,
+    }));
+    changed["reason"] = json!("plan_required");
+    names_the_vocabulary_not_the_free_string::<EventRecord>(
+        &changed,
+        "from",
+        "reason",
+        "plan_required",
+    );
+}
+
+/// REQ-MAIN-006: an event of a newer release: a field of its own (free) before its name.
+#[test]
+fn req_main_006_a_free_string_before_the_name_of_an_event_is_not_the_place_named() {
+    let mut unknown_event = json_of(&event(Event::TaskCreated));
+    unknown_event["event"] = json!("session.attached");
+    unknown_event["client"] = json!("session.attached");
+    names_the_vocabulary_not_the_free_string::<EventRecord>(
+        &unknown_event,
+        "client",
+        "event",
+        "session.attached",
+    );
+}
+
+/// REQ-MAIN-006: in a list: the path of the first change (free) before the kind of the second.
+#[test]
+fn req_main_006_a_free_string_earlier_in_a_list_is_not_the_place_named() {
+    let ids = ScriptedIds::default();
+    let change = |path: &str| crate::snapshot::Change {
+        path: path.into(),
+        kind: crate::snapshot::ChangeKind::Added,
+        bytes: 1,
+    };
+    let mut promotion = json_of(&crate::snapshot::Promotion {
+        promotion_id: crate::ids::PromotionId::new(&ids),
+        task_id: TaskId::new(&ids),
+        backup_snapshot: crate::ids::SnapshotId::new(&ids),
+        project_root: "/project".into(),
+        files: vec![change("renamed"), change("b.txt")],
+        applied_at: FakeClock::default().now(),
+        reversed_at: None,
+        state: crate::snapshot::PromotionState::Applied,
+        after: vec![],
+        reason: None,
+        restored: true,
+    });
+    promotion["files"][1]["kind"] = json!("renamed");
+    names_the_vocabulary_not_the_free_string::<crate::snapshot::Promotion>(
+        &promotion,
+        "files[0].path",
+        "files[1].kind",
+        "renamed",
+    );
+}
+
 /// REQ-MAIN-006: a record that is damaged, rather than newer, is the failure it always was.
 #[test]
 fn req_main_006_a_damaged_record_is_not_a_newer_one() {

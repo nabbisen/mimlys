@@ -518,9 +518,12 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
             .iter()
             .map(|w| (w.field.as_str(), w.word.as_str()))
             .collect();
-        assert!(
-            found.contains(&(field, word)),
-            "{what}: {found:?} does not hold {field} `{word}`"
+        // Exactly the one word, at exactly its field: a record that names another place as well
+        // is not the record this entry is.
+        assert_eq!(
+            found,
+            vec![(field, word)],
+            "{what}: {found:?} is not {field} `{word}`"
         );
         assert_eq!(newer.raw, record, "{what}: the record as written");
     }
@@ -530,6 +533,103 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// REQ-MAIN-006: the field named is the vocabulary's where a free string of the same record, equal
+/// to the unknown word, sorts BEFORE it. The maps of a record are sorted by key, so that a
+/// record whose vocabulary field comes first is named rightly by the order alone (the review of
+/// 004e: a reading that takes the first place that holds the word passed every other test). Each
+/// record is read from the store as the typed reads and the readers get it, and is a real one of
+/// its kind, with a free string put in the place `free` and the word in both places.
+#[test]
+fn req_main_006_a_free_string_that_sorts_before_the_vocabulary_is_not_the_field_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    let s = |kind| sample(&store, &task, kind);
+    let event = |name: &str, extra: Value| {
+        let mut e = s(RecordKind::Event);
+        e["event"] = json!(name);
+        with(&e, extra)
+    };
+    let w = "from_a_newer_release";
+    // (the kind, what it is, the record, the key of the free string met first, the vocabulary's field)
+    let table: Vec<(RecordKind, &str, Value, &str, &str)> = vec![
+        (
+            RecordKind::Task,
+            "the goal before the state",
+            with(&s(RecordKind::Task), json!({"goal": w, "state": w})),
+            "goal",
+            "state",
+        ),
+        (
+            RecordKind::Event,
+            "the reason of an admission before its state",
+            event(
+                "task.admission_changed",
+                json!({"reason": w, "state": w, "slots_taken": 1}),
+            ),
+            "reason",
+            "state",
+        ),
+        (
+            RecordKind::Event,
+            "the `from` of a state change before its halt reason",
+            event(
+                "task.state_changed",
+                json!({"from": w, "to": "halted", "reason": w}),
+            ),
+            "from",
+            "reason",
+        ),
+        (
+            RecordKind::Event,
+            "a field of a newer event before its name",
+            event(w, json!({"client": w})),
+            "client",
+            "event",
+        ),
+        (
+            // In a list: the path of the first change before the kind of the second.
+            RecordKind::Promotion,
+            "the path of one change before the kind of the next",
+            with(
+                &s(RecordKind::Promotion),
+                json!({"files": [
+                    {"path": w, "kind": "added", "bytes": 1},
+                    {"path": "b", "kind": w, "bytes": 1},
+                ]}),
+            ),
+            "path",
+            "files[1].kind",
+        ),
+    ];
+    // Every entry is tried, and the misses are listed together: each entry is a case of its own.
+    let mut misses: Vec<String> = Vec::new();
+    for (kind, what, record, free, field) in table {
+        // The precondition: the free string holds the first place of the word in the record's
+        // text (sorted, as the store writes it), or the entry does not tell the places apart.
+        let text = record.to_string();
+        let free_at = text.find(&format!("\"{w}\"")).unwrap();
+        assert!(
+            text[..free_at].ends_with(&format!("\"{free}\":")),
+            "{what}: `{free}` must hold the first `{w}` of {text}"
+        );
+        let newer = kind
+            .check(&text)
+            .unwrap_or_else(|e| panic!("{what}: {e:?} for {text}"))
+            .unwrap_or_else(|| panic!("{what}: the record reads whole: {text}"));
+        let found: Vec<(&str, &str)> = newer
+            .words
+            .iter()
+            .map(|word| (word.field.as_str(), word.word.as_str()))
+            .collect();
+        if found != vec![(field, w)] {
+            misses.push(format!(
+                "{what}: named {found:?}, not the vocabulary's `{field}` alone (the free `{free}` comes first)"
+            ));
+        }
+    }
+    assert!(misses.is_empty(), "{misses:#?}");
 }
 
 /// Every column of every row the task owns, as text: what "the store unchanged byte for byte in
