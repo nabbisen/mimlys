@@ -537,8 +537,8 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
 /// task that is running: `run`, `task new` (without `--hold`), `task resume`, `approve`, `reject`,
 /// `answer`, and `grant` and `revoke` (a grant or a revocation that invalidates a pending approval
 /// sets the task running, and a task recovered under `recovery.auto_resume` is driven by the first
-/// of these commands). That is the list of starts of the request 015a-1 (section 5); it is not
-/// kept by hand here: [`Steps::of`] matches **every** command, with no wildcard, so that a command
+/// of these commands). That is the list of starts of handoff 015a (item 3, and item 3 of 015a-5); it is
+/// not kept by hand here: [`Steps::of`] matches **every** command, with no wildcard, so that a command
 /// that is added does not compile until it says which it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Steps {

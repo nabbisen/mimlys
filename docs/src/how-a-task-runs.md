@@ -257,8 +257,10 @@ whether you gave the task a completion check:
   only if the run succeeds. The check never asks for your approval, and so
   must be a tool the task is granted and one the profile does not hold for
   approval: if it is not allowed to run, the task halts with the reason
-  `policy`. (The same reason is given when a task would start on a `remote`
-  backend under a profile that forbids it; see [Configuration](./reference/configuration.md#where-a-backend-is-locality).)
+  `policy`, and `task show --json` says which rule stopped it: `halt_detail` is
+  `{"rule": "completion_check_refused"}`. (The same reason is given when a task would start on a `remote`
+  backend under a profile that forbids it, with the rule `remote_backend_forbidden`, the backend and the
+  profile; see [Configuration](./reference/configuration.md#where-a-backend-is-locality).)
 - **A check that fails** does not complete the task. Its failed result goes to
   the model like any observation and the task goes on (it counts as a failed
   action toward the limit of five in a row).
