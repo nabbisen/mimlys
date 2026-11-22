@@ -457,12 +457,28 @@ fn run_process() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    match runtime.block_on(run(cli, &out)) {
+    let code = match runtime.block_on(run(cli, &out)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             out.error(&e);
             ExitCode::from(1)
         }
+    };
+    // A reader that has gone is not a failure (REQ-CLI-009): the exit code is the work's. A write
+    // that failed for another reason (a full disk) is said once, on standard error, and a command
+    // whose output did not arrive does not end in success.
+    match mimlys::output::write_failure() {
+        Some(detail) => {
+            eprintln!(
+                "{}",
+                mimlys::messages::error_line(
+                    "internal",
+                    &mimlys::messages::cannot_write_output(&detail)
+                )
+            );
+            ExitCode::from(1)
+        }
+        None => code,
     }
 }
 

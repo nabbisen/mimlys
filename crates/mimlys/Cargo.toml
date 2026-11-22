@@ -41,7 +41,7 @@ wat = "1"
 
 [target.'cfg(unix)'.dependencies]
 # `O_NONBLOCK` for the open of a project file (a named pipe never blocks it).
-rustix = { version = "1", features = ["fs", "process"] }
+rustix = { version = "1", features = ["fs", "process", "event"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # A pseudo-terminal and a signal for the tests of the prompts (REQ-CLI-005),

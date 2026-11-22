@@ -30,6 +30,13 @@ pub async fn run(
     let mut all = Vec::new();
     let mut unheld = UnheldWatch::default();
     loop {
+        // A reader that has gone (`events <task> --follow | head -1`) has what it wanted: the
+        // command ends, with the exit code of a reader, and does not follow into a closed pipe
+        // (REQ-CLI-009). Asked before every read, so also between the polls of a task that
+        // says nothing, and in `--json`, where nothing is written until the end.
+        if out.reader_gone() {
+            return Ok(());
+        }
         let batch = app.reader.get_events(task_id, position, 1000)?;
         for e in &batch {
             out.line(event_text(e));
