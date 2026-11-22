@@ -40,6 +40,39 @@ fn db_files(data: &std::path::Path) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
+/// How long a lock that nobody in the test holds may stay held before the test says so.
+const UNHELD_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Opens the store as a reader once its lock is free, for a test whose premise is that no runtime
+/// holds it (the writer of the test has been dropped, or there never was one).
+///
+/// Why a wait is there at all (handoff 004e, item 5): a lock on a file belongs to the open file
+/// description, not to the descriptor, and a process that forks keeps a duplicate of every
+/// descriptor it has, close-on-exec or not, until the child execs. This binary's other tests
+/// start processes (`Command::spawn` in `store/tests.rs` and `recovery/found_recovering_tests.rs`)
+/// on threads of their own, so a child that was forked while this test's writer held the lock
+/// may be alive for a moment after the writer is dropped, and then the lock is held by a process
+/// that is not a runtime and that will release it at its exec. The reader's single probe found
+/// it held and the test saw "no recovery pending". The test is about a store that no runtime
+/// holds; the wait gives the stray child its moment and nothing more: a lock still held after
+/// [`UNHELD_WITHIN`] is a handle the test leaked, or a writer that does not release it, and fails
+/// with that. The tests that are about a lock that **is** held do not use this.
+fn open_read_only_unheld(data: &std::path::Path) -> Result<ReadStore, PersistenceError> {
+    let started = std::time::Instant::now();
+    loop {
+        let reader = open_read_only(data)?;
+        if reader.lock_state() == &LockState::Free {
+            return Ok(reader);
+        }
+        assert!(
+            started.elapsed() < UNHELD_WITHIN,
+            "the lock is still held {UNHELD_WITHIN:?} after the test dropped its writer: {:?}",
+            reader.lock_state()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// REQ-PERS-013: the reader's handle has no writing method. The type does not
 /// implement the writer's trait (while the writer's handle does), and a call
 /// of a writing method on it does not compile (the doctest of `ReadStore`).
@@ -113,7 +146,7 @@ fn req_pers_013_a_reader_does_not_hold_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     drop(open(&data).unwrap());
-    let reader = open_read_only(&data).unwrap();
+    let reader = open_read_only_unheld(&data).unwrap();
     assert_eq!(reader.lock_state(), &LockState::Free);
     // Decided by state, not by elapsed time: a lock the reader held would keep
     // the writer out for the whole of LIM-O3 and then refuse it (`Locked`), so
@@ -147,7 +180,7 @@ fn req_pers_013_the_holder_is_recorded_while_the_lock_is_held() {
         r#"{"pid":1,"since":"2026-01-01T00:00:00Z"}"#,
     )
     .unwrap();
-    let reader = open_read_only(&data).unwrap();
+    let reader = open_read_only_unheld(&data).unwrap();
     assert_eq!(reader.lock_state(), &LockState::Free);
 }
 
@@ -173,7 +206,7 @@ fn req_pers_013_the_reader_runs_no_recovery() {
     .unwrap();
     let before = db_files(&data);
 
-    let reader = open_read_only(&data).unwrap();
+    let reader = open_read_only_unheld(&data).unwrap();
     assert_eq!(reader.lock_state(), &LockState::Free);
     assert!(reader.recovery_pending().unwrap());
     assert_eq!(
@@ -203,7 +236,7 @@ fn req_pers_013_the_reader_runs_no_recovery() {
     assert_eq!(recovered.len(), 1);
     integrity::check(&writer, fx.now()).unwrap();
     drop(writer);
-    let reader = open_read_only(&data).unwrap();
+    let reader = open_read_only_unheld(&data).unwrap();
     assert!(!reader.recovery_pending().unwrap());
 }
 
@@ -234,7 +267,7 @@ fn req_pers_013_a_task_found_recovering_is_recovery_pending() {
             )
             .unwrap();
     }
-    let reader = open_read_only(&data).unwrap();
+    let reader = open_read_only_unheld(&data).unwrap();
     assert!(reader.tasks_in_state("running").unwrap().is_empty());
     assert!(reader.recovery_pending().unwrap());
 }
