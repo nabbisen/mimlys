@@ -177,7 +177,10 @@ model = "qwen2.5:3b-instruct"
   you, and nothing falls back to one: in a file without a `default`, `check`
   and `status` work and say that there is none, and every command that creates a
   task or runs a step stops with that line, which lists the backends that are
-  configured. (A level of effort that names a backend arrives in a later release;
+  configured. That is every command that can lead to a step: `run`, `task new`,
+  `task resume`, `approve`, `reject`, `answer`, and `grant` and `revoke` too (a grant
+  or a revocation can set a task running again), each refused before anything is
+  created, granted, revoked or run. (A level of effort that names a backend arrives in a later release;
   until then a task runs on `default` only, and the other entries are for
   `status`.)
 - **Two entries on one URL must agree on `max_in_flight`.** The limit is counted
@@ -186,13 +189,14 @@ model = "qwen2.5:3b-instruct"
   one when they have the same scheme, host and port: the path, the case of the
   host and a user name do not make another. `localhost` and `127.0.0.1` are two
   URLs to mimlys, which does not resolve names.
-- **`status` shows each of them**: whether it answers, whether its model is listed and in memory, the transport in force, the engine's context against what a request needs, and the last fitness probe with its date. The backends are probed at once, so `status` takes no longer with three than with one (the limit is five seconds for all of them). See [`status`](./cli.md).
+- **`status` shows each of them**: whether it answers, whether its model is listed and in memory, the transport in force, the engine's context against what a request needs, and the last fitness probe with its date. The backends are probed at once, so `status` takes no longer with three than with one (the limit is five seconds for all of them). One that cannot be used as configured (`structured_output = "schema"` against a server that refuses a schema, a `fake` script that cannot be read) is said on its own line, `cannot be used: <the reason>`, and the others are shown all the same; `status` still ends with exit code 0. See [`status`](./cli.md).
 - **Version 1.** A file with `config_version = 1` has one `[backend]`, which is
   read as `[backends.default]`. It loads and runs as before; `check` says once
   that the form is deprecated and prints the configuration in version 2. It is
   read through 0.14. Mixing the forms is refused, naming the version each needs:
   `[backend]` under `config_version = 2`, or `[backends]` under
-  `config_version = 1`. To move a file, set `config_version = 2` and write
+  `config_version = 1` (an empty `[backends]` header too: the header is the mix).
+  To move a file, set `config_version = 2` and write
   `[backends.default]` where `[backend]` was. Messages name keys in the version-2
   form (`backends.default.timeout_ms`).
 
@@ -466,7 +470,7 @@ is removed by the next command that writes.
   other profile is unchanged.
 - **It writes**, so it does not run beside another runtime of this data
   directory: while another process holds the store it is refused, with that
-  process's id and the time it began. Its requests take the engine's gate like a
+  process's id and the time it began (as is every command that writes). Its requests take the engine's gate like a
   task's (`max_in_flight`), and Ctrl-C ends the wait for it, or the request in
   flight, within five seconds; the probe's task and scope are deleted, no class is
   recorded, and one line says so.

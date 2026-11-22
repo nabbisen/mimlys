@@ -12,23 +12,7 @@ use crate::probe::run::{Ended, probe_backend};
 use crate::probe::{self, LeftOut};
 use crate::probe_results::{self, LastProbe};
 use mimlys_core::clock::{Clock, SystemClock};
-use std::path::Path;
 use std::sync::Arc;
-
-/// The refusal of a probe while another process holds the store, naming the holder (LIM-O3). The
-/// holder is read without the lock, as `status` reads it.
-pub fn store_in_use(data_dir: &Path) -> AppError {
-    let holder = mimlys_persist::open_read_only(data_dir)
-        .ok()
-        .and_then(|store| match store.probe_lock() {
-            mimlys_persist::LockState::Held(holder) => holder,
-            _ => None,
-        });
-    AppError::StoreInUse {
-        detail: messages::probe_store_in_use(holder.as_ref().map(|h| (h.pid, h.since.as_str()))),
-        pid: holder.map(|h| h.pid),
-    }
-}
 
 /// What a probe command found, for `--json`.
 #[derive(Default, serde::Serialize)]

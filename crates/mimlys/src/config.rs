@@ -179,6 +179,13 @@ pub struct Config {
     pub interpreters: BTreeMap<String, InterpreterSection>,
 }
 
+/// Whether the TOML text has the top-level key `key`, however it is written (`[key]`, `key = {}`,
+/// `[key.x]`), read from the parsed table and not from a typed section. A text that does not parse
+/// has none here: the typed parse reports it.
+fn has_table_key(text: &str, key: &str) -> bool {
+    toml::from_str::<toml::Table>(text).is_ok_and(|table| table.contains_key(key))
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -1220,7 +1227,10 @@ impl Config {
                 }
             }
             CONFIG_VERSION_OLDEST => {
-                if !config.backends.is_empty() {
+                // The mix is the header, not the entries: an empty `[backends]` reads as no entry
+                // in the typed section, and the file still says the form of the other version.
+                // So it is read from the parsed table (`backends` is a key of the file).
+                if !config.backends.is_empty() || has_table_key(text, "backends") {
                     return Err(ConfigError::new(
                         "backends",
                         format!(

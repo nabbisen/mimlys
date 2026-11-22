@@ -354,6 +354,82 @@ fn req_mdl_010_backend_is_the_default_entry_and_null_without_one() {
     assert!(status.get("kind").is_none(), "{status}");
 }
 
+/// REQ-MDL-010 (handoff 015a-5, item 4): one backend that cannot be used as configured never hides
+/// the others. A `schema` mode against a server that refuses `json_schema`, and a `fake` backend
+/// whose script cannot be read, are each said on their own line (and as `error` in JSON, where
+/// their probe's findings are absent), the two that are fine are shown whole, the exit is 0, and
+/// `backend` is still the `default` entry.
+#[test]
+fn req_mdl_010_one_backend_that_cannot_be_used_does_not_hide_the_others() {
+    let good_a = MockServer::start(llama_cpp(32768), vec![]);
+    let good_b = MockServer::start(ollama(&["test-model"]), vec![]);
+    let strict = MockServer::start(
+        MockConfig {
+            refuse_formats: vec!["json_schema".to_owned()],
+            ..silent()
+        },
+        vec![],
+    );
+    let rig = Rig::new(&[("default", good_a.url(), ""), ("late", good_b.url(), "")]);
+    let missing = rig.dir.path().join("no-such-script.json");
+    let mut text = std::fs::read_to_string(&rig.config).unwrap();
+    text.push_str(&format!(
+        "[backends.strict]\nkind = \"openai_compatible\"\nurl = {:?}\nmodel = \"test-model\"\nstructured_output = \"schema\"\ndecision_transport = \"envelope\"\n[backends.ghost]\nkind = \"fake\"\nscript = {:?}\n",
+        strict.url(),
+        missing.to_string_lossy()
+    ));
+    std::fs::write(&rig.config, text).unwrap();
+
+    let (status, text) = rig.status();
+    let names: Vec<&str> = status["backends"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["default", "ghost", "late", "strict"]);
+    // The two that are fine, whole.
+    for name in ["default", "late"] {
+        let b = entry(&status, name);
+        assert_eq!(b["reachable"], true, "{b}");
+        assert!(b.get("error").is_none(), "{b}");
+        let line = line_of(&text, name);
+        assert!(line.contains("reachable, model listed"), "{line}");
+        assert!(!line.contains("cannot be used"), "{line}");
+    }
+    assert_eq!(entry(&status, "default")["context_tokens"], 32768);
+    assert_eq!(entry(&status, "late")["resident"], true);
+    // The two that are not, each on its own line, with its reason.
+    let ghost = line_of(&text, "ghost");
+    assert!(
+        ghost.contains("cannot be used: cannot read the script of backend `ghost`"),
+        "{ghost}"
+    );
+    assert!(ghost.contains("fake (local)"), "{ghost}");
+    let strict_line = line_of(&text, "strict");
+    assert!(
+        strict_line
+            .contains("cannot be used: backend `strict` unusable: the server refuses json_schema"),
+        "{strict_line}"
+    );
+    assert!(
+        strict_line.contains("openai_compatible test-model (local)"),
+        "{strict_line}"
+    );
+    for name in ["ghost", "strict"] {
+        let b = entry(&status, name);
+        assert!(b["error"].as_str().unwrap().contains(name), "{b}");
+        assert!(b.get("reachable").is_none(), "no findings for it: {b}");
+        assert_eq!(b["last_probe"], Value::Null);
+    }
+    assert_eq!(status["backend"], *entry(&status, "default"));
+    // The rest of the status is there.
+    assert!(
+        text.contains("store:") || text.contains("data directory"),
+        "{text}"
+    );
+}
+
 /// REQ-MDL-010: the other commands that start a task probe the backend that runs it, `default`,
 /// and print its context warning only: a backend that is not `default` is not contacted at all.
 #[test]

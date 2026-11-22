@@ -70,7 +70,8 @@ struct HostToolView {
 }
 
 /// One backend in the status: its name, the descriptor, the probe's findings (RFC 008 §4,
-/// REQ-MDL-010) and the last fitness probe (REQ-MDL-011), `null` when it was never probed.
+/// REQ-MDL-010) or the reason it cannot be used, and the last fitness probe (REQ-MDL-011), `null`
+/// when it was never probed.
 #[derive(Clone, Serialize)]
 struct BackendView {
     name: String,
@@ -80,6 +81,10 @@ struct BackendView {
     locality: mimlys_core::spi::Locality,
     #[serde(flatten)]
     probe: Option<crate::app::BackendProbe>,
+    /// Why the backend cannot be used as configured, when it cannot (a refused `schema` mode, a
+    /// script that cannot be read): the probe's findings are then absent. Shown only then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
     last_probe: Option<crate::probe_results::LastProbe>,
 }
 
@@ -91,52 +96,102 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     let policy = config.resolve_policy()?;
     // Every configured backend, probed at once: all the probes are started before any is waited
     // for, so the whole is bounded by one LIM-M4 however many backends there are (REQ-MDL-010).
-    let backends = Backend::make_all(&app.loaded)?;
-    let probed = crate::backends::probe_all(&backends).await;
+    // One that cannot be made or probed is said on its own line and the others are shown: a
+    // diagnosis does not stop at the first thing that is wrong (handoff 015a-5, item 4).
+    let made = Backend::make_each(&app.loaded);
+    let usable: Vec<Backend> = made
+        .iter()
+        .filter_map(|(_, made)| made.as_ref().ok().cloned())
+        .collect();
+    let mut probed = crate::backends::probe_all(&usable).await.into_iter();
     let last_probes = crate::probe_results::read(&app.data_dir);
-    let several = backends.len() > 1;
+    let several = made.len() > 1;
     let mut views = Vec::new();
     let mut backend_lines = Vec::new();
     let mut warnings = Vec::new();
-    for (backend, probed) in backends.iter().zip(probed) {
-        // An error here is a backend that cannot be used as configured (`schema` against a
-        // server that refuses it): it stops the status with the reason, as it always did.
-        let (probe, notice) = probed?;
-        if let Some(notice) = notice {
-            out.line(if several {
-                messages::for_backend(&backend.name, &notice)
-            } else {
-                notice
-            });
-        }
-        let described = backend.adapter.describe();
-        let locality = serde_json::to_value(described.locality)
+    for (name, made) in &made {
+        let last = |model: Option<&str>| messages::last_probe_text(&last_probes, name, model);
+        // What the backend is: from the adapter, or from the configuration when it could not be
+        // made.
+        let (backend, outcome) = match made {
+            Ok(backend) => (
+                Some(backend),
+                probed
+                    .next()
+                    .expect("one probe for each backend that was made")
+                    .map_err(|e| e.to_string()),
+            ),
+            Err(error) => (None, Err(error.to_string())),
+        };
+        let (kind, model, locality) = match backend {
+            Some(backend) => {
+                let described = backend.adapter.describe();
+                (described.kind, described.model, described.locality)
+            }
+            None => {
+                let section = app.loaded.config.backend(name)?;
+                let kind = serde_json::to_value(section.kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                (kind, section.model.clone(), section.locality)
+            }
+        };
+        let locality_text = serde_json::to_value(locality)
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
             .unwrap_or_default();
-        backend_lines.push(messages::status_backend_line(
-            &backend.name,
-            &described.kind,
-            described.model.as_deref(),
-            &locality,
-            Some(&probe),
-            &messages::last_probe_text(&last_probes, &backend.name, described.model.as_deref()),
-        ));
-        // The run goes on: a context below the need is a warning, never an error (REQ-MDL-003).
-        if let Some(warning) = probe.context_warning() {
-            warnings.push(if several {
-                messages::for_backend(&backend.name, &warning)
-            } else {
-                warning
-            });
-        }
+        let last_text = last(model.as_deref());
+        let (probe, error) = match outcome {
+            Ok((probe, notice)) => {
+                if let Some(notice) = notice {
+                    out.line(if several {
+                        messages::for_backend(name, &notice)
+                    } else {
+                        notice
+                    });
+                }
+                backend_lines.push(messages::status_backend_line(
+                    name,
+                    &kind,
+                    model.as_deref(),
+                    &locality_text,
+                    Some(&probe),
+                    &last_text,
+                ));
+                // The run goes on: a context below the need is a warning, never an error
+                // (REQ-MDL-003).
+                if let Some(warning) = probe.context_warning() {
+                    warnings.push(if several {
+                        messages::for_backend(name, &warning)
+                    } else {
+                        warning
+                    });
+                }
+                (Some(probe), None)
+            }
+            // A backend that cannot be used as configured (`schema` against a server that refuses
+            // it, a script that cannot be read): its own line says why, and the others go on.
+            Err(reason) => {
+                backend_lines.push(messages::status_backend_unusable_line(
+                    name,
+                    &kind,
+                    model.as_deref(),
+                    &locality_text,
+                    &reason,
+                    &last_text,
+                ));
+                (None, Some(reason))
+            }
+        };
         views.push(BackendView {
-            name: backend.name.clone(),
-            kind: described.kind,
-            model: described.model,
-            locality: described.locality,
-            probe: Some(probe),
-            last_probe: last_probes.of(&backend.name).cloned(),
+            name: name.clone(),
+            kind,
+            model,
+            locality,
+            probe,
+            error,
+            last_probe: last_probes.of(name).cloned(),
         });
     }
     // No backend named `default`: the line says so, as every command that needs one does.

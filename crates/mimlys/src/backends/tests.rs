@@ -63,6 +63,34 @@ fn req_cfg_007_a_version_1_file_without_a_backend_has_the_default_one() {
     config.validate().unwrap();
 }
 
+/// REQ-CFG-007: the mix is the header, not the entries: a version-1 file with an empty
+/// `[backends]` table is refused as one with an entry is, however the empty table is written, and
+/// it is found from the parsed table, not from the typed section (an empty table reads as no
+/// entry there). A version-2 file with an empty `[backends]` is not a mix (it names no backend,
+/// and no command that runs a step runs), and a version-1 file without the key is read as ever.
+#[test]
+fn req_cfg_007_an_empty_backends_header_in_a_version_1_file_is_the_mix() {
+    for text in [
+        "config_version = 1\n[backends]\n",
+        "config_version = 1\n[backend]\nkind = \"fake\"\n[backends]\n",
+        "config_version = 1\nbackends = {}\n",
+        "config_version = 1\n[runtime]\nadmission_slots = 2\n[backends]\n[policy]\n",
+    ] {
+        let err = Config::parse(text).unwrap_err();
+        assert_eq!(err.key, "backends", "{text:?}: {err}");
+        assert!(err.reason.contains("config_version 2"), "{text:?}: {err}");
+        assert!(err.reason.contains("config_version = 2"), "{text:?}: {err}");
+    }
+    // Not the mix: version 2 with the empty table (no `default`, said by the commands that need
+    // one), version 1 without the key.
+    let none = Config::parse("config_version = 2\n[backends]\n").unwrap();
+    assert!(none.backend_names().is_empty());
+    assert!(none.default_backend().is_err());
+    assert!(Config::parse("config_version = 1\n[backend]\nkind = \"fake\"\n").is_ok());
+    // The reverse is already refused by the same rule, in the same words.
+    assert!(Config::parse("config_version = 2\n[backend]\n").is_err());
+}
+
 /// REQ-CFG-007: a version-2 file with `[backend]`, and a version-1 file with `[backends]`, are
 /// refused, each naming the version that form needs.
 #[test]

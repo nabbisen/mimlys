@@ -257,7 +257,7 @@ fn req_pers_013_read_commands_answer_while_another_process_holds_the_store() {
     let (code, stdout, stderr) = env.run(&["check"]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
 
-    // The ones that write still take the lock, and still say why they cannot.
+    // The ones that write still take the lock, and still say why they cannot (naming the process that holds the store).
     for args in [
         vec!["task", "cancel", id.as_str()],
         vec!["rollback", id.as_str()],
@@ -266,7 +266,7 @@ fn req_pers_013_read_commands_answer_while_another_process_holds_the_store() {
         let (code, _, stderr) = env.run(&args);
         assert_eq!(code, 1, "{args:?}: {stderr}");
         assert!(
-            stderr.to_lowercase().contains("locked"),
+            stderr.contains("the store is in use by runtime"),
             "{args:?} keeps the exclusive open: {stderr}"
         );
     }
@@ -411,7 +411,10 @@ fn req_pers_013_promote_patch_reads_and_promote_writes() {
 
     let (code, _, stderr) = env.run(&["promote", &id, "--yes"]);
     assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.to_lowercase().contains("locked"), "{stderr}");
+    assert!(
+        stderr.contains("the store is in use by runtime"),
+        "{stderr}"
+    );
     drop(writer);
 }
 
@@ -603,7 +606,10 @@ fn req_pers_013_two_writers_still_exclude_each_other() {
     let writer = mimlys_persist::open(&env.data).unwrap();
     let (code, _, stderr) = env.run(&["task", "new", "x", "--hold"]);
     assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.to_lowercase().contains("locked"), "{stderr}");
+    assert!(
+        stderr.contains("the store is in use by runtime"),
+        "{stderr}"
+    );
     let (code, _, stderr) = env.run(&["status"]);
     assert_eq!(code, 0, "{stderr}");
     drop(writer);

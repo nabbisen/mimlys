@@ -159,6 +159,16 @@ fn req_cfg_007_a_form_of_the_other_version_is_refused_naming_the_version() {
     assert_eq!(code, 1);
     assert_eq!(value["error"]["kind"], "invalid_request");
     assert_eq!(value["error"]["detail"]["parameter"], "backend");
+    // An empty `[backends]` header is the mix too (handoff 015a-5, item 5): by every command.
+    let v1_with_empty_backends = Env::new(1, "[backends]\n");
+    for args in [&["check"][..], &["status"], &["task", "list"]] {
+        let (code, _, stderr) = v1_with_empty_backends.run(args);
+        assert_eq!(code, 1, "{args:?}: {stderr}");
+        assert!(stderr.contains("config_version 2"), "{stderr}");
+    }
+    let (code, value) = v1_with_empty_backends.json(&["check"]);
+    assert_eq!(code, 1);
+    assert_eq!(value["error"]["detail"]["parameter"], "backends");
 }
 
 /// REQ-SEC-010: a backend declared `local` whose URL's host is not loopback is refused at the
@@ -244,6 +254,10 @@ fn req_cfg_007_without_default_no_command_picks_a_backend() {
         vec!["approve", "abcd1234"],
         vec!["reject", "abcd1234"],
         vec!["answer", "abcd1234", "text"],
+        // They can drive a step (a grant or a revocation that invalidates a pending approval sets
+        // the task running, and the first command after a restart drives a recovered task).
+        vec!["grant", "abcd1234", "tool", "read_file"],
+        vec!["revoke", "abcd1234", "abcd1234"],
     ] {
         let (code, _, stderr) = env.run(&args);
         assert_eq!(code, 1, "{args:?}: {stderr}");
@@ -271,6 +285,66 @@ fn req_cfg_007_without_default_no_command_picks_a_backend() {
     // A command that runs no step needs no backend.
     let (code, _, stderr) = env.run(&["toolchain", "list"]);
     assert_eq!(code, 0, "{stderr}");
+}
+
+impl Env {
+    /// The configuration written again with `body`, as an edit of the file would.
+    fn rewrite(&self, version: u32, body: &str) {
+        std::fs::write(
+            &self.config,
+            format!(
+                "config_version = {version}\n[runtime]\ndata_dir = {:?}\n{body}",
+                self.dir.path().join("data").to_string_lossy()
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// REQ-CFG-007 (handoff 015a-5, item 3): `grant` and `revoke` can drive a step, so they check for
+/// `default` before anything is done: a task that waits for an approval, the file edited so that
+/// no backend is named `default`, and the two commands are refused with the same words as the
+/// others; the grant is not issued, the revocation is not made, the approval is still pending and
+/// the script of the fake backend is not advanced (the task shows exactly as it did).
+#[test]
+fn req_cfg_007_grant_and_revoke_are_refused_before_anything_is_driven() {
+    let scope = scope();
+    let scope_arg = scope.path().to_str().unwrap();
+    let configured = |name: &str| {
+        format!(
+            "[backends.{name}]\nkind = \"fake\"\nscript = {:?}\n[policy.profiles.workspace]\napproval_tools = [\"write_file\"]\n",
+            demo_script()
+        )
+    };
+    let env = Env::new(2, &configured("default"));
+    let (code, value) = env.json(&["run", "fix it", "--scope", scope_arg]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["task"]["state"], "waiting_user", "{value}");
+    let id = value["task"]["task_id"].as_str().unwrap().to_owned();
+    let grant = value["grants"][0]["grant_id"].as_str().unwrap().to_owned();
+    let (_, before) = env.json(&["task", "show", &id]);
+    let (_, events_before) = env.json(&["events", &id]);
+
+    env.rewrite(2, &configured("small"));
+    for args in [
+        vec!["grant", &id, "tool", "replace_in_file"],
+        vec!["revoke", &id, &grant],
+    ] {
+        let (code, _, stderr) = env.run(&args);
+        assert_eq!(code, 1, "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("no backend is named `default`"),
+            "{args:?}: {stderr}"
+        );
+        assert!(stderr.contains("`small`"), "{args:?}: {stderr}");
+        let (code, value) = env.json(&args);
+        assert_eq!(code, 1, "{args:?}: {value}");
+        assert_eq!(value["error"]["kind"], "invalid_request", "{value}");
+    }
+    let (_, after) = env.json(&["task", "show", &id]);
+    assert_eq!(after, before, "nothing was granted, revoked or driven");
+    let (_, events_after) = env.json(&["events", &id]);
+    assert_eq!(events_after, events_before, "no event was written");
 }
 
 /// REQ-CFG-007: a file with `[backends.default]` among others runs on it, and only on it.

@@ -394,7 +394,27 @@ fn m4_structured_output_is_visible() {
         "kind = \"openai_compatible\"\nurl = {:?}\nmodel = \"test-model\"\nstructured_output = \"schema\"",
         server.url()
     ));
-    let (code, _, stderr) = env.run(&["status"]);
+    // `status` says it on the backend's own line and goes on, exit 0 (handoff 015a-5, item 4: it
+    // used to stop with this reason, and so hid every other backend); a command that would run a
+    // step with this backend still stops, with the same reason.
+    let (code, stdout, stderr) = env.run(&["status"]);
+    assert_eq!(code, 0, "{stderr}");
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("backend         default:"))
+        .unwrap_or_else(|| panic!("no backend line: {stdout}"));
+    assert!(line.contains("cannot be used"), "{line}");
+    assert!(line.contains("refuses json_schema"), "{line}");
+    assert!(line.contains("structured_output"), "{line}");
+    let (_, status) = env.json(&["status"]);
+    assert!(
+        status["backend"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("refuses json_schema"),
+        "{status}"
+    );
+    let (code, _, stderr) = env.run(&["run", GOAL, "--scope", scope.path().to_str().unwrap()]);
     assert_eq!(code, 1);
     assert!(stderr.contains("refuses json_schema"), "{stderr}");
     assert!(stderr.contains("structured_output"), "{stderr}");

@@ -469,6 +469,22 @@ fn data_dir_error(data_dir: &Path, e: std::io::Error) -> AppError {
     }
 }
 
+/// The refusal of a command that writes while another process holds the store, naming the holder
+/// (LIM-O3): its process and since when, read without the lock as `status` reads it. Every writer
+/// is refused through this function (`App::open`), `model probe` included.
+pub fn store_in_use(data_dir: &Path) -> AppError {
+    let holder = mimlys_persist::open_read_only(data_dir)
+        .ok()
+        .and_then(|store| match store.probe_lock() {
+            mimlys_persist::LockState::Held(holder) => holder,
+            _ => None,
+        });
+    AppError::StoreInUse {
+        detail: crate::messages::store_in_use(holder.as_ref().map(|h| (h.pid, h.since.as_str()))),
+        pid: holder.map(|h| h.pid),
+    }
+}
+
 impl App {
     /// Opens the data directory, recovers, checks consistency and builds
     /// the runtime (REQ-PERS-006, REQ-PERS-007).
@@ -500,7 +516,12 @@ impl App {
         mimlys_exec::confine::create_private_dir(&data_dir)
             .map_err(|e| data_dir_error(&data_dir, e))?;
         let policy = config.resolve_policy()?;
-        let store = mimlys_persist::sqlite::open(&data_dir)?;
+        // Every writer opens the store here; while another process holds it, each is refused with
+        // the holder named (LIM-O3), by the one function (`store_in_use`).
+        let store = mimlys_persist::sqlite::open(&data_dir).map_err(|e| match e {
+            mimlys_core::spi::PersistenceError::Locked => store_in_use(&data_dir),
+            other => AppError::from(other),
+        })?;
         let ids = SystemIds;
         let now = mimlys_core::clock::Clock::now(&SystemClock);
 

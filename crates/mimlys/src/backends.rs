@@ -426,9 +426,11 @@ impl Backend {
         })
     }
 
-    /// Every configured backend, made: the one named [`DEFAULT`] first when there is one, the others
-    /// by name. Nothing is contacted.
-    pub fn make_all(loaded: &Loaded) -> Result<Vec<Self>, AppError> {
+    /// Every configured backend, each made on its own: the one named [`DEFAULT`] first when there
+    /// is one, the others by name. Nothing is contacted. One that cannot be made (a `fake`
+    /// backend's script that cannot be read) is its own error in its own place, and the others
+    /// are made all the same: a diagnosis must not hide what it could show (`status`).
+    pub fn make_each(loaded: &Loaded) -> Vec<(String, Result<Self, AppError>)> {
         let mut names = loaded.config.backend_names();
         if let Some(at) = names.iter().position(|n| *n == DEFAULT) {
             let default = names.remove(at);
@@ -436,7 +438,7 @@ impl Backend {
         }
         names
             .into_iter()
-            .map(|name| Self::make(loaded, name, None))
+            .map(|name| (name.to_owned(), Self::make(loaded, name, None)))
             .collect()
     }
 

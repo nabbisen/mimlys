@@ -495,6 +495,24 @@ pub fn status_backend_line(
     line.push_str(&format!("; last probe: {last}"));
     line
 }
+/// The line of a backend that cannot be used as configured (a refused `schema` mode, a script
+/// that cannot be read): it is said on its own line, and the other backends are shown
+/// (REQ-MDL-010; handoff 015a-5, item 4).
+pub fn status_backend_unusable_line(
+    name: &str,
+    kind: &str,
+    model: Option<&str>,
+    locality: &str,
+    reason: &str,
+    last: &str,
+) -> String {
+    let head = match model {
+        Some(m) => format!("backend         {name}: {kind} {m} ({locality})"),
+        None => format!("backend         {name}: {kind} ({locality})"),
+    };
+    format!("{head}; cannot be used: {reason}; last probe: {last}")
+}
+
 /// A probe's fixed-vocabulary detail as the line shows it: a redirect (`redirect:<host>`, from
 /// the adapter) says that it was not followed and where it pointed (REQ-SEC-010); any other
 /// detail is shown as it is.
@@ -1826,13 +1844,13 @@ pub fn probe_left_paths(paths: &[String]) -> String {
         paths.join(", ")
     )
 }
-/// `model probe` while another process holds the store (LIM-O3): who, and what to do.
-pub fn probe_store_in_use(holder: Option<(u32, &str)>) -> String {
+/// A command that writes, while another process holds the store (LIM-O3): who, and what to do.
+pub fn store_in_use(holder: Option<(u32, &str)>) -> String {
     match holder {
         Some((pid, since)) => format!(
-            "the store is in use by runtime {pid} since {since}: `mimlys model probe` writes (a scope, a task, a record) and does not run beside another runtime of this data directory; run it when that runtime has ended"
+            "the store is in use by runtime {pid} since {since}: a command that writes (a task, a scope, a record) does not run beside another runtime of this data directory; run it when that runtime has ended"
         ),
-        None => "the store is in use by another runtime: `mimlys model probe` writes (a scope, a task, a record) and does not run beside another runtime of this data directory; run it when that runtime has ended".to_owned(),
+        None => "the store is in use by another runtime: a command that writes (a task, a scope, a record) does not run beside another runtime of this data directory; run it when that runtime has ended".to_owned(),
     }
 }
 

@@ -490,29 +490,24 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
         let app = ReadApp::open(loaded)?;
         return dispatch_read(&app, read, out).await;
     }
-    // `model probe` writes, so it is refused while another process holds the store, naming it.
-    let probing_in = matches!(&cli.command, Command::Model(_))
-        .then(|| loaded.config.data_dir())
-        .transpose()?;
-    let app = match (App::open(loaded), probing_in) {
-        (Err(AppError::Persistence(mimlys_core::spi::PersistenceError::Locked)), Some(dir)) => {
-            return Err(commands::model::store_in_use(&dir));
-        }
-        (opened, _) => opened?,
-    };
+    // Every writer is refused while another process holds the store, naming it (LIM-O3): the
+    // refusal is made where the store is opened (`App::open`), by one function.
+    let app = App::open(loaded)?;
     // A task runs on the backend named `default`, and no command picks another when there is
     // none (REQ-CFG-007; RFC 015, Amendment 1): this is said before anything is created or run.
-    if needs_backend(&cli.command) {
+    // Every command that can lead to a step says it, `grant` and `revoke` included (`Steps`).
+    let steps = Steps::of(&cli.command);
+    if steps.needs_default() {
         app.loaded.config.default_backend()?;
     }
-    if runs_steps(&cli.command) {
+    if steps.starts_a_task() {
         app.backend_ready()?;
     }
     // REQ-SEC-010: a backend that the start of this command's task is refused is not contacted,
     // not even to be probed; the command goes on and says why (the creation is refused, or the
     // task halts `policy`).
     let forbidden = start_is_forbidden(&app, &cli.command);
-    if needs_backend(&cli.command)
+    if steps.contacts_backend()
         && !forbidden
         && let Some(notice) = app.probe_backend().await?
     {
@@ -520,7 +515,7 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     }
     // A context below the need is a warning on standard error, never an error:
     // the run goes on (REQ-MDL-003).
-    if needs_backend(&cli.command)
+    if steps.contacts_backend()
         && let Some(warning) = app.context_warning()
     {
         eprintln!("{warning}");
@@ -535,19 +530,79 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     result.and(closed)
 }
 
-/// Commands that run steps or report the backend probe the backend first (RFC 008 §4).
-/// Commands that will ask the backend for a decision; without a backend
-/// that can answer they stop here, not at the first step (CLR-1, CLR-5).
-fn runs_steps(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Run(_)
-            | Command::Task(TaskCommand::New { hold: false, .. })
-            | Command::Task(TaskCommand::Resume { .. })
-            | Command::Approve { .. }
-            | Command::Reject { .. }
-            | Command::Answer { .. }
-    )
+/// What a command can lead to, as far as the model backend goes (REQ-CFG-007; handoff 015a-5,
+/// item 3). A step is driven only by the commands that end in `commands::finish`, which follows a
+/// task that is running: `run`, `task new` (without `--hold`), `task resume`, `approve`, `reject`,
+/// `answer`, and `grant` and `revoke` (a grant or a revocation that invalidates a pending approval
+/// sets the task running, and a task recovered under `recovery.auto_resume` is driven by the first
+/// of these commands). That is the list of starts of the request 015a-1 (section 5); it is not
+/// kept by hand here: [`Steps::of`] matches **every** command, with no wildcard, so that a command
+/// that is added does not compile until it says which it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Steps {
+    /// It creates no task and sets none running.
+    Never,
+    /// It can drive a step (it may set a task running, and it follows one that runs), without
+    /// being a start of its own: it needs the backend a task runs on to exist, and contacts none
+    /// (`grant`, `revoke`).
+    May,
+    /// It creates a task and runs no step (`task new --hold`): the backend is probed, as the
+    /// creation checks it.
+    Creates,
+    /// It creates a task and runs it, or sets one running (`run`, `task new`, `task resume`,
+    /// `approve`, `reject`, `answer`): the backend is made sure to be able to answer, and probed
+    /// first (RFC 008 §4).
+    Starts,
+}
+
+impl Steps {
+    /// What `command` can lead to. No wildcard: see the type.
+    fn of(command: &Command) -> Self {
+        match command {
+            Command::Run(_) => Steps::Starts,
+            Command::Task(task) => match task {
+                TaskCommand::New { hold: false, .. } | TaskCommand::Resume { .. } => Steps::Starts,
+                TaskCommand::New { hold: true, .. } => Steps::Creates,
+                TaskCommand::Show { .. }
+                | TaskCommand::List
+                | TaskCommand::Pause { .. }
+                | TaskCommand::Cancel { .. }
+                | TaskCommand::Prune { .. }
+                | TaskCommand::Output { .. }
+                | TaskCommand::Delete { .. } => Steps::Never,
+            },
+            Command::Approve { .. } | Command::Reject { .. } | Command::Answer { .. } => {
+                Steps::Starts
+            }
+            Command::Grant { .. } | Command::Revoke { .. } => Steps::May,
+            Command::Rollback { .. }
+            | Command::Promote { .. }
+            | Command::Events { .. }
+            | Command::Metrics { .. }
+            | Command::Status { .. }
+            | Command::Check
+            | Command::Runtime(_)
+            | Command::Model(_)
+            | Command::Interpreters(_)
+            | Command::Toolchain(_) => Steps::Never,
+        }
+    }
+
+    /// The backend named `default` must exist: a task runs on it, and none other is picked.
+    fn needs_default(self) -> bool {
+        self != Steps::Never
+    }
+
+    /// The backend is probed first, and its context warning is printed.
+    fn contacts_backend(self) -> bool {
+        matches!(self, Steps::Creates | Steps::Starts)
+    }
+
+    /// The backend must be able to answer (a fake one needs a script): said here, not at the first
+    /// step (CLR-1, CLR-5).
+    fn starts_a_task(self) -> bool {
+        self == Steps::Starts
+    }
 }
 
 /// Whether the task this command creates or starts is one the profile forbids the backend for
@@ -575,18 +630,6 @@ fn start_is_forbidden(app: &App, command: &Command) -> bool {
         }
     };
     forbidden.unwrap_or(false)
-}
-
-fn needs_backend(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Run(_)
-            | Command::Task(TaskCommand::New { .. })
-            | Command::Task(TaskCommand::Resume { .. })
-            | Command::Approve { .. }
-            | Command::Reject { .. }
-            | Command::Answer { .. }
-    )
 }
 
 /// The commands that only read (REQ-PERS-013), and what each needs of the

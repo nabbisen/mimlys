@@ -175,9 +175,9 @@ see [Storage](./reference/storage.md): `mimlys status --storage` and
   <pid> since <time>`, and `task list`, `task show`, `events --follow` and
   `metrics` answer from what the running process has committed.
   Acting is another matter: a command that writes (`run`, `approve`, `task
-  cancel` …) from a second terminal waits one second and then says `store
-  locked by another runtime`. Finish or stop the first job, or approve from
-  the terminal that runs it.
+  cancel` …) from a second terminal waits one second and then says `the store
+  is in use by runtime <pid> since <time>`, naming the process that holds it.
+  Finish or stop the first job, or approve from the terminal that runs it.
 - **Two runtimes, on one data directory or on two, share the machine fairly.**
   Each runtime keeps its own bounds on memory, processes and time, and all of
   your runtimes together run at most `admission_slots` executions at once (two

@@ -194,10 +194,16 @@ fn req_pers_013_task_output_works_while_another_runtime_holds_the_store() {
     let (code, stdout, stderr) = run.output(&[]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(!stdout.to_lowercase().contains("locked"), "{stdout}");
-    // The writer's command, by contrast, waits for the lock and refuses.
+    // The writer's command, by contrast, waits for the lock and refuses, naming the holder.
     let (code, _, stderr) = mimlys(&run.data(), &["task", "delete", &run.task, "--yes"]);
     assert_eq!(code, 1);
-    assert!(stderr.contains("locked"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the store is in use by runtime {} since",
+            std::process::id()
+        )),
+        "{stderr}"
+    );
     drop(holder);
 }
 
