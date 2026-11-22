@@ -1417,7 +1417,10 @@ fn req_obs_events_metrics_status() {
     let metrics = h.runtime.get_metrics(None).unwrap();
     assert_eq!(metrics.tasks_by_state.get("waiting_user"), Some(&1));
     let status = h.runtime.get_runtime_status().unwrap();
-    assert_eq!(status.pending, vec![(id, WaitKind::Approval)]);
+    assert_eq!(
+        status.pending,
+        vec![(id, crate::runtime::WaitWord::Known(WaitKind::Approval))]
+    );
     assert!(status.running.is_empty());
     assert_eq!(status.tier, "core");
 }

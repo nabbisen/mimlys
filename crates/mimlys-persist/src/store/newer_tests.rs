@@ -1,0 +1,748 @@
+//! REQ-MAIN-006 in the store: the readers keep a record that holds a word a newer release wrote,
+//! the typed loads that the runtime and the writers use refuse it naming the word, a damaged
+//! record is none of these, and recovery at the start leaves such a task as it is.
+
+use super::tests::{Fx, sequence};
+use crate::sqlite::{Store, open};
+use mimlys_core::event::Event;
+use mimlys_core::ids::{PromotionId, QuestionId, SnapshotId, StepId};
+use mimlys_core::newer::{RecordKind, UnknownWord};
+use mimlys_core::snapshot::{
+    Change, ChangeKind, Manifest, Promotion, PromotionState, SnapshotReason, SnapshotRecord,
+};
+use mimlys_core::spi::{Persistence, PersistenceError, PersistenceRead};
+use mimlys_core::task::{PlanVersion, Task};
+use serde_json::{Value, json};
+
+/// A store holding one task with a record of every kind: the task, its step, action, approval,
+/// execution, observation, grant, plan, question, snapshot, promotion and events.
+fn store_of_every_kind(dir: &std::path::Path) -> (Store, Task) {
+    let store = open(dir).unwrap();
+    let fx = Fx::new();
+    let (task, _) = sequence(&store, &fx, 8, true);
+    store
+        .record_plan(
+            &PlanVersion {
+                task_id: task.task_id,
+                version: 1,
+                steps: vec!["look".into()],
+                created_at: fx.now(),
+            },
+            &fx.event(&task, Event::TaskCreated),
+        )
+        .unwrap();
+    let question = mimlys_core::question::Question::ask(
+        QuestionId::new(&fx.ids),
+        task.task_id,
+        StepId::new(&fx.ids),
+        "which one?",
+        fx.now(),
+        None,
+    );
+    store
+        .record_question(&task, &question, &fx.event(&task, Event::TaskCreated))
+        .unwrap();
+    let backup = SnapshotRecord {
+        snapshot_id: SnapshotId::new(&fx.ids),
+        task_id: task.task_id,
+        reason: SnapshotReason::Backup,
+        manifest_hash: Manifest::default().hash(),
+        bytes: 0,
+        files: 0,
+        created_at: fx.now(),
+        action_id: None,
+        project_root: Some("/project".into()),
+    };
+    store
+        .record_snapshot(
+            &backup,
+            &[],
+            &fx.event(
+                &task,
+                Event::WorkspaceSnapshot {
+                    snapshot_id: backup.snapshot_id,
+                    reason: "backup".into(),
+                },
+            ),
+        )
+        .unwrap();
+    let promotion = Promotion {
+        promotion_id: PromotionId::new(&fx.ids),
+        task_id: task.task_id,
+        backup_snapshot: backup.snapshot_id,
+        project_root: "/project".into(),
+        files: vec![Change {
+            path: "a.txt".into(),
+            kind: ChangeKind::Added,
+            bytes: 1,
+        }],
+        applied_at: fx.now(),
+        reversed_at: None,
+        state: PromotionState::Applied,
+        after: vec![],
+        restored: true,
+        reason: None,
+    };
+    store
+        .record_promotion(&promotion, &fx.event(&task, Event::TaskCreated))
+        .unwrap();
+    (store, task)
+}
+
+fn sample(store: &Store, task: &Task, kind: RecordKind) -> Value {
+    let raw = store.raw_records(kind, task.task_id).unwrap();
+    let first = raw
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no {kind:?} record"));
+    serde_json::from_str(&first.text).unwrap()
+}
+
+/// `base` with the keys of `patch` set (a key set to `null` is removed).
+fn with(base: &Value, patch: Value) -> Value {
+    let mut out = base.clone();
+    for (key, value) in patch.as_object().unwrap() {
+        if value.is_null() {
+            out.as_object_mut().unwrap().remove(key);
+        } else {
+            out[key] = value.clone();
+        }
+    }
+    out
+}
+
+/// REQ-MAIN-006, the inventory: every vocabulary of a stored record that a newer release could
+/// extend, each in the record that holds it. A record with a word of it that this release does
+/// not know is held by that word and the field that holds it; read for a writer it is refused
+/// naming the word; and the record the word was put in, unchanged, reads whole.
+///
+/// The list is the handoff's inventory (`rfcs/handoffs/004e-readers-of-newer-records`, the
+/// request's table): a vocabulary that is added to a record type is found by this reading with no
+/// change to the code, and is listed here by whoever adds it.
+#[test]
+fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    let s = |kind| sample(&store, &task, kind);
+    let task_ = s(RecordKind::Task);
+    let step = s(RecordKind::Step);
+    let action = s(RecordKind::Action);
+    let execution = s(RecordKind::Execution);
+    let observation = s(RecordKind::Observation);
+    let approval = s(RecordKind::Approval);
+    let question = s(RecordKind::Question);
+    let grant = s(RecordKind::Grant);
+    let snapshot = s(RecordKind::Snapshot);
+    let promotion = s(RecordKind::Promotion);
+    let event = |name: &str, extra: Value| {
+        let mut e = s(RecordKind::Event);
+        e["event"] = json!(name);
+        with(&e, extra)
+    };
+    let hash = task_["versions"]["policy_hash"].clone();
+    let w = "from_a_newer_release";
+    let backend = json!({"kind": "fake", "model": null, "locality": "local"});
+
+    // (the kind, what it is, the record as a newer release wrote it, the field, the word)
+    let table: Vec<(RecordKind, &str, Value, &str, &str)> = vec![
+        // The task: its state and what the state carries.
+        (
+            RecordKind::Task,
+            "task state",
+            with(&task_, json!({"state": w})),
+            "state",
+            w,
+        ),
+        (
+            RecordKind::Task,
+            "wait kind",
+            with(
+                &task_,
+                json!({"state": "waiting_user", "wait_kind": "plan"}),
+            ),
+            "wait_kind",
+            "plan",
+        ),
+        (
+            RecordKind::Task,
+            "pending item",
+            with(
+                &task_,
+                json!({"state": "waiting_user", "wait_kind": "approval", "pending": {"pending": w}}),
+            ),
+            "pending.pending",
+            w,
+        ),
+        (
+            RecordKind::Task,
+            "halt reason",
+            with(
+                &task_,
+                json!({"state": "halted", "halt_reason": "plan_required"}),
+            ),
+            "halt_reason",
+            "plan_required",
+        ),
+        (
+            RecordKind::Task,
+            "halt detail rule",
+            with(
+                &task_,
+                json!({"state": "halted", "halt_reason": "policy", "halt_detail": {"rule": w}}),
+            ),
+            "halt_detail.rule",
+            w,
+        ),
+        (
+            RecordKind::Task,
+            "completion",
+            with(&task_, json!({"state": "completed", "completion": w})),
+            "completion",
+            w,
+        ),
+        (
+            RecordKind::Task,
+            "failure reason",
+            with(
+                &task_,
+                json!({"state": "failed", "reason": {"failure_reason": w}}),
+            ),
+            "reason.failure_reason",
+            w,
+        ),
+        // The step.
+        (
+            RecordKind::Step,
+            "step phase",
+            with(&step, json!({"phase": w})),
+            "phase",
+            w,
+        ),
+        (
+            RecordKind::Step,
+            "step outcome",
+            with(&step, json!({"outcome": w})),
+            "outcome",
+            w,
+        ),
+        (
+            RecordKind::Step,
+            "rejection code",
+            with(&step, json!({"rejection": "plan_required"})),
+            "rejection",
+            "plan_required",
+        ),
+        // The action: its status, the code of a rejection, the cause of a failure, the effect.
+        (
+            RecordKind::Action,
+            "action status",
+            with(&action, json!({"status": w})),
+            "status",
+            w,
+        ),
+        (
+            RecordKind::Action,
+            "action rejection code",
+            with(
+                &action,
+                json!({"status": "rejected", "code": "plan_required"}),
+            ),
+            "code",
+            "plan_required",
+        ),
+        (
+            RecordKind::Action,
+            "action failure cause",
+            with(&action, json!({"status": "failed", "cause": {"cause": w}})),
+            "cause.cause",
+            w,
+        ),
+        (
+            RecordKind::Action,
+            "resource limit",
+            with(
+                &action,
+                json!({"status": "failed", "cause": {"cause": "resource_exhausted", "limit": w}}),
+            ),
+            "cause.limit",
+            w,
+        ),
+        (
+            RecordKind::Action,
+            "effect kind",
+            with(
+                &action,
+                json!({"effect": {"kind": w, "reversible": true, "idempotent": false}}),
+            ),
+            "effect.kind",
+            w,
+        ),
+        // The execution: how it ended.
+        (
+            RecordKind::Execution,
+            "termination",
+            with(&execution, json!({"termination": w})),
+            "termination",
+            w,
+        ),
+        (
+            RecordKind::Execution,
+            "host fault detail",
+            with(
+                &execution,
+                json!({"termination": "host_fault", "detail": w}),
+            ),
+            "detail",
+            w,
+        ),
+        // The observation: its status, its cause, its notices.
+        (
+            RecordKind::Observation,
+            "observation status",
+            with(&observation, json!({"status": w})),
+            "status",
+            w,
+        ),
+        (
+            RecordKind::Observation,
+            "observation cause",
+            with(&observation, json!({"cause": {"cause": w}})),
+            "cause.cause",
+            w,
+        ),
+        (
+            RecordKind::Observation,
+            "notice",
+            with(&observation, json!({"notices": [{"code": w}]})),
+            "notices[0].code",
+            w,
+        ),
+        // The approval, the question and the grant.
+        (
+            RecordKind::Approval,
+            "approval status",
+            with(&approval, json!({"status": w})),
+            "status",
+            w,
+        ),
+        (
+            RecordKind::Approval,
+            "invalidation reason",
+            with(&approval, json!({"invalidation": w})),
+            "invalidation",
+            w,
+        ),
+        (
+            RecordKind::Approval,
+            "decided by",
+            with(&approval, json!({"decided_by": {"actor": w}})),
+            "decided_by.actor",
+            w,
+        ),
+        (
+            RecordKind::Question,
+            "question status",
+            with(&question, json!({"status": w})),
+            "status",
+            w,
+        ),
+        (
+            RecordKind::Question,
+            "answered by",
+            with(&question, json!({"answered_by": {"actor": w}})),
+            "answered_by.actor",
+            w,
+        ),
+        (
+            RecordKind::Grant,
+            "grant status",
+            with(&grant, json!({"status": w})),
+            "status",
+            w,
+        ),
+        (
+            RecordKind::Grant,
+            "grant kind",
+            with(&grant, json!({"kind": {"kind": w}})),
+            "kind.kind",
+            w,
+        ),
+        (
+            RecordKind::Grant,
+            "grant issuer",
+            with(&grant, json!({"actor": w})),
+            "actor",
+            w,
+        ),
+        // The snapshot and the promotion.
+        (
+            RecordKind::Snapshot,
+            "snapshot reason",
+            with(&snapshot, json!({"reason": w})),
+            "reason",
+            w,
+        ),
+        (
+            RecordKind::Promotion,
+            "promotion state",
+            with(&promotion, json!({"state": w})),
+            "state",
+            w,
+        ),
+        (
+            RecordKind::Promotion,
+            "change kind",
+            with(
+                &promotion,
+                json!({"files": [{"path": "a", "kind": w, "bytes": 1}]}),
+            ),
+            "files[0].kind",
+            w,
+        ),
+        // The event: its name, and each vocabulary its payload holds.
+        (
+            RecordKind::Event,
+            "event name",
+            event(w, json!({"client": "x"})),
+            "event",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "event actor",
+            event("task.created", json!({"actor": w})),
+            "actor",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "halt reason of a state change",
+            event(
+                "task.state_changed",
+                json!({"from": "running", "to": "halted", "reason": w}),
+            ),
+            "reason",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "halt detail of a state change",
+            event(
+                "task.state_changed",
+                json!({"from": "running", "to": "halted", "reason": "policy", "halt_detail": {"rule": w}}),
+            ),
+            "halt_detail.rule",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "admission state",
+            event("task.admission_changed", json!({"state": w})),
+            "state",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "decision transport",
+            event("decision.received", json!({"hash": hash, "transport": w})),
+            "transport",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "rejection code of an event",
+            event("decision.rejected", json!({"code": w})),
+            "code",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "step outcome of an event",
+            event("step.finished", json!({"outcome": w})),
+            "outcome",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "approval decision",
+            event(
+                "approval.decided",
+                json!({"approval_id": approval["approval_id"], "decision": w}),
+            ),
+            "decision",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "recovery disposition",
+            event("task.recovered", json!({"disposition": w})),
+            "disposition",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "tier",
+            event("runtime.started", json!({"tier": w, "backend": backend})),
+            "tier",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "locality of the backend",
+            event(
+                "runtime.started",
+                json!({"tier": "core", "backend": {"kind": "fake", "model": null, "locality": w}}),
+            ),
+            "backend.locality",
+            w,
+        ),
+    ];
+
+    // The kinds with no vocabulary (the plan is text and numbers), and the kinds the table covers.
+    let covered: std::collections::BTreeSet<RecordKind> = table.iter().map(|t| t.0).collect();
+    for kind in RecordKind::ALL {
+        assert!(
+            covered.contains(&kind) || kind == RecordKind::Plan,
+            "{kind:?} has no entry in the inventory"
+        );
+    }
+    for (kind, what, record, field, word) in table {
+        // The record as it is, before the word: reads whole.
+        let text = record.to_string();
+        let newer = kind
+            .check(&text)
+            .unwrap_or_else(|e| panic!("{what}: {e:?} for {text}"))
+            .unwrap_or_else(|| panic!("{what}: the record reads whole: {text}"));
+        let found: Vec<(&str, &str)> = newer
+            .words
+            .iter()
+            .map(|w| (w.field.as_str(), w.word.as_str()))
+            .collect();
+        assert!(
+            found.contains(&(field, word)),
+            "{what}: {found:?} does not hold {field} `{word}`"
+        );
+        assert_eq!(newer.raw, record, "{what}: the record as written");
+    }
+    // Every record of the store as it is: none holds a word it does not know.
+    assert!(
+        mimlys_core::newer::scan(&store, task.task_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Rewrites the task's record and its state column, as a newer release would write it.
+fn write_task(store: &Store, task: &Task, state: &str, patch: &str) {
+    store
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE tasks SET state = ?2, record = json_patch(record, ?3) WHERE task_id = ?1",
+                rusqlite::params![task.task_id.to_string(), state, patch],
+            )
+            .unwrap();
+        })
+        .unwrap();
+}
+
+/// REQ-MAIN-006: what the runtime and the writers read refuses a record that holds a word it does
+/// not know, naming the word; what a reader reads keeps it. The same record, the same word.
+#[test]
+fn req_main_006_the_typed_loads_refuse_and_the_readers_keep() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    write_task(
+        &store,
+        &task,
+        "waiting_user",
+        r#"{"state":"waiting_user","wait_kind":"plan"}"#,
+    );
+    let refused = store.load_task(task.task_id).unwrap_err();
+    assert_eq!(
+        refused,
+        PersistenceError::NewerRecord {
+            record: "task".into(),
+            field: "wait_kind".into(),
+            word: "plan".into()
+        }
+    );
+    let text = refused.to_string();
+    assert!(
+        text.contains("`plan`") && text.contains("unknown to this release"),
+        "{text}"
+    );
+    assert!(
+        text.contains("the release of mimlys that wrote it is needed"),
+        "{text}"
+    );
+
+    // The reader's listing keeps the task, with the word.
+    let listed = store.list_tasks().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].state, "waiting_user");
+    assert_eq!(
+        listed[0].unknown,
+        vec![UnknownWord::new("wait_kind", "plan")]
+    );
+    // Only the task's own record is newer.
+    let found = mimlys_core::newer::scan(&store, task.task_id).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].kind, RecordKind::Task);
+}
+
+/// REQ-MAIN-006: an event a newer release wrote is read by the readers and refused by the typed
+/// read; the events before and after it read as they did.
+#[test]
+fn req_main_006_an_unknown_event_is_kept_by_the_reader_and_refused_by_the_typed_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    let before = store
+        .read_events_since(0, Some(task.task_id), 1_000)
+        .unwrap()
+        .len();
+    store
+        .with_conn(|c| {
+            c.execute(
+                "INSERT INTO events (event_id, at, name, task_id, step_id, action_id, record)
+                 SELECT '00000000-00ff-7000-8000-0000000000f1', at, 'session.attached', task_id, NULL, NULL,
+                        json_set(record, '$.event', 'session.attached', '$.event_id', '00000000-00ff-7000-8000-0000000000f1', '$.client', 'tui')
+                 FROM events WHERE task_id = ?1 ORDER BY position LIMIT 1",
+                [task.task_id.to_string()],
+            )
+            .unwrap();
+        })
+        .unwrap();
+    let read = store
+        .read_events_since(0, Some(task.task_id), 1_000)
+        .unwrap();
+    assert_eq!(read.len(), before + 1, "every event is listed");
+    let newer: Vec<_> = read
+        .iter()
+        .filter_map(|e| match &e.record {
+            mimlys_core::newer::Read::Newer(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(newer.len(), 1);
+    assert_eq!(newer[0].text("event"), Some("session.attached"));
+    assert_eq!(newer[0].text("client"), Some("tui"));
+    assert!(matches!(
+        store.events_since(0, Some(task.task_id), 1_000),
+        Err(PersistenceError::NewerRecord { word, .. }) if word == "session.attached"
+    ));
+    // The metrics count it by its name, and say it is not known.
+    let metrics = store.metrics(Some(task.task_id)).unwrap();
+    assert_eq!(metrics.events_by_name.get("session.attached"), Some(&1));
+    assert_eq!(
+        metrics.unknown_to_this_release,
+        vec![UnknownWord::new("events_by_name", "session.attached")]
+    );
+    assert!(
+        metrics
+            .events_by_name
+            .get("task.created")
+            .is_some_and(|n| *n > 1)
+    );
+}
+
+/// REQ-MAIN-006: a halt reason and a rejection code of a newer release are counted in their
+/// groups by their names, and the event under its own name too.
+#[test]
+fn req_main_006_metrics_count_the_words_of_a_newer_event_in_their_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    let known = store.metrics(None).unwrap();
+    store
+        .with_conn(|c| {
+            for (i, (name, patch)) in [
+                (
+                    "task.state_changed",
+                    r#"{"from":"running","to":"halted","reason":"plan_required"}"#,
+                ),
+                ("decision.rejected", r#"{"code":"plan_required"}"#),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                c.execute(
+                    "INSERT INTO events (event_id, at, name, task_id, step_id, action_id, record)
+                     SELECT ?3, at, ?2, task_id, NULL, NULL,
+                            json_patch(json_set(record, '$.event', ?2, '$.event_id', ?3), ?4)
+                     FROM events WHERE task_id = ?1 ORDER BY position LIMIT 1",
+                    rusqlite::params![
+                        task.task_id.to_string(),
+                        name,
+                        format!("00000000-00ff-7000-8000-0000000000f{i}"),
+                        patch
+                    ],
+                )
+                .unwrap();
+            }
+        })
+        .unwrap();
+    let metrics = store.metrics(None).unwrap();
+    assert_eq!(metrics.halts_by_reason.get("plan_required"), Some(&1));
+    assert_eq!(metrics.rejections_by_code.get("plan_required"), Some(&1));
+    assert_eq!(
+        metrics.events_by_name.get("task.state_changed"),
+        Some(&(known.events_by_name["task.state_changed"] + 1))
+    );
+    assert_eq!(metrics.events_by_name.get("decision.rejected"), Some(&1));
+    assert_eq!(
+        metrics.unknown_to_this_release,
+        vec![
+            UnknownWord::new("halts_by_reason", "plan_required"),
+            UnknownWord::new("rejections_by_code", "plan_required"),
+        ]
+    );
+}
+
+/// REQ-MAIN-006: a task whose state is a word of a newer release is counted by that word and
+/// marked, and a store of known words has no marker anywhere.
+#[test]
+fn req_main_006_metrics_mark_an_unknown_state_and_only_that() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    let known = store.metrics(None).unwrap();
+    assert!(known.unknown_to_this_release.is_empty());
+    assert!(
+        serde_json::to_value(&known)
+            .unwrap()
+            .get(mimlys_core::newer::MARKER_FIELD)
+            .is_none(),
+        "no marker in a store of known words"
+    );
+    write_task(&store, &task, "quarantined", r#"{"state":"quarantined"}"#);
+    let metrics = store.metrics(None).unwrap();
+    assert_eq!(metrics.tasks_by_state.get("quarantined"), Some(&1));
+    assert_eq!(
+        metrics.unknown_to_this_release,
+        vec![UnknownWord::new("tasks_by_state", "quarantined")]
+    );
+}
+
+/// REQ-MAIN-006: a record that is damaged is not "newer": the typed read fails as it did, and the
+/// listing still survives it.
+#[test]
+fn req_main_006_a_damaged_record_is_still_a_failure_and_still_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, task) = store_of_every_kind(&dir.path().join("data"));
+    store
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE tasks SET record = json_remove(record, '$.goal') WHERE task_id = ?1",
+                [task.task_id.to_string()],
+            )
+            .unwrap();
+        })
+        .unwrap();
+    assert_eq!(
+        store.load_task(task.task_id).unwrap_err(),
+        PersistenceError::Storage {
+            detail: "deserialize".into()
+        }
+    );
+    let listed = store.list_tasks().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].unknown.is_empty(), "damage is not a word");
+}

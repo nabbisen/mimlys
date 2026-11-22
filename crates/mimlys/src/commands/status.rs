@@ -224,8 +224,10 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         clauses: confinement.clauses.clone(),
         unavailable_clauses: confinement.unavailable_lines(),
         cpu: confinement.cpu.clone(),
+        unknown_to_this_release: activity.unknown_words(),
         running: activity.running,
         pending: activity.pending,
+        unknown_state: activity.unknown_state,
     };
     let store = app.store_view()?;
     for line in messages::status_head_lines(&status.version, &app.data_dir.to_string_lossy()) {
@@ -364,8 +366,11 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         out.line(messages::dependency_step_reads(&extra));
     }
     out.line(messages::status_running(status.running.len()));
-    for (id, kind) in &status.pending {
-        out.line(messages::status_pending(&id.to_string(), *kind));
+    for (id, wait) in &status.pending {
+        out.line(messages::status_pending(&id.to_string(), wait));
+    }
+    for (id, word) in &status.unknown_state {
+        out.line(messages::status_unknown_state(&id.to_string(), word));
     }
     out.value(&Status {
         runtime: &status,

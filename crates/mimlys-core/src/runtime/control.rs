@@ -148,8 +148,17 @@ pub struct RuntimeStatus {
     pub cpu: Option<crate::confine::ClauseState>,
     /// Tasks in `running`.
     pub running: Vec<TaskId>,
-    /// Tasks waiting for the user, with what they wait for.
-    pub pending: Vec<(TaskId, WaitKind)>,
+    /// Tasks waiting for the user, with what they wait for: a wait kind of this release, or the
+    /// word a newer release wrote (REQ-MAIN-006).
+    pub pending: Vec<(TaskId, super::read::WaitWord)>,
+    /// Tasks whose state is a word this release does not know, with the word as written
+    /// (REQ-MAIN-006). Absent when there is none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unknown_state: Vec<(TaskId, String)>,
+    /// The words above that this release does not know, with the field that holds each
+    /// (`pending`, `unknown_state`). Absent when there is none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unknown_to_this_release: Vec<crate::newer::UnknownWord>,
 }
 
 /// The scope is the request's input: a part of it that cannot be read (or whose name cannot be
@@ -1630,8 +1639,10 @@ impl Runtime {
             clauses: self.deps.probe.clauses.clone(),
             unavailable_clauses: self.deps.probe.unavailable_lines(),
             cpu: self.deps.probe.cpu.clone(),
+            unknown_to_this_release: activity.unknown_words(),
             running: activity.running,
             pending: activity.pending,
+            unknown_state: activity.unknown_state,
         })
     }
 

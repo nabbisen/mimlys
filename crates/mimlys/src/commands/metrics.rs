@@ -22,7 +22,13 @@ pub fn run(app: &ReadApp, task: Option<&str>, out: &Output) -> Result<(), AppErr
         ("actions_by_status", &metrics.actions_by_status),
     ] {
         for (k, v) in map {
-            out.line(messages::metric_line(&format!("{group}.{k}"), *v));
+            let line = messages::metric_line(&format!("{group}.{k}"), *v);
+            // A name a newer release wrote is counted like any other, and marked (REQ-MAIN-006).
+            let unknown = metrics
+                .unknown_to_this_release
+                .iter()
+                .any(|w| w.field == group && &w.word == k);
+            out.line(messages::marked(&line, unknown));
         }
     }
     // REQ-OBS-009: what the executions waited for a slot and the requests for the engine's gate.

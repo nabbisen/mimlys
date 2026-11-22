@@ -15,11 +15,13 @@ use crate::messages;
 use crate::output::Output;
 use mimlys_core::action::{Action, Execution};
 use mimlys_core::ids::{ActionId, ExecutionId, TaskId};
+use mimlys_core::newer::{Newer, Read, RecordKind, read_records};
 use mimlys_core::observation::{Notice, Observation, ObservationStatus, Stream};
 use mimlys_core::runtime::RuntimeError;
 use mimlys_core::spi::{PersistenceError, PersistenceRead};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 /// The copy a flag names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,16 +213,81 @@ pub fn find(
     action: Option<&str>,
     attempt: Option<u32>,
 ) -> Result<Found, AppError> {
-    if persistence.load_task(task_id)?.is_none() {
+    if persistence
+        .raw_records(RecordKind::Task, task_id)?
+        .is_empty()
+    {
         return Err(AppError::Runtime(RuntimeError::NotFound {
             what: "task".into(),
         }));
     }
-    let actions = persistence.load_actions(task_id)?;
+    // The records are read as a reader meets them (REQ-MAIN-006): an action, an execution or an
+    // observation that holds a word a newer release wrote is not readable here, and the actions
+    // that are readable are shown as they always were. A named action that is not readable is
+    // refused, naming the word; the latest that ran is the latest that can be read.
+    let mut actions = Vec::new();
+    let mut unreadable: BTreeMap<String, Newer> = BTreeMap::new();
+    for (key, record) in read_records::<Action>(persistence, RecordKind::Action, task_id)? {
+        match record {
+            Read::Known(action) => actions.push(action),
+            Read::Newer(newer) => {
+                unreadable.insert(key, newer);
+            }
+        }
+    }
+    let mut all_executions = Vec::new();
+    for (_, record) in read_records::<Execution>(persistence, RecordKind::Execution, task_id)? {
+        match record {
+            Read::Known(execution) => all_executions.push(execution),
+            Read::Newer(newer) => {
+                if let Some(id) = newer.text("action_id") {
+                    unreadable.entry(id.to_owned()).or_insert(newer);
+                }
+            }
+        }
+    }
+    let mut all_observations = Vec::new();
+    for (_, record) in read_records::<Observation>(persistence, RecordKind::Observation, task_id)? {
+        match record {
+            Read::Known(observation) => all_observations.push(observation),
+            Read::Newer(newer) => {
+                if let Some(id) = newer.text("action_id") {
+                    unreadable.entry(id.to_owned()).or_insert(newer);
+                }
+            }
+        }
+    }
+    let refuse_unreadable =
+        |newer: &Newer| AppError::Persistence(mimlys_core::newer::newer_error("action", newer));
+    let executions_of = |action: &Action| -> Vec<Execution> {
+        all_executions
+            .iter()
+            .filter(|e| e.action_id == action.action_id)
+            .cloned()
+            .collect()
+    };
     let (action, executions) = match action {
         Some(text) => {
-            let action = resolve_action(&actions, text)?;
-            let executions = persistence.load_executions(action.action_id)?;
+            let action = match resolve_action(&actions, text) {
+                Ok(action) => action,
+                // The text may name an action this release cannot read.
+                Err(error) => {
+                    let text = text.trim();
+                    return Err(
+                        match unreadable
+                            .iter()
+                            .find(|(key, _)| key.starts_with(text) && text.len() >= 4)
+                        {
+                            Some((_, newer)) => refuse_unreadable(newer),
+                            None => error,
+                        },
+                    );
+                }
+            };
+            if let Some(newer) = unreadable.get(&action.action_id.to_string()) {
+                return Err(refuse_unreadable(newer));
+            }
+            let executions = executions_of(action);
             if executions.is_empty() {
                 return Err(refusal(
                     "state",
@@ -236,21 +303,32 @@ pub fn find(
         None => {
             let mut latest = None;
             for action in actions.iter().rev() {
-                let executions = persistence.load_executions(action.action_id)?;
+                if unreadable.contains_key(&action.action_id.to_string()) {
+                    continue;
+                }
+                let executions = executions_of(action);
                 if !executions.is_empty() {
                     latest = Some((action.clone(), executions));
                     break;
                 }
             }
-            latest.ok_or_else(|| refusal("state", messages::task_has_no_action_that_ran()))?
+            match latest {
+                Some(found) => found,
+                // Nothing that can be read ran: when something that cannot be read is why, say so.
+                None => {
+                    return Err(match unreadable.values().next() {
+                        Some(newer) => refuse_unreadable(newer),
+                        None => refusal("state", messages::task_has_no_action_that_ran()),
+                    });
+                }
+            }
         }
     };
     let mut executions = executions;
     executions.sort_by_key(|e| e.attempt);
     // An execution and its observation are one transaction, so they pair in order; an action that
     // was stopped before its call also has an observation, which no execution stands behind.
-    let observations: Vec<Observation> = persistence
-        .load_observations(task_id)?
+    let observations: Vec<Observation> = all_observations
         .into_iter()
         .filter(|o| {
             o.action_id == action.action_id

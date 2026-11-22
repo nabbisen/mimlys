@@ -14,7 +14,7 @@ mod storage;
 
 pub use control::{CreateTask, RuntimeStatus, StartRefusal, TaskView, UnknownAction, Waiting};
 pub use loop_::{PROMPT_LOG_TARGET, StepResultView};
-pub use read::{Activity, Reader};
+pub use read::{Activity, Reader, TaskShown, WaitWord, readable_footprint_records};
 pub use storage::{Holdings, TaskHolding};
 
 use crate::clock::Clock;
@@ -202,6 +202,9 @@ impl RuntimeError {
                 | WorkspaceError::InsideDataDir
                 | WorkspaceError::ContainsDataDir,
             ) => "invalid_request",
+            // A record that a newer release wrote: the task is not in a state this release can act
+            // on (REQ-MAIN-006).
+            RuntimeError::Persistence(PersistenceError::NewerRecord { .. }) => "state",
             RuntimeError::Persistence(_) | RuntimeError::Workspace(_) => "internal",
         }
     }

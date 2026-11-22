@@ -121,6 +121,14 @@ pub struct StorageView {
     pub tasks: Vec<TaskBytes>,
     /// Manifests that could not be read: their objects are not in the sums.
     pub unreadable_manifests: u64,
+    /// Snapshot and promotion records that hold a word a newer release wrote (REQ-MAIN-006):
+    /// they are not in the sums. Absent when there is none.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unknown_records: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Builds the view: the records through the reader, the files that have no
@@ -175,6 +183,7 @@ pub fn build(app: &ReadApp, now: Instant) -> Result<StorageView, AppError> {
         bytes,
         tasks,
         unreadable_manifests: holdings.unreadable_manifests,
+        unknown_records: holdings.unknown_records,
     })
 }
 

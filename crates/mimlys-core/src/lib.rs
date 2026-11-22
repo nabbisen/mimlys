@@ -37,6 +37,7 @@ pub mod ids;
 pub mod limits;
 pub mod log_span;
 pub mod native;
+pub mod newer;
 pub mod observation;
 pub mod panic_text;
 pub mod path;

@@ -6,6 +6,7 @@ use crate::messages;
 use crate::output::Output;
 use crate::prompt::Interaction;
 use mimlys_core::clock::Clock;
+use mimlys_core::runtime::TaskShown;
 use mimlys_core::task::Extension;
 
 /// `task show`.
@@ -15,7 +16,26 @@ use mimlys_core::task::Extension;
 /// them, in `pending_approval.arguments`.
 pub fn show(app: &ReadApp, task: &str, arguments: bool, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    let mut view = app.reader.get_task(id)?;
+    // A record that a newer release wrote is shown as written and marked, never a failure
+    // (REQ-MAIN-006): the view of every record that reads is what it always was.
+    let (mut view, newer) = match app.reader.show_task(id)? {
+        TaskShown::Whole { view, newer } => (*view, newer),
+        TaskShown::Newer {
+            task_id,
+            record,
+            others,
+        } => {
+            for line in messages::show_newer_task_lines(&task_id.to_string(), &record, &others) {
+                out.line(line);
+            }
+            let mut value = serde_json::json!({ "task": record.to_json() });
+            if !others.is_empty() {
+                value["unknown_records"] = unknown_records_json(&others);
+            }
+            out.value(&value);
+            return Ok(());
+        }
+    };
     // A `running` task whose execution waits for a slot among the user's runtimes says why
     // (external design §19.3); the registry knows, the store does not.
     if view.task.state == mimlys_core::task::TaskState::Running {
@@ -27,6 +47,13 @@ pub fn show(app: &ReadApp, task: &str, arguments: bool, out: &Output) -> Result<
     }
     for line in messages::show_lines(&view) {
         out.line(line);
+    }
+    for record in &newer {
+        out.line(messages::newer_record_line(
+            record.kind.name(),
+            &record.key,
+            &record.newer.words,
+        ));
     }
     if let Some(approval) = &view.pending_approval {
         out.line("");
@@ -43,8 +70,31 @@ pub fn show(app: &ReadApp, task: &str, arguments: bool, out: &Output) -> Result<
         out.line("");
         out.line(crate::prompt::question_text(question).trim_end_matches('\n'));
     }
-    out.value(&view);
+    if newer.is_empty() {
+        out.value(&view);
+    } else {
+        let mut value = serde_json::to_value(&view).unwrap_or_default();
+        value["unknown_records"] = unknown_records_json(&newer);
+        out.value(&value);
+    }
     Ok(())
+}
+
+/// The records of a task that hold a word this release does not know, for `--json`: each as it
+/// was written, with the words listed in it (REQ-MAIN-006).
+fn unknown_records_json(records: &[mimlys_core::newer::NewerRecord]) -> serde_json::Value {
+    serde_json::Value::Array(
+        records
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "kind": r.kind.name(),
+                    "key": r.key,
+                    "record": r.newer.to_json(),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// `task list`.
@@ -55,20 +105,39 @@ pub fn list(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     }
     let mut rows = Vec::new();
     for t in &tasks {
-        let snapshots = app.reader.persistence().load_snapshots(t.task_id)?;
-        let promotions = app.reader.persistence().load_promotions(t.task_id)?;
+        // A snapshot or a promotion of a newer release is left out of the footprint, not a
+        // failure of the listing (REQ-MAIN-006).
+        let (snapshots, promotions, _) =
+            mimlys_core::runtime::readable_footprint_records(app.reader.persistence(), t.task_id)?;
         let footprint = app.reader.footprint(t.task_id, &snapshots, &promotions)?;
-        rows.push(serde_json::json!({
+        let mut row = serde_json::json!({
             "task_id": t.task_id, "goal": t.goal, "state": t.state, "created_at": t.created_at, "updated_at": t.updated_at,
             "footprint": footprint,
-        }));
+        });
+        mimlys_core::newer::mark(&mut row, &t.unknown);
+        rows.push(row);
+        // The state, marked when it is the word that is not known; any other word of the record
+        // that is not known follows the state.
+        let state_unknown = t.unknown.iter().any(|w| w.field == "state");
+        let others: Vec<String> = t
+            .unknown
+            .iter()
+            .filter(|w| w.field != "state")
+            .map(|w| format!("{} `{}` {}", w.field, w.word, messages::UNKNOWN_MARKER))
+            .collect();
+        let state = messages::marked(&t.state, state_unknown);
         out.line(format!(
-            "{}  {:<20}  {}  {:>10} B  {}",
+            "{}  {:<20}  {}  {:>10} B  {}{}",
             t.task_id,
-            t.state,
+            state,
             t.updated_at.to_rfc3339(),
             footprint.workspace_bytes + footprint.object_bytes_exclusive + footprint.blob_bytes,
-            serde_json::to_string(&t.goal).unwrap_or_default()
+            serde_json::to_string(&t.goal).unwrap_or_default(),
+            if others.is_empty() {
+                String::new()
+            } else {
+                format!("  [{}]", others.join(", "))
+            }
         ));
     }
     if tasks.is_empty() {

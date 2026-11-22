@@ -611,6 +611,49 @@ pub fn event_text(e: &PositionedEvent) -> String {
     messages::event_line(&time, e.record.event.name(), &detail)
 }
 
+/// One event as a reader meets it: the line of [`event_text`] for an event this release reads,
+/// and for one a newer release wrote (REQ-MAIN-006), its name and its fields as written, each
+/// word this release does not know followed by the marker.
+pub fn event_text_read(e: &mimlys_core::spi::PositionedRead) -> String {
+    use mimlys_core::newer::Read;
+    let newer = match &e.record {
+        Read::Known(record) => {
+            return event_text(&PositionedEvent {
+                position: e.position,
+                record: record.clone(),
+            });
+        }
+        Read::Newer(newer) => newer,
+    };
+    let at = newer.text("at").unwrap_or_default();
+    let time = at.get(11..19).unwrap_or(at).to_owned();
+    let name = messages::marked(
+        newer.text("event").unwrap_or_default(),
+        newer.is_unknown("event"),
+    );
+    let detail = newer
+        .raw
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter(|(k, _)| {
+                    k.as_str() != "event"
+                        && !mimlys_core::event::ENVELOPE_FIELDS.contains(&k.as_str())
+                })
+                .map(|(k, v)| {
+                    let shown = match v {
+                        serde_json::Value::String(s) => format!("{k}={s}"),
+                        other => format!("{k}={other}"),
+                    };
+                    messages::marked(&shown, newer.is_unknown_in(k))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    messages::event_line(&time, &name, &detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

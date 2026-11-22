@@ -104,6 +104,7 @@ impl AppError {
             | AppError::Workspace(mimlys_core::spi::WorkspaceError::PermissionsNotApplied {
                 ..
             }) => "unavailable",
+            AppError::Persistence(PersistenceError::NewerRecord { .. }) => "state",
             AppError::Persistence(_) | AppError::Io { .. } | AppError::Partial { .. } => "internal",
             AppError::Workspace(
                 mimlys_core::spi::WorkspaceError::Conflict { .. }

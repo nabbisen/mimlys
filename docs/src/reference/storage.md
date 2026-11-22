@@ -139,3 +139,24 @@ mimlys task delete <task>
   with exit code 1 and the paths in its report.
 - `mimlys task delete <task>` removes one finished task, after showing what
   will go and asking.
+
+## Going back to an older release
+
+A newer mimlys can write words that an older one does not have: a kind of wait, a
+reason for a halt, an event. What each release does with the same store:
+
+- **0.13 and later read it.** A command that only reads (`events`, `task show`,
+  `task list`, `metrics`, `status`, `task output`, `status --storage`) shows such a
+  word as it was written, by its name and with the fields of its record, marked
+  `(unknown to this release)`, and goes on: a listing never fails for it, and neither
+  does `task show` of the task that holds it. `--json` keeps the record as written
+  and adds the key `unknown_to_this_release` to the object that holds the word (see
+  [Command line](./cli.md#words-a-newer-release-wrote)).
+- **0.12.0 and earlier fail as before.** They do not read what a later release wrote:
+  `events` of 0.11.1 stopped at `storage failure: deserialize` on 0.12's
+  `task.admission_changed`, and 0.12.0 does the same at a word of 0.13. That is a
+  release that is already out, and it is not changed. To read a store that a newer
+  release wrote, use 0.13 or later; to go on with its tasks, the release that wrote
+  them.
+
+A store that holds no such word reads exactly as it did: no marker appears anywhere.

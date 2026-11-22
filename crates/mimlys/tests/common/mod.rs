@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+pub mod newer_store;
 #[cfg(feature = "test-bins")]
 pub mod printer;
 #[cfg(unix)]

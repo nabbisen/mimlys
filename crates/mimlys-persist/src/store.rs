@@ -11,6 +11,7 @@ use mimlys_core::approval::ApprovalRequest;
 use mimlys_core::event::EventRecord;
 use mimlys_core::grant::Grant;
 use mimlys_core::ids::{ActionId, BlobId, SnapshotId, TaskId};
+use mimlys_core::newer::{RawRecord, Read, RecordKind, Stored};
 use mimlys_core::observation::Observation;
 use mimlys_core::question::Question;
 use mimlys_core::rejection::Detail;
@@ -23,7 +24,6 @@ use mimlys_core::step::Step;
 use mimlys_core::task::{PlanVersion, Task};
 use rusqlite::{Transaction, TransactionBehavior, params};
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use std::io::Write;
 
 /// The version of every record type written by this runtime (REQ-MAIN-002).
@@ -35,10 +35,52 @@ fn json<T: Serialize>(value: &T) -> Result<String, PersistenceError> {
     })
 }
 
-fn parse<T: DeserializeOwned>(text: String) -> Result<T, PersistenceError> {
-    serde_json::from_str(&text).map_err(|_| PersistenceError::Storage {
-        detail: "deserialize".into(),
-    })
+/// Reads a record for the runtime and the writers: the typed value, or the refusal that names a
+/// word a newer release wrote (REQ-MAIN-006), or the damage. A word that is not known is never
+/// taken for one that is.
+fn parse<T: Stored>(text: String) -> Result<T, PersistenceError> {
+    mimlys_core::newer::parse_strict(&text)
+}
+
+/// The SQL that lists a task's records of one kind as `(key, record)` text, in the order the
+/// typed loads give them.
+fn raw_sql(kind: RecordKind) -> &'static str {
+    match kind {
+        RecordKind::Task => "SELECT CAST(task_id AS TEXT), record FROM tasks WHERE task_id = ?1",
+        RecordKind::Step => {
+            "SELECT CAST(step_id AS TEXT), record FROM steps WHERE task_id = ?1 ORDER BY idx"
+        }
+        RecordKind::Action => {
+            "SELECT CAST(action_id AS TEXT), record FROM actions WHERE task_id = ?1 ORDER BY created_at, rowid"
+        }
+        RecordKind::Execution => {
+            "SELECT CAST(e.execution_id AS TEXT), e.record FROM executions e JOIN actions a ON a.action_id = e.action_id WHERE a.task_id = ?1 ORDER BY e.rowid"
+        }
+        RecordKind::Observation => {
+            "SELECT CAST(o.observation_id AS TEXT), o.record FROM observations o JOIN actions a ON a.action_id = o.action_id WHERE a.task_id = ?1 ORDER BY o.rowid"
+        }
+        RecordKind::Approval => {
+            "SELECT CAST(approval_id AS TEXT), record FROM approvals WHERE task_id = ?1 ORDER BY rowid"
+        }
+        RecordKind::Question => {
+            "SELECT CAST(question_id AS TEXT), record FROM questions WHERE task_id = ?1 ORDER BY rowid"
+        }
+        RecordKind::Grant => {
+            "SELECT CAST(grant_id AS TEXT), record FROM grants WHERE task_id = ?1 ORDER BY rowid"
+        }
+        RecordKind::Plan => {
+            "SELECT CAST(version AS TEXT), record FROM plan_versions WHERE task_id = ?1 ORDER BY version"
+        }
+        RecordKind::Event => {
+            "SELECT CAST(position AS TEXT), record FROM events WHERE task_id = ?1 ORDER BY position"
+        }
+        RecordKind::Snapshot => {
+            "SELECT CAST(snapshot_id AS TEXT), record FROM snapshots WHERE task_id = ?1 ORDER BY created_at, rowid"
+        }
+        RecordKind::Promotion => {
+            "SELECT CAST(promotion_id AS TEXT), record FROM promotions WHERE task_id = ?1 ORDER BY applied_at, rowid"
+        }
+    }
 }
 
 impl Store {
@@ -238,7 +280,7 @@ fn status_name<T: Serialize>(value: &T) -> Result<String, PersistenceError> {
 macro_rules! persistence_read {
     ($t:ty) => {
         impl $t {
-            fn query<T: DeserializeOwned>(
+            fn query<T: Stored>(
                 &self,
                 sql: &str,
                 params: &[&dyn rusqlite::ToSql],
@@ -255,7 +297,7 @@ macro_rules! persistence_read {
                 Ok(out)
             }
 
-            fn query_one<T: DeserializeOwned>(
+            fn query_one<T: Stored>(
                 &self,
                 sql: &str,
                 params: &[&dyn rusqlite::ToSql],
@@ -275,7 +317,7 @@ macro_rules! persistence_read {
         fn list_tasks(&self) -> Result<Vec<TaskSummary>, PersistenceError> {
             let conn = self.conn.lock().map_err(|_| poisoned())?;
             let mut stmt = conn
-                .prepare("SELECT task_id, goal, state, created_at, updated_at FROM tasks ORDER BY created_at DESC")
+                .prepare("SELECT task_id, goal, state, created_at, updated_at, record FROM tasks ORDER BY created_at DESC")
                 .map_err(storage("prepare"))?;
             let rows = stmt
                 .query_map([], |r| {
@@ -285,13 +327,22 @@ macro_rules! persistence_read {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
                     ))
                 })
                 .map_err(storage("query"))?;
             let mut out = Vec::new();
             for row in rows {
-                let (id, goal, state, created, updated) = row.map_err(storage("row"))?;
+                let (id, goal, state, created, updated, record) = row.map_err(storage("row"))?;
+                // The words of the record that this release does not know, from the record
+                // itself: a listing survives a record it cannot read (a damaged one shows as it
+                // always did, by its columns) and a newer one is marked (REQ-MAIN-006).
+                let unknown = match Read::<Task>::parse(&record) {
+                    Ok(Read::Newer(newer)) => newer.words,
+                    _ => Vec::new(),
+                };
                 out.push(TaskSummary {
+                    unknown,
                     task_id: TaskId::from_uuid(id.parse().map_err(|_| PersistenceError::Storage {
                         detail: "uuid".into(),
                     })?),
@@ -451,6 +502,57 @@ macro_rules! persistence_read {
                     position: position as u64,
                     record: parse(record)?,
                 });
+            }
+            Ok(out)
+        }
+
+        fn read_events_since(
+            &self,
+            position: u64,
+            task_id: Option<TaskId>,
+            limit: usize,
+        ) -> Result<Vec<mimlys_core::spi::PositionedRead>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn
+                .prepare("SELECT position, record FROM events WHERE position > ?1 AND (?2 IS NULL OR task_id = ?2) ORDER BY position LIMIT ?3")
+                .map_err(storage("prepare"))?;
+            let rows = stmt
+                .query_map(
+                    params![
+                        position as i64,
+                        task_id.map(|t| t.to_string()),
+                        limit as i64
+                    ],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                )
+                .map_err(storage("query"))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (position, record) = row.map_err(storage("row"))?;
+                out.push(mimlys_core::spi::PositionedRead {
+                    position: position as u64,
+                    record: Read::parse(&record)?,
+                });
+            }
+            Ok(out)
+        }
+
+        fn raw_records(
+            &self,
+            kind: RecordKind,
+            task_id: TaskId,
+        ) -> Result<Vec<RawRecord>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let mut stmt = conn.prepare(raw_sql(kind)).map_err(storage("prepare"))?;
+            let rows = stmt
+                .query_map([task_id.to_string()], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(storage("query"))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (key, text) = row.map_err(storage("row"))?;
+                out.push(RawRecord { kind, key, text });
             }
             Ok(out)
         }
@@ -1213,3 +1315,6 @@ mod deletion_journal_tests;
 
 #[cfg(test)]
 mod halts_tests;
+
+#[cfg(test)]
+mod newer_tests;

@@ -899,6 +899,12 @@ pub struct Metrics {
     /// How many such waits there were.
     #[serde(default)]
     pub admission_waits: u64,
+    /// The names above that this release does not know, which a newer release wrote
+    /// (REQ-MAIN-006): each with the group that holds it (`events_by_name`, `tasks_by_state`,
+    /// `halts_by_reason`, …). They are counted in their group like any other name. Empty, and
+    /// absent from the JSON, when every name is known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_to_this_release: Vec<crate::newer::UnknownWord>,
     /// Milliseconds the model requests waited for the engine's gate (REQ-OBS-009), summed.
     #[serde(default)]
     pub engine_wait_ms: u64,
@@ -1785,6 +1791,9 @@ pub mod fake {
         before_write: Mutex<std::collections::HashMap<&'static str, WriteHook>>,
         /// The write methods that fail with a storage error (a full disk).
         failing: Mutex<std::collections::BTreeSet<&'static str>>,
+        /// Records of a newer release that the store holds as text: they are read as text and
+        /// are no typed record of the fake (REQ-MAIN-006).
+        newer: Mutex<Vec<(TaskId, crate::newer::RawRecord)>>,
     }
 
     /// A test's hook run before a write method of the fake writes.
@@ -1828,6 +1837,19 @@ pub mod fake {
         /// From now on the write method `name` fails with a storage error, and writes nothing.
         pub fn fail_write(&self, name: &'static str) {
             self.failing.lock().expect("fake lock").insert(name);
+        }
+
+        /// The store holds `text` as a record of `kind` of the task, as it would a record that a
+        /// newer release wrote: it is returned by `raw_records` and by nothing typed.
+        pub fn hold_raw(&self, task_id: TaskId, kind: crate::newer::RecordKind, text: &str) {
+            self.newer.lock().expect("fake lock").push((
+                task_id,
+                crate::newer::RawRecord {
+                    kind,
+                    key: "held".into(),
+                    text: text.to_owned(),
+                },
+            ));
         }
 
         /// The write methods called so far, in order.
@@ -1937,6 +1959,7 @@ pub mod fake {
                     state: t.state.name().to_owned(),
                     created_at: t.created_at,
                     updated_at: t.updated_at,
+                    unknown: Vec::new(),
                 })
                 .collect())
         }
@@ -2158,6 +2181,112 @@ pub mod fake {
                     record: record.clone(),
                 })
                 .collect())
+        }
+
+        fn read_events_since(
+            &self,
+            position: u64,
+            task_id: Option<TaskId>,
+            limit: usize,
+        ) -> Result<Vec<PositionedRead>, PersistenceError> {
+            Ok(self
+                .events_since(position, task_id, limit)?
+                .into_iter()
+                .map(|e| PositionedRead {
+                    position: e.position,
+                    record: crate::newer::Read::Known(e.record),
+                })
+                .collect())
+        }
+
+        fn raw_records(
+            &self,
+            kind: crate::newer::RecordKind,
+            task_id: TaskId,
+        ) -> Result<Vec<crate::newer::RawRecord>, PersistenceError> {
+            use crate::newer::RecordKind as K;
+            fn raw<T: Serialize>(
+                kind: K,
+                key: impl ToString,
+                value: &T,
+            ) -> crate::newer::RawRecord {
+                crate::newer::RawRecord {
+                    kind,
+                    key: key.to_string(),
+                    text: serde_json::to_string(value).expect("a record serializes"),
+                }
+            }
+            let held: Vec<crate::newer::RawRecord> = self
+                .newer
+                .lock()
+                .expect("fake lock")
+                .iter()
+                .filter(|(t, r)| *t == task_id && r.kind == kind)
+                .map(|(_, r)| r.clone())
+                .collect();
+            let inner = self.inner.lock().expect("fake lock");
+            let mut records: Vec<crate::newer::RawRecord> = match kind {
+                K::Task => inner
+                    .tasks
+                    .iter()
+                    .filter(|t| t.task_id == task_id)
+                    .map(|t| raw(kind, t.task_id, t))
+                    .collect(),
+                K::Step => inner
+                    .steps
+                    .iter()
+                    .filter(|s| s.task_id == task_id)
+                    .map(|s| raw(kind, s.step_id, s))
+                    .collect(),
+                K::Action => inner
+                    .actions
+                    .iter()
+                    .filter(|a| a.task_id == task_id)
+                    .map(|a| raw(kind, a.action_id, a))
+                    .collect(),
+                K::Execution => Vec::new(),
+                K::Observation => Vec::new(),
+                K::Approval => inner
+                    .approvals
+                    .iter()
+                    .filter(|a| a.task_id == task_id)
+                    .map(|a| raw(kind, a.approval_id, a))
+                    .collect(),
+                K::Question => inner
+                    .questions
+                    .iter()
+                    .filter(|q| q.task_id == task_id)
+                    .map(|q| raw(kind, q.question_id, q))
+                    .collect(),
+                K::Grant => inner
+                    .grants
+                    .iter()
+                    .filter(|g| g.task_id == task_id)
+                    .map(|g| raw(kind, g.grant_id, g))
+                    .collect(),
+                K::Plan => inner
+                    .plans
+                    .iter()
+                    .filter(|p| p.task_id == task_id)
+                    .map(|p| raw(kind, p.version, p))
+                    .collect(),
+                K::Event => inner
+                    .events
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.task_id == Some(task_id))
+                    .map(|(i, e)| raw(kind, i + 1, e))
+                    .collect(),
+                K::Snapshot => inner
+                    .snapshots
+                    .iter()
+                    .filter(|s| s.task_id == task_id)
+                    .map(|s| raw(kind, s.snapshot_id, s))
+                    .collect(),
+                K::Promotion => Vec::new(),
+            };
+            records.extend(held);
+            Ok(records)
         }
 
         fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError> {
@@ -2702,6 +2831,21 @@ pub enum PersistenceError {
         /// What.
         detail: String,
     },
+    /// A record holds a word that a newer release of mimlys wrote and this release does not know
+    /// (REQ-MAIN-006; external design §22). A command that only reads shows the record as it was
+    /// written, marked unknown to this release; a command that would change or run its task
+    /// refuses with this, so that no word is ever taken for another.
+    #[error(
+        "{record} holds {field} `{word}`, which is unknown to this release: the release of mimlys that wrote it is needed"
+    )]
+    NewerRecord {
+        /// The kind of record that holds it (`task`, `event`, `action`, …).
+        record: String,
+        /// The field that holds the word.
+        field: String,
+        /// The word as written.
+        word: String,
+    },
     /// Storage failed.
     #[error("storage failure: {detail}")]
     Storage {
@@ -2723,6 +2867,11 @@ pub struct TaskSummary {
     pub created_at: crate::clock::Instant,
     /// Updated.
     pub updated_at: crate::clock::Instant,
+    /// The words of the task's own record that this release does not know, when it holds any: a
+    /// state a newer release wrote, a wait kind, a reason (REQ-MAIN-006). Empty, and absent from
+    /// the JSON, for a task this release reads whole.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown: Vec<crate::newer::UnknownWord>,
 }
 
 /// An event with its position in the log.
@@ -2732,6 +2881,16 @@ pub struct PositionedEvent {
     pub position: u64,
     /// The event.
     pub record: EventRecord,
+}
+
+/// An event with its position, as a reader meets it: whole, or holding a word that a newer
+/// release wrote (REQ-MAIN-006). It serializes as [`PositionedEvent`] does, the record as written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PositionedRead {
+    /// Monotonic position.
+    pub position: u64,
+    /// The event, or the record as written with the words this release does not know.
+    pub record: crate::newer::Read<EventRecord>,
 }
 
 /// The reading half of the store (external design §16; REQ-PERS-013, RFC
@@ -2825,6 +2984,25 @@ pub trait PersistenceRead: Send + Sync {
         task_id: Option<TaskId>,
         limit: usize,
     ) -> Result<Vec<PositionedEvent>, PersistenceError>;
+
+    /// Events after `position`, oldest first, at most `limit`, as a reader meets them: an event
+    /// that holds a word this release does not know is kept as written, marked, and never fails
+    /// the read (REQ-MAIN-006). [`PersistenceRead::events_since`] refuses it instead.
+    fn read_events_since(
+        &self,
+        position: u64,
+        task_id: Option<TaskId>,
+        limit: usize,
+    ) -> Result<Vec<PositionedRead>, PersistenceError>;
+
+    /// The records of one kind that the task owns, as stored and unread, in the order the typed
+    /// loads give them: the one place where a record is not yet a type, for the readers and the
+    /// check of a task's records (`newer`).
+    fn raw_records(
+        &self,
+        kind: crate::newer::RecordKind,
+        task_id: TaskId,
+    ) -> Result<Vec<crate::newer::RawRecord>, PersistenceError>;
 
     /// Reads a blob.
     fn get_blob(&self, blob_id: BlobId) -> Result<Vec<u8>, PersistenceError>;

@@ -47,6 +47,9 @@ pub struct Holdings {
     pub blob_bytes: u64,
     /// Manifests that could not be read: their objects are not counted.
     pub unreadable_manifests: u64,
+    /// Snapshot and promotion records that hold a word a newer release wrote (REQ-MAIN-006): they
+    /// are not counted, and the listing goes on.
+    pub unknown_records: u64,
 }
 
 pub(super) fn holdings(
@@ -59,7 +62,8 @@ pub(super) fn holdings(
     let mut tasks: BTreeMap<TaskId, TaskHolding> = BTreeMap::new();
     for summary in persistence.list_tasks()? {
         let id = summary.task_id;
-        let snapshots = persistence.load_snapshots(id)?;
+        let (snapshots, _, unknown) = super::read::readable_footprint_records(persistence, id)?;
+        out.unknown_records += unknown as u64;
         for s in &snapshots {
             match workspaces.manifest(s) {
                 Ok(manifest) => {

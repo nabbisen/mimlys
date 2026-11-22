@@ -3,9 +3,11 @@
 use crate::sqlite::{poisoned, storage};
 use mimlys_core::event::{AdmissionState, Event, EventRecord};
 use mimlys_core::ids::TaskId;
+use mimlys_core::newer::{Read, UnknownWord};
 use mimlys_core::rejection::RejectionCode;
 use mimlys_core::spi::{ContextSums, Metrics, PersistenceError};
 use mimlys_core::step::Step;
+use mimlys_core::task::Task;
 use rusqlite::params;
 
 /// Counts over all tasks or one task.
@@ -17,19 +19,25 @@ pub fn metrics(
     let conn = &*conn;
     (|| -> Result<Metrics, PersistenceError> {
         let mut m = Metrics::default();
+        // The names a newer release wrote, by the group that counts them (REQ-MAIN-006).
+        let mut unknown: std::collections::BTreeSet<UnknownWord> = Default::default();
         let mut stmt = conn
-            .prepare(
-                "SELECT state, count(*) FROM tasks WHERE ?1 IS NULL OR task_id = ?1 GROUP BY state",
-            )
+            .prepare("SELECT state, record FROM tasks WHERE ?1 IS NULL OR task_id = ?1")
             .map_err(storage("prepare"))?;
         let rows = stmt
             .query_map(params![task_id.map(|t| t.to_string())], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .map_err(storage("query"))?;
         for row in rows {
-            let (state, n) = row.map_err(storage("row"))?;
-            m.tasks_by_state.insert(state, n as u64);
+            let (state, record) = row.map_err(storage("row"))?;
+            // A task whose state is not one of this release's is counted by the name it has.
+            if let Ok(Read::Newer(newer)) = Read::<Task>::parse(&record)
+                && newer.is_unknown("state")
+            {
+                unknown.insert(UnknownWord::new("tasks_by_state", state.clone()));
+            }
+            *m.tasks_by_state.entry(state).or_default() += 1;
         }
         let mut stmt = conn
             .prepare("SELECT record FROM events WHERE ?1 IS NULL OR task_id = ?1 ORDER BY position")
@@ -41,8 +49,16 @@ pub fn metrics(
             .map_err(storage("query"))?;
         for row in rows {
             let text = row.map_err(storage("row"))?;
-            let Ok(record) = serde_json::from_str::<EventRecord>(&text) else {
-                continue;
+            let record = match Read::<EventRecord>::parse(&text) {
+                Ok(Read::Known(record)) => record,
+                // An event a newer release wrote: counted by its name, and in the groups its
+                // words belong to (REQ-MAIN-006). Never skipped, never a failure.
+                Ok(Read::Newer(newer)) => {
+                    count_newer_event(&mut m, &mut unknown, &newer);
+                    continue;
+                }
+                // A damaged record is skipped, as it always was.
+                Err(_) => continue,
             };
             *m.events_by_name
                 .entry(record.event.name().to_owned())
@@ -120,6 +136,53 @@ pub fn metrics(
             }
         }
         m.context = sums.finish();
+        m.unknown_to_this_release = unknown.into_iter().collect();
         Ok(m)
     })()
+}
+
+/// Which map of the metrics counts a word, and the name of that group.
+type Group = (
+    fn(&mut Metrics) -> &mut std::collections::BTreeMap<String, u64>,
+    &'static str,
+);
+
+/// Counts an event that holds a word this release does not know: by the name it was written
+/// with, and in the group of each of its words that a group counts (`halts_by_reason`,
+/// `rejections_by_code`, `approvals_by_decision`). The words that are not known are listed with
+/// their group.
+fn count_newer_event(
+    m: &mut Metrics,
+    unknown: &mut std::collections::BTreeSet<UnknownWord>,
+    newer: &mimlys_core::newer::Newer,
+) {
+    let name = newer.text("event").unwrap_or("").to_owned();
+    if newer.is_unknown("event") {
+        unknown.insert(UnknownWord::new("events_by_name", name.clone()));
+    }
+    *m.events_by_name.entry(name.clone()).or_default() += 1;
+    let (field, (map, group)): (&str, Group) = match name.as_str() {
+        "task.state_changed" if newer.text("to") == Some("halted") => {
+            ("reason", (|m| &mut m.halts_by_reason, "halts_by_reason"))
+        }
+        "decision.rejected" => (
+            "code",
+            (|m| &mut m.rejections_by_code, "rejections_by_code"),
+        ),
+        "approval.decided" => (
+            "decision",
+            (|m| &mut m.approvals_by_decision, "approvals_by_decision"),
+        ),
+        "action.finished" => (
+            "status",
+            (|m| &mut m.actions_by_status, "actions_by_status"),
+        ),
+        _ => return,
+    };
+    if let Some(word) = newer.text(field) {
+        *map(m).entry(word.to_owned()).or_default() += 1;
+        if newer.is_unknown(field) {
+            unknown.insert(UnknownWord::new(group, word));
+        }
+    }
 }

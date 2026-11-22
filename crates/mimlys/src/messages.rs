@@ -932,6 +932,12 @@ pub fn storage_lines(view: &crate::storage::StorageView, shown: usize) -> Vec<St
             view.unreadable_manifests
         ));
     }
+    if view.unknown_records > 0 {
+        lines.push(format!(
+            "  {} snapshot or promotion record(s) hold a word {UNKNOWN_MARKER}; they are not counted",
+            view.unknown_records
+        ));
+    }
     if view.tasks.is_empty() {
         lines.push("no tasks".to_owned());
         return lines;
@@ -964,15 +970,101 @@ pub fn status_running(count: usize) -> String {
     format!("running tasks   {count}")
 }
 /// Status: pending items.
-pub fn status_pending(task_id: &str, kind: WaitKind) -> String {
+pub fn status_pending(task_id: &str, wait: &mimlys_core::runtime::WaitWord) -> String {
+    use mimlys_core::runtime::WaitWord;
     format!(
         "pending         task {task_id} waits for {}",
-        match kind {
-            WaitKind::Approval => "an approval",
-            WaitKind::Question => "an answer",
+        match wait {
+            WaitWord::Known(WaitKind::Approval) => "an approval".to_owned(),
+            WaitWord::Known(WaitKind::Question) => "an answer".to_owned(),
+            WaitWord::Unknown(word) => format!("`{word}` {UNKNOWN_MARKER}"),
         }
     )
 }
+/// Status: a task whose state a newer release wrote (REQ-MAIN-006).
+pub fn status_unknown_state(task_id: &str, word: &str) -> String {
+    format!("unknown         task {task_id} is in the state `{word}` {UNKNOWN_MARKER}")
+}
+
+/// What a reader prints beside a word that a newer release wrote (REQ-MAIN-006; external design
+/// §22): in parentheses, after the word.
+pub const UNKNOWN_MARKER: &str = "(unknown to this release)";
+
+/// `text`, and the marker after it when `unknown`.
+pub fn marked(text: &str, unknown: bool) -> String {
+    if unknown {
+        format!("{text} {UNKNOWN_MARKER}")
+    } else {
+        text.to_owned()
+    }
+}
+
+/// A record of a task that holds a word this release does not know, as `task show` lists it.
+pub fn newer_record_line(
+    kind: &str,
+    key: &str,
+    words: &[mimlys_core::newer::UnknownWord],
+) -> String {
+    let words = words
+        .iter()
+        .map(|w| format!("{} `{}` {UNKNOWN_MARKER}", w.field, w.word))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("unknown   {kind} {key}: {words}")
+}
+
+/// `task show` of a task whose own record holds a word this release does not know: what the
+/// record says, as written (REQ-MAIN-006). The state, the goal and the dates come first, as in
+/// every view; every other field follows as it was written.
+pub fn show_newer_task_lines(
+    task_id: &str,
+    record: &mimlys_core::newer::Newer,
+    others: &[mimlys_core::newer::NewerRecord],
+) -> Vec<String> {
+    const FIRST: [&str; 5] = ["task_id", "state", "goal", "created_at", "updated_at"];
+    let mut lines = vec![format!("task      {task_id}")];
+    if let Some(state) = record.text("state") {
+        // The state as written: the word, with the fields that make it up (a wait kind, a halt
+        // reason) when it is a state this release has but the field is not.
+        lines.push(format!(
+            "state     {}",
+            marked(state, record.is_unknown("state"))
+        ));
+    }
+    if let Some(goal) = record.raw.get("goal") {
+        lines.push(format!("goal      {goal}"));
+    }
+    for field in ["created_at", "updated_at"] {
+        if let Some(at) = record.text(field) {
+            lines.push(format!("{field:<9} {at}"));
+        }
+    }
+    if let Some(object) = record.raw.as_object() {
+        for (field, value) in object.iter().filter(|(k, _)| !FIRST.contains(&k.as_str())) {
+            let unknown = record.is_unknown_in(field);
+            let shown = match value {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            lines.push(format!("{field:<9} {}", marked(&shown, unknown)));
+        }
+    }
+    for word in &record.words {
+        lines.push(format!(
+            "unknown   {} `{}` {UNKNOWN_MARKER}: the release that wrote it is needed to act on this task",
+            word.field, word.word
+        ));
+    }
+    for other in others {
+        lines.push(newer_record_line(
+            other.kind.name(),
+            &other.key,
+            &other.newer.words,
+        ));
+    }
+    lines
+}
+
 fn plural(count: u32, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }

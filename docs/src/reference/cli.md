@@ -224,3 +224,31 @@ contract (REQ-CLI-004):
 | `toolchain revoke --all` | `{removed: [{path, source: runtime \| user, found_by: record \| scan}], failed: [{path, reason}], profile_deleted, record_deleted, per_task_entries? (Windows; only when there were per-task entries to remove): {removed, failed: [{path, reason}]}}`; on a partial failure the same object is printed and the exit code is 1 |
 | `check` | `{ok, config_path, data_dir, data_dir_in_temporary_directory, config, default_backend, deprecations, external_tools, undeclared_external_tools, host_tools, host_tools_allow_paths}` (`config.backends` is the table of backends, a version-1 file's `[backend]` being `backends.default`; `default_backend`: whether a backend is named `default`; `deprecations`: `["config_version_1"]` for a version-1 file; `host_tools_allow_paths`: the names of the declarations with `allow_paths = true`) |
 | any error | `{"error": {"kind", "message", "detail"}}` with kind from `invalid_request`, `not_found`, `state`, `denied`, `conflict`, `unavailable`, `internal`; **every `unavailable` carries `detail.component`**, which names what could not be reached: `model_backend` (the model backend), `tool_provider` (the tools' provider), `permissions` (the permissions of a directory mimlys writes could not be applied: another runtime holds their lock, or it cannot be taken; Windows) or `download` (an interpreter download that failed, with `url` and `last_status` beside it); a script can match on the word |
+
+### Words a newer release wrote
+
+A record that a newer mimlys wrote can hold a word this release does not know: an event
+name, a state, a wait kind, a halt, failure or rejection reason, an action's status or
+effect, a grant's kind. A command that reads shows the record as it was written and marks the
+word; it never fails for it (REQ-MAIN-006). Input from outside the store (the configuration,
+the model's reply, a tool's result) keeps refusing a word it does not know.
+
+- **In text,** the word is followed by `(unknown to this release)`: `state     quarantined
+  (unknown to this release)` in `task show` and `task list`, `session.attached (unknown to this
+  release)` and `reason=plan_required (unknown to this release)` in `events`, the metric's line in
+  `metrics`, and the task in `status`. A record `task show` cannot read (an action whose status is
+  new) is listed after the others, by its kind, its id and the word; the records that read are
+  shown as always.
+- **In `--json` there is one rule.** The field is as written, and the object that holds a word
+  this release does not know has the key `unknown_to_this_release`: a list of `{field, word}`,
+  `field` being the name of the field that holds the word (`event`, `state`, `wait_kind`,
+  `reason.failure_reason`, `pending.pending`; for a list or a map, the field that holds it). A
+  record with no such word never has the key. So: in `events`, the key is in `record`; in
+  `task list`, in the row; in `task show`, in `task` (the record as written) when the task's own
+  record holds the word, and `unknown_records: [{kind, key, record}]` lists the other records of
+  the task that hold one, each with the key in `record`; in `metrics` and `status`, in the object
+  itself, with `field` the group (`events_by_name`, `tasks_by_state`, `halts_by_reason`,
+  `rejections_by_code`, `approvals_by_decision`, `actions_by_status`) or the field of the status
+  (`pending`, `unknown_state`). In `status`, `pending` has the word as written for a task that waits
+  for a kind this release does not know, and `unknown_state: [[task_id, word]]` lists the tasks
+  in a state it does not know.

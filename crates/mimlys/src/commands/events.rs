@@ -1,7 +1,7 @@
 //! `mimlys events [<task>] [--since N] [--follow]` (REQ-OBS-002).
 
 use crate::app::{AppError, ReadApp};
-use crate::follow::event_text;
+use crate::follow::event_text_read;
 use crate::messages;
 use crate::output::Output;
 use mimlys_core::limits::LIM_O17_FOLLOW_HOLDER_WAIT_MS;
@@ -32,7 +32,9 @@ pub async fn run(
     loop {
         let batch = app.reader.get_events(task_id, position, 1000)?;
         for e in &batch {
-            out.line(event_text(e));
+            // An event that a newer release wrote is shown by its name and fields, marked, and
+            // the listing goes on (REQ-MAIN-006).
+            out.line(event_text_read(e));
             position = e.position;
         }
         all.extend(batch.iter().cloned());
@@ -43,14 +45,8 @@ pub async fn run(
             break;
         }
         if let Some(id) = task_id {
-            let state = app.reader.get_task(id)?.task.state;
-            if !matches!(
-                state,
-                TaskState::Running
-                    | TaskState::WaitingUser { .. }
-                    | TaskState::Created
-                    | TaskState::Paused
-            ) {
+            let (moves, running) = followed_state(&app.reader.show_task(id)?);
+            if !moves {
                 break;
             }
             // A `running` task that no runtime holds: either a runtime is about to
@@ -58,7 +54,7 @@ pub async fn run(
             // task) or the runtime that ran it is gone and nobody has recovered
             // the store. The follower waits LIM-O17 for a runtime, and past it the
             // task will not move on its own: say so and stop (REQ-PERS-013).
-            if matches!(state, TaskState::Running) {
+            if running {
                 let free = app.store.probe_lock() == mimlys_persist::LockState::Free;
                 match unheld.observe(free, Instant::now()) {
                     Unheld::Held => {}
@@ -83,6 +79,35 @@ pub async fn run(
     }
     out.value(&all);
     Ok(())
+}
+
+/// Whether the task can still move, and whether it is `running`, as the follower needs them. A
+/// state that this release does not know is not one it knows to move: the follower ends there
+/// (REQ-MAIN-006), as it does at any state that settles.
+fn followed_state(shown: &mimlys_core::runtime::TaskShown) -> (bool, bool) {
+    use mimlys_core::runtime::TaskShown;
+    match shown {
+        TaskShown::Whole { view, .. } => (
+            matches!(
+                view.task.state,
+                TaskState::Running
+                    | TaskState::WaitingUser { .. }
+                    | TaskState::Created
+                    | TaskState::Paused
+            ),
+            matches!(view.task.state, TaskState::Running),
+        ),
+        TaskShown::Newer { record, .. } => {
+            let state = record.text("state").filter(|_| !record.is_unknown("state"));
+            (
+                matches!(
+                    state,
+                    Some("running" | "waiting_user" | "created" | "paused")
+                ),
+                state == Some("running"),
+            )
+        }
+    }
 }
 
 /// What the follower finds of the store's holder at one poll of a `running` task.

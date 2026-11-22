@@ -407,6 +407,21 @@ impl Event {
     }
 }
 
+/// The keys of an [`EventRecord`] that are the envelope's, not the event's: what a reader that
+/// shows an event it does not know leaves out of the payload it prints (REQ-MAIN-006). A test
+/// keeps the list in step with the type.
+pub const ENVELOPE_FIELDS: [&str; 9] = [
+    "event_id",
+    "at",
+    "actor",
+    "session",
+    "os_user",
+    "task_id",
+    "step_id",
+    "action_id",
+    "policy_hash",
+];
+
 /// The envelope of a persisted event (external design §17.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventRecord {
