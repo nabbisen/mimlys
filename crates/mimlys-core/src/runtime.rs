@@ -55,6 +55,9 @@ pub struct RuntimeDeps {
     pub persistence: Arc<dyn Persistence>,
     /// The model backend.
     pub backend: Arc<dyn ModelBackend>,
+    /// The name the configuration gives that backend (`default`: a task runs on no other until
+    /// RFC 015's effort levels), so that a halt names it (`halt_detail`, REQ-SEC-010).
+    pub backend_name: String,
     /// Workspaces and the tools over them.
     pub workspaces: Arc<dyn WorkspaceProvider>,
     /// The policy in force.

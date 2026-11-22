@@ -125,6 +125,26 @@ fn refusal_line(stdout: &str) -> Option<&str> {
     stdout.lines().find(|l| l.starts_with("nothing was sent:"))
 }
 
+/// The rule of a halt `policy` for a remote backend under a profile that forbids it, as the task
+/// and the event say it (`halt_detail`, external design §5.2).
+fn forbidden_detail() -> Value {
+    json!({"rule": "remote_backend_forbidden", "backend": "default", "profile": "workspace"})
+}
+
+/// The `halt_detail` of the task's last `task.state_changed` event to `halted`, as `events --json`
+/// shows it.
+fn last_halt_detail(rig: &Rig, id: &str) -> Option<Value> {
+    let (_, events) = rig.json(&["events", id]);
+    events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| &e["record"])
+        .rfind(|r| r["event"] == "task.state_changed" && r["to"] == "halted")
+        .map(|r| r["halt_detail"].clone())
+        .filter(|d| !d.is_null())
+}
+
 /// REQ-SEC-010: a task made under a local backend, the file edited to declare the backend
 /// remote, `task resume` under the shipped profile (`external = false`): the task halts `policy`,
 /// the line names the backend and the profile, and the mock received no request at all.
@@ -153,10 +173,14 @@ fn req_sec_010_task_resume_halts_policy_when_the_backend_became_remote() {
     let (_, shown) = rig.json(&["task", "show", &id]);
     assert_eq!(shown["task"]["state"], "halted");
     assert_eq!(shown["task"]["halt_reason"], "policy");
+    // The halt names its rule (external design §5.2): in the task, and in the halt's event.
+    assert_eq!(shown["task"]["halt_detail"], forbidden_detail(), "{shown}");
+    assert_eq!(last_halt_detail(&rig, &id), Some(forbidden_detail()));
     // The same in JSON, and the same again at the next resume.
     let (code, value) = rig.json(&["task", "resume", &id]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(value["task"]["halt_reason"], "policy");
+    assert_eq!(value["task"]["halt_detail"], forbidden_detail(), "{value}");
     assert_eq!(server.requests().len(), received);
 
     // The user's remedy: the backend is local again; the same task goes on and sends.
@@ -251,6 +275,7 @@ fn req_sec_010_a_recovered_task_under_auto_resume_is_checked() {
     let (_, after) = rig.json(&["task", "show", &id]);
     assert_eq!(after["task"]["state"], "halted", "{stdout}");
     assert_eq!(after["task"]["halt_reason"], "policy", "{after}");
+    assert_eq!(after["task"]["halt_detail"], forbidden_detail(), "{after}");
     assert_eq!(
         server.requests().len(),
         received,
@@ -264,4 +289,40 @@ fn req_sec_010_a_recovered_task_under_auto_resume_is_checked() {
         .map(|e| e["record"]["event"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"task.recovered"), "{names:?}");
+}
+
+/// REQ-TASK-007, external design §5.2: the other cause of a halt `policy`, a completion check that
+/// the validator refuses (a tool the profile does not offer), is told from the first by its
+/// rule, `completion_check_refused`, in the task and in the halt's event, through `--json`; the
+/// text says it too, and does not blame the backend.
+#[test]
+fn req_task_007_a_refused_completion_check_halts_policy_naming_its_rule() {
+    let server = MockServer::start(MockConfig::default(), vec![Reply::Decision(complete())]);
+    let rig = Rig::new(&server);
+    let check = json!({"tool": "no_such_tool", "arguments": {}}).to_string();
+    let args = [
+        "run",
+        "go",
+        "--scope",
+        rig.scope(),
+        "--completion-check",
+        &check,
+    ];
+    let (code, stdout, stderr) = rig.run(&args);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("completion check was refused"), "{stdout}");
+    assert!(refusal_line(&stdout).is_none(), "{stdout}");
+    let id = rig.task_id();
+    let (_, shown) = rig.json(&["task", "show", &id]);
+    assert_eq!(shown["task"]["state"], "halted", "{shown}");
+    assert_eq!(shown["task"]["halt_reason"], "policy", "{shown}");
+    assert_eq!(
+        shown["task"]["halt_detail"],
+        json!({"rule": "completion_check_refused"}),
+        "{shown}"
+    );
+    assert_eq!(
+        last_halt_detail(&rig, &id),
+        Some(json!({"rule": "completion_check_refused"}))
+    );
 }

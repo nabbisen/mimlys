@@ -126,6 +126,7 @@ fn restarted(h: &Harness) -> Runtime {
     Runtime::new(RuntimeDeps {
         persistence: h.persistence.clone(),
         backend: h.backend.clone(),
+        backend_name: "default".to_owned(),
         workspaces: h.workspaces.clone(),
         policy: Policy::shipped(),
         ids: Arc::new(ScriptedIds::starting_at(1_000_000)),
@@ -507,7 +508,8 @@ fn req_dec_010_convergence_follows_the_trees_content_identity() {
             assert_eq!(
                 result.state,
                 TaskState::Halted {
-                    halt_reason: HaltReason::Convergence
+                    halt_reason: HaltReason::Convergence,
+                    halt_detail: None,
                 }
             );
             break;
@@ -536,7 +538,8 @@ fn req_task_004_the_fork_of_a_halted_source_names_both_ways_on() {
     assert_eq!(
         h.state(source),
         TaskState::Halted {
-            halt_reason: HaltReason::BudgetRejections
+            halt_reason: HaltReason::BudgetRejections,
+            halt_detail: None,
         }
     );
     let fork = |scope: &str| {
@@ -645,7 +648,8 @@ fn req_dec_010_a_rejected_approval_counts_with_the_trees_identity() {
     assert_eq!(
         task.state,
         TaskState::Halted {
-            halt_reason: HaltReason::Convergence
+            halt_reason: HaltReason::Convergence,
+            halt_detail: None,
         }
     );
 }

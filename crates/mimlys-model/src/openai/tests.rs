@@ -6,6 +6,7 @@ use mimlys_core::limits::{LIM_D1_DECISION_BYTES, LIM_M2_MAX_TOKENS};
 use serde_json::json;
 
 mod native;
+mod redirect;
 mod resident;
 
 fn config(url: &str, mode: Mode) -> OpenAiConfig {

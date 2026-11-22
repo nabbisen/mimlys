@@ -236,7 +236,22 @@ starts, so a task made while the backend was local can meet it declared `remote`
 its next start; it then halts with the reason `policy`, with a line that names the
 backend and the profile, and nothing is sent to the backend, not even the probe. To
 go on, make the backend local again, or set `external = true` in the profile (with
-`policy.remote_backend_allowed = true`) and resume.
+`policy.remote_backend_allowed = true`) and resume. The halt says which rule stopped
+the task, for a script as for a person: `task show --json` has `halt_detail` beside
+`halt_reason` (`{"rule": "remote_backend_forbidden", "backend": "default", "profile":
+"workspace"}`), and so does the halt's `task.state_changed` event. A halt `policy` has one
+other cause, a completion check that the policy did not allow to run, and its `rule` is
+`completion_check_refused`. A halt for any other reason has no `halt_detail`, and neither has a
+task recorded before 0.13.
+
+**A redirect is never followed.** A backend that answers a request with a redirect (`301`,
+`302`, `303`, `307` or `308`) is treated as a backend that did not answer: mimlys does not go to
+the address it names, so a `local` engine cannot pass a task's content, or your key, to another
+host. The request fails like an unreachable backend, **naming the host the redirect points to**
+(never the whole address, which can carry a password), is retried as for any failed request, and
+then the task halts `backend_unavailable`; `status` shows the backend `unreachable`, with the
+host on its line. If your `url` is an address that redirects (a proxy, a load balancer, a URL
+that moved), write the address it leads to.
 
 ## A local model
 

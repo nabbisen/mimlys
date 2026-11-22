@@ -119,6 +119,7 @@ pub(super) fn get_task(
     let unreadable = match task.state {
         TaskState::Halted {
             halt_reason: HaltReason::WorkspaceUnreadable,
+            ..
         } => unreadable_path(persistence, task_id)?,
         _ => None,
     };

@@ -12,6 +12,7 @@ fn every_event() -> Vec<Event> {
             to: "halted".into(),
             reason: Some(HaltReason::Convergence),
             rollback_failed: false,
+            halt_detail: None,
         },
         Event::TaskAdmissionChanged {
             state: AdmissionState::Waiting,
@@ -216,6 +217,7 @@ fn req_obs_001_event_record_envelope_is_flat() {
             to: "running".into(),
             reason: None,
             rollback_failed: false,
+            halt_detail: None,
         },
     };
     let json = serde_json::to_value(&record).unwrap();
@@ -229,4 +231,47 @@ fn req_obs_001_event_record_envelope_is_flat() {
     assert_eq!(back, record);
     let runtime = serde_json::to_value(Actor::Runtime).unwrap();
     assert_eq!(runtime["actor"], "runtime");
+}
+
+/// External design §5.2: the halt's `task.state_changed` carries `halt_detail` when the halt has
+/// one, and an event written before it existed reads without and is written back the same.
+#[test]
+fn req_sec_010_the_halt_event_carries_its_rule() {
+    let event = Event::TaskStateChanged {
+        from: "running".into(),
+        to: "halted".into(),
+        reason: Some(HaltReason::Policy),
+        rollback_failed: false,
+        halt_detail: Some(crate::task::HaltDetail::RemoteBackendForbidden {
+            backend: "default".into(),
+            profile: "workspace".into(),
+        }),
+    };
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["event"], "task.state_changed");
+    assert_eq!(json["reason"], "policy");
+    assert_eq!(
+        json["halt_detail"],
+        serde_json::json!({
+            "rule": "remote_backend_forbidden",
+            "backend": "default",
+            "profile": "workspace"
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
+    let old = serde_json::json!({
+        "event": "task.state_changed", "from": "running", "to": "halted", "reason": "policy"
+    });
+    let read: Event = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(
+        read,
+        Event::TaskStateChanged {
+            from: "running".into(),
+            to: "halted".into(),
+            reason: Some(HaltReason::Policy),
+            rollback_failed: false,
+            halt_detail: None,
+        }
+    );
+    assert_eq!(serde_json::to_value(&read).unwrap(), old);
 }

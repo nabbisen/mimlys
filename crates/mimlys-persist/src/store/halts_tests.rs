@@ -121,6 +121,7 @@ impl Run {
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store.clone(),
             backend: backend.clone(),
+            backend_name: "default".to_owned(),
             workspaces: workspaces.clone(),
             policy,
             ids: Arc::new(ScriptedIds::default()),
@@ -228,7 +229,8 @@ fn req_obs_001_a_halt_decided_inside_execute_is_counted_by_the_metrics() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::ToolUnavailable
+            halt_reason: HaltReason::ToolUnavailable,
+            halt_detail: None,
         }
     );
     let halts: Vec<_> = run
@@ -250,7 +252,8 @@ fn req_obs_001_a_halt_decided_inside_execute_is_counted_by_the_metrics() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::UnknownOutcome
+            halt_reason: HaltReason::UnknownOutcome,
+            halt_detail: None,
         }
     );
     assert_eq!(run.halts("unknown_outcome"), 1);
@@ -321,7 +324,8 @@ fn req_obs_001_a_failed_restore_is_counted_by_the_metrics() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::UnknownOutcome
+            halt_reason: HaltReason::UnknownOutcome,
+            halt_detail: None,
         }
     );
     assert_eq!(run.halts("unknown_outcome"), 1);

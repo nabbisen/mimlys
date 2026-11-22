@@ -61,10 +61,14 @@ fn state_changed(from: &Task, to: &Task) -> Event {
         from: from.state.name().to_owned(),
         to: to.state.name().to_owned(),
         reason: match &to.state {
-            TaskState::Halted { halt_reason } => Some(*halt_reason),
+            TaskState::Halted { halt_reason, .. } => Some(*halt_reason),
             _ => None,
         },
         rollback_failed: false,
+        halt_detail: match &to.state {
+            TaskState::Halted { halt_detail, .. } => halt_detail.clone(),
+            _ => None,
+        },
     }
 }
 

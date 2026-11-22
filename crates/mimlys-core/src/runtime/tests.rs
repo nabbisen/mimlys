@@ -22,6 +22,7 @@ use std::sync::Arc;
 mod approval_card;
 mod definitions_bound;
 mod engine_gate;
+mod halt_detail;
 mod interrupt;
 mod native;
 mod native_context;
@@ -128,6 +129,7 @@ impl Harness {
         let runtime = Runtime::new(RuntimeDeps {
             persistence: persistence.clone(),
             backend: backend.clone(),
+            backend_name: "default".to_owned(),
             workspaces: workspaces.clone(),
             policy,
             ids: Arc::new(ScriptedIds::default()),
@@ -372,7 +374,8 @@ fn req_dec_009_rejections_feed_back_then_halt() {
     assert_eq!(
         third.state,
         TaskState::Halted {
-            halt_reason: HaltReason::BudgetRejections
+            halt_reason: HaltReason::BudgetRejections,
+            halt_detail: None,
         }
     );
     assert_eq!(h.backend.requests().len(), 3);
@@ -495,7 +498,8 @@ fn req_apr_007_reject_continue_or_halt() {
     assert_eq!(
         task.state,
         TaskState::Halted {
-            halt_reason: HaltReason::ApprovalRejected
+            halt_reason: HaltReason::ApprovalRejected,
+            halt_detail: None,
         }
     );
     assert!(h.tools.calls().is_empty());
@@ -729,7 +733,8 @@ fn req_task_009_deadline_halts_and_extension_resumes() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::BudgetDeadline
+            halt_reason: HaltReason::BudgetDeadline,
+            halt_detail: None,
         }
     );
     assert!(
@@ -773,7 +778,8 @@ fn req_task_010_step_budget_halts() {
     assert_eq!(
         second.state,
         TaskState::Halted {
-            halt_reason: HaltReason::BudgetSteps
+            halt_reason: HaltReason::BudgetSteps,
+            halt_detail: None,
         }
     );
 }
@@ -803,7 +809,8 @@ fn req_test_011_consecutive_failures_halt_budget_failures() {
     assert_eq!(
         last.state,
         TaskState::Halted {
-            halt_reason: HaltReason::BudgetFailures
+            halt_reason: HaltReason::BudgetFailures,
+            halt_detail: None,
         }
     );
     assert_eq!(h.tools.calls().len(), n);
@@ -844,7 +851,8 @@ fn req_test_011_identical_decisions_halt_convergence() {
     assert_eq!(
         last.state,
         TaskState::Halted {
-            halt_reason: HaltReason::Convergence
+            halt_reason: HaltReason::Convergence,
+            halt_detail: None,
         }
     );
 }
@@ -865,7 +873,8 @@ fn req_mdl_003_backend_retries_then_halts() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::BackendUnavailable
+            halt_reason: HaltReason::BackendUnavailable,
+            halt_detail: None,
         }
     );
     let requests = h.backend.requests();
@@ -1146,6 +1155,7 @@ fn req_sched_002_one_step_and_one_execution_at_a_time_per_task() {
     let runtime = Runtime::new(RuntimeDeps {
         persistence: persistence.clone(),
         backend: backend.clone(),
+        backend_name: "default".to_owned(),
         workspaces: Arc::new(FakeWorkspaces::new(provider.clone())),
         policy: approval_policy(),
         ids: Arc::new(ScriptedIds::default()),
@@ -2857,6 +2867,7 @@ fn inv_05_a_transition_is_durable_before_its_consequence_is_visible() {
     let runtime = Runtime::new(RuntimeDeps {
         persistence: persistence.clone(),
         backend: backend.clone(),
+        backend_name: "default".to_owned(),
         workspaces: Arc::new(FakeWorkspaces::new(witness.clone())),
         policy: Policy::shipped(),
         ids: Arc::new(ScriptedIds::default()),
@@ -3113,7 +3124,8 @@ fn req_sec_011_a_panicking_backend_is_backend_unavailable() {
         assert_eq!(
             result.state,
             TaskState::Halted {
-                halt_reason: HaltReason::BackendUnavailable
+                halt_reason: HaltReason::BackendUnavailable,
+                halt_detail: None,
             },
             "{at:?}"
         );
@@ -3155,7 +3167,8 @@ fn req_sec_011_a_panicking_tool_provider_is_host_fault_unavailable() {
         assert_eq!(
             result.state,
             TaskState::Halted {
-                halt_reason: HaltReason::ToolUnavailable
+                halt_reason: HaltReason::ToolUnavailable,
+                halt_detail: None,
             },
             "{at:?}"
         );
@@ -3430,6 +3443,7 @@ fn req_sec_011_every_call_into_an_adapter_is_contained() {
         assert_eq!(result.outcome, StepOutcome::Halted, "{method}");
         let halted = TaskState::Halted {
             halt_reason: HaltReason::ToolUnavailable,
+            halt_detail: None,
         };
         assert_eq!(result.state, halted, "{method}");
         assert_eq!(h.state(id), halted, "{method}");

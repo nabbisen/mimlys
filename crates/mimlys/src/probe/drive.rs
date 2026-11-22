@@ -154,7 +154,7 @@ pub fn observe(
         TaskState::WaitingUser {
             wait_kind: WaitKind::Question,
         } => End::AskedUser,
-        TaskState::Halted { halt_reason } => End::Halted(*halt_reason),
+        TaskState::Halted { halt_reason, .. } => End::Halted(*halt_reason),
         other => End::Other(other.name().to_owned()),
     };
     let facts: Vec<StepFacts> = steps

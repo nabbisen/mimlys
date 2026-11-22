@@ -190,6 +190,7 @@ fn sequence_with(
                     to: "running".into(),
                     reason: None,
                     rollback_failed: false,
+                    halt_detail: None,
                 },
             ),
         )
@@ -705,7 +706,8 @@ fn req_pers_007_008_recovery() {
     assert_eq!(
         store.load_task(task.task_id).unwrap().unwrap().state,
         TaskState::Halted {
-            halt_reason: HaltReason::Recovered
+            halt_reason: HaltReason::Recovered,
+            halt_detail: None,
         }
     );
     let dir = tempfile::tempdir().unwrap();
@@ -725,7 +727,8 @@ fn req_pers_007_008_recovery() {
     assert_eq!(
         store.load_task(task.task_id).unwrap().unwrap().state,
         TaskState::Halted {
-            halt_reason: HaltReason::Recovered
+            halt_reason: HaltReason::Recovered,
+            halt_detail: None,
         },
         "no snapshot in M1, so no auto-resume"
     );
@@ -773,7 +776,8 @@ fn req_pers_007_008_recovery() {
     assert_eq!(
         store.load_task(waiting.task_id).unwrap().unwrap().state,
         TaskState::Halted {
-            halt_reason: HaltReason::ApprovalExpired
+            halt_reason: HaltReason::ApprovalExpired,
+            halt_detail: None,
         }
     );
     assert!(
@@ -1064,6 +1068,7 @@ fn crash_child_sequence() {
                     to: "running".into(),
                     reason: None,
                     rollback_failed: false,
+                    halt_detail: None,
                 },
             ),
         )

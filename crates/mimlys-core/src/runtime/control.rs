@@ -955,6 +955,7 @@ impl Runtime {
     pub fn start_refusal(&self, task: &Task) -> Result<Option<StartRefusal>, RuntimeError> {
         let profile = self.profile_of(task)?;
         Ok(self.remote_forbidden(&profile)?.then(|| StartRefusal {
+            backend: self.deps.backend_name.clone(),
             profile: task.profile.clone(),
         }))
     }
@@ -1673,6 +1674,8 @@ impl Runtime {
 /// `external = false`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartRefusal {
+    /// The name of the backend in force.
+    pub backend: String,
     /// The task's profile.
     pub profile: String,
 }

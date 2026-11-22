@@ -42,8 +42,8 @@ use crate::spi::{BackendError, Cancellation, ExecutionContext, GenerateRequest, 
 use crate::step::StepMeasures;
 use crate::step::{ActionOutcome, Step, StepOutcome, StepPhase, StepResult};
 use crate::task::{
-    CompletionStep, FailureReason, HaltReason, PendingItem, PlanVersion, StateError, Task,
-    TaskInput, TaskState,
+    CompletionStep, FailureReason, HaltDetail, HaltReason, PendingItem, PlanVersion, StateError,
+    Task, TaskInput, TaskState,
 };
 use crate::tool::{ToolDefinition, render_definitions};
 use crate::validate::{AuthorizedAction, ControlDecision, Outcome, ValidationContext, validate};
@@ -237,7 +237,13 @@ impl Runtime {
                 profile = %refusal.profile,
                 "the backend is remote and the profile forbids external communication: the task is halted before anything is sent"
             );
-            let halted = task.transition(TaskInput::Halt(HaltReason::Policy), now)?;
+            let halted = task.transition(
+                TaskInput::HaltPolicy(HaltDetail::RemoteBackendForbidden {
+                    backend: refusal.backend,
+                    profile: refusal.profile,
+                }),
+                now,
+            )?;
             self.persist_task(&task, &halted)?;
             return Ok(StepResultView {
                 outcome: StepOutcome::Halted,
@@ -1279,7 +1285,10 @@ impl Runtime {
         let authorized = match env.validate(self, &task, false, &raw, now) {
             Outcome::Authorized(a) if !a.approval_required() => a,
             _ => {
-                let halted = task.transition(TaskInput::Halt(HaltReason::Policy), now)?;
+                let halted = task.transition(
+                    TaskInput::HaltPolicy(HaltDetail::CompletionCheckRefused),
+                    now,
+                )?;
                 return self.finish_step_into(task, halted, step, StepOutcome::Halted, now);
             }
         };
@@ -2510,15 +2519,19 @@ pub(crate) fn state_changed(before: &Task, after: &Task) -> Event {
 /// As `state_changed`, for a halt that followed a rollback of the workspace that failed
 /// (`rollback_failed`): the event says that nothing was rolled back.
 pub(crate) fn state_changed_after(before: &Task, after: &Task, rollback_failed: bool) -> Event {
-    let reason = match &after.state {
-        TaskState::Halted { halt_reason } => Some(*halt_reason),
-        _ => None,
+    let (reason, halt_detail) = match &after.state {
+        TaskState::Halted {
+            halt_reason,
+            halt_detail,
+        } => (Some(*halt_reason), halt_detail.clone()),
+        _ => (None, None),
     };
     Event::TaskStateChanged {
         from: before.state.name().to_owned(),
         to: after.state.name().to_owned(),
         reason,
         rollback_failed: rollback_failed && reason.is_some(),
+        halt_detail,
     }
 }
 

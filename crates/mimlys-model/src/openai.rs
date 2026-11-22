@@ -202,8 +202,12 @@ fn model_matches(listed: &str, configured: &str) -> bool {
 impl OpenAiBackend {
     /// Builds the adapter; nothing is contacted.
     pub fn new(config: OpenAiConfig) -> Self {
+        // A redirect is never followed (REQ-SEC-010): it would carry the request, and with it a
+        // task's content and the key, to a host the configuration never named. It fails the
+        // request instead ([`redirect_detail`]).
         let client = reqwest::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("a default client builds");
         let resolved = match config.structured_output {
@@ -309,6 +313,17 @@ impl OpenAiBackend {
         let send = async {
             let response = request.send().await.map_err(|e| transport(&e))?;
             let status = response.status().as_u16();
+            if is_redirect(status) {
+                // Not followed, and not read: the answer fails like an unreachable backend and
+                // names where it pointed (the host only, never the URL: it may carry a password).
+                let detail = redirect_detail(&response);
+                tracing::warn!(
+                    status,
+                    detail = %detail,
+                    "the backend answered with a redirect; it is never followed"
+                );
+                return Err(BackendError::Unavailable { detail });
+            }
             let retry_after = response
                 .headers()
                 .get(reqwest::header::RETRY_AFTER)
@@ -893,6 +908,39 @@ fn message_json(m: &Message) -> Value {
             },
             "content": m.content,
         }),
+    }
+}
+
+/// The statuses that ask a client to go elsewhere (the ones an HTTP client follows).
+fn is_redirect(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+/// The longest host a detail names, in characters.
+const REDIRECT_HOST_CHARS: usize = 255;
+
+/// The detail of a failure caused by a redirect that was not followed: `redirect:<host>`, the host
+/// the `Location` points to (resolved against the request's URL, so a relative one names the
+/// backend's own host), or `redirect` when the `Location` is missing or not a URL. Only the host:
+/// the URL may carry a password, a path or a token. The host is what the URL parser reads, and is
+/// shown without anything that is not a graphic ASCII character.
+fn redirect_detail(response: &reqwest::Response) -> String {
+    let host = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|location| response.url().join(location.trim()).ok())
+        .and_then(|target| target.host_str().map(str::to_owned));
+    match host {
+        Some(host) => {
+            let host: String = host
+                .chars()
+                .take(REDIRECT_HOST_CHARS)
+                .map(|c| if c.is_ascii_graphic() { c } else { '?' })
+                .collect();
+            format!("redirect:{host}")
+        }
+        None => "redirect".to_owned(),
     }
 }
 

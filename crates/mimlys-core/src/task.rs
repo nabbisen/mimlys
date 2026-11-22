@@ -83,6 +83,28 @@ impl HaltReason {
     ];
 }
 
+/// The rule that stopped a task, for a halt `policy`, which has more than one cause (external
+/// design §5.2; from 0.13). A script tells the causes apart by `rule`, as the text line does.
+///
+/// Additive: it is a field of the `halted` state that is absent from every record written before
+/// 0.13 and from every halt that has no detail, and an older reader that does not know it ignores
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "rule", rename_all = "snake_case")]
+pub enum HaltDetail {
+    /// The task's backend is `remote` and its profile does not allow external communication,
+    /// found at a start, before anything was sent (REQ-SEC-010).
+    RemoteBackendForbidden {
+        /// The backend's name.
+        backend: String,
+        /// The profile's name.
+        profile: String,
+    },
+    /// The configured completion check was refused by the validator, or would need the user's
+    /// approval, which a check never gets (REQ-TASK-007).
+    CompletionCheckRefused,
+}
+
 /// How a task completed (external design §5.3, REQ-TASK-010).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,6 +152,9 @@ pub enum TaskState {
     Halted {
         /// Why.
         halt_reason: HaltReason,
+        /// The rule, for a halt `policy` (from 0.13); absent otherwise and in older records.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        halt_detail: Option<HaltDetail>,
     },
     /// Found running at startup; resolves to `halted` or `running`.
     Recovering,
@@ -431,8 +456,10 @@ pub enum TaskInput {
     UserHalted,
     /// The pending item expired.
     Expired,
-    /// The runtime halts the task.
+    /// The runtime halts the task. A halt `policy` is [`TaskInput::HaltPolicy`], which says why.
     Halt(HaltReason),
+    /// The runtime halts the task `policy`, naming the rule (from 0.13).
+    HaltPolicy(HaltDetail),
     /// The task completed.
     Complete(Completion),
     /// The task failed.
@@ -484,7 +511,7 @@ impl TaskInput {
             TaskInput::UserDecided => "user_decided",
             TaskInput::UserHalted => "user_halted",
             TaskInput::Expired => "expired",
-            TaskInput::Halt(_) => "halt",
+            TaskInput::Halt(_) | TaskInput::HaltPolicy(_) => "halt",
             TaskInput::Complete(_) => "complete",
             TaskInput::Fail(_) => "fail",
             TaskInput::StartRecovery => "start_recovery",
@@ -601,6 +628,11 @@ impl Task {
             }
             (TaskState::Running, TaskInput::Halt(reason)) => TaskState::Halted {
                 halt_reason: *reason,
+                halt_detail: None,
+            },
+            (TaskState::Running, TaskInput::HaltPolicy(detail)) => TaskState::Halted {
+                halt_reason: HaltReason::Policy,
+                halt_detail: Some(detail.clone()),
             },
             (TaskState::Running, TaskInput::Complete(completion)) => TaskState::Completed {
                 completion: *completion,
@@ -620,6 +652,7 @@ impl Task {
                 next.pending = None;
                 TaskState::Halted {
                     halt_reason: HaltReason::ApprovalRejected,
+                    halt_detail: None,
                 }
             }
             (TaskState::WaitingUser { wait_kind }, TaskInput::Expired) => {
@@ -629,6 +662,7 @@ impl Task {
                         WaitKind::Approval => HaltReason::ApprovalExpired,
                         WaitKind::Question => HaltReason::QuestionExpired,
                     },
+                    halt_detail: None,
                 }
             }
             (TaskState::WaitingUser { .. }, TaskInput::Cancel) => {
@@ -648,7 +682,7 @@ impl Task {
             (TaskState::Paused, TaskInput::Cancel) => TaskState::Cancelled,
 
             // halted
-            (TaskState::Halted { halt_reason }, TaskInput::Resume { extend, ceiling }) => {
+            (TaskState::Halted { halt_reason, .. }, TaskInput::Resume { extend, ceiling }) => {
                 if let Some(extension) = extend {
                     apply_extension(&mut next, *halt_reason, *extension, *ceiling)?;
                 }
@@ -676,6 +710,7 @@ impl Task {
                 },
             ) => TaskState::Halted {
                 halt_reason: *reason,
+                halt_detail: None,
             },
             (TaskState::Recovering, TaskInput::Cancel) => TaskState::Cancelled,
 

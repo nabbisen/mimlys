@@ -754,6 +754,7 @@ impl App {
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store,
             backend: Arc::clone(&backend.adapter),
+            backend_name: backend.name.clone(),
             workspaces,
             policy,
             ids: Arc::new(ids),

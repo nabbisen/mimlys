@@ -277,6 +277,7 @@ impl Rig {
         let runtime = Runtime::new(RuntimeDeps {
             persistence: persistence.clone(),
             backend: backend.clone(),
+            backend_name: "default".to_owned(),
             workspaces: workspaces.clone(),
             policy,
             ids: Arc::new(ScriptedIds::default()),
@@ -455,7 +456,8 @@ fn req_cli_005_the_second_request_leaves_the_outcome_unknown_and_halts() {
         assert_eq!(
             result.state,
             TaskState::Halted {
-                halt_reason: HaltReason::UnknownOutcome
+                halt_reason: HaltReason::UnknownOutcome,
+                halt_detail: None,
             },
             "{name}"
         );
@@ -911,7 +913,8 @@ fn req_pers_008_an_action_that_cannot_be_undone_and_was_ended_by_the_runtime_is_
             assert_eq!(
                 result.state,
                 TaskState::Halted {
-                    halt_reason: HaltReason::UnknownOutcome
+                    halt_reason: HaltReason::UnknownOutcome,
+                    halt_detail: None,
                 },
                 "{name}"
             );
@@ -974,7 +977,8 @@ fn req_pers_008_the_rule_is_for_what_the_runtime_ended_and_what_cannot_be_undone
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::ToolUnavailable
+            halt_reason: HaltReason::ToolUnavailable,
+            halt_detail: None,
         }
     );
     assert!(
@@ -1033,7 +1037,8 @@ fn req_obs_001_every_halt_decided_inside_execute_is_a_state_change_in_the_events
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::ToolUnavailable
+            halt_reason: HaltReason::ToolUnavailable,
+            halt_detail: None,
         }
     );
     assert_eq!(
@@ -1082,7 +1087,8 @@ fn req_obs_001_a_failed_restore_halts_the_task_and_the_halt_is_in_the_events() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::UnknownOutcome
+            halt_reason: HaltReason::UnknownOutcome,
+            halt_detail: None,
         }
     );
     assert_eq!(result.outcome, StepOutcome::Halted);
@@ -1114,7 +1120,8 @@ fn req_ws_010_a_failed_restore_after_a_cancelled_write_halts_the_task() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::UnknownOutcome
+            halt_reason: HaltReason::UnknownOutcome,
+            halt_detail: None,
         }
     );
     assert_eq!(result.outcome, StepOutcome::Halted);
@@ -1206,7 +1213,8 @@ impl Rig {
         assert_eq!(
             result.state,
             TaskState::Halted {
-                halt_reason: HaltReason::WorkspaceUnreadable
+                halt_reason: HaltReason::WorkspaceUnreadable,
+                halt_detail: None,
             }
         );
         assert_eq!(

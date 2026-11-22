@@ -352,6 +352,7 @@ impl Loop {
         let runtime = Runtime::new(RuntimeDeps {
             persistence: persistence.clone(),
             backend: backend.clone(),
+            backend_name: "default".to_owned(),
             workspaces,
             policy,
             ids: Arc::new(ScriptedIds::default()),

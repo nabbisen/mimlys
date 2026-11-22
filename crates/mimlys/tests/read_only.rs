@@ -116,6 +116,7 @@ fn apply(store: &dyn Persistence, task: &Task, input: TaskInput) -> Task {
                     to: next.state.name().to_owned(),
                     reason: None,
                     rollback_failed: false,
+                    halt_detail: None,
                 },
             },
         )

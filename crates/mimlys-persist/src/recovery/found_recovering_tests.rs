@@ -240,7 +240,8 @@ fn req_pers_007_a_task_found_recovering_is_recovered_again() {
         assert_eq!(
             state_of(&store, &flight.task),
             TaskState::Halted {
-                halt_reason: HaltReason::Recovered
+                halt_reason: HaltReason::Recovered,
+                halt_detail: None,
             },
             "{reached:?}"
         );
@@ -309,7 +310,8 @@ fn req_pers_008_an_action_marked_by_an_earlier_recovery_still_halts_unknown_outc
         assert_eq!(
             state_of(&store, &flight.task),
             TaskState::Halted {
-                halt_reason: HaltReason::UnknownOutcome
+                halt_reason: HaltReason::UnknownOutcome,
+                halt_detail: None,
             },
             "{reached:?}"
         );
@@ -337,7 +339,8 @@ fn req_pers_007_a_restore_that_fails_when_recovered_again_halts_unknown_outcome(
     assert_eq!(
         state_of(&store, &flight.task),
         TaskState::Halted {
-            halt_reason: HaltReason::UnknownOutcome
+            halt_reason: HaltReason::UnknownOutcome,
+            halt_detail: None,
         }
     );
     assert!(
@@ -398,7 +401,8 @@ fn req_pers_007_an_unknown_action_from_before_is_not_the_one_in_flight() {
     assert_eq!(
         state_of(&store, &flight.task),
         TaskState::Halted {
-            halt_reason: HaltReason::Recovered
+            halt_reason: HaltReason::Recovered,
+            halt_detail: None,
         }
     );
 }
@@ -467,7 +471,8 @@ fn req_pers_007_a_recovery_that_the_process_does_not_finish_is_finished_by_the_n
         assert_eq!(
             state_of(&store, &flight.task),
             TaskState::Halted {
-                halt_reason: expected
+                halt_reason: expected,
+                halt_detail: None,
             },
             "{point}, {kind:?}"
         );

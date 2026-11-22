@@ -7,9 +7,15 @@
 use super::*;
 use crate::runtime::StartRefusal;
 
+/// A halt `policy` for a remote backend under a profile that forbids it: it names the rule, the
+/// backend and the profile (external design §5.2).
 fn halted_policy() -> TaskState {
     TaskState::Halted {
         halt_reason: HaltReason::Policy,
+        halt_detail: Some(crate::task::HaltDetail::RemoteBackendForbidden {
+            backend: "default".into(),
+            profile: "workspace".into(),
+        }),
     }
 }
 
@@ -51,6 +57,7 @@ fn req_sec_010_resume_under_a_remote_backend_halts_policy_and_sends_nothing() {
     assert_eq!(
         h.runtime.start_refusal(&task).unwrap(),
         Some(StartRefusal {
+            backend: "default".into(),
             profile: "workspace".into()
         })
     );

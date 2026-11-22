@@ -242,6 +242,7 @@ fn req_ctx_005_the_last_guard_halts_the_task_once_and_does_not_fail_every_step()
     assert_eq!(first.outcome, StepOutcome::Halted);
     let halted = TaskState::Halted {
         halt_reason: HaltReason::DefinitionsTooLarge,
+        halt_detail: None,
     };
     assert_eq!(first.state, halted);
     assert_eq!(h.state(id), halted);

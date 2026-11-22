@@ -185,6 +185,11 @@ pub struct MockConfig {
     /// A `GET /models` is never answered (after the rendezvous, when there is one): a server that
     /// accepts the connection and says nothing.
     pub models_hang: bool,
+    /// Every request is answered with a `307` whose `Location` is this base (a URL up to, and
+    /// without, a path) followed by the request's path and query; nothing else is answered or
+    /// scripted. A server that sends its client elsewhere, which a model backend never follows
+    /// (REQ-SEC-010).
+    pub redirect_to: Option<String>,
 }
 
 impl Default for MockConfig {
@@ -206,6 +211,7 @@ impl Default for MockConfig {
             ps_after_decision: None,
             models_rendezvous: None,
             models_hang: false,
+            redirect_to: None,
         }
     }
 }
@@ -334,6 +340,16 @@ impl State {
             headers: headers.clone(),
             body: body_value.clone(),
         });
+        if let Some(base) = &self.config.redirect_to {
+            let target = line.split(' ').nth(1).unwrap_or("/");
+            respond(
+                &mut stream,
+                307,
+                "{}",
+                &[("Location".to_owned(), format!("{base}{target}"))],
+            );
+            return;
+        }
         if let Some(expected) = &self.config.expect_bearer {
             let auth = headers
                 .iter()
@@ -683,6 +699,7 @@ fn respond(stream: &mut TcpStream, status: u16, body: &str, headers: &[(String, 
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        307 => "Temporary Redirect",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         503 => "Service Unavailable",

@@ -188,6 +188,7 @@ fn req_pers_007_a_task_found_recovering_has_the_plan_of_a_running_one() {
         TaskState::Paused,
         TaskState::Halted {
             halt_reason: HaltReason::Recovered,
+            halt_detail: None,
         },
     ] {
         let mut other = running.clone();

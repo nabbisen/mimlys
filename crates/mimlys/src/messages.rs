@@ -110,7 +110,7 @@ pub fn state_text_after(state: &TaskState, rollback_failed: bool) -> String {
             WaitKind::Question => "waiting for your answer".into(),
         },
         TaskState::Paused => "paused".into(),
-        TaskState::Halted { halt_reason } => {
+        TaskState::Halted { halt_reason, .. } => {
             format!("halted: {}", halt_line(*halt_reason, rollback_failed))
         }
         TaskState::Recovering => "recovering".into(),
@@ -489,12 +489,26 @@ pub fn status_backend_line(
             }
         }
         if let Some(d) = &p.detail {
-            line.push_str(&format!(" ({d})"));
+            line.push_str(&format!(" ({})", detail_text(d)));
         }
     }
     line.push_str(&format!("; last probe: {last}"));
     line
 }
+/// A probe's fixed-vocabulary detail as the line shows it: a redirect (`redirect:<host>`, from
+/// the adapter) says that it was not followed and where it pointed (REQ-SEC-010); any other
+/// detail is shown as it is.
+fn detail_text(detail: &str) -> String {
+    match detail.strip_prefix("redirect") {
+        Some("") => "answers with a redirect, which is never followed".to_owned(),
+        Some(host) if host.starts_with(':') => format!(
+            "answers with a redirect to {}, which is never followed",
+            &host[1..]
+        ),
+        _ => detail.to_owned(),
+    }
+}
+
 /// A line about one backend of several, written for `status`: the same line with the backend
 /// named, so that two warnings are not taken for one (`status` names them when there are
 /// several; with one backend the line is what it always was).
@@ -779,6 +793,12 @@ pub fn start_refused(backend: &str, profile: &str) -> String {
     format!(
         "nothing was sent: backend `{backend}` is remote and profile `{profile}` forbids external communication (external = false), so the task was halted `policy`; make the backend local, or set external = true in [policy.profiles.{profile}] (with policy.remote_backend_allowed = true), then resume the task"
     )
+}
+/// A task halted `policy` because the completion check was refused (REQ-TASK-007; `halt_detail`
+/// `completion_check_refused`): the validator did not authorize it, or it would need an approval,
+/// which a check never gets.
+pub fn completion_check_refused() -> String {
+    "the completion check was refused, so the task was halted `policy`: the policy does not allow the check's tool with its arguments (or it would need your approval, which a check never gets); change the check or the policy, then resume the task".to_owned()
 }
 /// `check`: the file is `config_version = 1` (REQ-CFG-007, REQ-MAIN-001): read now, through 0.14.
 pub fn config_version_1_deprecated() -> &'static str {
@@ -1868,6 +1888,7 @@ mod tests {
         // The state line carries the clause when the view says so.
         let halted = TaskState::Halted {
             halt_reason: HaltReason::WorkspaceUnreadable,
+            halt_detail: None,
         };
         assert!(task_state_after("t", &halted, true).contains(clause));
         assert!(!task_state_after("t", &halted, false).contains(clause));

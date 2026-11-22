@@ -145,6 +145,7 @@ pub async fn probe_backend(
     let runtime = Runtime::new(RuntimeDeps {
         persistence: Arc::clone(&app.store),
         backend: Arc::clone(&backend.adapter),
+        backend_name: backend.name.clone(),
         workspaces: Arc::clone(&workspaces) as Arc<dyn WorkspaceProvider>,
         policy,
         ids: Arc::new(SystemIds),

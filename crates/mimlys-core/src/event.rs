@@ -112,6 +112,10 @@ pub enum Event {
         /// back (from 0.11; absent, and read as `false`, in earlier records).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         rollback_failed: bool,
+        /// The rule of a halt `policy` (from 0.13; external design §5.2): absent for any other
+        /// halt, for a state that is not `halted` and in earlier records.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        halt_detail: Option<crate::task::HaltDetail>,
     },
     /// The task's execution waited for a slot, got one, or went on without the registry (from
     /// 0.12; external design §19.3, RFC 013 decision 5). The task stays `running` meanwhile.

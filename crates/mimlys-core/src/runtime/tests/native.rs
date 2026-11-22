@@ -165,7 +165,8 @@ fn req_mdl_009_an_unsettled_transport_halts_without_a_fallback() {
     assert_eq!(
         result.state,
         TaskState::Halted {
-            halt_reason: HaltReason::BackendUnavailable
+            halt_reason: HaltReason::BackendUnavailable,
+            halt_detail: None,
         }
     );
     assert!(

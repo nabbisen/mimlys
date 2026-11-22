@@ -68,6 +68,7 @@ fn all_states() -> Vec<TaskState> {
         TaskState::Paused,
         TaskState::Halted {
             halt_reason: HaltReason::Convergence,
+            halt_detail: None,
         },
         TaskState::Recovering,
         TaskState::Completed {
@@ -93,6 +94,7 @@ fn all_inputs(task: &Task) -> Vec<TaskInput> {
         TaskInput::UserHalted,
         TaskInput::Expired,
         TaskInput::Halt(HaltReason::Policy),
+        TaskInput::HaltPolicy(HaltDetail::CompletionCheckRefused),
         TaskInput::Complete(Completion::Verified),
         TaskInput::Fail(FailureReason::WorkspaceLost),
         TaskInput::StartRecovery,
@@ -142,7 +144,8 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
     assert_eq!(
         r(TaskState::Running, TaskInput::Halt(HaltReason::BudgetSteps)),
         TaskState::Halted {
-            halt_reason: HaltReason::BudgetSteps
+            halt_reason: HaltReason::BudgetSteps,
+            halt_detail: None,
         }
     );
     assert_eq!(
@@ -188,19 +191,22 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
     assert_eq!(
         r(waiting_approval.clone(), TaskInput::UserHalted),
         TaskState::Halted {
-            halt_reason: HaltReason::ApprovalRejected
+            halt_reason: HaltReason::ApprovalRejected,
+            halt_detail: None,
         }
     );
     assert_eq!(
         r(waiting_approval.clone(), TaskInput::Expired),
         TaskState::Halted {
-            halt_reason: HaltReason::ApprovalExpired
+            halt_reason: HaltReason::ApprovalExpired,
+            halt_detail: None,
         }
     );
     assert_eq!(
         r(waiting_question, TaskInput::Expired),
         TaskState::Halted {
-            halt_reason: HaltReason::QuestionExpired
+            halt_reason: HaltReason::QuestionExpired,
+            halt_detail: None,
         }
     );
     assert_eq!(r(waiting_approval, TaskInput::Cancel), TaskState::Cancelled);
@@ -211,6 +217,7 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
     );
     let halted = TaskState::Halted {
         halt_reason: HaltReason::Convergence,
+        halt_detail: None,
     };
     assert_eq!(r(halted.clone(), resume(&task)), TaskState::Running);
     assert_eq!(r(halted, TaskInput::Cancel), TaskState::Cancelled);
@@ -223,7 +230,8 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
             }
         ),
         TaskState::Halted {
-            halt_reason: HaltReason::UnknownOutcome
+            halt_reason: HaltReason::UnknownOutcome,
+            halt_detail: None,
         }
     );
     assert_eq!(
@@ -243,7 +251,7 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
 }
 
 /// REQ-TASK-002: every (state, input) pair not in external design §5.1 is refused with `StateError`.
-/// REQ-TEST-003 (tasks, illegal): all ten states against all thirteen inputs; every pair outside the table is refused.
+/// REQ-TEST-003 (tasks, illegal): all ten states against all fourteen inputs; every pair outside the table is refused.
 #[test]
 fn req_task_002_illegal_transitions_are_refused() {
     let (task, clock) = fixture();
@@ -290,7 +298,7 @@ fn req_task_002_illegal_transitions_are_refused() {
             checked += 1;
         }
     }
-    assert_eq!(checked, all_states().len() * 13);
+    assert_eq!(checked, all_states().len() * 14);
 }
 
 /// REQ-TASK-003: terminal states refuse every input and the original task is never mutated.
@@ -308,7 +316,8 @@ fn req_task_003_terminal_states_are_immutable() {
     assert!(!TaskState::Running.is_terminal());
     assert!(
         !TaskState::Halted {
-            halt_reason: HaltReason::Recovered
+            halt_reason: HaltReason::Recovered,
+            halt_detail: None,
         }
         .is_terminal()
     );
@@ -337,6 +346,7 @@ fn req_task_005_extension_rules() {
     let c = ceiling(&task);
     let budget_halt = in_state(TaskState::Halted {
         halt_reason: HaltReason::BudgetSteps,
+        halt_detail: None,
     });
     let later = task.deadline.plus_millis(60_000).unwrap();
     let ok = budget_halt
@@ -356,15 +366,18 @@ fn req_task_005_extension_rules() {
     assert_eq!(ok.deadline, later);
 
     let refuse = |halt: HaltReason, ext: Extension| {
-        in_state(TaskState::Halted { halt_reason: halt })
-            .transition(
-                TaskInput::Resume {
-                    extend: Some(ext),
-                    ceiling: c,
-                },
-                now,
-            )
-            .unwrap_err()
+        in_state(TaskState::Halted {
+            halt_reason: halt,
+            halt_detail: None,
+        })
+        .transition(
+            TaskInput::Resume {
+                extend: Some(ext),
+                ceiling: c,
+            },
+            now,
+        )
+        .unwrap_err()
     };
     let raise = Extension {
         steps: Some(LIM_T1_STEPS + 1),
@@ -498,6 +511,7 @@ fn req_task_010_terminal_fields_serialize_flat() {
     assert_eq!(json["reason"]["failure_reason"], "model_gave_up");
     let halted = in_state(TaskState::Halted {
         halt_reason: HaltReason::WorkspaceQuota,
+        halt_detail: None,
     });
     let json = serde_json::to_value(&halted).unwrap();
     assert_eq!(json["state"], "halted");
@@ -648,4 +662,91 @@ fn req_main_002_a_build_that_is_no_release_reads_as_current_and_a_recorded_value
     record["action_schema_version"] = 9.into();
     let v: TaskVersions = serde_json::from_value(record).unwrap();
     assert_eq!((v.event_schema_version, v.action_schema_version), (7, 9));
+}
+
+/// External design §5.2 (from 0.13): a halt `policy` names its rule in `halt_detail`, on the
+/// `halted` state, and a halt for any other reason has none.
+#[test]
+fn req_sec_010_a_policy_halt_carries_its_rule() {
+    let (task, clock) = fixture();
+    let now = clock.now();
+    let running = in_state(TaskState::Running);
+    for detail in [
+        HaltDetail::RemoteBackendForbidden {
+            backend: "default".into(),
+            profile: "workspace".into(),
+        },
+        HaltDetail::CompletionCheckRefused,
+    ] {
+        let halted = running
+            .transition(TaskInput::HaltPolicy(detail.clone()), now)
+            .unwrap();
+        assert_eq!(
+            halted.state,
+            TaskState::Halted {
+                halt_reason: HaltReason::Policy,
+                halt_detail: Some(detail.clone()),
+            }
+        );
+        // The rule is gone when the task runs again.
+        let resumed = halted.transition(resume(&task), now).unwrap();
+        assert_eq!(resumed.state, TaskState::Running);
+    }
+    let other = running
+        .transition(TaskInput::Halt(HaltReason::Convergence), now)
+        .unwrap();
+    assert_eq!(
+        other.state,
+        TaskState::Halted {
+            halt_reason: HaltReason::Convergence,
+            halt_detail: None,
+        }
+    );
+}
+
+/// External design §5.2: `halt_detail` is additive. It is an object named by `rule` beside
+/// `halt_reason`, absent when there is none, and a record written before it existed reads as it
+/// always did and is written back the same.
+#[test]
+fn req_sec_010_halt_detail_is_additive_in_the_record() {
+    let with = TaskState::Halted {
+        halt_reason: HaltReason::Policy,
+        halt_detail: Some(HaltDetail::RemoteBackendForbidden {
+            backend: "default".into(),
+            profile: "workspace".into(),
+        }),
+    };
+    let json = serde_json::to_value(&with).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "state": "halted",
+            "halt_reason": "policy",
+            "halt_detail": {
+                "rule": "remote_backend_forbidden",
+                "backend": "default",
+                "profile": "workspace"
+            }
+        })
+    );
+    assert_eq!(serde_json::from_value::<TaskState>(json).unwrap(), with);
+    let check = TaskState::Halted {
+        halt_reason: HaltReason::Policy,
+        halt_detail: Some(HaltDetail::CompletionCheckRefused),
+    };
+    assert_eq!(
+        serde_json::to_value(&check).unwrap()["halt_detail"],
+        serde_json::json!({"rule": "completion_check_refused"})
+    );
+    // A record written by 0.12 or earlier: no `halt_detail`; read as none, written back as it was.
+    let old = serde_json::json!({"state": "halted", "halt_reason": "policy"});
+    let read: TaskState = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(
+        read,
+        TaskState::Halted {
+            halt_reason: HaltReason::Policy,
+            halt_detail: None,
+        }
+    );
+    assert_eq!(serde_json::to_value(&read).unwrap(), old);
 }

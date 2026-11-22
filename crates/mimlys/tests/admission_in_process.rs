@@ -88,6 +88,7 @@ fn rig(dir: &Path, pid: u32) -> Rig {
         Runtime::new(RuntimeDeps {
             persistence: persistence.clone(),
             backend,
+            backend_name: "default".to_owned(),
             workspaces,
             policy: Policy::shipped(),
             ids: Arc::new(ScriptedIds::default()),

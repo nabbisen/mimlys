@@ -103,6 +103,7 @@ impl Rig {
         let runtime = Runtime::new(RuntimeDeps {
             persistence: Arc::new(FakePersistence::default()),
             backend,
+            backend_name: "default".to_owned(),
             workspaces: Arc::new(FakeWorkspaces::new(tools())),
             policy: probe::policy(external),
             ids: Arc::new(ScriptedIds::default()),
@@ -348,6 +349,7 @@ async fn req_mdl_011_the_wall_time_is_the_tasks_deadline() {
     let runtime = Runtime::new(RuntimeDeps {
         persistence: Arc::new(FakePersistence::default()),
         backend: backend.clone(),
+        backend_name: "default".to_owned(),
         workspaces: Arc::new(FakeWorkspaces::new(tools())),
         policy: probe::policy(false),
         ids: Arc::new(ScriptedIds::default()),

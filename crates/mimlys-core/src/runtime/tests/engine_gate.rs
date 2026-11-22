@@ -64,6 +64,7 @@ fn rig(script: Vec<Script>, decisions: Vec<Value>) -> Rig {
         Runtime::new(RuntimeDeps {
             persistence: persistence.clone(),
             backend: backend.clone(),
+            backend_name: "default".to_owned(),
             workspaces,
             policy: Policy::shipped(),
             ids: Arc::new(ScriptedIds::default()),
@@ -253,7 +254,8 @@ fn req_sched_007_the_deadline_ends_the_wait_and_halts_as_a_deadline() {
         matches!(
             result.state,
             TaskState::Halted {
-                halt_reason: HaltReason::BudgetDeadline
+                halt_reason: HaltReason::BudgetDeadline,
+                ..
             }
         ),
         "{:?}",
