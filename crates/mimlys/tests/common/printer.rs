@@ -80,7 +80,7 @@ pub struct Run {
 }
 
 pub fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
+    let mut cmd = super::mimlys_testloop();
     cmd.args(args);
     for (k, v) in envs {
         cmd.env(k, v);
@@ -147,7 +147,7 @@ pub fn mimlys_command(data: &Path, args: &[&str]) -> Command {
         ),
     )
     .unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    let mut cmd = super::mimlys();
     cmd.arg("--config")
         .arg(&config)
         .args(args)
