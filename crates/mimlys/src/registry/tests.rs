@@ -9,10 +9,7 @@ use mimlys_core::spi::{AdmissionOutcome, AdmissionRequest, Cancellation, WaitCha
 use std::sync::Mutex;
 
 fn fast() -> Bounds {
-    Bounds {
-        op: Duration::from_secs(5),
-        poll: Duration::from_millis(10),
-    }
+    Bounds::new(Duration::from_secs(5), Duration::from_millis(10))
 }
 
 fn registry_in(dir: &Path, bounds: Bounds) -> Arc<Registry> {
@@ -293,9 +290,12 @@ async fn thr_38_the_directory_is_made_owner_only() {
 #[tokio::test]
 async fn req_sched_006_a_registry_that_cannot_be_used_fails_with_a_reason() {
     let dir = tempfile::tempdir().unwrap();
+    // The wait for the lock is short and the operation's bound is long: the margin between them
+    // is the whole of `fast()`'s five seconds, which no scheduler uses up, so the verdict is the
+    // state (the lock is held) and not a race between two timers.
     let bounds = Bounds {
-        op: Duration::from_millis(100),
-        poll: Duration::from_millis(10),
+        lock: Duration::from_millis(20),
+        ..fast()
     };
     // The lock is held by someone else (a runtime that stopped in the middle of an operation).
     let registry = registry_in(dir.path(), bounds);
@@ -313,6 +313,15 @@ async fn req_sched_006_a_registry_that_cannot_be_used_fails_with_a_reason() {
         panic!("the lock is held");
     };
     assert_eq!(reason, "another runtime holds the registry's lock");
+    // So does the reap, which waits for the same lock the same way.
+    let held = registry.clone();
+    let reaped = tokio::task::spawn_blocking(move || held.reap())
+        .await
+        .unwrap();
+    assert_eq!(
+        reaped.map(|_| ()),
+        Err("another runtime holds the registry's lock".to_owned())
+    );
     drop(lock);
     drop(granted(&registry, &slot(1), 1).await);
     // A file where the directory should be.
@@ -328,6 +337,47 @@ async fn req_sched_006_a_registry_that_cannot_be_used_fails_with_a_reason() {
     };
     assert!(reason.contains("is not a directory of its own"), "{reason}");
     assert!(registry.check().is_err());
+}
+
+/// REQ-SCHED-006 (LIM-O11): the wait for the writers' mutex ends at the start of the operation
+/// plus the bound given for it, measured before the operation's thread starts. A thread that
+/// starts late is given the time left, not a fresh wait: the instant it receives is the same
+/// whenever it starts, and a mutex that is held when it is already past is reported as held at
+/// once, never as a registry that did not answer.
+#[test]
+fn req_sched_006_the_lock_deadline_is_measured_from_the_operations_start() {
+    let bounds = fast();
+    let start = std::time::Instant::now()
+        .checked_sub(Duration::from_millis(200))
+        .expect("the clock has run for 200 ms");
+    let deadline = bounded_from(start, bounds, Ok).unwrap();
+    assert_eq!(
+        deadline,
+        start + bounds.lock,
+        "the instant is the operation's start and its lock bound, not the thread's"
+    );
+    // The operation began longer ago than its lock may wait, and the lock is held: the
+    // operation says so, with the bound far from spent.
+    let dir = tempfile::tempdir().unwrap();
+    let held = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.path().join("registry.lock"))
+        .unwrap();
+    held.try_lock().unwrap();
+    let short = Bounds {
+        lock: Duration::from_millis(50),
+        ..bounds
+    };
+    let path = dir.path().to_owned();
+    let result = bounded_from(start, short, move |deadline| {
+        lock_mutex(&path, deadline).map(|_| ())
+    });
+    assert_eq!(
+        result,
+        Err("another runtime holds the registry's lock".to_owned())
+    );
 }
 
 /// REQ-SCHED-006: a directory that cannot be written is a registry that cannot be used (Unix

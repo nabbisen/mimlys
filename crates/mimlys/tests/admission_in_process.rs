@@ -59,10 +59,7 @@ struct Rig {
 fn registry_of(dir: &Path) -> Arc<Registry> {
     Registry::new(
         dir.to_owned(),
-        Bounds {
-            op: Duration::from_secs(10),
-            poll: Duration::from_millis(10),
-        },
+        Bounds::new(Duration::from_secs(10), Duration::from_millis(10)),
         Arc::new(FakeClock::default()) as Arc<dyn Clock>,
     )
 }

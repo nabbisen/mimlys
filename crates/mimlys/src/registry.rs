@@ -159,21 +159,43 @@ pub fn endpoint_of(url: &str) -> Option<(String, String)> {
     Some((key, shown))
 }
 
+/// The share of an operation's bound that the wait for the writers' mutex may take by default.
+/// What is left is the margin in which a mutex that stays held is told as that, before the
+/// operation is given up as one that did not answer.
+const LOCK_SHARE: f32 = 0.75;
+
 /// The bounds of the registry's operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bounds {
     /// One operation: take, return, reap, list (LIM-O11).
     pub op: Duration,
+    /// How long an operation that writes waits for the writers' mutex, measured from the start
+    /// of the operation: less than `op`. The difference is the margin in which a held mutex is
+    /// told as "another runtime holds the registry's lock"; only a filesystem that does not
+    /// answer within `op` is told as a registry that did not answer.
+    pub lock: Duration,
     /// How often a wait looks again.
     pub poll: Duration,
 }
 
+impl Bounds {
+    /// The bounds of an operation of at most `op`: it waits for the mutex for three quarters of
+    /// that, and a wait looks again every `poll`.
+    pub fn new(op: Duration, poll: Duration) -> Self {
+        Self {
+            op,
+            lock: op.mul_f32(LOCK_SHARE),
+            poll,
+        }
+    }
+}
+
 impl Default for Bounds {
     fn default() -> Self {
-        Self {
-            op: Duration::from_millis(LIM_O11_REGISTRY_MS),
-            poll: Duration::from_millis(200),
-        }
+        Self::new(
+            Duration::from_millis(LIM_O11_REGISTRY_MS),
+            Duration::from_millis(200),
+        )
     }
 }
 
@@ -572,25 +594,41 @@ fn create(dir: &Path, entry: &Entry) -> Result<Handle, Reason> {
     Ok(handle)
 }
 
-/// Runs `work` on a thread of its own and gives it up at `bound`: a filesystem that does not
-/// answer cannot hold the caller (LIM-O11). What the work returns after it was given up is
-/// dropped on its thread, which releases anything it made.
+/// Runs `work` on a thread of its own and gives it up at the operation's bound: a filesystem
+/// that does not answer cannot hold the caller (LIM-O11). What the work returns after it was
+/// given up is dropped on its thread, which releases anything it made.
+///
+/// The work is given the instant at which its wait for the writers' mutex ends. It is measured
+/// here, from the start of the operation and before the thread starts, never inside the thread:
+/// a thread that starts late (a loaded machine) then has less time to wait and never more than
+/// the operation has left, so that a mutex that is held is reported as held, and "did not
+/// answer" is left to a filesystem that did not.
 fn bounded<T: Send + 'static>(
-    bound: Duration,
-    work: impl FnOnce() -> Result<T, Reason> + Send + 'static,
+    bounds: Bounds,
+    work: impl FnOnce(std::time::Instant) -> Result<T, Reason> + Send + 'static,
 ) -> Result<T, Reason> {
+    bounded_from(std::time::Instant::now(), bounds, work)
+}
+
+/// [`bounded`] for an operation that began at `start`.
+fn bounded_from<T: Send + 'static>(
+    start: std::time::Instant,
+    bounds: Bounds,
+    work: impl FnOnce(std::time::Instant) -> Result<T, Reason> + Send + 'static,
+) -> Result<T, Reason> {
+    let lock_deadline = start + bounds.lock.min(bounds.op);
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("registry".into())
         .spawn(move || {
-            let _ = sender.send(work());
+            let _ = sender.send(work(lock_deadline));
         })
         .map_err(|_| "a thread for the registry cannot be started".to_owned())?;
-    match receiver.recv_timeout(bound) {
+    match receiver.recv_timeout(bounds.op.saturating_sub(start.elapsed())) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
             "the registry did not answer within {} ms",
-            bound.as_millis()
+            bounds.op.as_millis()
         )),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             Err("the registry's thread ended without an answer".to_owned())
@@ -650,10 +688,9 @@ impl Registry {
     ) -> Result<Take, Reason> {
         let this = Arc::clone(self);
         let (class, owner) = (class.clone(), owner.clone());
-        let bound = self.bounds.op;
+        let bounds = self.bounds;
         tokio::task::spawn_blocking(move || {
-            bounded(bound, move || {
-                let deadline = std::time::Instant::now() + bound.mul_f32(0.75);
+            bounded(bounds, move |deadline| {
                 this.take_now(&class, task_id, &owner, waiter, deadline)
             })
         })
@@ -729,7 +766,7 @@ impl Registry {
     /// as `reaped`, though a reader removes none.
     pub fn list(&self) -> Result<Scan, Reason> {
         let dir = self.dir.clone();
-        bounded(self.bounds.op, move || {
+        bounded(self.bounds, move |_| {
             if !dir.exists() {
                 return Ok(Scan::default());
             }
@@ -741,12 +778,10 @@ impl Registry {
     /// reap`; also what every take does first).
     pub fn reap(&self) -> Result<Vec<Reaped>, Reason> {
         let dir = self.dir.clone();
-        let bound = self.bounds.op;
-        bounded(bound, move || {
+        bounded(self.bounds, move |deadline| {
             if !dir.exists() {
                 return Ok(Vec::new());
             }
-            let deadline = std::time::Instant::now() + bound.mul_f32(0.75);
             let _mutex = lock_mutex(&dir, deadline)?;
             Ok(scan(&dir, true)?.reaped)
         })
@@ -759,7 +794,7 @@ impl Registry {
     /// look cannot promise (a read-only filesystem, say, is found only by writing).
     pub fn check(&self) -> Result<Presence, Reason> {
         let dir = self.dir.clone();
-        bounded(self.bounds.op, move || Self::look(&dir))
+        bounded(self.bounds, move |_| Self::look(&dir))
     }
 
     fn look(dir: &Path) -> Result<Presence, Reason> {
