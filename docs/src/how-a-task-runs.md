@@ -87,10 +87,56 @@ every request holds the latest version right after the goal, as the model's
 own message (`<<plan version="2">>`; in the `tool_calls` transport, as an
 earlier `plan` call with its acknowledgement), so the model sees it again at
 every step. Earlier versions are not sent; a new `plan` replaces it. You see the same
-plan in `mimlys task show <task>`.
+plan in `mimlys task show <task>`, with when it was made (for every task, plan-first or
+not). To approve the plan yourself before anything acts, create the task with `--plan-first`
+(next section).
 
 Where this is written: [Decisions](./reference/decisions-and-tools.md#one-decision-per-step),
 [decision schema](./maintainers/external-design.md#62-decision-schema-req-dec-002-version-1).
+
+## Plan first: you approve the plan before anything acts
+
+A task created with `--plan-first` (on `run` and on `task new`) will not act until you have
+approved a plan. A fork is plan-first only when you give it the flag too. Step by step:
+
+1. **Before any plan.** The model's first decision must be a `plan`. An `act` or a `complete`
+   is rejected as `state` with the reason `plan_required` and the hint "State your plan first
+   (decide `plan`)", and counts toward the rejections that halt a task (three in a row halt it
+   `budget_rejections`, like any rejected step). `ask_user` and `give_up` act on nothing, so they
+   go through: a question is asked and answered as ever, and `give_up` fails the task.
+2. **The first plan.** It is recorded as plan version 1, and the task waits as `waiting for your
+   approval of its plan`. Nothing has been done: no action is recorded and the workspace is as it
+   was. `run` prints the plan, every step on a line of its own, and asks you at a terminal; without
+   one it prints the plan and says how to decide, and exits as it does for a pending approval.
+   `mimlys task show <task>` shows the same plan, and says that no plan is approved yet.
+3. **You decide**, as for an action, with the same commands.
+   - `mimlys approve <task>` ends the gate. Add `--note "…"` and your words reach the model
+     with the plan, as their own labelled message (`approval_note`), never as a rewrite of the goal;
+     a note is at most 500 characters. The task runs.
+   - `mimlys reject <task> --note "…"` asks for another plan. The model reads the plan it made,
+     that you rejected it, and your note (`rejection_note`). The task stays gated: an `act` is
+     still `plan_required`, and the next `plan` waits for you again. A rejected plan counts as a
+     rejected step.
+   - `mimlys reject <task> --halt` halts the task `approval_rejected`; `mimlys task cancel <task>`
+     cancels it; a wait that has an expiry (LIM-A1, none by default) halts it `approval_expired`.
+   - `answer`, `task resume` and `task pause` are refused while the task waits for a plan, with the
+     state error, as they are for an approval.
+4. **After the approval.** Only the first plan is gated. The task acts, and a later `plan` is
+   recorded and shown and never waits. The approved plan is the plan in force that the model
+   sees from then on (a plan you rejected never is), and your approval note stays beside it.
+
+The gate is in the task's own record, not in the configuration or in the process, so it holds
+across a restart, a recovery and `task resume`; a task that was halted while it waited is still
+gated when you resume it.
+
+<!-- tested -->
+```sh
+mimlys run "add a helper" --scope <project> --plan-first
+```
+
+That is the whole of it with the scripted model of the book's own tests: the task waits for its
+plan, the plan is shown, and the command says how to approve it. A task without `--plan-first`
+behaves as it always did, and its record has no `plan_first` key.
 
 ## What reaches the model at each step
 
@@ -219,7 +265,9 @@ Before you decide you can see every argument in full: `[v]iew` at the prompt, or
 long to name on the card is refused before it is recorded (`arguments_do_not_fit`).
 An approval is for that one action under the grants in force when you gave it: if
 the grants changed before it ran, the approval is void and the action does not
-run. Rejecting continues the task, or halts it with `--halt` (or with
+run. `mimlys approve <task> --note "…"` adds a note of yours, at most 500 characters, which the
+model reads with the action's result as your own words (`approval_note`), as a rejection's note is
+`rejection_note`. Rejecting continues the task, or halts it with `--halt` (or with
 `on_reject = "halt"` in the profile). If you press Ctrl-C or the process gets
 SIGTERM while the prompt waits, the process ends with exit code 0 within LIM-O1,
 the task stays `waiting_user`, and one line says how to decide later; a decision
