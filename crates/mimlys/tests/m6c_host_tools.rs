@@ -1783,12 +1783,67 @@ fn req_conf_005_every_listed_tool_resolves_through_the_sandboxed_xcrun() {
     }
 }
 
+/// The one executable script of the `xcrun` stand-in, written once for the whole binary (a test
+/// that wrote an executable of its own and ran it a moment later, while another test forked, met
+/// `ETXTBSY`: the forked child holds the write handle until it execs). What differs between uses
+/// is **data**: the file `<the path it was called by>.body`, which `sh` reads. The runner is
+/// executed once here, until the system lets it be, before any test uses it.
+fn xcrun_runner() -> &'static (tempfile::TempDir, PathBuf) {
+    use std::os::unix::fs::PermissionsExt as _;
+    static RUNNER: std::sync::OnceLock<(tempfile::TempDir, PathBuf)> = std::sync::OnceLock::new();
+    RUNNER.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner");
+        std::fs::write(&path, "#!/bin/sh\nexec sh \"$0.body\" \"$@\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut busy = 0;
+        loop {
+            match Command::new(&path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                Ok(_) => break,
+                // ETXTBSY: a child forked during the write still holds it, until it execs.
+                Err(e) if e.raw_os_error() == Some(26) && busy < 1000 => {
+                    busy += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(e) => panic!("the xcrun stand-in's runner cannot be executed: {e}"),
+            }
+        }
+        (dir, path)
+    })
+}
+
+/// A stand-in for `xcrun` in `dir`: a link to [`xcrun_runner`] with `body` beside it, as data.
+/// Nothing executable is written here.
+fn xcrun_stand_in(dir: &Path, body: &str) -> PathBuf {
+    let path = dir.join("xcrun");
+    std::os::unix::fs::symlink(&xcrun_runner().1, &path).unwrap();
+    std::fs::write(dir.join("xcrun.body"), format!("{body}\n")).unwrap();
+    path
+}
+
 /// REQ-CONF-003 / external design §13.3: if the cache cannot be made (the
 /// test makes `xcrun` fail with the debug-only `MIMLYS_TEST_XCRUN`, which a
 /// release build does not read), `status` and `check` each show one line
 /// naming the file and the remedy, in the JSON as `xcrun_cache_missing`, and
-/// the command goes on (exit 0). Without the hook the same commands show no
-/// such line and the cache exists afterwards.
+/// the command goes on (exit 0). Where the cache is made, the same commands
+/// show no such line and the cache exists afterwards.
+///
+/// The healthy half decides by state, not by the speed of the system's `xcrun` (a first
+/// `xcrun --find` of a cold runner can pass LIM-O8, 10 s, and the runtime then does what it
+/// should: kills it, removes the partial file and warns; macos-latest, run 45258100149). So it
+/// has two parts. **A stand-in** that succeeds and makes the file, and writes what it was asked:
+/// it shows, on every machine and in no time, that `status` and `check` ask `xcrun --find <tool>`
+/// for each tool of the warming, in order, make the cache, say nothing, and ask nothing again of
+/// a cache that is there. **The real `xcrun`**, once, which may be as slow as the system makes
+/// it: the cache is made and no line is shown, or, if the system's `xcrun` was slower than the
+/// bound, the product's own bounded outcome (the file absent, the one line naming it and the
+/// remedy). The two outcomes are told apart by the file, and each must be whole: a cache made
+/// with a warning, or no cache without one, fails.
 #[test]
 fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
     let test = "req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made";
@@ -1801,6 +1856,7 @@ fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
         return;
     };
     let shown = file.to_string_lossy().into_owned();
+    let remedy = "run `env -i PATH=/usr/bin:/bin /usr/bin/xcrun --find clang` once";
     let _ = std::fs::remove_file(&file);
     let failing = Env::new_exclusive(&[], "", &_serial).env("MIMLYS_TEST_XCRUN", "/usr/bin/false");
     for command in ["status", "check"] {
@@ -1812,24 +1868,78 @@ fn req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made() {
             .collect();
         assert_eq!(lines.len(), 1, "one line: {stdout}");
         assert!(lines[0].contains(&shown), "names the file: {}", lines[0]);
-        assert!(
-            lines[0].contains("run `env -i PATH=/usr/bin:/bin /usr/bin/xcrun --find clang` once"),
-            "and the remedy: {}",
-            lines[0]
-        );
+        assert!(lines[0].contains(remedy), "and the remedy: {}", lines[0]);
         let (_, json) = failing.json(&[command]);
         assert_eq!(json["xcrun_cache_missing"], shown.as_str(), "{json}");
         assert!(!file.exists(), "it could not be made");
     }
-    let healthy = Env::new_exclusive(&[], "", &_serial);
+
+    // The stand-in that succeeds: it writes what it was asked, and makes the file.
+    let stand_in_dir = tempfile::tempdir().unwrap();
+    let asked = stand_in_dir.path().join("asked");
+    let stand_in = xcrun_stand_in(
+        stand_in_dir.path(),
+        &format!(
+            "echo \"$@\" >> '{}'\ntouch '{}'",
+            asked.display(),
+            file.display()
+        ),
+    );
+    let healthy =
+        Env::new_exclusive(&[], "", &_serial).env("MIMLYS_TEST_XCRUN", stand_in.to_str().unwrap());
+    // Each tool of the warming, once and in order: the list is what the runtime asks.
+    let expected: Vec<String> = mimlys_exec::confine::macos::xcrun::WARMED_TOOLS
+        .iter()
+        .map(|tool| format!("--find {tool}"))
+        .collect();
+    let asked_lines = || -> Vec<String> {
+        std::fs::read_to_string(&asked)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
     for command in ["status", "check"] {
-        let (code, stdout, _) = healthy.run(&[command]);
-        assert_eq!(code, 0);
+        let _ = std::fs::remove_file(&asked);
+        let (code, stdout, stderr) = healthy.run(&[command]);
+        assert_eq!(code, 0, "{stdout}\n{stderr}");
         assert!(!stdout.contains("xcrun's cache"), "{stdout}");
+        assert!(file.exists(), "the runtime made the cache with {command}");
+        assert_eq!(asked_lines(), expected, "{command} asked for each tool");
+        // The cache is there now: the same command, as JSON, asks nothing more.
         let (_, json) = healthy.json(&[command]);
         assert!(json.get("xcrun_cache_missing").is_none(), "{json}");
-        assert!(file.exists(), "the runtime made the cache");
+        assert_eq!(
+            asked_lines(),
+            expected,
+            "a cache that is there is not asked for again"
+        );
         let _ = std::fs::remove_file(&file);
+    }
+
+    // The real `xcrun`, as slow as this machine makes it.
+    let real = Env::new_exclusive(&[], "", &_serial);
+    let (code, stdout, stderr) = real.run(&["status"]);
+    assert_eq!(code, 0, "the run goes on: {stdout}\n{stderr}");
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains("xcrun's cache"))
+        .collect();
+    if file.exists() {
+        assert!(
+            lines.is_empty(),
+            "a cache that was made, with a warning: {stdout}"
+        );
+        let (_, json) = real.json(&["status"]);
+        assert!(json.get("xcrun_cache_missing").is_none(), "{json}");
+    } else {
+        // LIM-O8: a first `xcrun --find` slower than the bound is killed and its partial file
+        // removed; the product says so, with the file and the remedy. Not a failure of the
+        // product, and said here so that the log shows the real path was not exercised.
+        eprintln!("NOTE {test}: the system's xcrun did not make its cache within LIM-O8");
+        assert_eq!(lines.len(), 1, "one line, and no cache: {stdout}");
+        assert!(lines[0].contains(&shown), "names the file: {}", lines[0]);
+        assert!(lines[0].contains(remedy), "and the remedy: {}", lines[0]);
     }
 }
 
