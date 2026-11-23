@@ -134,4 +134,10 @@ The review of 2026-11-23 (`.git-exclude/reviewed/handoff-015b/README.md`) approv
      - a mutation that drops the sentence is killed.
    - **The book** says what the model is told.
 
+2. **Also, found on `main`'s CI (a test of 011c-6, not of this handoff).**
+   - **What failed:** `req_conf_003_status_and_check_say_when_the_xcrun_cache_cannot_be_made` (`tests/m6c_host_tools.rs`) failed on `macos-latest` (run `45258100149`, `73d6d78`). In its "healthy" half, the real `xcrun` did not make its cache, and `status` printed the warning, where the test expects no line and the file made.
+   - **The product did what it should:** a first `xcrun --find` slower than LIM-O8 (10 s) is killed, its partial file removed, and the warning names the remedy.
+   - **The test** depends on the runner's speed, because its healthy half runs the real `xcrun` under that bound.
+   - **The fix:** make the healthy half decide by state, not by the speed of the system's `xcrun`. For example, a stand-in through `MIMLYS_TEST_XCRUN` that succeeds and makes the file, beside one real call that is allowed to be slow, or another way that keeps what the test is for. Say which, and why it still shows that the real path makes the cache.
+
 **Return:** `.git-exclude/review-requests/015b-3-after-review/README.md`.
