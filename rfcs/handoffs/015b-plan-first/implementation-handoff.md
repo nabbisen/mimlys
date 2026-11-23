@@ -39,7 +39,7 @@ These are as found on `main` at `daede80`; check them on today's `main`.
    - **`approve <task> [--note TEXT]`:**
      - ends the gate and records `plan.approval_decided{version, decision: approved}`;
      - the task runs again;
-     - the note, bounded by LIM-D4 as a rejection's note is, reaches the model as `<<user kind="approval_note">>` beside the plan.
+     - the note, bounded as a rejection's note is (LIM-D2: the handoff first said LIM-D4, corrected at review), reaches the model as `<<user kind="approval_note">>` beside the plan.
    - **`approve --note` on an action's approval** carries the note the same way. Say what the model's instructions need to say of it.
    - **`reject <task> --note TEXT`:**
      - records `plan.approval_decided{version, decision: rejected}`;
@@ -119,3 +119,19 @@ Each of these must be killed:
 - the proposed JSON shape and metric;
 - the commands that meet a plan wait;
 - the design questions.
+
+## After review: 015b-3
+
+The review of 2026-11-23 (`.git-exclude/reviewed/handoff-015b/README.md`) approved #203 and #202 and landed them as one linear series (CI of PR #204). One item remains.
+
+1. **A plan-first task's first request says that its first decision must be a plan** (your question 4, second part).
+   - **Today** the model learns it from the first rejection, so two steps can be wasted, and a model that acts three times halts `budget_rejections` before it ever plans.
+   - **The change:** add one sentence to the fixed instructions of a plan-first task only, in both transports, so that no other task's stable prefix changes. For example: "This task is plan first: your first decision must be `plan`; the user approves it before you act." Propose the exact words.
+   - **Its place:** say whether the sentence belongs in the fixed instructions or in a segment of its own, and keep the prefix stable across the task's steps either way, the gate's end included. Check what the prefix ratio does at the approval.
+   - **Tests:**
+     - the sentence is in the first request of a plan-first task and in no request of another task (both transports);
+     - the prefix is byte-stable from step to step;
+     - a mutation that drops the sentence is killed.
+   - **The book** says what the model is told.
+
+**Return:** `.git-exclude/review-requests/015b-3-after-review/README.md`.

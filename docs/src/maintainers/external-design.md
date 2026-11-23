@@ -105,8 +105,8 @@ ApprovalChannel request(rendered) -> decision        (v1: the CLI prompt)
 | `resume_task` | `created`, `paused`, `halted` | → `running`; from `halted` may extend `steps` and `deadline` within the ceiling | REQ-TASK-005 |
 | `pause_task` | `running` | → `paused` at the next step boundary | REQ-TASK-005 |
 | `cancel_task` | any non-terminal | → `cancelled` | REQ-TASK-006 |
-| `approve_action` | `waiting_user` (approval) | Records the approval; the action starts; → `running` | REQ-APR-007 |
-| `reject_action` | `waiting_user` (approval) | Records the rejection with note and `halt` flag; → `running` or `halted` | REQ-APR-007 |
+| `approve_action` | `waiting_user` (approval, or from 0.13 a plan-first task's plan) | Records the approval, with the user's optional note; the action starts, or the gate of plan first ends; → `running` | REQ-APR-007, REQ-TASK-015 |
+| `reject_action` | `waiting_user` (approval, or from 0.13 a plan-first task's plan) | Records the rejection with note and `halt` flag; → `running` (for a plan: still gated, the model asked for another) or `halted` | REQ-APR-007, REQ-TASK-015 |
 | `answer_question` | `waiting_user` (question) | Records the answer; → `running` | REQ-APR-010 |
 | `grant_capability` | any non-terminal | Issues a grant within the ceiling | REQ-CAP-004 |
 | `revoke_capability` | any non-terminal | Revokes a grant | REQ-CAP-005 |
@@ -167,7 +167,7 @@ created ──▶ running ──▶ completed | failed | cancelled        termin
 - **`reject --note TEXT`** keeps it: the step of the plan ends `approval_rejected`, and the model is asked again, with the note as its `rejection_note` segment, as for an action.
 - **`reject --halt`, `task cancel` and the expiry of a pending item (LIM-A1)** act as for an approval.
 - **After the gate:** only the first approved plan is gated. Later plans are recorded and shown, never gated, and a fork is gated only when it is created with `--plan-first` itself.
-- **The goal is never rewritten.** An approval's note reaches the model as a labelled `user` segment (`kind: approval_note`), bounded as a rejection's note is (LIM-D4).
+- **The goal is never rewritten.** An approval's note reaches the model as a labelled `user` segment (`kind: approval_note`), bounded as a rejection's note is (LIM-D2, 500 characters).
 
 `waiting_user`, `paused`, `halted` and `created` keep their state across a restart. A pause requested during a step is a visible `pause_requested` flag until the boundary.
 
