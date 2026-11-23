@@ -57,6 +57,15 @@ These are as found on `main` at `daede80`; check them on today's `main`.
    - `cli.md`: the flags, `approve --note`, the plan in `task show`;
    - a `<!-- tested -->` example of `run --plan-first` with the fake backend (1.0's condition 4).
 
+7. **Also, found on `main`'s CI (a defect of 0.12's registry, not of this handoff).**
+   - **What failed:** `registry::tests::req_sched_006_a_registry_that_cannot_be_used_fails_with_a_reason` failed once on `macos-latest` (run `45091069608`, `daede80`). It said `the registry did not answer within 100 ms` where `another runtime holds the registry's lock` was expected.
+   - **The cause:**
+     - `lock_mutex` waits for the lock until a deadline of the operation's bound;
+     - `bounded` gives the whole operation up at that same bound;
+     - so the two race. On a slow machine the outer one wins, and a user whose registry is held is told the vaguer reason.
+   - **The fix:** make the lock's own deadline end before the operation's bound (a margin you justify, within LIM-O11), so that a held lock is always reported as such, and `did not answer` means only a filesystem that did not answer.
+   - **The test** decides by state, not by a race: the lock held for longer than the bound, and the reason asserted. Show it under a slowed scheduler (for example a busy loop on every core), before and after.
+
 ## Tests (by state, §3c)
 
 - **The gate:**
@@ -88,7 +97,8 @@ Each of these must be killed:
 - a later plan waiting again;
 - `reject --note` ending the gate;
 - the note dropped from the next request;
-- the gate lost at a restart.
+- the gate lost at a restart;
+- the registry's lock deadline equal to the operation's bound again (item 7).
 
 ## Book and CHANGELOG
 
