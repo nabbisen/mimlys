@@ -604,11 +604,13 @@ LIM-W1 (read from the latest snapshot at the step boundary), LIM-W2, LIM-W3. `al
 | 2 | Tool definitions (generated, pinned, ≤ LIM-I1) | runtime | at pin time |
 | 3 | Capability summary (generated from grants) | runtime | when grants change |
 | 4 | Goal; for a fork, the source's `history` segment (LIM-C5) | user; runtime | never |
-| 5 | Plan (current version) | model | on `plan` |
+| 5 | Plan (current version; for a plan-first task, the approved one, with the user's approval note as `<<user kind="approval_note">>` after it, from 0.13) | model; user | on `plan`; at an approval |
 | 6 | Compressed history (steps older than LIM-C3, as `feedback kind="history"` with `summarized` and `dropped` counts) | runtime | when a step is compressed or dropped |
 | 7 | Recent steps in full (decisions, observations, rejections, answers) | mixed, each labelled | every step |
 | 8 | Latest observation or feedback | tool or runtime | every step |
 | 9 | Decision request and schema reminder | runtime | never |
+
+**A plan-first task's instructions (REQ-TASK-015, from 0.13).** Segment 1 of a task created with `--plan-first` ends with one sentence more, for the life of the task (the gate's end included, so that the prefix stays byte-stable): *"This task is plan first: decide `plan` before you act or complete; the user approves the plan before you act. If you cannot plan without an answer, you may ask the user first."* Every other task's segment 1 is unchanged. The sentence is an instruction of the runtime, so it is in segment 1 and never in a labelled segment, which the instructions call data.
 
 Segments 1–3 are one `system` message; 4 is a `user` message (the fork history a second one); 5 is an `assistant` message; 6 is a `user` message; 7 and 8 keep their original roles (the model's decisions as `assistant`, everything else as labelled `user` segments); 9 is a `user` message. Segments 1–4 are byte-identical across every request of a task until a grant changes (then once); 5 changes only on a `plan` decision; everything mutable follows everything stable (C-07). The step being decided is not yet part of the history. RFC 007.
 

@@ -152,3 +152,18 @@ The review of 2026-11-23 (`.git-exclude/reviewed/handoff-015b/README.md`) approv
      Say which, with the evidence.
 
 **Return:** `.git-exclude/review-requests/015b-3-after-review/README.md`.
+
+## After review: 015b-4
+
+The review of 2026-11-24 (`.git-exclude/reviewed/handoff-015b-3/README.md`) approved #207, #205 and #206 and landed them as one linear series (CI of PR #208). One item remains, from your question 2.
+
+1. **The plan-first sentence must say what is true.**
+   - **What is wrong:** "your first decision must be `plan`" is not so: `ask_user` and `give_up` go through before the plan (REQ-TASK-015). An instruction that says otherwise can make a model plan blind when it should ask.
+   - **The words** (external design §15.1, written with the landing):
+
+     > This task is plan first: decide `plan` before you act or complete; the user approves the plan before you act. If you cannot plan without an answer, you may ask the user first.
+
+   - **Change:** `PLAN_FIRST_INSTRUCTION`, the book (`how-a-task-runs.md`, "Plan first", step 1) and the CHANGELOG entry.
+   - **Tests:** the existing three tests of the sentence still hold with the new words. Add none unless a test pins the old words.
+
+**Return:** `.git-exclude/review-requests/015b-4-after-review/README.md`.
