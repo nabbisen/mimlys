@@ -114,6 +114,8 @@ struct EventReport {
     name: String,
     actor: String,
     action_id: Option<String>,
+    /// The event as recorded (its fields), for a test that says what it found.
+    detail: serde_json::Value,
 }
 
 fn main() -> ExitCode {
@@ -290,6 +292,7 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
                 .and_then(|v| v.get("actor").and_then(|a| a.as_str()).map(str::to_owned))
                 .unwrap_or_default(),
             action_id: e.record.action_id.map(|id| id.to_string()),
+            detail: serde_json::to_value(&e.record.event).unwrap_or_default(),
         })
         .collect();
     let report = Report {

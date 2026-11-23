@@ -89,6 +89,20 @@ fn action_events(report: &Value, action_id: &str) -> Vec<String> {
         .collect()
 }
 
+/// The events of one action as the report holds them, each with its fields: what a failing
+/// comparison of names shows (`task.admission_changed` says its `state`, `reason` and
+/// `slots_taken`).
+fn action_event_details(report: &Value, action_id: &str) -> String {
+    report["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action_id"].as_str() == Some(action_id))
+        .map(|e| format!("{} {}", e["position"], e["detail"]))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// External design §23, M1: create → plan → act → validate → approval →
 /// execute → observe → complete, with the eight lines per action, the
 /// rendered approval text and `completion = asserted`.
@@ -147,7 +161,8 @@ fn m1_demonstration_asserted() {
             "action.finished",
             "step.finished"
         ],
-        "a write action: the before snapshot reuses the base (same tree), the after snapshot is new (REQ-WS-004)"
+        "a write action: the before snapshot reuses the base (same tree), the after snapshot is new (REQ-WS-004); its events:\n{}",
+        action_event_details(&report, write["action_id"].as_str().unwrap())
     );
     assert_eq!(
         action_events(&report, actions[0]["action_id"].as_str().unwrap()),
