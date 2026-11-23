@@ -1,5 +1,7 @@
 # Handoff 004e — Readers that tolerate a newer release's records; output to a closed pipe (release 0.13, phase 1)
 
+**Status (2026-11-23): done.** Parts A and B landed at `eeeef5d`, and 004e-5 at `daede80` (`.git-exclude/reviewed/handoff-004e/README.md`, `.git-exclude/reviewed/handoff-004e-5/README.md`).
+
 **RFC.** [RFC 004](../../done/004-persistence-checkpoints-and-recovery.md) (records), [RFC 010](../../done/010-cli-and-operator-interface.md) (the output). **From.** The scope of 0.12, §8 (both items carried), brought into 0.13 by the owner's decision of 2026-11-21 (`ROADMAP.md`, "Release 0.13", phase 1).
 
 **Specification** (written before this handoff):
