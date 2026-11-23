@@ -24,6 +24,7 @@ fn task() -> Task {
                 root: "/project".into(),
                 include: vec![],
             },
+            plan_first: false,
         },
         clock.now(),
     )
@@ -89,23 +90,23 @@ fn req_main_006_a_record_of_known_words_is_the_typed_value() {
     assert!(json_of(&known).get(MARKER_FIELD).is_none());
 }
 
-/// REQ-MAIN-006: a wait kind this release has not got (0.13's `plan`) is held by its name, in
+/// REQ-MAIN-006: a wait kind this release has not got (a later release's `review`) is held by its name, in
 /// the field that holds it, with the record as written.
 #[test]
 fn req_main_006_an_unknown_wait_kind_is_held_by_its_name() {
     let value = written_by_a_newer_release(|v| {
         v["state"] = json!("waiting_user");
-        v["wait_kind"] = json!("plan");
+        v["wait_kind"] = json!("review");
     });
     let newer = newer_of::<Task>(&value);
-    assert_eq!(words(&newer), vec![("wait_kind", "plan")]);
+    assert_eq!(words(&newer), vec![("wait_kind", "review")]);
     assert_eq!(newer.raw, value, "the record as written");
     assert_eq!(newer.text("goal"), Some("fix the failing test"));
     // The runtime never sees it as a state it knows.
     assert!(matches!(
         parse_strict::<Task>(&value.to_string()),
         Err(PersistenceError::NewerRecord { record, field, word })
-            if record == "task" && field == "wait_kind" && word == "plan"
+            if record == "task" && field == "wait_kind" && word == "review"
     ));
 }
 
@@ -121,11 +122,11 @@ fn req_main_006_an_unknown_state_or_reason_is_held_by_its_name() {
 
     let halted = written_by_a_newer_release(|v| {
         v["state"] = json!("halted");
-        v["halt_reason"] = json!("plan_required");
+        v["halt_reason"] = json!("needs_review");
     });
     assert_eq!(
         words(&newer_of::<Task>(&halted)),
-        vec![("halt_reason", "plan_required")]
+        vec![("halt_reason", "needs_review")]
     );
 
     let failed = written_by_a_newer_release(|v| {
@@ -140,11 +141,11 @@ fn req_main_006_an_unknown_state_or_reason_is_held_by_its_name() {
     let pending = written_by_a_newer_release(|v| {
         v["state"] = json!("waiting_user");
         v["wait_kind"] = json!("approval");
-        v["pending"] = json!({ "pending": "plan", "plan_id": "x" });
+        v["pending"] = json!({ "pending": "review", "plan_id": "x" });
     });
     assert_eq!(
         words(&newer_of::<Task>(&pending)),
-        vec![("pending.pending", "plan")]
+        vec![("pending.pending", "review")]
     );
 }
 
@@ -168,6 +169,7 @@ fn req_main_006_two_unknown_words_of_a_record_are_both_named() {
         started_at: FakeClock::default().now(),
         finished_at: None,
         measures: None,
+        plan_wait: None,
     };
     let mut value = json_of(&step);
     value["phase"] = json!("planning_ahead");
@@ -183,7 +185,7 @@ fn req_main_006_two_unknown_words_of_a_record_are_both_named() {
 /// known event with a word it has not got (a rejection code) is held by that.
 #[test]
 fn req_main_006_an_unknown_event_is_held_by_its_name_and_fields() {
-    let mut value = json_of(&event(Event::TaskCreated));
+    let mut value = json_of(&event(Event::TaskCreated { plan_first: false }));
     value["event"] = json!("session.attached");
     value["client"] = json!("tui");
     let newer = newer_of::<EventRecord>(&value);
@@ -195,9 +197,9 @@ fn req_main_006_an_unknown_event_is_held_by_its_name_and_fields() {
         reason: None,
         grant_kind: None,
     }));
-    rejected["code"] = json!("plan_required");
+    rejected["code"] = json!("needs_review");
     let newer = newer_of::<EventRecord>(&rejected);
-    assert_eq!(words(&newer), vec![("code", "plan_required")]);
+    assert_eq!(words(&newer), vec![("code", "needs_review")]);
     assert_eq!(newer.text("event"), Some("decision.rejected"));
 }
 
@@ -207,12 +209,12 @@ fn req_main_006_an_unknown_event_is_held_by_its_name_and_fields() {
 fn req_main_006_the_place_named_is_the_vocabularys_not_a_free_string() {
     let mut rejected = json_of(&event(Event::DecisionRejected {
         code: crate::rejection::RejectionCode::Malformed,
-        reason: Some("plan_required".into()),
+        reason: Some("needs_review".into()),
         grant_kind: None,
     }));
-    rejected["code"] = json!("plan_required");
+    rejected["code"] = json!("needs_review");
     let newer = newer_of::<EventRecord>(&rejected);
-    assert_eq!(words(&newer), vec![("code", "plan_required")]);
+    assert_eq!(words(&newer), vec![("code", "needs_review")]);
 }
 
 /// The precondition of the test below, and what it asks: the record holds `word` in the free
@@ -260,11 +262,11 @@ fn req_main_006_a_free_string_before_the_state_of_a_task_is_not_the_place_named(
 #[test]
 fn req_main_006_a_free_string_before_the_wait_kind_of_a_task_is_not_the_place_named() {
     let task_wait = written_by_a_newer_release(|v| {
-        v["goal"] = json!("plan");
+        v["goal"] = json!("review");
         v["state"] = json!("waiting_user");
-        v["wait_kind"] = json!("plan");
+        v["wait_kind"] = json!("review");
     });
-    names_the_vocabulary_not_the_free_string::<Task>(&task_wait, "goal", "wait_kind", "plan");
+    names_the_vocabulary_not_the_free_string::<Task>(&task_wait, "goal", "wait_kind", "review");
 }
 
 /// REQ-MAIN-006: `task.admission_changed`: the reason (free) before the state.
@@ -289,25 +291,25 @@ fn req_main_006_a_free_string_before_the_state_of_an_admission_is_not_the_place_
 #[test]
 fn req_main_006_a_free_string_before_the_halt_reason_of_a_change_is_not_the_place_named() {
     let mut changed = json_of(&event(Event::TaskStateChanged {
-        from: "plan_required".into(),
+        from: "needs_review".into(),
         to: "halted".into(),
         reason: Some(crate::task::HaltReason::Policy),
         rollback_failed: false,
         halt_detail: None,
     }));
-    changed["reason"] = json!("plan_required");
+    changed["reason"] = json!("needs_review");
     names_the_vocabulary_not_the_free_string::<EventRecord>(
         &changed,
         "from",
         "reason",
-        "plan_required",
+        "needs_review",
     );
 }
 
 /// REQ-MAIN-006: an event of a newer release: a field of its own (free) before its name.
 #[test]
 fn req_main_006_a_free_string_before_the_name_of_an_event_is_not_the_place_named() {
-    let mut unknown_event = json_of(&event(Event::TaskCreated));
+    let mut unknown_event = json_of(&event(Event::TaskCreated { plan_first: false }));
     unknown_event["event"] = json!("session.attached");
     unknown_event["client"] = json!("session.attached");
     names_the_vocabulary_not_the_free_string::<EventRecord>(
@@ -370,12 +372,12 @@ fn req_main_006_a_damaged_record_is_not_a_newer_one() {
 fn req_main_006_json_keeps_the_record_and_adds_the_marker() {
     let value = written_by_a_newer_release(|v| {
         v["state"] = json!("waiting_user");
-        v["wait_kind"] = json!("plan");
+        v["wait_kind"] = json!("review");
     });
     let newer = newer_of::<Task>(&value);
     let shown = json_of(&Read::<Task>::Newer(newer));
     let mut expected = value.clone();
-    expected[MARKER_FIELD] = json!([{ "field": "wait_kind", "word": "plan" }]);
+    expected[MARKER_FIELD] = json!([{ "field": "wait_kind", "word": "review" }]);
     assert_eq!(shown, expected);
 }
 
@@ -411,7 +413,7 @@ fn req_main_006_a_state_is_never_read_without_its_kind() {
 /// of the payload it prints is the type's.
 #[test]
 fn req_main_006_the_envelope_fields_are_the_event_records() {
-    let mut record = event(Event::TaskCreated);
+    let mut record = event(Event::TaskCreated { plan_first: false });
     record.actor = Actor::User {
         session: "pid:1".into(),
         os_user: "someone".into(),

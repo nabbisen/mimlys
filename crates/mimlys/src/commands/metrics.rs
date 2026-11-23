@@ -19,6 +19,10 @@ pub fn run(app: &ReadApp, task: Option<&str>, out: &Output) -> Result<(), AppErr
         ("denials_by_grant_kind", &metrics.denials_by_grant_kind),
         ("halts_by_reason", &metrics.halts_by_reason),
         ("approvals_by_decision", &metrics.approvals_by_decision),
+        (
+            "plan_approvals_by_decision",
+            &metrics.plan_approvals_by_decision,
+        ),
         ("actions_by_status", &metrics.actions_by_status),
     ] {
         for (k, v) in map {

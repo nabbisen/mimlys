@@ -100,6 +100,7 @@ fn rig(script: Vec<Script>, decisions: Vec<Value>) -> Rig {
                 hold: false,
                 from_task: None,
                 from_snapshot: None,
+                plan_first: false,
             },
         )
         .unwrap()

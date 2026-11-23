@@ -299,6 +299,7 @@ fn validate_with(tools: &[ToolDefinition], raw: &[u8]) -> Outcome {
         grants: &hooks,
         effects: &hooks,
         budgets: &hooks,
+        plan_required: false,
     };
     validate(&ctx, raw)
 }
@@ -392,6 +393,7 @@ impl Loop {
             hold: false,
             from_task: None,
             from_snapshot: None,
+            plan_first: false,
         };
         self.runtime
             .create_task(&self.session, request)
@@ -995,6 +997,7 @@ fn fs_symlinks(name: &str, c: Symlinks) -> Result<(), String> {
                 grants: &hooks,
                 effects: &hooks,
                 budgets: &hooks,
+                plan_required: false,
             };
             let raw = serde_json::to_vec(
                 &json!({"decision": "act", "tool": step.tool, "arguments": step.arguments}),

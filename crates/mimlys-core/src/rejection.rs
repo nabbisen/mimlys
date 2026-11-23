@@ -207,6 +207,9 @@ pub enum StateReason {
     CompletionCheckRunning,
     /// The task is not running.
     NotRunning,
+    /// The task is plan-first and no plan is approved yet: an `act` or a `complete` is refused
+    /// (from 0.13; REQ-TASK-015).
+    PlanRequired,
 }
 
 /// Which budget an action would exceed at stage 10 (external design §6.3,
@@ -256,6 +259,27 @@ impl StateReason {
             StateReason::PendingUserItem => "pending_user_item",
             StateReason::CompletionCheckRunning => "completion_check_running",
             StateReason::NotRunning => "not_running",
+            StateReason::PlanRequired => "plan_required",
+        }
+    }
+
+    /// Every reason, in the order of external design §6.4.
+    pub const ALL: [StateReason; 4] = [
+        StateReason::PendingUserItem,
+        StateReason::CompletionCheckRunning,
+        StateReason::NotRunning,
+        StateReason::PlanRequired,
+    ];
+
+    /// The hint of the fixed table for this reason (CLR-5): every reason of the code `state`
+    /// but `plan_required` has the code's hint, which waits; a plan-first task's model is told
+    /// what to do instead.
+    pub fn hint(self) -> &'static str {
+        match self {
+            StateReason::PendingUserItem
+            | StateReason::CompletionCheckRunning
+            | StateReason::NotRunning => RejectionCode::State.hint(),
+            StateReason::PlanRequired => "State your plan first (decide `plan`).",
         }
     }
 }
@@ -519,6 +543,7 @@ pub fn feedback_body(
 ) -> Value {
     let hint = match detail {
         Some(Detail::Denied { reason, .. }) => reason.hint(),
+        Some(Detail::State { reason }) => reason.hint(),
         _ => code.hint_for(transport),
     };
     match detail {
@@ -610,6 +635,7 @@ impl Rejection {
         let detail = detail.bounded();
         let hint = match &detail {
             Detail::Denied { reason, .. } => reason.hint(),
+            Detail::State { reason } => reason.hint(),
             _ => code.hint(),
         };
         Self { code, detail, hint }
@@ -684,6 +710,9 @@ pub fn hints_within_limit() -> bool {
         .iter()
         .all(|c| c.hint().chars().count() <= LIM_I5_MESSAGE_CHARS)
         && DeniedReason::ALL
+            .iter()
+            .all(|r| r.hint().chars().count() <= LIM_I5_MESSAGE_CHARS)
+        && StateReason::ALL
             .iter()
             .all(|r| r.hint().chars().count() <= LIM_I5_MESSAGE_CHARS)
 }

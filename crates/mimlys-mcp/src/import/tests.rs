@@ -573,6 +573,7 @@ fn req_apr_002_the_longest_admitted_tool_still_renders_an_approval_card() {
         grants: &AllowAll,
         effects: &AllowAll,
         budgets: &AllowAll,
+        plan_required: false,
     };
     let decision = json!({
         "decision": "act", "tool": tool.name, "arguments": arguments, "reason": "r".repeat(500)

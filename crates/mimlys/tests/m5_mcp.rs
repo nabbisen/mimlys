@@ -3585,6 +3585,7 @@ fn req_cli_005_the_providers_wait_for_a_restart_ends_not_started_for_every_effec
                 grants: &hooks,
                 effects: &hooks,
                 budgets: &hooks,
+                plan_required: false,
             };
             let raw = serde_json::to_vec(
                 &json!({"decision": "act", "tool": "t.ghost", "arguments": {"query": "x"}}),

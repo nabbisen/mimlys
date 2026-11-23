@@ -12,6 +12,7 @@ use mimlys_core::approval::{ApprovalRequest, arguments_text};
 use mimlys_core::grant::GrantKind;
 use mimlys_core::limits::LIM_D2_REASON_CHARS;
 use mimlys_core::question::Question;
+use mimlys_core::task::PlanVersion;
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -33,6 +34,27 @@ pub enum Decision {
     Leave,
 }
 
+/// What the user decided at the prompt for a plan-first task's plan (REQ-TASK-015).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlanDecision {
+    /// Approve it, with an optional note for the model.
+    Approve {
+        /// Reaches the model as `<<user kind="approval_note">>`.
+        note: Option<String>,
+    },
+    /// Reject it and ask for another, with an optional note; `halt` ends the task instead.
+    Reject {
+        /// Reaches the model as `<<user kind="rejection_note">>`.
+        note: Option<String>,
+        /// Reject and halt.
+        halt: bool,
+    },
+    /// Cancel the task.
+    Cancel,
+    /// Input ended; leave the task waiting.
+    Leave,
+}
+
 /// A channel to the user.
 pub trait Interaction {
     /// Whether prompts can be shown at all.
@@ -45,6 +67,8 @@ pub trait Interaction {
     }
     /// Asks for a decision on an approval request.
     fn approve(&mut self, request: &ApprovalRequest, step_index: Option<u32>) -> Decision;
+    /// Asks for a decision on the plan a plan-first task waits for.
+    fn plan(&mut self, task_id: &str, plan: &PlanVersion) -> PlanDecision;
     /// Asks for the answer to a question; `None` leaves the task waiting.
     fn answer(&mut self, question: &Question) -> Option<String>;
     /// Asks a yes-or-no question (promotion, deletion); `false` on anything but `y`.
@@ -59,6 +83,23 @@ pub fn approval_text(request: &ApprovalRequest, step_index: Option<u32>) -> Stri
     text.push('\n');
     text.push_str(messages::APPROVAL_OPTIONS);
     text.push('\n');
+    text
+}
+
+/// The plan a plan-first task waits for, in the fixed template (REQ-TASK-015): the header, every
+/// step, and, at the prompt, the options. The steps are the model's text, sanitized and quoted,
+/// never raw.
+pub fn plan_text(task_id: &str, plan: &PlanVersion, options: bool) -> String {
+    let mut text = messages::plan_header(task_id, plan.version);
+    text.push('\n');
+    for line in messages::plan_step_lines(plan) {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    if options {
+        text.push_str(messages::PLAN_OPTIONS);
+        text.push('\n');
+    }
     text
 }
 
@@ -404,6 +445,51 @@ impl<L: Lines, W: Write> Interaction for Terminal<L, W> {
         }
     }
 
+    fn plan(&mut self, task_id: &str, plan: &PlanVersion) -> PlanDecision {
+        let _ = write!(self.output, "{}", plan_text(task_id, plan, true));
+        loop {
+            let Some(line) = self.read_line(messages::PROMPT) else {
+                return PlanDecision::Leave;
+            };
+            let choice = line.trim();
+            let (approve, halt) = match choice {
+                "a" => {
+                    return PlanDecision::Approve { note: None };
+                }
+                "c" => return PlanDecision::Cancel,
+                "n" => (true, false),
+                "r" => (false, false),
+                "h" => (false, true),
+                _ => {
+                    let _ = writeln!(self.output, "{}", messages::PLAN_PROMPT_UNKNOWN);
+                    continue;
+                }
+            };
+            let prompt = if approve {
+                messages::APPROVE_NOTE_PROMPT
+            } else {
+                messages::REJECT_NOTE_PROMPT
+            };
+            let note = self.read_line(prompt).filter(|n| !n.trim().is_empty());
+            if self.stopped {
+                // The wait for the note ended with a stop: nothing is decided.
+                return PlanDecision::Leave;
+            }
+            if note
+                .as_ref()
+                .is_some_and(|n| n.chars().count() > LIM_D2_REASON_CHARS)
+            {
+                let _ = writeln!(self.output, "{}", messages::note_too_long());
+                continue;
+            }
+            return if approve {
+                PlanDecision::Approve { note }
+            } else {
+                PlanDecision::Reject { note, halt }
+            };
+        }
+    }
+
     fn answer(&mut self, question: &Question) -> Option<String> {
         let _ = write!(self.output, "{}", question_text(question));
         loop {
@@ -440,6 +526,17 @@ impl Interaction for Scripted {
 
     fn approve(&mut self, _request: &ApprovalRequest, _step_index: Option<u32>) -> Decision {
         self.decision.clone()
+    }
+
+    fn plan(&mut self, _task_id: &str, _plan: &PlanVersion) -> PlanDecision {
+        match &self.decision {
+            Decision::Approve => PlanDecision::Approve { note: None },
+            Decision::Reject { note, halt } => PlanDecision::Reject {
+                note: note.clone(),
+                halt: *halt,
+            },
+            Decision::Grant(_) | Decision::Leave => PlanDecision::Leave,
+        }
     }
 
     fn answer(&mut self, _question: &Question) -> Option<String> {

@@ -1,0 +1,6 @@
+[
+  {"decision": "plan", "steps": ["delete everything"]},
+  {"decision": "plan", "steps": ["delete src"]},
+  {"decision": "plan", "steps": ["delete lib.rs"]},
+  {"decision": "plan", "steps": ["read src/lib.rs"]}
+]

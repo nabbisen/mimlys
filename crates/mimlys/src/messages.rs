@@ -108,6 +108,7 @@ pub fn state_text_after(state: &TaskState, rollback_failed: bool) -> String {
         TaskState::WaitingUser { wait_kind } => match wait_kind {
             WaitKind::Approval => "waiting for your approval".into(),
             WaitKind::Question => "waiting for your answer".into(),
+            WaitKind::Plan => "waiting for your approval of its plan".into(),
         },
         TaskState::Paused => "paused".into(),
         TaskState::Halted { halt_reason, .. } => {
@@ -219,6 +220,34 @@ pub fn approval_header(task_id: &str, step: Option<u32>) -> String {
         None => format!("Approval required · task {task_id}"),
     }
 }
+/// The header of the plan a plan-first task waits for (REQ-TASK-015), put to the user as an
+/// approval is.
+pub fn plan_header(task_id: &str, version: u32) -> String {
+    format!("Plan to approve · task {task_id} · version {version}")
+}
+/// The plan prompt's options line.
+pub const PLAN_OPTIONS: &str = "[a]pprove   approve with a [n]ote   [r]eject (and ask for another plan)   [h]alt (reject and halt)   [c]ancel the task";
+/// The user typed something the plan prompt does not understand.
+pub const PLAN_PROMPT_UNKNOWN: &str = "type a, n, r, h or c";
+/// Approve with a note: ask for it.
+pub const APPROVE_NOTE_PROMPT: &str = "Note for the model (Enter for none): ";
+/// The steps of a plan, one line each, as the user is shown them: sanitized (no invisible or
+/// bidirectional character reaches the terminal) and JSON-quoted, so that a newline or a quote
+/// cannot start a line of its own or a fake label. Bounded by LIM-D3 when the decision is read.
+pub fn plan_step_lines(plan: &mimlys_core::task::PlanVersion) -> Vec<String> {
+    plan.steps
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            format!(
+                "{:>3}. {}",
+                i + 1,
+                serde_json::to_string(&mimlys_core::observation::sanitize(step).0)
+                    .unwrap_or_default()
+            )
+        })
+        .collect()
+}
 /// The approval prompt's options line (REQ-CLI-002).
 pub const APPROVAL_OPTIONS: &str =
     "[a]pprove   [r]eject   [h]alt (reject and halt)   [g]rant …   [v]iew (every argument in full)";
@@ -273,6 +302,9 @@ pub fn pending_non_interactive(task_id: &str, kind: WaitKind) -> String {
         WaitKind::Question => format!(
             "task {task_id} is waiting for your answer; run `mimlys task show {task_id}` then `mimlys answer {task_id} <text>`"
         ),
+        WaitKind::Plan => format!(
+            "task {task_id} is waiting for your approval of its plan; run `mimlys task show {task_id}` then `mimlys approve {task_id} [--note TEXT]`, or `mimlys reject {task_id} --note TEXT` to ask for another plan"
+        ),
     }
 }
 /// A stop signal arrived once.
@@ -288,6 +320,9 @@ pub fn signal_at_prompt(task_id: &str, kind: WaitKind) -> String {
         ),
         WaitKind::Question => format!(
             "stop signal: {task_id} is still waiting for your answer; answer later with mimlys answer {task_id} <text>"
+        ),
+        WaitKind::Plan => format!(
+            "stop signal: {task_id} is still waiting for your approval of its plan; decide later with mimlys approve {task_id} or mimlys reject {task_id}"
         ),
     }
 }
@@ -977,6 +1012,7 @@ pub fn status_pending(task_id: &str, wait: &mimlys_core::runtime::WaitWord) -> S
         match wait {
             WaitWord::Known(WaitKind::Approval) => "an approval".to_owned(),
             WaitWord::Known(WaitKind::Question) => "an answer".to_owned(),
+            WaitWord::Known(WaitKind::Plan) => "the approval of its plan".to_owned(),
             WaitWord::Unknown(word) => format!("`{word}` {UNKNOWN_MARKER}"),
         }
     )
@@ -1760,15 +1796,37 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
     if let Some(waiting) = &view.waiting {
         lines.push(waiting_line(waiting));
     }
+    // The plan in force of every task, with when it was made (REQ-TASK-015); a plan-first task
+    // says whether a plan is approved and which version.
     if let Some(plan) = &view.plan {
-        lines.push(format!("plan      version {}", plan.version));
-        for (i, step) in plan.steps.iter().enumerate() {
-            lines.push(format!(
-                "          {}. {}",
-                i + 1,
-                serde_json::to_string(step).unwrap_or_default()
-            ));
+        lines.push(format!(
+            "plan      version {}, made {}",
+            plan.version,
+            plan.created_at.to_rfc3339()
+        ));
+        for line in plan_step_lines(plan) {
+            lines.push(format!("         {line}"));
         }
+    }
+    if t.plan_first {
+        lines.push(match t.plan_approved {
+            Some(version) => format!("gate      plan first; version {version} approved"),
+            None => "gate      plan first; no plan is approved yet: nothing acts before one is"
+                .to_owned(),
+        });
+    }
+    if let (
+        TaskState::WaitingUser {
+            wait_kind: WaitKind::Plan,
+        },
+        Some(plan),
+    ) = (&t.state, &view.plan)
+    {
+        lines.push(format!(
+            "pending   the plan above, version {}: `mimlys approve {id} [--note TEXT]`, or `mimlys reject {id} --note TEXT` to ask for another plan",
+            plan.version,
+            id = t.task_id
+        ));
     }
     if let Some(source) = t.forked_from {
         lines.push(format!("forked    from task {source}"));

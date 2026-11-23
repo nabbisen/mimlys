@@ -54,6 +54,7 @@ fn authorized(raw: &str) -> (AuthorizedAction, ToolDefinition) {
         grants: &hooks,
         effects: &hooks,
         budgets: &hooks,
+        plan_required: false,
     };
     match validate(&ctx, raw.as_bytes()) {
         Outcome::Authorized(a) => (a, delete_tool()),
@@ -119,8 +120,12 @@ fn req_apr_004_005_binding_and_one_shot() {
         r.consume(&action, &grants),
         Err(ApprovalError::WrongStatus { needed: "approved" })
     );
-    r.decide(UserDecision::Approve, Actor::Runtime, clock.now())
-        .unwrap();
+    r.decide(
+        UserDecision::Approve { note: None },
+        Actor::Runtime,
+        clock.now(),
+    )
+    .unwrap();
     assert_eq!(r.status, ApprovalStatus::Approved);
     let mut swapped = r.clone();
     assert_eq!(
@@ -144,7 +149,11 @@ fn req_apr_004_005_binding_and_one_shot() {
         Err(ApprovalError::WrongStatus { needed: "approved" })
     );
     assert_eq!(
-        r.decide(UserDecision::Approve, Actor::Runtime, clock.now()),
+        r.decide(
+            UserDecision::Approve { note: None },
+            Actor::Runtime,
+            clock.now()
+        ),
         Err(ApprovalError::WrongStatus { needed: "pending" })
     );
 }
@@ -255,7 +264,11 @@ fn req_test_003_every_approval_transition_is_legal_or_refused() {
             let wrong = |needed| Err(ApprovalError::WrongStatus { needed });
             match op {
                 Approve => assert_eq!(
-                    r.decide(UserDecision::Approve, Actor::Runtime, clock.now()),
+                    r.decide(
+                        UserDecision::Approve { note: None },
+                        Actor::Runtime,
+                        clock.now()
+                    ),
                     if expected.is_some() {
                         Ok(())
                     } else {

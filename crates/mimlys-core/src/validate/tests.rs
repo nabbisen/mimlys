@@ -77,6 +77,7 @@ impl Ctx {
             grants: &self.hooks,
             effects: &self.hooks,
             budgets: &self.hooks,
+            plan_required: false,
         }
     }
 }

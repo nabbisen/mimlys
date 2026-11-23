@@ -91,6 +91,7 @@ impl State {
             tool_definitions: "[]",
             grants: &self.grants,
             plan: self.plan.as_ref(),
+            plans: &[],
             steps: &self.steps,
             actions: &self.actions,
             observations: &self.observations,

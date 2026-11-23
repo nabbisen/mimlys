@@ -152,6 +152,7 @@ fn req_ctx_005_a_profile_that_would_exceed_lim_i1_refuses_the_task_naming_the_to
         hold: false,
         from_task: None,
         from_snapshot: None,
+        plan_first: false,
     };
     let refused = h
         .runtime
@@ -332,6 +333,7 @@ fn req_ctx_005_a_fork_is_judged_on_its_inherited_grants_with_its_request() {
         hold: true,
         from_task: Some(source),
         from_snapshot: None,
+        plan_first: false,
     };
     let tasks = h.persistence.list_tasks().unwrap().len();
     let big_c = vec![GrantKind::Tool {

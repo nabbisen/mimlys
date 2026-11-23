@@ -101,8 +101,11 @@ pub struct ContextInputs<'a> {
     pub tool_definitions: &'a str,
     /// Active grants.
     pub grants: &'a GrantSet,
-    /// The current plan.
+    /// The plan in force: none while a plan-first task has no approved plan (REQ-TASK-015), so
+    /// that a plan the user has not approved, or has rejected, is not shown as the model's plan.
     pub plan: Option<&'a PlanVersion>,
+    /// Every plan version, oldest first: a plan the user rejected is shown with its step.
+    pub plans: &'a [PlanVersion],
     /// Steps so far, oldest first.
     pub steps: &'a [Step],
     /// Actions of those steps.
@@ -145,7 +148,12 @@ struct Entry<'a> {
     action: Option<&'a Action>,
     observation: Option<&'a Observation>,
     question: Option<&'a Question>,
-    note: Option<&'a str>,
+    /// The plan the step made and the user rejected (REQ-TASK-015).
+    plan: Option<&'a PlanVersion>,
+    /// The user's note on a rejection: the model's `rejection_note`.
+    rejection_note: Option<&'a str>,
+    /// The user's note on an approval of the action that ran: the model's `approval_note`.
+    approval_note: Option<&'a str>,
     retained: bool,
 }
 
@@ -343,6 +351,7 @@ fn stable_messages_native(inputs: &ContextInputs<'_>) -> Vec<Message> {
                 &json!(plan.steps),
             ),
         ));
+        push_plan_approval_note(inputs, &mut messages);
     }
     messages
 }
@@ -390,8 +399,34 @@ fn stable_messages(inputs: &ContextInputs<'_>) -> Vec<Message> {
                 &json!(plan.steps),
             ),
         ));
+        push_plan_approval_note(inputs, &mut messages);
     }
     messages
+}
+
+/// The note the user gave when they approved the plan of a plan-first task (REQ-TASK-015), as
+/// their own words beside the plan: `<<user kind="approval_note">>`. It is the user's, so it is
+/// never a rewrite of the goal, and it is part of the stable prefix like the plan itself.
+fn push_plan_approval_note(inputs: &ContextInputs<'_>, messages: &mut Vec<Message>) {
+    let Some(approved) = inputs.task.plan_approved else {
+        return;
+    };
+    let note = inputs
+        .steps
+        .iter()
+        .filter_map(|s| s.plan_wait.as_ref())
+        .find(|w| w.version == approved)
+        .and_then(|w| w.approval_note());
+    if let Some(note) = note {
+        messages.push(Message::text(
+            Role::User,
+            write_segment(
+                SegmentLabel::User,
+                &[("kind", "approval_note")],
+                &json!(note),
+            ),
+        ));
+    }
 }
 
 fn entries<'a>(inputs: &ContextInputs<'a>) -> Vec<Entry<'a>> {
@@ -408,19 +443,33 @@ fn entries<'a>(inputs: &ContextInputs<'a>) -> Vec<Entry<'a>> {
                 .observation_id
                 .and_then(|id| inputs.observations.iter().find(|o| o.observation_id == id));
             let question = inputs.questions.iter().find(|q| q.step_id == step.step_id);
-            let note = action.and_then(|a| {
-                inputs
-                    .approvals
-                    .iter()
-                    .find(|r| r.action_id == a.action_id)
-                    .and_then(|r| r.note.as_deref())
-            });
+            let approval =
+                action.and_then(|a| inputs.approvals.iter().find(|r| r.action_id == a.action_id));
+            // A note is a rejection's when the user rejected, an approval's otherwise.
+            let (mut rejection_note, approval_note) = match approval {
+                Some(r) if r.status == crate::approval::ApprovalStatus::Rejected => {
+                    (r.note.as_deref(), None)
+                }
+                Some(r) => (None, r.note.as_deref()),
+                None => (None, None),
+            };
+            // The plan the user rejected, with its note (REQ-TASK-015).
+            let plan = step
+                .plan_wait
+                .as_ref()
+                .filter(|w| w.rejection_note().is_some() || step.rejection.is_some())
+                .and_then(|w| inputs.plans.iter().find(|p| p.version == w.version));
+            if let Some(wait) = &step.plan_wait {
+                rejection_note = rejection_note.or_else(|| wait.rejection_note());
+            }
             Entry {
                 step,
                 action,
                 observation,
                 question,
-                note,
+                plan,
+                rejection_note,
+                approval_note,
                 retained: false,
             }
         })
@@ -477,12 +526,15 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
                 Role::User,
                 observation_segment_with(observation, collapse),
             ));
+            if let Some(note) = e.approval_note {
+                messages.push(approval_note_message(note));
+            }
         } else if let Some(code) = e.step.rejection {
             messages.push(Message::text(
                 Role::User,
                 feedback_segment(code, e.step.rejection_detail.as_ref()),
             ));
-            if let Some(note) = e.note {
+            if let Some(note) = e.rejection_note {
                 messages.push(Message::text(
                     Role::User,
                     write_segment(
@@ -494,10 +546,23 @@ fn full_messages(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Message>) {
             }
         }
     } else if let Some(code) = e.step.rejection {
+        // The plan the user rejected, as the model made it, then the rejection and the note.
+        if let Some(plan) = e.plan {
+            messages.push(Message::text(
+                Role::Assistant,
+                serde_json::to_string(&json!({"decision": "plan", "steps": plan.steps}))
+                    .expect("serializes"),
+            ));
+        }
         messages.push(Message::text(
             Role::User,
             feedback_segment(code, e.step.rejection_detail.as_ref()),
         ));
+        if e.plan.is_some()
+            && let Some(note) = e.rejection_note
+        {
+            messages.push(rejection_note_message(note));
+        }
     }
     if let Some(question) = e.question {
         messages.push(Message::text(
@@ -543,23 +608,38 @@ fn full_messages_native(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Messag
             }));
             messages.push(Message::answer(id, answer));
             if e.observation.is_none()
-                && let Some(note) = e.note
+                && let Some(note) = e.rejection_note
             {
-                messages.push(Message::text(
-                    Role::User,
-                    write_segment(
-                        SegmentLabel::User,
-                        &[("kind", "rejection_note")],
-                        &json!(note),
-                    ),
-                ));
+                messages.push(rejection_note_message(note));
+            }
+            if e.observation.is_some()
+                && let Some(note) = e.approval_note
+            {
+                messages.push(approval_note_message(note));
             }
         }
     } else if let Some(code) = e.step.rejection {
-        messages.push(Message::text(
-            Role::User,
-            feedback_segment_in(code, e.step.rejection_detail.as_ref(), transport),
-        ));
+        // The plan the user rejected is the model's own call, answered by the rejection.
+        if let Some(plan) = e.plan {
+            let id = format!("call_{index}_plan");
+            messages.push(Message::call(ToolCall {
+                id: id.clone(),
+                name: "plan".into(),
+                arguments: json!({"steps": plan.steps}).to_string(),
+            }));
+            messages.push(Message::answer(
+                id,
+                feedback_segment_in(code, e.step.rejection_detail.as_ref(), transport),
+            ));
+            if let Some(note) = e.rejection_note {
+                messages.push(rejection_note_message(note));
+            }
+        } else {
+            messages.push(Message::text(
+                Role::User,
+                feedback_segment_in(code, e.step.rejection_detail.as_ref(), transport),
+            ));
+        }
     }
     if let Some(question) = e.question
         && let Some(answer) = &question.answer
@@ -575,6 +655,30 @@ fn full_messages_native(e: &Entry<'_>, collapse: bool, messages: &mut Vec<Messag
             write_segment(SegmentLabel::User, &[("kind", "answer")], &json!(answer)),
         ));
     }
+}
+
+/// The user's note on a rejection, as their own words.
+fn rejection_note_message(note: &str) -> Message {
+    Message::text(
+        Role::User,
+        write_segment(
+            SegmentLabel::User,
+            &[("kind", "rejection_note")],
+            &json!(note),
+        ),
+    )
+}
+
+/// The user's note on an approval, as their own words.
+fn approval_note_message(note: &str) -> Message {
+    Message::text(
+        Role::User,
+        write_segment(
+            SegmentLabel::User,
+            &[("kind", "approval_note")],
+            &json!(note),
+        ),
+    )
 }
 
 /// The hint that goes with a tool left out of the request.

@@ -342,8 +342,13 @@ pub enum ApprovalStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum UserDecision {
-    /// Approve the action.
-    Approve,
+    /// Approve the action, with an optional note for the model (from 0.13): it reaches the model
+    /// as `<<user kind="approval_note">>` with the action's observation.
+    Approve {
+        /// Reaches the model as `user` text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     /// Reject it, with an optional note for the model and a halt flag.
     Reject {
         /// Reaches the model as `user` text.
@@ -416,7 +421,8 @@ pub struct ApprovalRequest {
     pub decided_at: Option<Instant>,
     /// Who decided.
     pub decided_by: Option<Actor>,
-    /// The user's note on rejection.
+    /// The user's note on the decision: on a rejection it is the model's `rejection_note`, on an
+    /// approval (from 0.13) its `approval_note`.
     pub note: Option<String>,
     /// Whether the user asked to halt.
     pub halt: bool,
@@ -489,16 +495,24 @@ impl ApprovalRequest {
         if self.status != ApprovalStatus::Pending {
             return Err(ApprovalError::WrongStatus { needed: "pending" });
         }
+        // A note is the user's own words, bounded as a rejection's note is, whichever way the
+        // decision goes.
+        let bounded = |note: Option<String>| -> Result<Option<String>, ApprovalError> {
+            if note
+                .as_ref()
+                .is_some_and(|n| n.chars().count() > LIM_D2_REASON_CHARS)
+            {
+                return Err(ApprovalError::NoteTooLong);
+            }
+            Ok(note.map(|n| sanitize(&n).0))
+        };
         match decision {
-            UserDecision::Approve => self.status = ApprovalStatus::Approved,
+            UserDecision::Approve { note } => {
+                self.note = bounded(note)?;
+                self.status = ApprovalStatus::Approved;
+            }
             UserDecision::Reject { note, halt } => {
-                if note
-                    .as_ref()
-                    .is_some_and(|n| n.chars().count() > LIM_D2_REASON_CHARS)
-                {
-                    return Err(ApprovalError::NoteTooLong);
-                }
-                self.note = note.map(|n| sanitize(&n).0);
+                self.note = bounded(note)?;
                 self.halt = halt;
                 self.status = ApprovalStatus::Rejected;
             }

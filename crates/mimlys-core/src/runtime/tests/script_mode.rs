@@ -216,7 +216,7 @@ fn req_apr_001_approval_by_tool_name_is_the_same_in_either_mode_and_shows_the_ef
             "{mode}: {}",
             approval.display_text()
         );
-        h.runtime.approve_action(&h.session, id).unwrap();
+        h.runtime.approve_action(&h.session, id, None).unwrap();
         assert_eq!(h.step(id).outcome, StepOutcome::Continued, "{mode}");
         let s = seen(&h, id, n);
         assert_eq!(s.before, snapshots, "{mode}: snapshot before");

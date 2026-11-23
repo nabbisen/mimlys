@@ -88,6 +88,7 @@ impl Fx {
                     root: "/project".into(),
                     include: vec![],
                 },
+                plan_first: false,
             },
             self.now(),
         )
@@ -166,7 +167,11 @@ pub(crate) fn sequence_with(
         hash_bytes(b"grants")
     };
     store
-        .create_task(&task, &grants, &fx.event(&task, Event::TaskCreated))
+        .create_task(
+            &task,
+            &grants,
+            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+        )
         .unwrap();
     let task = task
         .transition(
@@ -267,7 +272,11 @@ pub(crate) fn sequence_with(
             return (waiting, Some(action));
         }
         approval
-            .decide(UserDecision::Approve, Actor::Runtime, fx.now())
+            .decide(
+                UserDecision::Approve { note: None },
+                Actor::Runtime,
+                fx.now(),
+            )
             .unwrap();
         let running_task = waiting
             .transition(TaskInput::UserDecided, fx.now())
@@ -1046,7 +1055,11 @@ fn crash_child_sequence() {
             .unwrap();
         let other = fx.task();
         store
-            .create_task(&other, &[], &fx.event(&other, Event::TaskCreated))
+            .create_task(
+                &other,
+                &[],
+                &fx.event(&other, Event::TaskCreated { plan_first: false }),
+            )
             .unwrap();
         let rows = store
             .delete_task_data(
@@ -1246,7 +1259,11 @@ mod snapshots_m3 {
         snapshot_with(&store, &files, &fx, &task, b"mine", SnapshotReason::After);
         let other = fx.task();
         store
-            .create_task(&other, &[], &fx.event(&other, Event::TaskCreated))
+            .create_task(
+                &other,
+                &[],
+                &fx.event(&other, Event::TaskCreated { plan_first: false }),
+            )
             .unwrap();
         snapshot_with(&store, &files, &fx, &other, b"shared", SnapshotReason::Base);
         store.put_blob(task.task_id, b"blob", 1 << 20).unwrap();

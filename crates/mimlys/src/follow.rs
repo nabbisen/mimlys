@@ -8,7 +8,7 @@
 use crate::app::{App, AppError};
 use crate::messages;
 use crate::output::Output;
-use crate::prompt::{Decision, Interaction, StopHandle};
+use crate::prompt::{Decision, Interaction, PlanDecision, StopHandle};
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::LIM_O1_STOP_MS;
 use mimlys_core::runtime::{Runtime, TaskView};
@@ -463,6 +463,15 @@ pub async fn drive(
             }
             TaskState::WaitingUser { wait_kind } => {
                 if !interaction.interactive() {
+                    // The plan is shown, so that what there is to decide is on the screen.
+                    if wait_kind == WaitKind::Plan
+                        && let Some(plan) = &view.plan
+                    {
+                        out.line(
+                            crate::prompt::plan_text(&task_id.to_string(), plan, false)
+                                .trim_end_matches('\n'),
+                        );
+                    }
                     out.line(messages::pending_non_interactive(
                         &task_id.to_string(),
                         wait_kind,
@@ -497,7 +506,7 @@ pub async fn drive(
                         }
                         match decision {
                             Decision::Approve => {
-                                runtime.approve_action(&app.session, task_id)?;
+                                runtime.approve_action(&app.session, task_id, None)?;
                             }
                             Decision::Reject { note, halt } => {
                                 runtime.reject_action(&app.session, task_id, note, Some(halt))?;
@@ -511,6 +520,30 @@ pub async fn drive(
                                 ));
                             }
                             Decision::Leave => return Ok(view),
+                        }
+                    }
+                    WaitKind::Plan => {
+                        let Some(plan) = view.plan.clone() else {
+                            return Ok(view);
+                        };
+                        if !signals.begin_prompt() {
+                            return Ok(leave_at_prompt(&signals, view));
+                        }
+                        let decision = interaction.plan(&task_id.to_string(), &plan);
+                        if signals.end_prompt() {
+                            return Ok(leave_at_prompt(&signals, view));
+                        }
+                        match decision {
+                            PlanDecision::Approve { note } => {
+                                runtime.approve_action(&app.session, task_id, note)?;
+                            }
+                            PlanDecision::Reject { note, halt } => {
+                                runtime.reject_action(&app.session, task_id, note, Some(halt))?;
+                            }
+                            PlanDecision::Cancel => {
+                                runtime.cancel_task(&app.session, task_id)?;
+                            }
+                            PlanDecision::Leave => return Ok(view),
                         }
                     }
                     WaitKind::Question => {
@@ -1195,7 +1228,11 @@ mod tests {
             messages::signal_at_prompt("t1", WaitKind::Question),
             "stop signal: t1 is still waiting for your answer; answer later with mimlys answer t1 <text>"
         );
-        for kind in [WaitKind::Approval, WaitKind::Question] {
+        assert_eq!(
+            messages::signal_at_prompt("t1", WaitKind::Plan),
+            "stop signal: t1 is still waiting for your approval of its plan; decide later with mimlys approve t1 or mimlys reject t1"
+        );
+        for kind in [WaitKind::Approval, WaitKind::Question, WaitKind::Plan] {
             let line = messages::signal_at_prompt("t1", kind).to_lowercase();
             assert!(!line.contains("paus") && !line.contains("cancel"), "{line}");
         }

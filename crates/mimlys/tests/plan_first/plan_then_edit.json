@@ -1,0 +1,6 @@
+[
+  {"decision": "plan", "steps": ["read src/lib.rs", "write a new file"]},
+  {"decision": "plan", "steps": ["read src/lib.rs", "write a new file", "check it"]},
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "src/new.rs", "content": "pub fn n() {}\n"}},
+  {"decision": "complete", "summary": "done"}
+]

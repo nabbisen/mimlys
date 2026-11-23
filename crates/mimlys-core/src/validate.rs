@@ -54,6 +54,9 @@ pub struct ValidationContext<'a> {
     pub task_running: bool,
     /// Whether an approval or question is pending.
     pub pending_user_item: bool,
+    /// Whether the task is plan-first and no plan is approved yet (REQ-TASK-015): an `act` and a
+    /// `complete` are then refused `plan_required`, whatever else is wrong with them.
+    pub plan_required: bool,
     /// The tools visible to the task.
     pub tools: &'a [ToolDefinition],
     /// The platform's naming rules.
@@ -207,6 +210,19 @@ pub fn validate(ctx: &ValidationContext<'_>, raw: &[u8]) -> Outcome {
         Err(r) => return rejected(r, None),
     };
     let decision_hash = decision.hash();
+    // The gate of a plan-first task (REQ-TASK-015): known only once the decision parses, since
+    // `plan`, `ask_user` and `give_up` act on nothing and go through.
+    if ctx.plan_required && matches!(decision, Decision::Act { .. } | Decision::Complete { .. }) {
+        return rejected(
+            Rejection::new(
+                RejectionCode::State,
+                Detail::State {
+                    reason: StateReason::PlanRequired,
+                },
+            ),
+            Some(decision_hash),
+        );
+    }
     let (tool_name, mut arguments, reason) = match decision {
         Decision::Act {
             tool,

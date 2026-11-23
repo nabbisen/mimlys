@@ -887,6 +887,11 @@ pub struct Metrics {
     pub halts_by_reason: std::collections::BTreeMap<String, u64>,
     /// Approvals by decision.
     pub approvals_by_decision: std::collections::BTreeMap<String, u64>,
+    /// The decisions about a plan-first task's plan, by decision (from 0.13; REQ-TASK-015):
+    /// `approved`, `rejected`, `expired`. Apart from the actions' approvals, so that the ratio
+    /// of those is not changed by the plans. Absent from the JSON when there is none.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub plan_approvals_by_decision: std::collections::BTreeMap<String, u64>,
     /// Finished actions by status.
     pub actions_by_status: std::collections::BTreeMap<String, u64>,
     /// The context and model measures over measured steps.
@@ -2127,6 +2132,20 @@ pub mod fake {
                 .cloned())
         }
 
+        fn load_plans(&self, task_id: TaskId) -> Result<Vec<PlanVersion>, PersistenceError> {
+            let mut plans: Vec<PlanVersion> = self
+                .inner
+                .lock()
+                .expect("fake lock")
+                .plans
+                .iter()
+                .filter(|p| p.task_id == task_id)
+                .cloned()
+                .collect();
+            plans.sort_by_key(|p| p.version);
+            Ok(plans)
+        }
+
         fn metrics(&self, task_id: Option<TaskId>) -> Result<Metrics, PersistenceError> {
             let inner = self.inner.lock().expect("fake lock");
             let mut m = Metrics::default();
@@ -2661,6 +2680,24 @@ pub mod fake {
             })
         }
 
+        fn record_plan_step(
+            &self,
+            step: &Step,
+            task: &Task,
+            plan: Option<&PlanVersion>,
+            events: &[EventRecord],
+        ) -> Result<(), PersistenceError> {
+            self.write("plan_step", |i| {
+                if let Some(plan) = plan {
+                    i.plans.push(plan.clone());
+                }
+                upsert(&mut i.steps, step, |s| s.step_id == step.step_id);
+                upsert(&mut i.tasks, task, |t| t.task_id == task.task_id);
+                i.events.extend(events.iter().cloned());
+                Ok(())
+            })
+        }
+
         fn append_event(&self, event: &EventRecord) -> Result<(), PersistenceError> {
             self.write("event", |i| {
                 i.events.push(event.clone());
@@ -2943,6 +2980,9 @@ pub trait PersistenceRead: Send + Sync {
     /// The task's latest plan version, if any.
     fn load_plan(&self, task_id: TaskId) -> Result<Option<PlanVersion>, PersistenceError>;
 
+    /// Every plan version of the task, oldest first.
+    fn load_plans(&self, task_id: TaskId) -> Result<Vec<PlanVersion>, PersistenceError>;
+
     /// The task's snapshots, oldest first.
     fn load_snapshots(&self, task_id: TaskId) -> Result<Vec<SnapshotRecord>, PersistenceError>;
 
@@ -3143,6 +3183,19 @@ pub trait Persistence: PersistenceRead {
 
     /// A plan version was created.
     fn record_plan(&self, plan: &PlanVersion, event: &EventRecord) -> Result<(), PersistenceError>;
+
+    /// A step of a plan-first task's plan wait (REQ-TASK-015), in one write: the step, the task
+    /// as it is now, the plan version when this write makes it, and the events, in order. The
+    /// plan is put to the user (the step open in the `wait` phase, the task waiting), or the
+    /// user's decision, the expiry or a cancellation ends the wait (the step finished, the task
+    /// running, halted or cancelled).
+    fn record_plan_step(
+        &self,
+        step: &Step,
+        task: &Task,
+        plan: Option<&PlanVersion>,
+        events: &[EventRecord],
+    ) -> Result<(), PersistenceError>;
 
     /// Records a snapshot whose files are durable, and the objects it references
     /// (counts incremented in the same transaction) (REQ-WS-004, REQ-PERS-009).

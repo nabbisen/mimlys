@@ -312,6 +312,7 @@ impl Rig {
                     hold: false,
                     from_task: None,
                     from_snapshot: None,
+                    plan_first: false,
                 },
             )
             .unwrap()
@@ -354,7 +355,7 @@ impl Rig {
         let mut result = futures_block(self.runtime.run_step(self.task)).unwrap();
         if result.outcome == StepOutcome::Waited {
             self.runtime
-                .approve_action(&self.session, self.task)
+                .approve_action(&self.session, self.task, None)
                 .unwrap();
             result = futures_block(self.runtime.run_step(self.task)).unwrap();
         }
@@ -532,7 +533,9 @@ fn req_task_006_cancel_task_records_an_interrupted_action_that_cannot_be_undone_
         let _ = futures_block(rig.runtime.run_step(rig.task));
         if rig.runtime.get_task(rig.task).unwrap().task.state != TaskState::Cancelled {
             // An action that needs approval: approve, then run it.
-            rig.runtime.approve_action(&rig.session, rig.task).unwrap();
+            rig.runtime
+                .approve_action(&rig.session, rig.task, None)
+                .unwrap();
             let _ = futures_block(rig.runtime.run_step(rig.task));
         }
         let (state, statuses) = rig
@@ -664,7 +667,9 @@ fn req_sched_004_a_request_made_while_the_task_waits_is_cleared_when_the_user_de
     let waited = futures_block(rig.runtime.run_step(rig.task)).unwrap();
     assert_eq!(waited.outcome, StepOutcome::Waited);
     rig.runtime.interrupt_step_anyway(rig.task);
-    rig.runtime.approve_action(&rig.session, rig.task).unwrap();
+    rig.runtime
+        .approve_action(&rig.session, rig.task, None)
+        .unwrap();
     assert!(
         !rig.runtime.step_interruption(rig.task).is_cancelled(),
         "the decision cleared the request"
@@ -695,7 +700,9 @@ fn req_cli_005_a_first_signal_during_the_model_request_starts_no_new_action() {
         rig.ask_during_the_request(Ask::NoNewAction);
         let mut result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
         if result.outcome == StepOutcome::Waited {
-            rig.runtime.approve_action(&rig.session, rig.task).unwrap();
+            rig.runtime
+                .approve_action(&rig.session, rig.task, None)
+                .unwrap();
             rig.ask_when_the_step_begins(Ask::NoNewAction);
             result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
         }
@@ -841,7 +848,9 @@ fn req_cli_005_a_stronger_request_already_set_when_an_execution_would_begin_star
             rig.ask_during_the_request(ask);
             let mut result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
             if result.outcome == StepOutcome::Waited {
-                rig.runtime.approve_action(&rig.session, rig.task).unwrap();
+                rig.runtime
+                    .approve_action(&rig.session, rig.task, None)
+                    .unwrap();
                 rig.ask_when_the_step_begins(ask);
                 result = futures_block(rig.runtime.run_step(rig.task)).unwrap();
             }
@@ -1428,7 +1437,9 @@ fn req_ws_004_an_approved_action_continues_after_the_tree_can_be_read_again() {
     let rig = Rig::new(definition);
     let waited = futures_block(rig.runtime.run_step(rig.task)).unwrap();
     assert_eq!(waited.outcome, StepOutcome::Waited);
-    rig.runtime.approve_action(&rig.session, rig.task).unwrap();
+    rig.runtime
+        .approve_action(&rig.session, rig.task, None)
+        .unwrap();
     rig.workspaces.make_unreadable_to_snapshots("d");
 
     let result = futures_block(rig.runtime.run_step(rig.task)).unwrap();

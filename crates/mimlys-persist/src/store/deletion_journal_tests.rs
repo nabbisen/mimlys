@@ -22,7 +22,11 @@ fn task_with_a_snapshot(
 ) -> (Task, SnapshotRecord) {
     let task = fx.task();
     store
-        .create_task(&task, &[], &fx.event(&task, Event::TaskCreated))
+        .create_task(
+            &task,
+            &[],
+            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+        )
         .unwrap();
     let hash = hash_bytes(content);
     files.put_object(&hash, content).unwrap();

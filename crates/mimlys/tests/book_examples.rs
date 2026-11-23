@@ -3,6 +3,9 @@
 //! `sh` block preceded by the comment `<!-- tested -->` is executed line by
 //! line against a store with finished, cancelled and held tasks; every
 //! `mimlys …` line must exit 0, with `<task>` standing for a finished task.
+//! `<project>` stands for a project directory made for the command, and a command with
+//! `--plan-first` is run against a fake backend whose script begins with a `plan`: with the
+//! book's own script the first decision is an action, which a plan-first task rejects.
 //! There is no list of page names here: a page that carries the marker but is
 //! not in `SUMMARY.md` (so not in the book either), or a marker that opens no
 //! block of commands, fails the test. A change to a command that the book
@@ -141,6 +144,8 @@ fn book_src() -> Option<PathBuf> {
 struct Env {
     dir: tempfile::TempDir,
     config: PathBuf,
+    /// The same store with a script whose first decision is a plan (`--plan-first`).
+    plan_config: PathBuf,
 }
 
 impl Env {
@@ -157,13 +162,34 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { dir, config }
+        let plan_script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/plan_first/plan_then_edit.json");
+        let plan_config = dir.path().join("config-plan.toml");
+        std::fs::write(
+            &plan_config,
+            format!(
+                "config_version = 1\n[runtime]\ndata_dir = {:?}\n[backend]\nkind = \"fake\"\nscript = {:?}\n",
+                dir.path().join("data").to_string_lossy(),
+                plan_script.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        Self {
+            dir,
+            config,
+            plan_config,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
         let mut cmd = common::mimlys();
+        let config = if args.contains(&"--plan-first") {
+            &self.plan_config
+        } else {
+            &self.config
+        };
         cmd.arg("--config")
-            .arg(&self.config)
+            .arg(config)
             .args(args)
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
@@ -205,6 +231,37 @@ impl Env {
     }
 }
 
+/// The words of a command line as a shell reads them: split at blanks, a double-quoted word kept
+/// whole without its quotes (the book's examples quote a goal of more than one word).
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    for c in command.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}
+
 /// REQ-CLI-007: every command in a tested block of every page of the book
 /// (the pages `SUMMARY.md` lists) runs and succeeds.
 #[test]
@@ -219,12 +276,16 @@ fn req_cli_007_the_commands_in_the_books_tested_blocks_run() {
     let pages = book_commands(&src).unwrap_or_else(|e| panic!("{e}"));
     let env = Env::new();
     let finished = env.fill();
+    let project = env.scope("project");
     for (page, commands) in &pages {
         for command in commands {
-            let words: Vec<String> = command
-                .split_whitespace()
+            let words: Vec<String> = shell_words(command)
+                .into_iter()
                 .skip(1)
-                .map(|w| w.replace("<task>", &finished))
+                .map(|w| {
+                    w.replace("<task>", &finished)
+                        .replace("<project>", &project)
+                })
                 .collect();
             let args: Vec<&str> = words.iter().map(String::as_str).collect();
             let (code, stdout, stderr) = env.run(&args);

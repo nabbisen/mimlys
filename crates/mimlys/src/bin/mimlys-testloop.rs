@@ -46,6 +46,9 @@ struct Cli {
     /// Completion check JSON.
     #[arg(long)]
     completion_check: Option<String>,
+    /// Create the task plan-first (REQ-TASK-015): the fake user decides the plan with `--decide`.
+    #[arg(long)]
+    plan_first: bool,
     /// What the fake user decides at every approval: approve, reject, halt.
     #[arg(long, default_value = "approve")]
     decide: String,
@@ -230,6 +233,7 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
                     hold: false,
                     from_task: None,
                     from_snapshot: None,
+                    plan_first: cli.plan_first,
                 },
             )?
             .task_id

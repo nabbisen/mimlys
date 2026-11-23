@@ -1,0 +1,6 @@
+[
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "src/new.rs", "content": "pub fn n() {}\n"}},
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "src/new.rs", "content": "pub fn n() {}\n"}},
+  {"decision": "act", "tool": "write_file", "arguments": {"path": "src/new.rs", "content": "pub fn n() {}\n"}},
+  {"decision": "complete", "summary": "done"}
+]

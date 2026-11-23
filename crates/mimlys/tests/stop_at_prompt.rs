@@ -1,4 +1,5 @@
-//! A stop signal at an approval prompt and at a question prompt (REQ-CLI-005):
+//! A stop signal at an approval prompt, at a question prompt and at the prompt for a plan-first
+//! task's plan (REQ-CLI-005, REQ-TASK-015):
 //! `mimlys run` on a pseudo-terminal, as a user runs it, waiting for the user's
 //! decision or answer. SIGINT, and separately SIGTERM, ends the process with
 //! success within LIM-O1, the task stays `waiting_user`, and standard error
@@ -33,6 +34,7 @@ const PROMPT_BOUND: Duration = Duration::from_secs(120);
 enum Prompt {
     Approval,
     Question,
+    Plan,
 }
 
 struct Env {
@@ -51,6 +53,7 @@ impl Env {
                 "arguments": {"path": "notes/out.txt", "content": "hello"},
             }),
             Prompt::Question => json!({"decision": "ask_user", "question": "Which branch?"}),
+            Prompt::Plan => json!({"decision": "plan", "steps": ["read a", "write b"]}),
         };
         let script = [first, json!({"decision": "complete", "summary": "done"})];
         let script_path = data.path().join("script.json");
@@ -137,7 +140,11 @@ fn stop_at(prompt: Prompt, signal: rustix::process::Signal, name: &str) {
     std::fs::create_dir_all(&scope).unwrap();
     let terminal = Terminal::open();
     let stderr_path = env.data.path().join("stderr.txt");
-    let mut cmd = env.command(&["run", "go on", "--scope", scope.to_str().unwrap()]);
+    let mut args = vec!["run", "go on", "--scope", scope.to_str().unwrap()];
+    if matches!(prompt, Prompt::Plan) {
+        args.push("--plan-first");
+    }
+    let mut cmd = env.command(&args);
     cmd.stdin(Stdio::from(terminal.slave.try_clone().unwrap()))
         .stdout(Stdio::from(terminal.slave.try_clone().unwrap()))
         .stderr(std::fs::File::create(&stderr_path).unwrap());
@@ -146,7 +153,7 @@ fn stop_at(prompt: Prompt, signal: rustix::process::Signal, name: &str) {
 
     // The prompt is shown, and the process reads the user's input next.
     let shown = match prompt {
-        Prompt::Approval => "[a]pprove",
+        Prompt::Approval | Prompt::Plan => "[a]pprove",
         Prompt::Question => "Your answer: ",
     };
     let started = Instant::now();
@@ -154,7 +161,7 @@ fn stop_at(prompt: Prompt, signal: rustix::process::Signal, name: &str) {
         let text = terminal.text();
         if text.contains(shown)
             && text.ends_with(match prompt {
-                Prompt::Approval => "> ",
+                Prompt::Approval | Prompt::Plan => "> ",
                 Prompt::Question => "Your answer: ",
             })
         {
@@ -206,6 +213,9 @@ fn stop_at(prompt: Prompt, signal: rustix::process::Signal, name: &str) {
         Prompt::Question => format!(
             "stop signal: {id} is still waiting for your answer; answer later with mimlys answer {id} <text>"
         ),
+        Prompt::Plan => format!(
+            "stop signal: {id} is still waiting for your approval of its plan; decide later with mimlys approve {id} or mimlys reject {id}"
+        ),
     };
     let stderr = std::fs::read_to_string(&stderr_path).unwrap();
     assert_eq!(stderr.trim_end_matches('\n'), expected, "{name}");
@@ -222,6 +232,10 @@ fn stop_at(prompt: Prompt, signal: rustix::process::Signal, name: &str) {
     match prompt {
         Prompt::Approval => assert_eq!(pending["pending_approval"]["status"], "pending"),
         Prompt::Question => assert!(!pending["pending_question"].is_null(), "{name}"),
+        Prompt::Plan => {
+            assert_eq!(pending["task"]["pending"]["pending"], "plan", "{name}");
+            assert_eq!(pending["plan"]["steps"].as_array().unwrap().len(), 2);
+        }
     }
 }
 
@@ -242,6 +256,26 @@ fn req_cli_005_sigterm_at_an_approval_prompt_ends_the_process() {
         Prompt::Approval,
         rustix::process::Signal::TERM,
         "SIGTERM at an approval prompt",
+    );
+}
+
+/// REQ-CLI-005, REQ-TASK-015: SIGINT at the prompt for a plan.
+#[test]
+fn req_cli_005_sigint_at_a_plan_prompt_ends_the_process() {
+    stop_at(
+        Prompt::Plan,
+        rustix::process::Signal::INT,
+        "SIGINT at a plan prompt",
+    );
+}
+
+/// REQ-CLI-005, REQ-TASK-015: SIGTERM at the prompt for a plan.
+#[test]
+fn req_cli_005_sigterm_at_a_plan_prompt_ends_the_process() {
+    stop_at(
+        Prompt::Plan,
+        rustix::process::Signal::TERM,
+        "SIGTERM at a plan prompt",
     );
 }
 

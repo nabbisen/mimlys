@@ -27,6 +27,7 @@ mod interrupt;
 mod native;
 mod native_context;
 mod newer_records;
+mod plan_first;
 mod refused_creation;
 mod rejection_feedback;
 mod result_bound;
@@ -176,6 +177,7 @@ impl Harness {
             hold: false,
             from_task: None,
             from_snapshot: None,
+            plan_first: false,
         };
         edit(&mut request);
         self.runtime
@@ -439,7 +441,7 @@ fn req_apr_approval_round_trip() {
         h.runtime.run_step(id).now_or_never_err(),
         "a waiting task has no step"
     );
-    let task = h.runtime.approve_action(&h.session, id).unwrap();
+    let task = h.runtime.approve_action(&h.session, id, None).unwrap();
     assert_eq!(task.state, TaskState::Running);
     let cont = h.step(id);
     assert_eq!(cont.outcome, StepOutcome::Continued);
@@ -531,7 +533,7 @@ fn req_apr_009_revocation_invalidates_pending_approval() {
     assert_eq!(h.state(id), TaskState::Running);
     let approvals = h.persistence.load_approvals(id).unwrap();
     assert!(matches!(approvals[0].status, ApprovalStatus::Invalidated));
-    assert!(h.runtime.approve_action(&h.session, id).is_err());
+    assert!(h.runtime.approve_action(&h.session, id, None).is_err());
     assert!(h.tools.calls().is_empty());
 }
 
@@ -543,7 +545,7 @@ fn req_apr_009_approved_then_revoked_does_not_run() {
     let h = Harness::with_policy(vec![act("write_file", "a")], approval_policy());
     let id = h.create();
     h.step(id);
-    h.runtime.approve_action(&h.session, id).unwrap();
+    h.runtime.approve_action(&h.session, id, None).unwrap();
     let grants = h.runtime.get_task(id).unwrap().grants;
     let write = grants
         .iter()
@@ -611,7 +613,7 @@ fn req_apr_010_question_round_trip() {
     );
     assert!(h.runtime.get_task(id).unwrap().pending_question.is_some());
     assert!(
-        h.runtime.approve_action(&h.session, id).is_err(),
+        h.runtime.approve_action(&h.session, id, None).is_err(),
         "a question is not an approval"
     );
     let task = h.runtime.answer_question(&h.session, id, "main").unwrap();
@@ -943,6 +945,7 @@ fn req_task_012_scope_overlap_conflict() {
                 hold: false,
                 from_task: None,
                 from_snapshot: None,
+                plan_first: false,
             },
         )
         .unwrap_err();
@@ -1190,6 +1193,7 @@ fn req_sched_002_one_step_and_one_execution_at_a_time_per_task() {
                 hold: false,
                 from_task: None,
                 from_snapshot: None,
+                plan_first: false,
             },
         )
         .unwrap()
@@ -1220,7 +1224,7 @@ fn req_sched_002_one_step_and_one_execution_at_a_time_per_task() {
     assert_eq!(provider.at_call.lock().unwrap().len(), 1, "one execution");
 
     // Approved, the held step ends its own step before the next one starts.
-    runtime.approve_action(&session, id).unwrap();
+    runtime.approve_action(&session, id, None).unwrap();
     let state = futures_block(runtime.run_until_wait(id)).unwrap();
     assert!(
         matches!(state, TaskState::Completed { .. }),
@@ -1368,6 +1372,7 @@ fn req_task_001_invalid_requests() {
         hold: true,
         from_task: None,
         from_snapshot: None,
+        plan_first: false,
     };
     let mut empty = base();
     empty.goal = String::new();
@@ -1517,7 +1522,7 @@ fn req_apr_009_grant_change_rebinds_pending_approval() {
     let third = h.runtime.get_task(id).unwrap().pending_approval.unwrap();
     assert_ne!(third.approval_id, second.approval_id);
     // Approving the current request runs the action once.
-    h.runtime.approve_action(&h.session, id).unwrap();
+    h.runtime.approve_action(&h.session, id, None).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
     assert_eq!(h.tools.calls().len(), 1);
     assert_eq!(
@@ -1967,6 +1972,7 @@ fn req_task_004_fork() {
             hold: true,
             from_task: Some(source),
             from_snapshot: None,
+            plan_first: false,
         },
     );
     let fork = err.unwrap();
@@ -2655,6 +2661,7 @@ fn req_sec_010_remote_backend_needs_external_profile() {
                 hold: false,
                 from_task: None,
                 from_snapshot: None,
+                plan_first: false,
             },
         )
         .unwrap_err();
@@ -2775,6 +2782,7 @@ fn inv_11_grants_never_exceed_the_ceiling() {
                 hold: true,
                 from_task: None,
                 from_snapshot: None,
+                plan_first: false,
             },
         )
         .unwrap_err();
@@ -2905,6 +2913,7 @@ fn inv_05_a_transition_is_durable_before_its_consequence_is_visible() {
                 hold: false,
                 from_task: None,
                 from_snapshot: None,
+                plan_first: false,
             },
         )
         .unwrap()
@@ -3373,6 +3382,7 @@ fn create_request() -> CreateTask {
         hold: false,
         from_task: None,
         from_snapshot: None,
+        plan_first: false,
     }
 }
 
@@ -3610,6 +3620,7 @@ fn req_ws_006_a_promotions_backup_is_not_a_fork_source() {
                 hold: true,
                 from_task: Some(id),
                 from_snapshot: snapshot,
+                plan_first: false,
             },
         )
     };

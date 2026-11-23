@@ -16,6 +16,8 @@ pub enum WaitKind {
     Approval,
     /// A question to the user is pending.
     Question,
+    /// The plan of a plan-first task is pending (from 0.13; REQ-TASK-015).
+    Plan,
 }
 
 /// Why the runtime stopped a task (external design §5.2, REQ-TASK-007).
@@ -141,7 +143,7 @@ pub enum TaskState {
     Created,
     /// The loop is active.
     Running,
-    /// An approval or a question is pending; no resources are held.
+    /// An approval, a question or a plan is pending; no resources are held.
     WaitingUser {
         /// What the task waits for.
         wait_kind: WaitKind,
@@ -211,6 +213,13 @@ pub enum PendingItem {
         /// The question.
         question_id: QuestionId,
     },
+    /// The first plan of a plan-first task, which the user approves before anything acts (from
+    /// 0.13; REQ-TASK-015). The step that holds the wait is the open step whose
+    /// [`PlanWait`](crate::plan_wait::PlanWait) has this version.
+    Plan {
+        /// The plan version that waits.
+        version: u32,
+    },
 }
 
 impl PendingItem {
@@ -219,6 +228,7 @@ impl PendingItem {
         match self {
             PendingItem::Approval { .. } => WaitKind::Approval,
             PendingItem::Question { .. } => WaitKind::Question,
+            PendingItem::Plan { .. } => WaitKind::Plan,
         }
     }
 }
@@ -412,6 +422,17 @@ pub struct Task {
     /// The task this one was forked from (REQ-TASK-004).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<TaskId>,
+    /// The task was created with `--plan-first` (from 0.13; REQ-TASK-015): until a plan is
+    /// approved, an `act` or a `complete` is rejected `plan_required`. Absent when false, so that
+    /// a task without the flag has the record it always had.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan_first: bool,
+    /// The version of the plan the user approved, once they did (from 0.13). It is what ends the
+    /// gate, and is read from the task's own record, never from the configuration, so that a
+    /// restart, a recovery and a resume keep it. Absent before, and for a task that is not
+    /// plan-first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_approved: Option<u32>,
 }
 
 /// A budget extension requested at resumption from a budget halt (REQ-TASK-005).
@@ -452,6 +473,9 @@ pub enum TaskInput {
     NeedsUser(PendingItem),
     /// The user approved, rejected without halt, or answered.
     UserDecided,
+    /// The user approved the plan the task waits for: the gate ends, and the version is kept
+    /// (from 0.13).
+    PlanApproved,
     /// The user rejected with the halt flag.
     UserHalted,
     /// The pending item expired.
@@ -509,6 +533,7 @@ impl TaskInput {
             TaskInput::Cancel => "cancel",
             TaskInput::NeedsUser(_) => "needs_user",
             TaskInput::UserDecided => "user_decided",
+            TaskInput::PlanApproved => "plan_approved",
             TaskInput::UserHalted => "user_halted",
             TaskInput::Expired => "expired",
             TaskInput::Halt(_) | TaskInput::HaltPolicy(_) => "halt",
@@ -537,6 +562,8 @@ pub struct TaskSpec {
     pub versions: TaskVersions,
     /// Project scope.
     pub scope: ScopeSpec,
+    /// Created with `--plan-first` (REQ-TASK-015).
+    pub plan_first: bool,
 }
 
 impl Task {
@@ -559,7 +586,15 @@ impl Task {
             profile: spec.profile,
             scope: spec.scope,
             forked_from: None,
+            plan_first: spec.plan_first,
+            plan_approved: None,
         })
+    }
+
+    /// Whether the gate of a plan-first task is closed: an `act` or a `complete` is rejected
+    /// `plan_required` until a plan is approved (REQ-TASK-015). Read from the record alone.
+    pub fn plan_required(&self) -> bool {
+        self.plan_first && self.plan_approved.is_none()
     }
 
     /// Sets the completion check.
@@ -648,6 +683,19 @@ impl Task {
                 next.pending = None;
                 TaskState::Running
             }
+            (
+                TaskState::WaitingUser {
+                    wait_kind: WaitKind::Plan,
+                },
+                TaskInput::PlanApproved,
+            ) => {
+                let Some(PendingItem::Plan { version }) = next.pending else {
+                    return Err(illegal());
+                };
+                next.plan_approved = Some(version);
+                next.pending = None;
+                TaskState::Running
+            }
             (TaskState::WaitingUser { .. }, TaskInput::UserHalted) => {
                 next.pending = None;
                 TaskState::Halted {
@@ -661,6 +709,8 @@ impl Task {
                     halt_reason: match wait_kind {
                         WaitKind::Approval => HaltReason::ApprovalExpired,
                         WaitKind::Question => HaltReason::QuestionExpired,
+                        // A plan is a request for approval: it expires as one does (LIM-A1).
+                        WaitKind::Plan => HaltReason::ApprovalExpired,
                     },
                     halt_detail: None,
                 }

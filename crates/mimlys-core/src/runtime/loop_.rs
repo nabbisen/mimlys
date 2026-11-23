@@ -166,6 +166,7 @@ impl StepEnv {
         let ctx = ValidationContext {
             task_running: task.state == TaskState::Running,
             pending_user_item,
+            plan_required: task.plan_required(),
             tools: &self.visible,
             rules: runtime.deps.rules,
             grants: &hooks,
@@ -520,7 +521,11 @@ impl Runtime {
                 env.unavailable.clone(),
             ),
         };
-        let plan = persistence.load_plan(task.task_id)?;
+        // The plan in force: a plan-first task has none before the user approves one, so a plan
+        // that waits or was rejected is not shown as the model's plan (REQ-TASK-015); a rejected
+        // plan is in the history of its step.
+        let plans = persistence.load_plans(task.task_id)?;
+        let plan = plans.last().filter(|_| !task.plan_required());
         let steps = persistence.load_steps(task.task_id)?;
         let actions = persistence.load_actions(task.task_id)?;
         let observations = persistence.load_observations(task.task_id)?;
@@ -535,7 +540,8 @@ impl Runtime {
             tools: &offered,
             tool_definitions: &definitions,
             grants: &env.grants,
-            plan: plan.as_ref(),
+            plan,
+            plans: &plans,
             steps: &steps,
             actions: &actions,
             observations: &observations,
@@ -1048,6 +1054,59 @@ impl Runtime {
         })
     }
 
+    /// The plan of a plan-first task is put to the user (REQ-TASK-015): the version is recorded,
+    /// the task waits as `waiting_user{wait_kind: plan}` with `pending: plan{version}`, and the
+    /// step stays open in the `wait` phase holding the wait, as an action's step does. The plan,
+    /// the step, the task and the three events are one write: a crash leaves the task running
+    /// with nothing recorded, or waiting with everything.
+    fn request_plan_approval(
+        &self,
+        task: Task,
+        mut step: Step,
+        plan: PlanVersion,
+        received: crate::event::EventRecord,
+        now: Instant,
+    ) -> Result<StepResultView, RuntimeError> {
+        let waiting = task.transition(
+            TaskInput::NeedsUser(PendingItem::Plan {
+                version: plan.version,
+            }),
+            now,
+        )?;
+        step.phase = StepPhase::Wait;
+        step.plan_wait = Some(crate::plan_wait::PlanWait::request(
+            plan.version,
+            now,
+            LIM_A1_EXPIRY_MS.and_then(|ms| now.plus_millis(ms).ok()),
+        ));
+        let events = [
+            received,
+            self.event(
+                Actor::Runtime,
+                Some(task.task_id),
+                Some(step.step_id),
+                None,
+                Event::PlanApprovalRequested {
+                    version: plan.version,
+                },
+            ),
+            self.event(
+                Actor::Runtime,
+                Some(task.task_id),
+                None,
+                None,
+                state_changed(&task, &waiting),
+            ),
+        ];
+        self.deps
+            .persistence
+            .record_plan_step(&step, &waiting, Some(&plan), &events)?;
+        Ok(StepResultView {
+            outcome: StepOutcome::Waited,
+            state: waiting.state,
+        })
+    }
+
     /// Continues the step of an approved action: the approval is checked
     /// against the action and the grant set again, consumed with the
     /// authorization (one transition), then lines 5–8 run (REQ-APR-008, REQ-APR-009).
@@ -1211,6 +1270,12 @@ impl Runtime {
                     steps,
                     created_at: now,
                 };
+                // The first plan of a plan-first task is put to the user, and nothing acts until
+                // they approve it (REQ-TASK-015). The gate is read from the task's own record,
+                // never from the configuration, so a restart, a recovery and a resume keep it.
+                if task.plan_required() {
+                    return self.request_plan_approval(task, step, plan, received, now);
+                }
                 persistence.record_plan(&plan, &received)?;
                 self.finish_step(task, step, StepOutcome::Continued, None, now)
             }

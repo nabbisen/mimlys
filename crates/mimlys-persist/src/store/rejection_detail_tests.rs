@@ -21,7 +21,11 @@ use serde_json::{Value, json};
 fn create(store: &dyn Persistence, fx: &Fx) -> Task {
     let task = fx.task();
     store
-        .create_task(&task, &[], &fx.event(&task, Event::TaskCreated))
+        .create_task(
+            &task,
+            &[],
+            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+        )
         .unwrap();
     task
 }

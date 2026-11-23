@@ -54,7 +54,10 @@ fn req_main_006_every_verb_that_changes_a_task_refuses_a_newer_word_and_writes_n
         ("resume_task", h.runtime.resume_task(s, id, None).map(drop)),
         ("pause_task", h.runtime.pause_task(s, id).map(drop)),
         ("cancel_task", h.runtime.cancel_task(s, id).map(drop)),
-        ("approve_action", h.runtime.approve_action(s, id).map(drop)),
+        (
+            "approve_action",
+            h.runtime.approve_action(s, id, None).map(drop),
+        ),
         (
             "reject_action",
             h.runtime.reject_action(s, id, None, None).map(drop),

@@ -260,7 +260,7 @@ pub fn run_an_action(data: &std::path::Path, task: &str, index: u32) -> ActionId
 /// The tasks of a store that holds words of a newer release, by what they hold.
 pub struct Newer {
     pub env: Env,
-    /// Waits for a kind of item this release has not got (0.13's `plan`).
+    /// Waits for a kind of item this release has not got (a later release's `review`).
     pub wait: String,
     /// In a state this release has not got.
     pub state: String,
@@ -294,19 +294,19 @@ impl Newer {
         env.write_task(
             &wait,
             "waiting_user",
-            json!({"state": "waiting_user", "wait_kind": "plan"}),
+            json!({"state": "waiting_user", "wait_kind": "review"}),
         );
         env.write_task(&state, "quarantined", json!({"state": "quarantined"}));
         env.write_task(
             &halt,
             "halted",
-            json!({"state": "halted", "halt_reason": "plan_required"}),
+            json!({"state": "halted", "halt_reason": "needs_review"}),
         );
         env.write_event(
             &halt,
             1,
             "task.state_changed",
-            json!({"from": "running", "to": "halted", "reason": "plan_required"}),
+            json!({"from": "running", "to": "halted", "reason": "needs_review"}),
         );
         env.write_task(
             &failed,
@@ -315,7 +315,7 @@ impl Newer {
         );
         env.write_event(&event, 2, "session.attached", json!({"client": "tui"}));
         env.sql(
-            "UPDATE actions SET status = 'held_for_plan', record = json_set(record, '$.status', 'held_for_plan') WHERE action_id = ?1",
+            "UPDATE actions SET status = 'held_for_review', record = json_set(record, '$.status', 'held_for_review') WHERE action_id = ?1",
             &[&unreadable_action.to_string()],
         );
         Self {
@@ -334,12 +334,12 @@ impl Newer {
 
     pub fn newer_tasks(&self) -> [(&str, &str, &str); 6] {
         [
-            (self.wait.as_str(), "wait_kind", "plan"),
+            (self.wait.as_str(), "wait_kind", "review"),
             (self.state.as_str(), "state", "quarantined"),
-            (self.halt.as_str(), "halt_reason", "plan_required"),
+            (self.halt.as_str(), "halt_reason", "needs_review"),
             (self.failed.as_str(), "reason.failure_reason", "daemon_lost"),
             (self.event.as_str(), "event", "session.attached"),
-            (self.action.as_str(), "status", "held_for_plan"),
+            (self.action.as_str(), "status", "held_for_review"),
         ]
     }
 }

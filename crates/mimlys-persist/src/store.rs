@@ -475,6 +475,13 @@ macro_rules! persistence_read {
             )
         }
 
+        fn load_plans(&self, task_id: TaskId) -> Result<Vec<PlanVersion>, PersistenceError> {
+            self.query(
+                "SELECT record FROM plan_versions WHERE task_id = ?1 ORDER BY version",
+                &[&task_id.to_string()],
+            )
+        }
+
         fn events_since(
             &self,
             position: u64,
@@ -989,6 +996,30 @@ impl Persistence for Store {
         })
     }
 
+    fn record_plan_step(
+        &self,
+        step: &Step,
+        task: &Task,
+        plan: Option<&PlanVersion>,
+        events: &[EventRecord],
+    ) -> Result<(), PersistenceError> {
+        self.transaction("task_transition", |tx| {
+            if let Some(plan) = plan {
+                tx.execute(
+                    "INSERT INTO plan_versions (task_id, version, record) VALUES (?1, ?2, ?3)",
+                    params![plan.task_id.to_string(), plan.version, json(plan)?],
+                )
+                .map_err(storage("insert_plan"))?;
+            }
+            upsert_step(tx, step)?;
+            upsert_task(tx, task)?;
+            for event in events {
+                append_event(tx, event)?;
+            }
+            Ok(())
+        })
+    }
+
     fn put_blob(
         &self,
         task_id: TaskId,
@@ -1337,3 +1368,6 @@ mod halts_tests;
 
 #[cfg(test)]
 mod newer_tests;
+
+#[cfg(test)]
+mod plan_first_tests;

@@ -118,11 +118,11 @@ fn req_main_006_the_start_recovers_the_others_and_leaves_a_newer_task_as_it_is()
     // Said once each: a line of the start's log names the task.
     for (task, what) in [
         (&running_newer, "session.attached"),
-        (&s.wait, "plan"),
+        (&s.wait, "review"),
         (&s.state, "quarantined"),
-        (&s.halt, "plan_required"),
+        (&s.halt, "needs_review"),
         (&s.failed, "daemon_lost"),
-        (&s.action, "held_for_plan"),
+        (&s.action, "held_for_review"),
     ] {
         let lines: Vec<&str> = err.lines().filter(|l| l.contains(task.as_str())).collect();
         // Tasks the start does not visit (halted, failed, an action's status) are not named by

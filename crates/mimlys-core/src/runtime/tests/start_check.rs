@@ -119,7 +119,7 @@ fn req_sec_010_every_start_is_checked_not_only_resume() {
     let before = h.backend.requests().len();
     assert_eq!(before, 1);
     h.backend.set_remote(true);
-    h.runtime.approve_action(&h.session, id).unwrap();
+    h.runtime.approve_action(&h.session, id, None).unwrap();
     assert_eq!(h.step(id).state, halted_policy(), "approve");
     assert_eq!(h.backend.requests().len(), before, "approve: nothing sent");
     assert!(

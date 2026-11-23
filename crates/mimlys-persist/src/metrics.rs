@@ -100,6 +100,13 @@ pub fn metrics(
                         .unwrap_or_default();
                     *m.approvals_by_decision.entry(name).or_default() += 1;
                 }
+                Event::PlanApprovalDecided { decision, .. } => {
+                    let name = serde_json::to_value(decision)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_default();
+                    *m.plan_approvals_by_decision.entry(name).or_default() += 1;
+                }
                 Event::ActionFinished { status, .. } => {
                     *m.actions_by_status.entry(status.clone()).or_default() += 1
                 }
@@ -172,6 +179,13 @@ fn count_newer_event(
         "approval.decided" => (
             "decision",
             (|m| &mut m.approvals_by_decision, "approvals_by_decision"),
+        ),
+        "plan.approval_decided" => (
+            "decision",
+            (
+                |m| &mut m.plan_approvals_by_decision,
+                "plan_approvals_by_decision",
+            ),
         ),
         "action.finished" => (
             "status",

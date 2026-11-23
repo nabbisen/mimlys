@@ -68,6 +68,9 @@ struct NewArgs {
     /// Fork: the snapshot to start from (the source's latest by default).
     #[arg(long, value_name = "SNAPSHOT")]
     from_snapshot: Option<String>,
+    /// The model's first decision must be a plan, which you approve before anything acts.
+    #[arg(long)]
+    plan_first: bool,
 }
 
 impl NewArgs {
@@ -83,6 +86,7 @@ impl NewArgs {
             hold,
             from_task: self.from_task,
             from_snapshot: self.from_snapshot,
+            plan_first: self.plan_first,
         }
     }
 }
@@ -94,12 +98,15 @@ enum Command {
     /// Task control.
     #[command(subcommand)]
     Task(TaskCommand),
-    /// Approve the pending action; it runs at once.
+    /// Approve the pending action, or the plan a plan-first task waits for; it goes ahead at once.
     Approve {
         /// Task id or a unique prefix.
         task: String,
+        /// A note for the model, in your own words.
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
     },
-    /// Reject the pending action.
+    /// Reject the pending action, or the plan a plan-first task waits for.
     Reject {
         /// Task id or a unique prefix.
         task: String,
@@ -592,7 +599,7 @@ fn changes_task(command: &Command) -> Option<&str> {
             | TaskCommand::Prune { .. }
             | TaskCommand::Output { .. } => None,
         },
-        Command::Approve { task }
+        Command::Approve { task, .. }
         | Command::Reject { task, .. }
         | Command::Answer { task, .. }
         | Command::Grant { task, .. }
@@ -690,7 +697,7 @@ impl Steps {
 fn start_is_forbidden(app: &App, command: &Command) -> bool {
     let named = match command {
         Command::Task(TaskCommand::Resume { task, .. })
-        | Command::Approve { task }
+        | Command::Approve { task, .. }
         | Command::Reject { task, .. }
         | Command::Answer { task, .. } => Some(task),
         _ => None,
@@ -903,7 +910,9 @@ async fn dispatch(
         Command::Promote { patch: true, .. } => {
             unreachable!("routed to the reader by ReadCommand::of")
         }
-        Command::Approve { task } => commands::approve::run(app, &task, terminal, out).await,
+        Command::Approve { task, note } => {
+            commands::approve::run(app, &task, note, terminal, out).await
+        }
         Command::Reject { task, note, halt } => {
             commands::reject::run(app, &task, note, halt, terminal, out).await
         }

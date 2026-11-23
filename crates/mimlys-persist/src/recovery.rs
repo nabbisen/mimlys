@@ -16,7 +16,8 @@ use mimlys_core::ids::{EventId, IdSource, TaskId};
 use mimlys_core::policy::Recovery;
 use mimlys_core::recovery::plan_recovery;
 use mimlys_core::spi::{Persistence, PersistenceError, PersistenceRead};
-use mimlys_core::task::{HaltReason, Task, TaskInput, TaskState, WaitKind};
+use mimlys_core::step::StepOutcome;
+use mimlys_core::task::{HaltReason, PendingItem, Task, TaskInput, TaskState, WaitKind};
 
 /// What recovery did to one task.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -500,6 +501,46 @@ fn expire_waiting(
                     event.action_id = Some(approval.action_id);
                     store.record_approval_decision(&halted, &approval, &event)?;
                     store.append_event(&ctx.event(&halted, state_changed(&task, &halted)))?;
+                }
+            }
+            WaitKind::Plan => {
+                // The wait is on the step that made the plan (REQ-TASK-015): the one whose
+                // `plan_wait` is the task's pending version and has no decision.
+                let Some(PendingItem::Plan { version }) = task.pending else {
+                    continue;
+                };
+                let Some(mut step) = store.load_steps(task_id)?.into_iter().find(|s| {
+                    s.plan_wait
+                        .as_ref()
+                        .is_some_and(|w| w.version == version && w.is_pending())
+                }) else {
+                    continue;
+                };
+                let Some(wait) = step.plan_wait.as_mut() else {
+                    continue;
+                };
+                if wait.expire(ctx.now) {
+                    let halted = task
+                        .transition(TaskInput::Expired, ctx.now)
+                        .map_err(state_error)?;
+                    step.finish(StepOutcome::Halted, ctx.now);
+                    let mut decided = ctx.event(
+                        &halted,
+                        Event::PlanApprovalDecided {
+                            version,
+                            decision: ApprovalDecision::Expired,
+                        },
+                    );
+                    decided.step_id = Some(step.step_id);
+                    let mut finished = ctx.event(
+                        &halted,
+                        Event::StepFinished {
+                            outcome: StepOutcome::Halted,
+                        },
+                    );
+                    finished.step_id = Some(step.step_id);
+                    let changed = ctx.event(&halted, state_changed(&task, &halted));
+                    store.record_plan_step(&step, &halted, None, &[decided, finished, changed])?;
                 }
             }
             WaitKind::Question => {

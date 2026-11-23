@@ -559,6 +559,7 @@ fn req_task_004_the_fork_of_a_halted_source_names_both_ways_on() {
                 hold: false,
                 from_task: Some(source),
                 from_snapshot: None,
+                plan_first: false,
             },
         )
     };
@@ -588,6 +589,7 @@ fn req_task_004_the_fork_of_a_halted_source_names_both_ways_on() {
             hold: false,
             from_task: None,
             from_snapshot: None,
+            plan_first: false,
         },
     );
     let message = other.unwrap_err().to_string();
@@ -631,7 +633,7 @@ fn req_dec_010_a_rejected_approval_counts_with_the_trees_identity() {
     };
     // 1: approved and run (the decision saw the base tree).
     assert_eq!(h.step(id).outcome, StepOutcome::Waited);
-    h.runtime.approve_action(&h.session, id).unwrap();
+    h.runtime.approve_action(&h.session, id, None).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
     // 2: rejected by the user (the decision saw the written tree: a fresh run).
     assert_eq!(h.step(id).outcome, StepOutcome::Waited);
@@ -639,7 +641,7 @@ fn req_dec_010_a_rejected_approval_counts_with_the_trees_identity() {
     assert_eq!(identical(), 1);
     // 3: approved and run on the same tree: the second identical decision.
     assert_eq!(h.step(id).outcome, StepOutcome::Waited);
-    h.runtime.approve_action(&h.session, id).unwrap();
+    h.runtime.approve_action(&h.session, id, None).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
     assert_eq!(identical(), 2);
     // 4: rejected by the user on the same tree: the third, which halts.

@@ -106,6 +106,11 @@ pub struct Step {
     /// absent on records written before they were measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measures: Option<StepMeasures>,
+    /// The wait of this step for the approval of the plan it made (from 0.13; REQ-TASK-015):
+    /// present only on the step of the first plan of a plan-first task, and of each plan that
+    /// the user rejected after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_wait: Option<crate::plan_wait::PlanWait>,
 }
 
 /// What the assembler's rules did to one request (REQ-CTX-010).
@@ -162,6 +167,7 @@ impl Step {
             started_at: now,
             finished_at: None,
             measures: None,
+            plan_wait: None,
         }
     }
 

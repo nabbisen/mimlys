@@ -97,7 +97,12 @@ pub const EVENT_SCHEMA_VERSION: u32 = 2;
 pub enum Event {
     /// A task was created.
     #[serde(rename = "task.created")]
-    TaskCreated,
+    TaskCreated {
+        /// The task was created with `--plan-first` (from 0.13; REQ-TASK-015): absent, and read
+        /// as `false`, in earlier records and for a task without the flag.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        plan_first: bool,
+    },
     /// A task changed state.
     #[serde(rename = "task.state_changed")]
     TaskStateChanged {
@@ -216,6 +221,21 @@ pub enum Event {
     ApprovalDecided {
         /// The request.
         approval_id: ApprovalId,
+        /// The decision.
+        decision: ApprovalDecision,
+    },
+    /// The first plan of a plan-first task is put to the user, and the task waits for it (from
+    /// 0.13; REQ-TASK-015). The user's note is not in the event, as for an action.
+    #[serde(rename = "plan.approval_requested")]
+    PlanApprovalRequested {
+        /// The plan version that waits.
+        version: u32,
+    },
+    /// The user decided about that plan, or the wait expired (from 0.13).
+    #[serde(rename = "plan.approval_decided")]
+    PlanApprovalDecided {
+        /// The plan version.
+        version: u32,
         /// The decision.
         decision: ApprovalDecision,
     },
@@ -366,7 +386,7 @@ impl Event {
     /// The dotted name on the wire.
     pub fn name(&self) -> &'static str {
         match self {
-            Event::TaskCreated => "task.created",
+            Event::TaskCreated { .. } => "task.created",
             Event::TaskStateChanged { .. } => "task.state_changed",
             Event::TaskAdmissionChanged { .. } => "task.admission_changed",
             Event::TaskPauseRequested => "task.pause_requested",
@@ -382,6 +402,8 @@ impl Event {
             Event::ActionFinished { .. } => "action.finished",
             Event::ApprovalRequested { .. } => "approval.requested",
             Event::ApprovalDecided { .. } => "approval.decided",
+            Event::PlanApprovalRequested { .. } => "plan.approval_requested",
+            Event::PlanApprovalDecided { .. } => "plan.approval_decided",
             Event::ApprovalInvalidated { .. } => "approval.invalidated",
             Event::QuestionAsked { .. } => "question.asked",
             Event::QuestionAnswered { .. } => "question.answered",

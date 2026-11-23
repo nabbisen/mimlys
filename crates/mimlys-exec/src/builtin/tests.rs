@@ -48,6 +48,7 @@ impl Fixture {
             grants: &hooks,
             effects: &hooks,
             budgets: &hooks,
+            plan_required: false,
         };
         let raw = serde_json::to_vec(&json!({"decision": "act", "tool": tool, "arguments": args}))
             .unwrap();
@@ -374,6 +375,7 @@ async fn req_tool_006_007_deadline_and_cancellation() {
         grants: &hooks,
         effects: &hooks,
         budgets: &hooks,
+        plan_required: false,
     };
     let raw = serde_json::to_vec(
         &json!({"decision": "act", "tool": "search_files", "arguments": {"pattern": "x"}}),

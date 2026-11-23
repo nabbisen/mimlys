@@ -41,6 +41,7 @@ pub mod newer;
 pub mod observation;
 pub mod panic_text;
 pub mod path;
+pub mod plan_wait;
 pub mod policy;
 pub mod question;
 pub mod recovery;

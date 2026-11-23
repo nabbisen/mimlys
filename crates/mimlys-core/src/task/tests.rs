@@ -18,6 +18,7 @@ fn fixture() -> (Task, FakeClock) {
                 root: "/project".into(),
                 include: vec![],
             },
+            plan_first: false,
         },
         clock.now(),
     )
@@ -50,6 +51,7 @@ fn in_state(state: TaskState) -> Task {
             WaitKind::Question => PendingItem::Question {
                 question_id: QuestionId::new(&ScriptedIds::default()),
             },
+            WaitKind::Plan => PendingItem::Plan { version: 1 },
         });
     }
     task
@@ -64,6 +66,9 @@ fn all_states() -> Vec<TaskState> {
         },
         TaskState::WaitingUser {
             wait_kind: WaitKind::Question,
+        },
+        TaskState::WaitingUser {
+            wait_kind: WaitKind::Plan,
         },
         TaskState::Paused,
         TaskState::Halted {
@@ -91,6 +96,7 @@ fn all_inputs(task: &Task) -> Vec<TaskInput> {
             question_id: QuestionId::new(&ScriptedIds::default()),
         }),
         TaskInput::UserDecided,
+        TaskInput::PlanApproved,
         TaskInput::UserHalted,
         TaskInput::Expired,
         TaskInput::Halt(HaltReason::Policy),
@@ -210,6 +216,40 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
         }
     );
     assert_eq!(r(waiting_approval, TaskInput::Cancel), TaskState::Cancelled);
+    // A plan-first task's plan wait (REQ-TASK-015): the plan is a request for approval.
+    let waiting_plan = TaskState::WaitingUser {
+        wait_kind: WaitKind::Plan,
+    };
+    assert_eq!(
+        r(
+            TaskState::Running,
+            TaskInput::NeedsUser(PendingItem::Plan { version: 1 })
+        ),
+        waiting_plan
+    );
+    assert_eq!(
+        r(waiting_plan.clone(), TaskInput::PlanApproved),
+        TaskState::Running
+    );
+    assert_eq!(
+        r(waiting_plan.clone(), TaskInput::UserDecided),
+        TaskState::Running
+    );
+    assert_eq!(
+        r(waiting_plan.clone(), TaskInput::UserHalted),
+        TaskState::Halted {
+            halt_reason: HaltReason::ApprovalRejected,
+            halt_detail: None,
+        }
+    );
+    assert_eq!(
+        r(waiting_plan.clone(), TaskInput::Expired),
+        TaskState::Halted {
+            halt_reason: HaltReason::ApprovalExpired,
+            halt_detail: None,
+        }
+    );
+    assert_eq!(r(waiting_plan, TaskInput::Cancel), TaskState::Cancelled);
     assert_eq!(r(TaskState::Paused, resume(&task)), TaskState::Running);
     assert_eq!(
         r(TaskState::Paused, TaskInput::Cancel),
@@ -251,7 +291,7 @@ fn req_task_002_legal_transitions_of_ed_5_1() {
 }
 
 /// REQ-TASK-002: every (state, input) pair not in external design §5.1 is refused with `StateError`.
-/// REQ-TEST-003 (tasks, illegal): all ten states against all fourteen inputs; every pair outside the table is refused.
+/// REQ-TEST-003 (tasks, illegal): all eleven states (the three waits among them) against all fifteen inputs; every pair outside the table is refused.
 #[test]
 fn req_task_002_illegal_transitions_are_refused() {
     let (task, clock) = fixture();
@@ -283,7 +323,16 @@ fn req_task_002_illegal_transitions_are_refused() {
         for input in all_inputs(&task) {
             let pair = (state.name(), input.name());
             let result = in_state(state.clone()).transition(input.clone(), now);
-            if legal.contains(&pair) {
+            // Approving a plan is legal in the plan wait only.
+            let plan_wait = matches!(
+                state,
+                TaskState::WaitingUser {
+                    wait_kind: WaitKind::Plan
+                }
+            );
+            if pair == ("waiting_user", "plan_approved") {
+                assert_eq!(result.is_ok(), plan_wait, "{state:?}");
+            } else if legal.contains(&pair) {
                 assert!(result.is_ok(), "expected legal: {pair:?}");
             } else {
                 assert_eq!(
@@ -298,7 +347,7 @@ fn req_task_002_illegal_transitions_are_refused() {
             checked += 1;
         }
     }
-    assert_eq!(checked, all_states().len() * 14);
+    assert_eq!(checked, all_states().len() * 15);
 }
 
 /// REQ-TASK-003: terminal states refuse every input and the original task is never mutated.

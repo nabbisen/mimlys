@@ -296,3 +296,109 @@ fn req_cli_005_a_scripted_channel_has_no_stop_handle() {
     };
     assert!(scripted.stop_handle().is_none());
 }
+
+fn plan_of(steps: &[&str]) -> PlanVersion {
+    let ids = ScriptedIds::default();
+    PlanVersion {
+        task_id: TaskId::new(&ids),
+        version: 2,
+        steps: steps.iter().map(|s| (*s).to_owned()).collect(),
+        created_at: Instant::from_unix_millis(0).unwrap(),
+    }
+}
+
+/// REQ-TASK-015: the plan is put to the user in the fixed template, as an approval is: every step
+/// on a line of its own, sanitized and JSON-quoted (a newline or a bidirectional control in a
+/// step starts no line and reorders none), then the options.
+#[test]
+fn req_task_015_the_plan_card_names_every_step_and_quotes_it() {
+    let plan = plan_of(&["read a", "a\nfake: line \u{202e}drowssap", "c"]);
+    let text = plan_text("t1", &plan, true);
+    assert!(text.starts_with("Plan to approve · task t1 · version 2\n"));
+    assert!(text.contains("  1. \"read a\"\n"));
+    assert!(
+        text.contains("  2. \"a\\nfake: line drowssap\"\n"),
+        "{text}"
+    );
+    assert!(text.contains("  3. \"c\"\n"));
+    assert!(!text.contains('\u{202e}'));
+    assert_eq!(text.lines().count(), 1 + 3 + 1, "{text}");
+    assert!(text.ends_with(&format!("{}\n", messages::PLAN_OPTIONS)));
+    assert!(!plan_text("t1", &plan, false).contains("[a]pprove"));
+}
+
+/// REQ-TASK-015: the plan prompt reads its options: approve, approve with a note, reject with a
+/// note, reject and halt, cancel; anything else is said and asked again; input that ends leaves
+/// the task waiting; a note over the bound is refused and asked for again.
+#[test]
+fn req_task_015_the_plan_prompt_reads_its_options() {
+    let plan = plan_of(&["read a"]);
+    let decide = |input: &str| terminal(input).plan("t1", &plan);
+    assert_eq!(decide("a\n"), PlanDecision::Approve { note: None });
+    assert_eq!(
+        decide("n\nonly src\n"),
+        PlanDecision::Approve {
+            note: Some("only src".into())
+        }
+    );
+    assert_eq!(decide("n\n\n"), PlanDecision::Approve { note: None });
+    assert_eq!(
+        decide("x\nr\nsmaller\n"),
+        PlanDecision::Reject {
+            note: Some("smaller".into()),
+            halt: false
+        }
+    );
+    assert_eq!(
+        decide("h\n\n"),
+        PlanDecision::Reject {
+            note: None,
+            halt: true
+        }
+    );
+    assert_eq!(decide("c\n"), PlanDecision::Cancel);
+    assert_eq!(decide(""), PlanDecision::Leave);
+    let long = "x".repeat(mimlys_core::limits::LIM_D2_REASON_CHARS + 1);
+    let mut t = terminal(&format!("r\n{long}\na\n"));
+    assert_eq!(t.plan("t1", &plan), PlanDecision::Approve { note: None });
+    let shown = String::from_utf8(t.output.clone()).unwrap();
+    assert!(shown.contains(&messages::note_too_long()), "{shown}");
+    let mut t = terminal("x\na\n");
+    t.plan("t1", &plan);
+    let shown = String::from_utf8(t.output.clone()).unwrap();
+    assert!(shown.contains(messages::PLAN_PROMPT_UNKNOWN), "{shown}");
+}
+
+/// REQ-TASK-015: a stop signal while the plan prompt waits leaves the task waiting (a note still
+/// to be read is not a decision), as it does at an approval.
+#[test]
+fn req_task_015_a_stop_at_the_plan_prompt_leaves_the_task_waiting() {
+    let (mut t, stop, lines) = queued();
+    lines.send(Input::Line("n".into())).unwrap();
+    stop.stop();
+    assert_eq!(t.plan("t1", &plan_of(&["x"])), PlanDecision::Leave);
+}
+
+/// The scripted channel decides a plan as it decides an approval.
+#[test]
+fn req_task_015_the_scripted_channel_decides_plans() {
+    let plan = plan_of(&["x"]);
+    let mut s = Scripted {
+        decision: Decision::Approve,
+        answer: String::new(),
+    };
+    assert_eq!(s.plan("t", &plan), PlanDecision::Approve { note: None });
+    s.decision = Decision::Reject {
+        note: Some("no".into()),
+        halt: true,
+    };
+    assert_eq!(
+        s.plan("t", &plan),
+        PlanDecision::Reject {
+            note: Some("no".into()),
+            halt: true
+        }
+    );
+    s.decision = Decision::Leave;
+    assert_eq!(s.plan("t", &plan), PlanDecision::Leave);
+}

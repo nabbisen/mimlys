@@ -63,6 +63,7 @@ fn authorize(tool: &ToolDefinition, arguments: &Value, reason: Option<&str>) -> 
         grants: &hooks,
         effects: &hooks,
         budgets: &hooks,
+        plan_required: false,
     };
     let mut decision = json!({"decision": "act", "tool": tool.name, "arguments": arguments});
     if let Some(reason) = reason {

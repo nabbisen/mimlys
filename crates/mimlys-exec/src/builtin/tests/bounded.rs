@@ -24,6 +24,7 @@ fn verdict(f: &Fixture, args: serde_json::Value) -> Outcome {
         grants: &hooks,
         effects: &hooks,
         budgets: &hooks,
+        plan_required: false,
     };
     let raw =
         serde_json::to_vec(&json!({"decision": "act", "tool": "read_file", "arguments": args}))

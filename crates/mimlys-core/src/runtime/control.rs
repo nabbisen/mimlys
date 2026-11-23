@@ -22,8 +22,8 @@ use crate::snapshot::{
 use crate::spi::{EditedPaths, Metrics, PositionedEvent, TaskSummary};
 use crate::step::{Budgets, StepOutcome, StepResult};
 use crate::task::{
-    CompletionCheck, Extension, ExtensionCeiling, PlanVersion, ScopeSpec, Task, TaskInput,
-    TaskSpec, TaskState, TaskVersions, WaitKind,
+    CompletionCheck, Extension, ExtensionCeiling, PendingItem, PlanVersion, ScopeSpec, Task,
+    TaskInput, TaskSpec, TaskState, TaskVersions, WaitKind,
 };
 
 /// A request to create a task (REQ-TASK-001).
@@ -49,6 +49,9 @@ pub struct CreateTask {
     pub from_task: Option<TaskId>,
     /// Fork: the snapshot; the source's latest when `None`.
     pub from_snapshot: Option<SnapshotId>,
+    /// `--plan-first` (REQ-TASK-015): the task's first plan is approved by the user before
+    /// anything acts. A fork is plan-first only when it is created with this itself.
+    pub plan_first: bool,
 }
 
 /// A task as the control API shows it.
@@ -482,6 +485,7 @@ impl Runtime {
                 profile: profile_name,
                 versions,
                 scope: request.scope,
+                plan_first: request.plan_first,
             },
             now,
         )
@@ -535,7 +539,9 @@ impl Runtime {
                 Some(task_id),
                 None,
                 None,
-                Event::TaskCreated,
+                Event::TaskCreated {
+                    plan_first: task.plan_first,
+                },
             ),
         )?;
         // The task is recorded: the workspace is its own.
@@ -1036,6 +1042,25 @@ impl Runtime {
         let task = self.writable(task_id)?;
         let now = self.deps.clock.now();
         let next = task.transition(TaskInput::Cancel, now)?;
+        // A task that waits for its plan (REQ-TASK-015) has no action and no approval: the step
+        // that holds the wait ends `cancelled` with the task, in one write.
+        if matches!(
+            task.state,
+            TaskState::WaitingUser {
+                wait_kind: WaitKind::Plan
+            }
+        ) {
+            let step = self.plan_wait_step(&task)?;
+            let after = self.finish_plan_step(
+                session.actor(),
+                (&task, next),
+                step,
+                (StepOutcome::Cancelled, vec![]),
+                now,
+            )?;
+            self.forget_task(task_id);
+            return Ok(after);
+        }
         if let Some(mut approval) = self.deps.persistence.load_pending_approval(task_id)? {
             approval.invalidate(InvalidationReason::GrantsChanged);
             self.deps.persistence.record_approval_decision(
@@ -1088,13 +1113,29 @@ impl Runtime {
         Ok(next)
     }
 
-    /// Approves the pending action (REQ-APR-007, REQ-APR-009). The action
-    /// runs at the task's next step, under the grants in force then.
-    pub fn approve_action(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
-        let (task, mut approval) = self.pending_approval(task_id)?;
+    /// Approves the pending action (REQ-APR-007, REQ-APR-009), or the plan a plan-first task waits
+    /// for (REQ-TASK-015). The action runs at the task's next step, under the grants in force
+    /// then; an approved plan ends the gate, and the task runs. The optional `note` is the
+    /// user's own words for the model (`approval_note`), bounded as a rejection's note is.
+    pub fn approve_action(
+        &self,
+        session: &Session,
+        task_id: TaskId,
+        note: Option<String>,
+    ) -> Result<Task, RuntimeError> {
+        let task = self.writable(task_id)?;
+        if matches!(
+            task.state,
+            TaskState::WaitingUser {
+                wait_kind: WaitKind::Plan
+            }
+        ) {
+            return self.decide_plan(session, task, PlanVerdict::Approve { note });
+        }
+        let (task, mut approval) = self.pending_approval_of(task)?;
         let now = self.deps.clock.now();
         approval
-            .decide(UserDecision::Approve, session.actor(), now)
+            .decide(UserDecision::Approve { note }, session.actor(), now)
             .map_err(|e| RuntimeError::InvalidRequest {
                 detail: e.to_string(),
             })?;
@@ -1124,9 +1165,10 @@ impl Runtime {
         Ok(next)
     }
 
-    /// Rejects the pending action with an optional note (REQ-APR-007). The
-    /// profile's `on_reject` applies unless `halt` says otherwise; the
-    /// rejection ends the step and counts toward LIM-T2.
+    /// Rejects the pending action, or the plan of a plan-first task, with an optional note
+    /// (REQ-APR-007, REQ-TASK-015). The profile's `on_reject` applies unless `halt` says
+    /// otherwise; the rejection ends the step and counts toward LIM-T2. A rejected plan leaves
+    /// the task gated: the next `plan` waits again.
     pub fn reject_action(
         &self,
         session: &Session,
@@ -1134,7 +1176,16 @@ impl Runtime {
         note: Option<String>,
         halt: Option<bool>,
     ) -> Result<Task, RuntimeError> {
-        let (task, mut approval) = self.pending_approval(task_id)?;
+        let task = self.writable(task_id)?;
+        if matches!(
+            task.state,
+            TaskState::WaitingUser {
+                wait_kind: WaitKind::Plan
+            }
+        ) {
+            return self.decide_plan(session, task, PlanVerdict::Reject { note, halt });
+        }
+        let (task, mut approval) = self.pending_approval_of(task)?;
         let now = self.deps.clock.now();
         let profile = self.profile_of(&task)?;
         let halt = halt.unwrap_or(profile.on_reject == crate::policy::OnReject::Halt);
@@ -1648,8 +1699,9 @@ impl Runtime {
         })
     }
 
-    fn pending_approval(&self, task_id: TaskId) -> Result<(Task, ApprovalRequest), RuntimeError> {
-        let task = self.writable(task_id)?;
+    /// The task waiting for an approval, with that approval.
+    fn pending_approval_of(&self, task: Task) -> Result<(Task, ApprovalRequest), RuntimeError> {
+        let task_id = task.task_id;
         if !matches!(
             task.state,
             TaskState::WaitingUser {
@@ -1677,10 +1729,153 @@ impl Runtime {
         Ok((task, approval))
     }
 
+    /// The open step that holds the plan wait the task is in (REQ-TASK-015).
+    fn plan_wait_step(&self, task: &Task) -> Result<crate::step::Step, RuntimeError> {
+        let Some(PendingItem::Plan { version }) = task.pending else {
+            return Err(RuntimeError::NotFound {
+                what: "plan wait".into(),
+            });
+        };
+        self.deps
+            .persistence
+            .load_steps(task.task_id)?
+            .into_iter()
+            .find(|s| {
+                s.plan_wait
+                    .as_ref()
+                    .is_some_and(|w| w.version == version && w.is_pending())
+            })
+            .ok_or(RuntimeError::NotFound {
+                what: "plan wait".into(),
+            })
+    }
+
+    /// The user decides the plan the task waits for (REQ-TASK-015): `approve` ends the gate and
+    /// the task runs; `reject` ends the plan's step `approval_rejected`, with the note, and the
+    /// task runs gated or, with `halt`, halts `approval_rejected`.
+    fn decide_plan(
+        &self,
+        session: &Session,
+        task: Task,
+        verdict: PlanVerdict,
+    ) -> Result<Task, RuntimeError> {
+        let now = self.deps.clock.now();
+        let mut step = self.plan_wait_step(&task)?;
+        let mut wait = step.plan_wait.take().expect("the step holds the wait");
+        let version = wait.version;
+        let (decision, note, input) = match verdict {
+            PlanVerdict::Approve { note } => {
+                (ApprovalDecision::Approved, note, TaskInput::PlanApproved)
+            }
+            PlanVerdict::Reject { note, halt } => {
+                let halt = halt
+                    .unwrap_or(self.profile_of(&task)?.on_reject == crate::policy::OnReject::Halt);
+                (
+                    ApprovalDecision::Rejected,
+                    note,
+                    if halt {
+                        TaskInput::UserHalted
+                    } else {
+                        TaskInput::UserDecided
+                    },
+                )
+            }
+        };
+        wait.decide(decision, session.actor(), note, now)
+            .map_err(|e| RuntimeError::InvalidRequest {
+                detail: e.to_string(),
+            })?;
+        step.plan_wait = Some(wait);
+        let next = task.transition(input, now)?;
+        let outcome = if decision == ApprovalDecision::Rejected {
+            step.rejection = Some(RejectionCode::ApprovalRejected);
+            StepOutcome::Rejected
+        } else {
+            StepOutcome::Continued
+        };
+        let decided = self.event(
+            session.actor(),
+            Some(task.task_id),
+            Some(step.step_id),
+            None,
+            Event::PlanApprovalDecided { version, decision },
+        );
+        self.finish_plan_step(
+            session.actor(),
+            (&task, next),
+            step,
+            (outcome, vec![decided]),
+            now,
+        )
+    }
+
+    /// Ends the step that held a plan wait, applying the counters as the end of any step does
+    /// (a budget reached halts a running task), and writes the step, the task and the events in
+    /// one write. `task` is the task as it was and as the user's input left it; `end` is how the
+    /// step ended and the events that came before its own end.
+    fn finish_plan_step(
+        &self,
+        actor: Actor,
+        (before, next): (&Task, Task),
+        mut step: crate::step::Step,
+        (outcome, mut events): (StepOutcome, Vec<crate::event::EventRecord>),
+        now: Instant,
+    ) -> Result<Task, RuntimeError> {
+        let mut after = next;
+        let budget = after.counters.apply(
+            &StepResult {
+                outcome,
+                action: None,
+                decision_hash: step.decision_hash.clone(),
+                snapshot: self.tree_identity(before.task_id, None)?,
+            },
+            &after.budgets,
+        );
+        if let (Some(reason), TaskState::Running) = (budget, &after.state) {
+            after = after.transition(TaskInput::Halt(reason), now)?;
+        }
+        let outcome = if matches!(after.state, TaskState::Halted { .. }) {
+            StepOutcome::Halted
+        } else {
+            outcome
+        };
+        step.finish(outcome, now);
+        events.push(self.event(
+            actor.clone(),
+            Some(before.task_id),
+            Some(step.step_id),
+            None,
+            Event::StepFinished { outcome },
+        ));
+        events.push(self.event(
+            actor,
+            Some(before.task_id),
+            None,
+            None,
+            state_changed(before, &after),
+        ));
+        self.deps
+            .persistence
+            .record_plan_step(&step, &after, None, &events)?;
+        self.transitioned(before, &after);
+        Ok(after)
+    }
+
     /// The current instant, for callers that build records.
     pub fn now(&self) -> Instant {
         self.deps.clock.now()
     }
+}
+
+/// What the user decides about a plan (REQ-TASK-015).
+enum PlanVerdict {
+    Approve {
+        note: Option<String>,
+    },
+    Reject {
+        note: Option<String>,
+        halt: Option<bool>,
+    },
 }
 
 /// A start the profile forbids (REQ-SEC-010): the backend is `remote` and the task's profile has

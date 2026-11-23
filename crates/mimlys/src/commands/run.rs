@@ -33,6 +33,8 @@ pub struct NewTask {
     pub from_task: Option<String>,
     /// Fork from this snapshot (id or prefix).
     pub from_snapshot: Option<String>,
+    /// The model's first decision must be a plan that the user approves (REQ-TASK-015).
+    pub plan_first: bool,
 }
 
 /// Builds the request (REQ-TASK-001) and creates the task.
@@ -120,6 +122,7 @@ pub fn create(app: &App, args: &NewTask) -> Result<mimlys_core::task::Task, AppE
             hold: args.hold,
             from_task,
             from_snapshot,
+            plan_first: args.plan_first,
         },
     )?;
     Ok(task)

@@ -30,7 +30,11 @@ fn promoted(
 ) -> (Task, SnapshotRecord, Promotion) {
     let task = fx.task();
     store
-        .create_task(&task, &[], &fx.event(&task, Event::TaskCreated))
+        .create_task(
+            &task,
+            &[],
+            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+        )
         .unwrap();
     let backup = SnapshotRecord {
         snapshot_id: SnapshotId::new(&fx.ids),

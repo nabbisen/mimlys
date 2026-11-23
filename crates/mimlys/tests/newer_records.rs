@@ -23,7 +23,7 @@ fn req_main_006_the_readers_show_every_word_with_its_marker_in_text() {
         "{out}"
     );
     assert!(
-        out.contains(&format!("reason=plan_required {MARKER}")),
+        out.contains(&format!("reason=needs_review {MARKER}")),
         "{out}"
     );
     assert!(
@@ -57,7 +57,7 @@ fn req_main_006_the_readers_show_every_word_with_its_marker_in_text() {
     );
     let (_, out, _) = env.run(&["task", "show", &s.action]);
     assert!(
-        out.contains(&s.unreadable_action.to_string()) && out.contains("held_for_plan"),
+        out.contains(&s.unreadable_action.to_string()) && out.contains("held_for_review"),
         "{out}"
     );
 
@@ -71,7 +71,7 @@ fn req_main_006_the_readers_show_every_word_with_its_marker_in_text() {
     }
     assert!(out.contains(&format!("quarantined {MARKER}")), "{out}");
     assert!(
-        out.contains(&format!("wait_kind `plan` {MARKER}")),
+        out.contains(&format!("wait_kind `review` {MARKER}")),
         "the task whose wait kind is not known: {out}"
     );
 
@@ -81,7 +81,7 @@ fn req_main_006_the_readers_show_every_word_with_its_marker_in_text() {
     for line in [
         "events_by_name.session.attached",
         "tasks_by_state.quarantined",
-        "halts_by_reason.plan_required",
+        "halts_by_reason.needs_review",
     ] {
         let found = out
             .lines()
@@ -100,7 +100,7 @@ fn req_main_006_the_readers_show_every_word_with_its_marker_in_text() {
     assert_eq!(code, 0, "{out}\n{err}");
     assert!(
         out.lines()
-            .any(|l| l.contains(&s.wait) && l.contains(&format!("`plan` {MARKER}"))),
+            .any(|l| l.contains(&s.wait) && l.contains(&format!("`review` {MARKER}"))),
         "{out}"
     );
     assert!(
@@ -123,7 +123,7 @@ fn req_main_006_the_readers_show_every_word_with_its_marker_in_text() {
     ]);
     assert_eq!(code, 1, "{out}");
     assert!(
-        err.contains("held_for_plan") && err.contains(MARKER.trim_matches(['(', ')'])),
+        err.contains("held_for_review") && err.contains(MARKER.trim_matches(['(', ')'])),
         "{err}"
     );
 }
@@ -170,10 +170,10 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
         .iter()
         .find(|e| e["record"]["event"] == "task.state_changed")
         .unwrap();
-    assert_eq!(halted["record"]["reason"], "plan_required");
+    assert_eq!(halted["record"]["reason"], "needs_review");
     assert_eq!(
         words(&halted["record"]),
-        [("reason".into(), "plan_required".into())]
+        [("reason".into(), "needs_review".into())]
     );
     for event in events
         .iter()
@@ -185,9 +185,12 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
     // task show: the task record as written, in `task`.
     let (code, shown) = env.json(&["task", "show", &s.wait]);
     assert_eq!(code, 0, "{shown}");
-    assert_eq!(shown["task"]["wait_kind"], "plan");
+    assert_eq!(shown["task"]["wait_kind"], "review");
     assert_eq!(shown["task"]["goal"], "wait");
-    assert_eq!(words(&shown["task"]), [("wait_kind".into(), "plan".into())]);
+    assert_eq!(
+        words(&shown["task"]),
+        [("wait_kind".into(), "review".into())]
+    );
     let (code, shown) = env.json(&["task", "show", &s.state]);
     assert_eq!(code, 0, "{shown}");
     assert_eq!(
@@ -198,7 +201,7 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
     assert_eq!(code, 0, "{shown}");
     assert_eq!(
         words(&shown["task"]),
-        [("halt_reason".into(), "plan_required".into())]
+        [("halt_reason".into(), "needs_review".into())]
     );
     // A readable task with a record that is not: the record is listed, the view is whole.
     let (code, shown) = env.json(&["task", "show", &s.action]);
@@ -208,10 +211,10 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
     assert_eq!(records.len(), 1, "{shown}");
     assert_eq!(records[0]["kind"], "action");
     assert_eq!(records[0]["key"], s.unreadable_action.to_string());
-    assert_eq!(records[0]["record"]["status"], "held_for_plan");
+    assert_eq!(records[0]["record"]["status"], "held_for_review");
     assert_eq!(
         words(&records[0]["record"]),
-        [("status".into(), "held_for_plan".into())]
+        [("status".into(), "held_for_review".into())]
     );
     let (_, shown) = env.json(&["task", "show", &s.event]);
     assert_eq!(shown["unknown_records"][0]["kind"], "event");
@@ -227,7 +230,7 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
         words(row(&s.state)),
         [("state".into(), "quarantined".into())]
     );
-    assert_eq!(words(row(&s.wait)), [("wait_kind".into(), "plan".into())]);
+    assert_eq!(words(row(&s.wait)), [("wait_kind".into(), "review".into())]);
     assert!(row(&s.plain).get(MARKER_KEY).is_none());
 
     // metrics: the groups name their unknown words.
@@ -236,7 +239,7 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
     let marked = words(&metrics);
     for expected in [
         ("events_by_name", "session.attached"),
-        ("halts_by_reason", "plan_required"),
+        ("halts_by_reason", "needs_review"),
         ("tasks_by_state", "quarantined"),
     ] {
         assert!(
@@ -245,7 +248,7 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
         );
     }
     assert_eq!(metrics["events_by_name"]["session.attached"], 1);
-    assert_eq!(metrics["halts_by_reason"]["plan_required"], 1);
+    assert_eq!(metrics["halts_by_reason"]["needs_review"], 1);
 
     // status: the kind of the wait, and the state, as written, and the words listed.
     let (code, status) = env.json(&["status"]);
@@ -254,7 +257,7 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
     assert!(
         pending
             .iter()
-            .any(|p| p[0] == s.wait.as_str() && p[1] == "plan"),
+            .any(|p| p[0] == s.wait.as_str() && p[1] == "review"),
         "{status}"
     );
     assert!(
@@ -267,7 +270,7 @@ fn req_main_006_the_readers_mark_every_word_in_json_by_one_rule() {
     );
     let marked = words(&status);
     assert!(
-        marked.contains(&("pending".into(), "plan".into())),
+        marked.contains(&("pending".into(), "review".into())),
         "{marked:?}"
     );
     assert!(

@@ -181,6 +181,7 @@ impl Fixture {
             grants: &hooks,
             effects: &hooks,
             budgets: &hooks,
+            plan_required: false,
         };
         validate(&ctx, raw.as_bytes())
     }

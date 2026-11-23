@@ -21,6 +21,7 @@ fn running_task() -> Task {
                 root: "/project".into(),
                 include: vec![],
             },
+            plan_first: false,
         },
         clock.now(),
     )

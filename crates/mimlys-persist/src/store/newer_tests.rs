@@ -28,7 +28,7 @@ fn store_of_every_kind(dir: &std::path::Path) -> (Store, Task) {
                 steps: vec!["look".into()],
                 created_at: fx.now(),
             },
-            &fx.event(&task, Event::TaskCreated),
+            &fx.event(&task, Event::TaskCreated { plan_first: false }),
         )
         .unwrap();
     let question = mimlys_core::question::Question::ask(
@@ -40,7 +40,11 @@ fn store_of_every_kind(dir: &std::path::Path) -> (Store, Task) {
         None,
     );
     store
-        .record_question(&task, &question, &fx.event(&task, Event::TaskCreated))
+        .record_question(
+            &task,
+            &question,
+            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+        )
         .unwrap();
     let backup = SnapshotRecord {
         snapshot_id: SnapshotId::new(&fx.ids),
@@ -84,7 +88,10 @@ fn store_of_every_kind(dir: &std::path::Path) -> (Store, Task) {
         reason: None,
     };
     store
-        .record_promotion(&promotion, &fx.event(&task, Event::TaskCreated))
+        .record_promotion(
+            &promotion,
+            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+        )
         .unwrap();
     (store, task)
 }
@@ -158,10 +165,10 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
             "wait kind",
             with(
                 &task_,
-                json!({"state": "waiting_user", "wait_kind": "plan"}),
+                json!({"state": "waiting_user", "wait_kind": "review"}),
             ),
             "wait_kind",
-            "plan",
+            "review",
         ),
         (
             RecordKind::Task,
@@ -178,10 +185,10 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
             "halt reason",
             with(
                 &task_,
-                json!({"state": "halted", "halt_reason": "plan_required"}),
+                json!({"state": "halted", "halt_reason": "needs_review"}),
             ),
             "halt_reason",
-            "plan_required",
+            "needs_review",
         ),
         (
             RecordKind::Task,
@@ -225,12 +232,35 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
             "outcome",
             w,
         ),
+        // The wait of a plan-first task's step for its plan's approval (from 0.13).
+        (
+            RecordKind::Step,
+            "plan decision",
+            with(
+                &step,
+                json!({"plan_wait": {"version": 1, "requested_at": step["started_at"], "decided": {
+                    "decision": w, "at": step["started_at"], "by": {"actor": "runtime"}}}}),
+            ),
+            "plan_wait.decided.decision",
+            w,
+        ),
+        (
+            RecordKind::Step,
+            "plan decision actor",
+            with(
+                &step,
+                json!({"plan_wait": {"version": 1, "requested_at": step["started_at"], "decided": {
+                    "decision": "approved", "at": step["started_at"], "by": {"actor": w}}}}),
+            ),
+            "plan_wait.decided.by.actor",
+            w,
+        ),
         (
             RecordKind::Step,
             "rejection code",
-            with(&step, json!({"rejection": "plan_required"})),
+            with(&step, json!({"rejection": "needs_review"})),
             "rejection",
-            "plan_required",
+            "needs_review",
         ),
         // The action: its status, the code of a rejection, the cause of a failure, the effect.
         (
@@ -245,10 +275,10 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
             "action rejection code",
             with(
                 &action,
-                json!({"status": "rejected", "code": "plan_required"}),
+                json!({"status": "rejected", "code": "needs_review"}),
             ),
             "code",
-            "plan_required",
+            "needs_review",
         ),
         (
             RecordKind::Action,
@@ -468,6 +498,16 @@ fn req_main_006_every_vocabulary_of_every_kind_of_record_is_held_by_its_word() {
             event(
                 "approval.decided",
                 json!({"approval_id": approval["approval_id"], "decision": w}),
+            ),
+            "decision",
+            w,
+        ),
+        (
+            RecordKind::Event,
+            "plan decision of an event",
+            event(
+                "plan.approval_decided",
+                json!({"version": 1, "decision": w}),
             ),
             "decision",
             w,
@@ -699,7 +739,7 @@ fn req_main_006_the_typed_loads_refuse_and_the_readers_keep() {
         &store,
         &task,
         "waiting_user",
-        r#"{"state":"waiting_user","wait_kind":"plan"}"#,
+        r#"{"state":"waiting_user","wait_kind":"review"}"#,
     );
     let refused = store.load_task(task.task_id).unwrap_err();
     assert_eq!(
@@ -707,12 +747,12 @@ fn req_main_006_the_typed_loads_refuse_and_the_readers_keep() {
         PersistenceError::NewerRecord {
             record: "task".into(),
             field: "wait_kind".into(),
-            word: "plan".into()
+            word: "review".into()
         }
     );
     let text = refused.to_string();
     assert!(
-        text.contains("`plan`") && text.contains("unknown to this release"),
+        text.contains("`review`") && text.contains("unknown to this release"),
         "{text}"
     );
     assert!(
@@ -726,7 +766,7 @@ fn req_main_006_the_typed_loads_refuse_and_the_readers_keep() {
     assert_eq!(listed[0].state, "waiting_user");
     assert_eq!(
         listed[0].unknown,
-        vec![UnknownWord::new("wait_kind", "plan")]
+        vec![UnknownWord::new("wait_kind", "review")]
     );
     // Only the task's own record is newer.
     let found = mimlys_core::newer::scan(&store, task.task_id).unwrap();
@@ -801,9 +841,9 @@ fn req_main_006_metrics_count_the_words_of_a_newer_event_in_their_groups() {
             for (i, (name, patch)) in [
                 (
                     "task.state_changed",
-                    r#"{"from":"running","to":"halted","reason":"plan_required"}"#,
+                    r#"{"from":"running","to":"halted","reason":"needs_review"}"#,
                 ),
-                ("decision.rejected", r#"{"code":"plan_required"}"#),
+                ("decision.rejected", r#"{"code":"needs_review"}"#),
             ]
             .into_iter()
             .enumerate()
@@ -825,8 +865,8 @@ fn req_main_006_metrics_count_the_words_of_a_newer_event_in_their_groups() {
         })
         .unwrap();
     let metrics = store.metrics(None).unwrap();
-    assert_eq!(metrics.halts_by_reason.get("plan_required"), Some(&1));
-    assert_eq!(metrics.rejections_by_code.get("plan_required"), Some(&1));
+    assert_eq!(metrics.halts_by_reason.get("needs_review"), Some(&1));
+    assert_eq!(metrics.rejections_by_code.get("needs_review"), Some(&1));
     assert_eq!(
         metrics.events_by_name.get("task.state_changed"),
         Some(&(known.events_by_name["task.state_changed"] + 1))
@@ -835,8 +875,8 @@ fn req_main_006_metrics_count_the_words_of_a_newer_event_in_their_groups() {
     assert_eq!(
         metrics.unknown_to_this_release,
         vec![
-            UnknownWord::new("halts_by_reason", "plan_required"),
-            UnknownWord::new("rejections_by_code", "plan_required"),
+            UnknownWord::new("halts_by_reason", "needs_review"),
+            UnknownWord::new("rejections_by_code", "needs_review"),
         ]
     );
 }
@@ -1000,7 +1040,7 @@ fn req_main_006_recovery_leaves_a_newer_task_as_it_is_and_recovers_the_others() 
         &store,
         &waiting,
         "waiting_user",
-        r#"{"state":"waiting_user","wait_kind":"plan"}"#,
+        r#"{"state":"waiting_user","wait_kind":"review"}"#,
     );
     write_task(&store, &stated, "quarantined", r#"{"state":"quarantined"}"#);
     let untouched = [&with_event, &waiting, &stated].map(|t| (t.task_id, rows_of(&store, t)));
@@ -1039,7 +1079,7 @@ fn req_main_006_recovery_leaves_a_newer_task_as_it_is_and_recovers_the_others() 
     left.sort();
     let mut expected = vec![
         (with_event.task_id, "event", "event", "session.attached"),
-        (waiting.task_id, "task", "wait_kind", "plan"),
+        (waiting.task_id, "task", "wait_kind", "review"),
         (stated.task_id, "task", "state", "quarantined"),
     ];
     expected.sort();
