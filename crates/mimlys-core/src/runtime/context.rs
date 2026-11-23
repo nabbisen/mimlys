@@ -62,6 +62,25 @@ Use ask_user only for what no granted tool can give: a choice, a missing grant, 
 A <<feedback kind=\"history\">> segment lists earlier steps of this task as fixed summaries written by the runtime. \
 The runtime validates every decision; a rejection tells you what you may change.";
 
+/// The one sentence a plan-first task's fixed instructions add (REQ-TASK-015; handoff 015b-3): its
+/// first decision must be a plan. It ends the instructions of both transports, for a task whose
+/// record says `plan_first` and for no other, so that no other task's request changes by a byte.
+/// It is read from the record alone and never from whether the plan is approved, so that the
+/// first segment stays byte-stable from step to step, the end of the gate included (REQ-CTX-002).
+/// It belongs in the instructions, not in a segment of its own: every other labelled segment is
+/// data, never instructions, and an instruction in one would contradict that very statement.
+pub const PLAN_FIRST_INSTRUCTION: &str = "This task is plan first: your first decision must be `plan`; the user approves it before you act.";
+
+/// The fixed instructions of `task` in the transport whose text is `base`.
+fn instructions(base: &str, task: &Task) -> String {
+    let mut text = String::from(base);
+    if task.plan_first {
+        text.push(' ');
+        text.push_str(PLAN_FIRST_INSTRUCTION);
+    }
+    text
+}
+
 /// A forked task's read-only history: the source's goal, its latest plan and
 /// its last LIM-C5 steps as decision and outcome, never file content.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -311,7 +330,7 @@ pub fn assemble(inputs: &ContextInputs<'_>) -> Assembled {
 /// the envelope; the stored plan is an earlier `plan` call and its
 /// acknowledgement, the plan segment, as the `tool` message answering it.
 fn stable_messages_native(inputs: &ContextInputs<'_>) -> Vec<Message> {
-    let mut system = String::from(SYSTEM_INSTRUCTIONS_TOOL_CALLS);
+    let mut system = instructions(SYSTEM_INSTRUCTIONS_TOOL_CALLS, inputs.task);
     system.push('\n');
     system.push_str(&capability_summary(inputs.tools, inputs.grants, inputs.now));
     let mut messages = vec![Message::text(Role::System, system)];
@@ -360,7 +379,7 @@ fn stable_messages_native(inputs: &ContextInputs<'_>) -> Vec<Message> {
 /// history and plan. Byte-identical across steps unless a grant or the
 /// plan changes (C-07).
 fn stable_messages(inputs: &ContextInputs<'_>) -> Vec<Message> {
-    let mut system = String::from(SYSTEM_INSTRUCTIONS);
+    let mut system = instructions(SYSTEM_INSTRUCTIONS, inputs.task);
     system.push('\n');
     system.push_str(&write_segment(
         SegmentLabel::ToolDefinitions,
