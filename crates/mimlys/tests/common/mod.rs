@@ -180,6 +180,21 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
     {
         cmd.env("MIMLYS_DEBUG_STACK_DIVISOR", "4");
     }
+    // The user's registry (RFC 013) is shared by every runtime of the user, so that a run that
+    // reaches it waits for the slots of the runs beside it (limit 2): a test that runs a runtime
+    // names a registry of its own. `Command::env_clear` drops the one that `mimlys()` and
+    // `mimlys_testloop()` set, and a clean environment must give it back (handoff 015b-3, item 3).
+    let is_runtime = Path::new(cmd.get_program())
+        .file_stem()
+        .is_some_and(|name| name == "mimlys" || name == "mimlys-testloop");
+    assert!(
+        !is_runtime
+            || cmd
+                .get_envs()
+                .any(|(key, value)| key == "MIMLYS_RUN_DIR" && value.is_some()),
+        "this run of {:?} names no MIMLYS_RUN_DIR: it would use the user's own registry, shared with every other run (give it `common::run_dir()` after any `env_clear`)",
+        cmd.get_program()
+    );
     let out_path = dir.join(format!("run-{}-{n}.stdout", std::process::id()));
     let err_path = dir.join(format!("run-{}-{n}.stderr", std::process::id()));
     cmd.stdin(Stdio::null())

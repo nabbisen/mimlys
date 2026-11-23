@@ -135,6 +135,8 @@ fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run
         }
     }
     cmd.env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
+    // The run's own registry: `env_clear` dropped the one `mimlys_testloop()` set (handoff 015b-3).
+    cmd.env("MIMLYS_RUN_DIR", common::run_dir());
     let out = run_bounded(&mut cmd, data);
     assert!(out.status.success(), "{}", out.stderr);
     Run {

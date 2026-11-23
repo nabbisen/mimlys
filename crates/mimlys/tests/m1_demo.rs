@@ -38,6 +38,10 @@ fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
             cmd.env(key, v);
         }
     }
+    // The registry of the user's runtimes (RFC 013) is the run's own: `env_clear` dropped the one
+    // that `mimlys_testloop()` set, and the user's real registry, which every run of this suite
+    // shares (two slots), made an execution wait for the others' (handoff 015b-3, item 3).
+    cmd.env("MIMLYS_RUN_DIR", common::run_dir());
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -422,9 +426,17 @@ fn m1_child_environment_is_allow_listed() {
         "{names:?}"
     );
     assert!(
-        names.iter().all(
-            |n| ["PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE"].contains(&n.as_str())
-        ),
+        names.iter().all(|n| [
+            "PATH",
+            "SYSTEMROOT",
+            "TEMP",
+            "TMP",
+            "HOME",
+            "USERPROFILE",
+            // The run's own registry (a path, the harness's seam), set by `testloop`.
+            "MIMLYS_RUN_DIR"
+        ]
+        .contains(&n.as_str())),
         "{names:?}"
     );
 }
