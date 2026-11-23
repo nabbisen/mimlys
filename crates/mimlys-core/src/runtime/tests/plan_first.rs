@@ -646,3 +646,249 @@ fn req_task_015_an_actions_approval_note_reaches_the_model() {
     );
     assert!(!has(&second, "rejection_note"));
 }
+
+// ---- What the model is told: the first request of a plan-first task (handoff 015b-3) ----
+
+use crate::runtime::context::{
+    PLAN_FIRST_INSTRUCTION, SYSTEM_INSTRUCTIONS, SYSTEM_INSTRUCTIONS_TOOL_CALLS,
+};
+
+#[derive(Clone, Copy, Debug)]
+enum Wire {
+    Envelope,
+    ToolCalls,
+}
+
+impl Wire {
+    fn base(self) -> &'static str {
+        match self {
+            Wire::Envelope => SYSTEM_INSTRUCTIONS,
+            Wire::ToolCalls => SYSTEM_INSTRUCTIONS_TOOL_CALLS,
+        }
+    }
+}
+
+/// A task over `wire` with the decisions given, plan-first or not.
+fn over(wire: Wire, plan_first: bool, decisions: Vec<Value>) -> (Harness, TaskId) {
+    let backend = ScriptedBackend::with_decisions(decisions);
+    let backend = match wire {
+        Wire::Envelope => backend,
+        Wire::ToolCalls => backend.tool_calls(),
+    };
+    let h = Harness::with_backend(
+        Arc::new(backend),
+        Policy::shipped(),
+        vec![],
+        crate::limits::LIM_C1_CONTEXT_CHARS,
+    );
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create_with(|r| {
+        r.plan_first = plan_first;
+        r.profile = Some("read_only".into());
+    });
+    (h, id)
+}
+
+fn system_of(h: &Harness, n: usize) -> String {
+    let first = &h.backend.requests()[n].messages[0];
+    assert_eq!(first.role, crate::spi::Role::System);
+    first.content.clone()
+}
+
+/// A plan-first task's run: the plan, its approval, an act, a completion.
+fn plan_first_run(wire: Wire) -> Harness {
+    let (h, id) = over(
+        wire,
+        true,
+        vec![
+            first(&["read a"]),
+            act("read_file", "a"),
+            json!({"decision": "complete", "summary": "done"}),
+        ],
+    );
+    h.step(id);
+    h.runtime.approve_action(&user(&h), id, None).unwrap();
+    h.step(id);
+    h.step(id);
+    assert_eq!(h.backend.requests().len(), 3);
+    h
+}
+
+/// REQ-TASK-015, REQ-CTX-002: the first request of a plan-first task says, in the fixed
+/// instructions and in both transports, that its first decision must be a plan; and every later
+/// request, the approval's included, says it in the same bytes.
+#[test]
+fn req_task_015_the_first_request_of_a_plan_first_task_says_its_first_decision_is_a_plan() {
+    for wire in [Wire::Envelope, Wire::ToolCalls] {
+        let h = plan_first_run(wire);
+        for n in 0..3 {
+            let system = system_of(&h, n);
+            assert!(
+                system.starts_with(&format!("{} {PLAN_FIRST_INSTRUCTION}\n", wire.base())),
+                "{wire:?}, request {n}: the sentence ends the fixed instructions: {system}"
+            );
+            assert_eq!(
+                system.matches(PLAN_FIRST_INSTRUCTION).count(),
+                1,
+                "{wire:?}, request {n}"
+            );
+        }
+    }
+}
+
+/// REQ-CTX-002: no request of another task has the sentence, and its fixed instructions are
+/// byte for byte the plan-first task's without it: nothing else of the first segment moved.
+#[test]
+fn req_task_015_no_request_of_another_task_has_the_sentence() {
+    for wire in [Wire::Envelope, Wire::ToolCalls] {
+        let (h, id) = over(
+            wire,
+            false,
+            vec![
+                first(&["read a"]),
+                act("read_file", "a"),
+                json!({"decision": "complete", "summary": "done"}),
+            ],
+        );
+        h.step(id);
+        h.step(id);
+        h.step(id);
+        let requests = h.backend.requests();
+        assert_eq!(requests.len(), 3);
+        for (n, request) in requests.iter().enumerate() {
+            for message in &request.messages {
+                assert!(
+                    !message.content.contains("plan first"),
+                    "{wire:?}, request {n}: {}",
+                    message.content
+                );
+            }
+        }
+        assert!(
+            system_of(&h, 0).starts_with(&format!("{}\n", wire.base())),
+            "{wire:?}"
+        );
+        let gated = plan_first_run(wire);
+        assert_eq!(
+            system_of(&gated, 0).replacen(&format!(" {PLAN_FIRST_INSTRUCTION}"), "", 1),
+            system_of(&h, 0),
+            "{wire:?}: the instructions differ by the sentence alone"
+        );
+    }
+}
+
+/// REQ-CTX-010: the first segment and the goal are byte-stable from step to step of a plan-first
+/// task, the end of the gate included; what the approval adds follows them. The prefix measured
+/// at the approval is the whole request before it.
+#[test]
+fn req_task_015_the_prefix_is_byte_stable_through_the_gate_and_its_end() {
+    for wire in [Wire::Envelope, Wire::ToolCalls] {
+        let (h, id) = over(
+            wire,
+            true,
+            vec![
+                first(&["read a"]),
+                act("read_file", "a"),
+                json!({"decision": "complete", "summary": "done"}),
+            ],
+        );
+        h.step(id);
+        h.runtime
+            .approve_action(&user(&h), id, Some("only a".into()))
+            .unwrap();
+        h.step(id);
+        h.step(id);
+        let requests = h.backend.requests();
+        for (n, request) in requests.iter().enumerate() {
+            assert_eq!(
+                request.messages[0], requests[0].messages[0],
+                "{wire:?}, request {n}: the instructions"
+            );
+            assert_eq!(
+                request.messages[1], requests[0].messages[1],
+                "{wire:?}, request {n}: the goal"
+            );
+        }
+        // The first request is the instructions, the goal and the runtime's own request for a
+        // decision. The approval's request keeps the first two and puts the plan (and the note)
+        // after them, so the prefix at the approval is those two, plus the bytes the old tail
+        // and the plan have in common: never less than the two, and the sentence is in them.
+        assert_eq!(
+            requests[1].messages[..2],
+            requests[0].messages[..2],
+            "{wire:?}"
+        );
+        let steps = steps_of(&h, id);
+        let measured = |n: usize| steps[n].measures.as_ref().unwrap().context.prefix_chars as usize;
+        let view =
+            |n: usize| crate::context::prefix_view(&requests[n].messages, &requests[n].functions);
+        let head = &requests[0].messages[..2];
+        let head_chars = crate::context::common_prefix_chars(head, head);
+        assert_eq!(measured(0), 0, "{wire:?}: nothing before the first request");
+        assert_eq!(
+            measured(1),
+            crate::context::common_prefix_chars(&view(0), &view(1)),
+            "{wire:?}"
+        );
+        assert!(
+            measured(1) >= head_chars,
+            "{wire:?}: at the approval the instructions and the goal are reused ({} < {head_chars})",
+            measured(1)
+        );
+        assert_eq!(
+            measured(2),
+            crate::context::common_prefix_chars(&view(1), &view(2)),
+            "{wire:?}"
+        );
+        assert!(
+            measured(2) > measured(1),
+            "{wire:?}: after the approval the plan is in the prefix too"
+        );
+    }
+}
+
+/// REQ-CTX-010: when a plan is rejected before one is approved, the request after the approval
+/// has the plan segment where the earlier ones had the rejected plan's step: the prefix is then
+/// the instructions and the goal, as for any plan that changes, and never less than those.
+#[test]
+fn req_task_015_the_prefix_at_an_approval_after_a_rejection_is_the_instructions_and_the_goal() {
+    for wire in [Wire::Envelope, Wire::ToolCalls] {
+        let (h, id) = over(
+            wire,
+            true,
+            vec![
+                first(&["delete everything"]),
+                first(&["read a"]),
+                act("read_file", "a"),
+            ],
+        );
+        h.step(id);
+        h.runtime
+            .reject_action(&user(&h), id, Some("too much".into()), Some(false))
+            .unwrap();
+        h.step(id);
+        h.runtime.approve_action(&user(&h), id, None).unwrap();
+        h.step(id);
+        let requests = h.backend.requests();
+        assert_eq!(requests.len(), 3);
+        let view =
+            |n: usize| crate::context::prefix_view(&requests[n].messages, &requests[n].functions);
+        let head = &requests[0].messages[..2];
+        let head_chars = crate::context::common_prefix_chars(head, head);
+        let steps = steps_of(&h, id);
+        let at_approval = steps[2].measures.as_ref().unwrap().context.prefix_chars as usize;
+        assert_eq!(
+            at_approval,
+            crate::context::common_prefix_chars(&view(1), &view(2))
+        );
+        assert!(
+            at_approval >= head_chars,
+            "{wire:?}: the instructions and the goal are always reused ({at_approval} < {head_chars})"
+        );
+        assert!(
+            requests[2].messages[0] == requests[0].messages[0],
+            "{wire:?}"
+        );
+    }
+}
