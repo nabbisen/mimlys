@@ -59,11 +59,15 @@ These are as found on `main` at `daede80`; check them on today's `main`.
 
 7. **Also, found on `main`'s CI (a defect of 0.12's registry, not of this handoff).**
    - **What failed:** `registry::tests::req_sched_006_a_registry_that_cannot_be_used_fails_with_a_reason` failed once on `macos-latest` (run `45091069608`, `daede80`). It said `the registry did not answer within 100 ms` where `another runtime holds the registry's lock` was expected.
-   - **The cause:**
-     - `lock_mutex` waits for the lock until a deadline of the operation's bound;
-     - `bounded` gives the whole operation up at that same bound;
-     - so the two race. On a slow machine the outer one wins, and a user whose registry is held is told the vaguer reason.
-   - **The fix:** make the lock's own deadline end before the operation's bound (a margin you justify, within LIM-O11), so that a held lock is always reported as such, and `did not answer` means only a filesystem that did not answer.
+   - **The cause, corrected on reading the code:**
+     - `lock_mutex` waits for the lock until 0.75 of the operation's bound (`registry.rs:656` and `:749`), measured from inside the thread `bounded` starts;
+     - `bounded` gives the whole operation up at the full bound;
+     - at the test's bound of 100 ms the margin is 25 ms, which a loaded runner's thread start, scheduling and 5 ms sleeps can use up. At LIM-O11's 2000 ms the margin is 500 ms, so a user is unlikely to meet it, but it is the same race.
+   - **The fix:**
+     - measure the lock's deadline from the operation's start (before `bounded` starts its thread), not from inside the thread;
+     - make the test's bound large enough that its margin is not a race (or give the test a bound whose margin it controls).
+
+     Then `did not answer` means only a filesystem that did not answer.
    - **The test** decides by state, not by a race: the lock held for longer than the bound, and the reason asserted. Show it under a slowed scheduler (for example a busy loop on every core), before and after.
 
 ## Tests (by state, §3c)
