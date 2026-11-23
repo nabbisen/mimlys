@@ -35,12 +35,9 @@ fn put_err(bytes: &[u8]) {
     if STDERR_GONE.load(Ordering::SeqCst) {
         return;
     }
-    let mut stderr = std::io::stderr().lock();
-    let written = stderr.write_all(bytes).and_then(|()| stderr.flush());
-    if let Err(e) = written
-        && e.kind() == std::io::ErrorKind::BrokenPipe
+    #[allow(clippy::print_stderr)]
     {
-        STDERR_GONE.store(true, Ordering::SeqCst);
+        eprint!("{}", String::from_utf8_lossy(bytes));
     }
 }
 
