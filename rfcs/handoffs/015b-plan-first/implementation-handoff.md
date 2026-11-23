@@ -140,4 +140,14 @@ The review of 2026-11-23 (`.git-exclude/reviewed/handoff-015b/README.md`) approv
    - **The test** depends on the runner's speed, because its healthy half runs the real `xcrun` under that bound.
    - **The fix:** make the healthy half decide by state, not by the speed of the system's `xcrun`. For example, a stand-in through `MIMLYS_TEST_XCRUN` that succeeds and makes the file, beside one real call that is allowed to be slow, or another way that keeps what the test is for. Say which, and why it still shows that the real path makes the cache.
 
+3. **Also, found on `main`'s CI on Windows (a test of M1 and 0.12's admission, not of this handoff).**
+   - **What failed:** `m1_demonstration_asserted` (`tests/m1_demo.rs:136`) failed on `windows-latest` (run `45265528391`, `7cafda7`). The approved `write_file` action's events held two `task.admission_changed` between `action.authorized` and `action.started`, which the test's exact list does not allow.
+   - **What is unexplained:** each command of the test has a registry of its own (`common::run_dir`), so no other runtime should have held a slot.
+   - **Find the cause first, with the events' payloads** (`state`, `reason`, `slots_taken`). One possible reading: the slot entry of the previous process (the one that ended at the approval wait) is still seen as held for a moment after that process exits on Windows, so the next runtime waits. Another: a registry operation past LIM-O11 makes the runtime run unadmitted.
+   - **Then fix what is wrong:**
+     - if a runtime waits for a slot of a process that has ended, that is a defect of admission on Windows;
+     - if the wait is real and correct, the test decides by state, accepting the admission events where they can truly occur.
+
+     Say which, with the evidence.
+
 **Return:** `.git-exclude/review-requests/015b-3-after-review/README.md`.
