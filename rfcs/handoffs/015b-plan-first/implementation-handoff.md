@@ -167,3 +167,23 @@ The review of 2026-11-24 (`.git-exclude/reviewed/handoff-015b-3/README.md`) appr
    - **Tests:** the existing three tests of the sentence still hold with the new words. Add none unless a test pins the old words.
 
 **Return:** `.git-exclude/review-requests/015b-4-after-review/README.md`.
+
+## After review: 015b-5
+
+The review of 2026-11-24 (`.git-exclude/reviewed/handoff-015b-4/README.md`) approved #209 and landed it as is. The sentence the model is told is now true, and its pin is kept (your question 1). The same untruth is still in the words the user reads, and in two places of the code that the request said were changed or did not quote it. Together they are one small change.
+
+1. **The `--plan-first` help and the CLI reference say what is true** (your question 2).
+   - **What is wrong:** `mimlys task new --help` and `mimlys run --help` (`crates/mimlys/src/main.rs:71`) say "The model's first decision must be a plan". The CLI reference says the same (`docs/src/reference/cli.md:26`, the `run` row: "the model's first decision must be a plan"). The user reads these words, and they are not so: the model may ask first.
+   - **The words of the help:** "The model must plan before it acts; you approve the plan before anything acts."
+   - **The words of the CLI reference** (the `run` row, in place of "the model's first decision must be a plan, which you approve before anything acts"): "the model must plan before it acts or completes (it may ask you first), and you approve the plan before anything acts".
+   - **Also:** the doc comment of `plan_first` in `crates/mimlys/src/commands/run.rs:36` says the same; give it the help's words.
+2. **The first test of the sentence says what it checks** (your question 3).
+   - **What is wrong:** its name, `req_task_015_the_first_request_of_a_plan_first_task_says_its_first_decision_is_a_plan`, and its doc comment (`plan_first.rs:719`, "that its first decision must be a plan") still say the old words. The request said that the doc comment was changed; it was not. No tracked file cites the name (by `git grep`), so a rename touches nothing else.
+   - **Change:** rename it `req_task_015_the_first_request_of_a_plan_first_task_says_it_must_plan_before_it_acts`, and give its doc comment the same words.
+3. **The CHANGELOG entry does not tell a history that no user saw.**
+   - **What is wrong:** the entry is unreleased, so no user of a release ever read the old words. "(handoff 015b-4 made the words true: …)" tells such a user of an untruth they never met.
+   - **Change:** drop that parenthesis. Cite the handoff in the entry's leading parenthesis instead: `(handoffs 015b-3, item 1, and 015b-4; …)`.
+
+**Tests:** none new. A grep of tracked files for "first decision must" then finds only this handoff and the RFC's amended sentences.
+
+**Return:** `.git-exclude/review-requests/015b-5-after-review/README.md`.
