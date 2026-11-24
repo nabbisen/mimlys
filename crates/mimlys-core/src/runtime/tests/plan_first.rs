@@ -716,10 +716,10 @@ fn plan_first_run(wire: Wire) -> Harness {
 }
 
 /// REQ-TASK-015, REQ-CTX-002: the first request of a plan-first task says, in the fixed
-/// instructions and in both transports, that its first decision must be a plan; and every later
+/// instructions and in both transports, that the model must plan before it acts; and every later
 /// request, the approval's included, says it in the same bytes.
 #[test]
-fn req_task_015_the_first_request_of_a_plan_first_task_says_its_first_decision_is_a_plan() {
+fn req_task_015_the_first_request_of_a_plan_first_task_says_it_must_plan_before_it_acts() {
     for wire in [Wire::Envelope, Wire::ToolCalls] {
         let h = plan_first_run(wire);
         for n in 0..3 {

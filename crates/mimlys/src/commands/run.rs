@@ -33,7 +33,7 @@ pub struct NewTask {
     pub from_task: Option<String>,
     /// Fork from this snapshot (id or prefix).
     pub from_snapshot: Option<String>,
-    /// The model's first decision must be a plan that the user approves (REQ-TASK-015).
+    /// The model must plan before it acts; you approve the plan before anything acts.
     pub plan_first: bool,
 }
 

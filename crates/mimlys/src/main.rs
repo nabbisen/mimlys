@@ -68,7 +68,7 @@ struct NewArgs {
     /// Fork: the snapshot to start from (the source's latest by default).
     #[arg(long, value_name = "SNAPSHOT")]
     from_snapshot: Option<String>,
-    /// The model's first decision must be a plan, which you approve before anything acts.
+    /// The model must plan before it acts; you approve the plan before anything acts.
     #[arg(long)]
     plan_first: bool,
 }

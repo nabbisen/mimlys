@@ -23,7 +23,7 @@ or configuration error, 2 usage error.
 
 | Command | What it does |
 |---|---|
-| `run <goal> [--scope DIR] [--profile P] [--grant KIND:SCOPE]… [--steps N] [--deadline D] [--completion-check JSON] [--plan-first]` | Create and start a task, print events, prompt when it waits. `--plan-first` (from 0.13): the model's first decision must be a plan, which you approve before anything acts ([Plan first](../how-a-task-runs.md#plan-first-you-approve-the-plan-before-anything-acts)); the plan is printed, and at a terminal you are asked to approve, reject with a note, or cancel |
+| `run <goal> [--scope DIR] [--profile P] [--grant KIND:SCOPE]… [--steps N] [--deadline D] [--completion-check JSON] [--plan-first]` | Create and start a task, print events, prompt when it waits. `--plan-first` (from 0.13): the model must plan before it acts or completes (it may ask you first), and you approve the plan before anything acts ([Plan first](../how-a-task-runs.md#plan-first-you-approve-the-plan-before-anything-acts)); the plan is printed, and at a terminal you are asked to approve, reject with a note, or cancel |
 | `task new <goal> [--hold] [--plan-first] …` | Create (and start unless `--hold`). `--plan-first` as on `run`; a fork (`--from-task`) is plan-first only when it is given the flag itself |
 | `task show <task> [--arguments]` | The task, its plan in force (its version, its steps and when it was made, for every task), grants and pending item; for a plan-first task, whether a plan is approved and which version (`gate      plan first; version 1 approved`), and, while it waits for its plan, how to decide. `--arguments` also prints every argument of the pending approval in full (sanitized), which the card may have cut |
 | `task list` | Every task |
