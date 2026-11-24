@@ -88,6 +88,7 @@ Adaptive effort, part one (ROADMAP, "Release 0.13"; RFC 015 with its Amendment 1
 | 1 | [015a Several backends, locality that is checked, and the fitness probe](./015a-backends-and-the-probe/implementation-handoff.md) | RFC 015 | — |
 | 2 | [004e Readers that tolerate a newer release's records; output to a closed pipe](./004e-readers-of-newer-records/implementation-handoff.md) | RFC 004, RFC 010 | — |
 | 3 | [015b Plan first: a plan shown and approved before anything acts](./015b-plan-first/implementation-handoff.md) | RFC 015 | — |
+| 4 | [015-0 The M8 measurements: levels, the swap, and the probe](./015-0-m8-measurements/implementation-handoff.md) | RFC 015 | 015a (the probe) |
 
 ## Release 0.12
 
