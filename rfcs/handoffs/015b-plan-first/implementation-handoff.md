@@ -1,5 +1,7 @@
 # Handoff 015b — Plan first: a plan shown and approved before anything acts (release 0.13, phase 1)
 
+**Status (2026-11-25): done.** The handoff landed at `13d8df1`, 015b-3 at `cbfcad3`, 015b-4 at `d143f8d` and 015b-5 at `55b69b6` (`.git-exclude/reviewed/handoff-015b/README.md`, `.git-exclude/reviewed/handoff-015b-3/README.md`, `.git-exclude/reviewed/handoff-015b-4/README.md`, `.git-exclude/reviewed/handoff-015b-5/README.md`).
+
 **RFC.** [RFC 015](../../accepted/015-adaptive-effort.md), decision 6, read with its **Amendment 1**, item 8. **From.** The scope of 0.13 (`ROADMAP.md`, "Release 0.13", phase 1).
 
 **Specification** (amended before this handoff):
