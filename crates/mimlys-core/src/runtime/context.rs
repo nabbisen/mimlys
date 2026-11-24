@@ -62,14 +62,16 @@ Use ask_user only for what no granted tool can give: a choice, a missing grant, 
 A <<feedback kind=\"history\">> segment lists earlier steps of this task as fixed summaries written by the runtime. \
 The runtime validates every decision; a rejection tells you what you may change.";
 
-/// The one sentence a plan-first task's fixed instructions add (REQ-TASK-015; handoff 015b-3): its
-/// first decision must be a plan. It ends the instructions of both transports, for a task whose
+/// The one sentence a plan-first task's fixed instructions add (REQ-TASK-015; handoffs 015b-3 and
+/// 015b-4): the model decides `plan` before it acts or completes, and may ask first when it cannot
+/// plan without an answer (`ask_user` and `give_up` go through before a plan, so the words say no
+/// more than is so; external design §15.1). It ends the instructions of both transports, for a task whose
 /// record says `plan_first` and for no other, so that no other task's request changes by a byte.
 /// It is read from the record alone and never from whether the plan is approved, so that the
 /// first segment stays byte-stable from step to step, the end of the gate included (REQ-CTX-002).
 /// It belongs in the instructions, not in a segment of its own: every other labelled segment is
 /// data, never instructions, and an instruction in one would contradict that very statement.
-pub const PLAN_FIRST_INSTRUCTION: &str = "This task is plan first: your first decision must be `plan`; the user approves it before you act.";
+pub const PLAN_FIRST_INSTRUCTION: &str = "This task is plan first: decide `plan` before you act or complete; the user approves the plan before you act. If you cannot plan without an answer, you may ask the user first.";
 
 /// The fixed instructions of `task` in the transport whose text is `base`.
 fn instructions(base: &str, task: &Task) -> String {

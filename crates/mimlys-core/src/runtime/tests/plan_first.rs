@@ -737,6 +737,17 @@ fn req_task_015_the_first_request_of_a_plan_first_task_says_its_first_decision_i
     }
 }
 
+/// REQ-TASK-015 (handoff 015b-4): the words are what external design §15.1 gives, and they say
+/// nothing untrue: the model may ask first, so the sentence does not claim a first decision.
+#[test]
+fn req_task_015_the_sentence_has_the_words_of_the_design() {
+    assert_eq!(
+        PLAN_FIRST_INSTRUCTION,
+        "This task is plan first: decide `plan` before you act or complete; the user approves \
+         the plan before you act. If you cannot plan without an answer, you may ask the user first."
+    );
+}
+
 /// REQ-CTX-002: no request of another task has the sentence, and its fixed instructions are
 /// byte for byte the plan-first task's without it: nothing else of the first segment moved.
 #[test]

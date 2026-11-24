@@ -99,9 +99,10 @@ Where this is written: [Decisions](./reference/decisions-and-tools.md#one-decisi
 A task created with `--plan-first` (on `run` and on `task new`) will not act until you have
 approved a plan. A fork is plan-first only when you give it the flag too. Step by step:
 
-1. **Before any plan.** The model's first decision must be a `plan`, and the model is told so:
-   the fixed instructions of a plan-first task end with one more sentence, *This task is plan
-   first: your first decision must be `plan`; the user approves it before you act.* It is in
+1. **Before any plan.** The model must decide `plan` before it acts or completes, and it is
+   told so: the fixed instructions of a plan-first task end with one more sentence, *This task
+   is plan first: decide `plan` before you act or complete; the user approves the plan before
+   you act. If you cannot plan without an answer, you may ask the user first.* It is in
    every request of the task, in both transports, in the same bytes before and after your
    approval (so the beginning of each request still repeats the last one's), and in no
    request of any other task, whose instructions are unchanged. An `act` or a `complete`
