@@ -20,7 +20,14 @@ impl Env {
         let config_path = dir.path().join("config.toml");
         std::fs::write(
             &config_path,
-            config.replace("@DATA@", &dir.path().join("data").to_string_lossy()),
+            // The path is written into a TOML string: a Windows path's backslashes are escaped.
+            config.replace(
+                "@DATA@",
+                &dir.path()
+                    .join("data")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
+            ),
         )
         .unwrap();
         Self {
