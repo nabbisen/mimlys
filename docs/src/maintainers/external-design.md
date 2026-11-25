@@ -769,13 +769,15 @@ api_key = "env:MIMLYS_BACKEND_KEY"     # by reference only; at least 8 character
 # model = "qwen2.5:3b-instruct"
 
 # [effort.quick]                       # RFC 015: an overlay; a key it leaves out is the profile's
+                                       # shipped: steps = 22 (LIM-E4), deadline = "10m" (LIM-E5); a key here replaces it
 # backend = "small"                    # every level local, or every level on one remote endpoint
 # steps = 20                           # LIM-T1, within the ceiling
 # deadline = "30m"                     # LIM-T5
 # context_chars = 16000                # LIM-C1, at most the backend's
 # recent_steps = 4                     # LIM-C3
 # [effort.standard]                    # ships with no keys: the behaviour before levels
-# [effort.deep]
+# [effort.deep]                        # ships with no keys: chosen unconfigured, it is refused (name a larger model's backend)
+# backend = "large"
 
 [policy]
 default_profile = "workspace"
@@ -920,6 +922,7 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 |---|---|---|
 | Backend unreachable | retries per LIM-M3, then halt `backend_unavailable` | REQ-MDL-003 |
 | A model backend answers with a redirect (from 0.13) | not followed; the request fails naming the host the redirect points to, as an unreachable backend does; nothing is sent there | REQ-SEC-010 |
+| A level chosen that has no key, shipped or configured (from 0.13; `deep` until it is configured) | `run --effort <level>` and `task new --effort <level>` refused, naming `[effort.<level>]` and what to set in it (a backend, or a budget); no task is created | REQ-TASK-013 |
 | An effort level's backend unreachable at creation (from 0.13) | `run --effort <level>` and `task new --effort <level>` refused with the backend's name and the reason; no task is created | REQ-MDL-010 |
 | A task's backend no longer configured at a start (from 0.13) | the start refused, naming the backend and the configured ones; the task stays as it was; nothing moves it to another backend | REQ-MDL-010 |
 | A task's backend now `remote` under a profile without `external`, at a start | the task halts `policy`, naming the backend and the profile, before any request is sent | REQ-SEC-010 |

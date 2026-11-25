@@ -390,8 +390,8 @@ that slowness the 120 s is the bound a user would still sit through.
   on Ollama on a 16 GB card always pays a swap, and `OLLAMA_MAX_LOADED_MODELS`
   does not change that. The RFC's expectation that a swap costs "seconds to
   tens of seconds" is met at the seconds end: 2.4 to 5.8 s.
-- **Decision 1 / Amendment 1, item 1 ("a level that names a larger model is
-  better for the hard task"):** `deep`'s model is not the only variable. The
+- **Decision 1 / Amendment 1, item 1 (each level names the backend it runs
+  on):** `deep`'s model is not the only variable. The
   same 14B GGUF completes the M4 task on Ollama and not on `llama-server` (§3.3),
   and the same 7B completes it every time on Ollama and 5 of 6 on
   `llama-server`. A level names a backend, and a backend is an engine and a

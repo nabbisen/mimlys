@@ -1,6 +1,6 @@
 # Limits and Defaults
 
-**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-10. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). Fixed by measurement on 2026-11-07: LIM-O7 (investigation D1) and LIM-H6 (011c-5). Fixed by measurement on 2026-11-08: LIM-O8 (011c-6). Fixed by measurement on 2026-11-10: LIM-C1 (the M4 report §7, run B). Provisional again, as candidates until their measurement reports: LIM-X5, LIM-H7, LIM-O11 … O14 (RFCs 013, 014) and LIM-E2, LIM-E3 (RFC 015). The other values are design choices, not measurements, and change only here.
+**Status:** Baseline 1.0 (2026-10-02), revised 2026-11-10. Fixed by measurement: LIM-S8 (the M2 report: setup under a millisecond per execution, steady state; the worker's start is the separate LIM-X4), and from the [M4 report](./m4-report.md) LIM-C3, LIM-C4, LIM-M2 and LIM-M4 (kept). Fixed by measurement on 2026-11-07: LIM-O7 (investigation D1) and LIM-H6 (011c-5). Fixed by measurement on 2026-11-08: LIM-O8 (011c-6). Fixed by measurement on 2026-11-10: LIM-C1 (the M4 report §7, run B). Fixed by measurement on 2026-11-19: LIM-X5 and LIM-H7 (the [M7b report](./m7b-report.md)). Fixed by measurement on 2026-11-25: LIM-E2 to LIM-E5 (the [M8 report](./m8-report.md)). Provisional, as candidates until their measurement reports: LIM-O11 … O14 (RFCs 013, 014). The other values are design choices, not measurements, and change only here.
 **Governs:** every number that the [requirements](./requirements.md) and the [external design](./external-design.md) cite by a `LIM-` identifier. The documents never repeat a value; a value changes here only.
 
 "Range" is what an administrator may configure. "fixed" means no configuration changes it. Budgets a user may set per task are bounded by the administrator's ceiling, which is itself within the range.
@@ -155,8 +155,10 @@
 
 | ID | Parameter | Default | Range | Basis |
 |---|---|---:|---|---|
-| LIM-E2 | Steps of the fitness probe's mini-task | 8 | fixed | Provisional (RFC 015): set by its measurement report |
-| LIM-E3 | Wall time of the fitness probe | 120 s | fixed | Provisional (RFC 015): set by its measurement report |
+| LIM-E2 | Steps of the fitness probe's mini-task | 8 | fixed | Measured (M8 report §5, 2026-11-25): twice the most steps an `acts` run used (4: a 14B on a CPU `llama-server`; 3 on Ollama) |
+| LIM-E3 | Wall time of the fitness probe | 120 s | fixed | Measured (M8 report §5): about 2.7 times the slowest `acts` run (43.9 s, a 14B on 8 threads of a shared CPU), and a wait a person sits through at a prompt; 120 s cut no run of the 24 |
+| LIM-E4 | Steps of the `quick` level (`[effort.quick] steps`, shipped) | 22 | 1–1000 (LIM-T1's range) | Measured (M8 report §3.2): twice the longest run of the M4 task that completed (11 steps, a 7B on a CPU `llama-server`). Every run of the 7B measured at 40 steps ends the same at 22: the longest, which did not complete, halted `convergence` at 21. Q1's 12 cut runs of a completing length (5 of 11 runs halted `budget_steps`) |
+| LIM-E5 | Deadline of the `quick` level (`[effort.quick] deadline`, shipped) | 10 min | LIM-T5's range | Measured (M8 report §3.2): twice the slowest completed run of the 7B (247.6 s on a capped CPU), rounded up; 22 steps at the slowest step seen (21 s) is 7.7 min |
 
 ## Host tools (M6)
 

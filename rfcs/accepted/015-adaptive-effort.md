@@ -112,3 +112,18 @@ The decisions were written against 0.9's code. Read against 0.12.0's code, and r
 - **`unreachable` is not recorded.** It is said, with exit code 1, and the last measurement stays. It measures the engine's availability, not the model, and `status` shows that live.
 - **A model backend's redirect is never followed** (REQ-SEC-010), so a "local" engine cannot pass a task's content to another host.
 - **A halt `policy` names its rule** in `halt_detail`.
+
+**Decided at the review of handoff 015-0, the M8 report (2026-11-25; `docs/src/maintainers/m8-report.md`):**
+- **`quick` ships `steps` 22 and `deadline` 10 min** (LIM-E4, LIM-E5), and nothing else.
+  - `quick` stops a task that wanders sooner. It does not make a completing task faster: on the GPU, every candidate envelope finished the M4 task in the same seven requests and the same 8.6 s.
+  - A `context_chars` below a request's own size changes nothing on a short task, because the last LIM-C3 steps are kept whole. No `recent_steps` could be measured. So `quick` ships neither key, and a level sets only what was measured.
+  - A user who wants `quick` to be faster names a smaller model's backend in `[effort.quick]`.
+- **`deep` ships with no keys, and chosen unconfigured it is refused,** naming `[effort.deep]` and what to set in it.
+  - The larger model is what makes `deep`, and only the user can name it. A `deep` of budgets alone would cost more and finish nothing more: the M4 task never needed more than 11 steps, and the runs that went on ended in `convergence`.
+  - A level that silently ran as `standard` would contradict item 4: nothing is chosen silently.
+  - The rule is general: a level other than `standard` that has no key, shipped or configured, is refused when chosen.
+- **A level is as good as its backend, and a backend is an engine and a model.** The same 14B file completes the M4 task on Ollama (5 of 5) and not on a CPU `llama-server` (0 of 5, one trajectory: its replacements left the old text behind). The probe says `acts` for both.
+  - The probe answers whether a model acts, never whether it finishes a task. The book says so where it presents the probe and where it presents `deep`.
+  - No task-level probe is added: a longer mini-task would still promise nothing about the user's task, and would cost every user its time.
+- **LIM-E2 and LIM-E3 are measured at their provisional values** (8 steps; 120 s), each with its rule (the limits register).
+- **One 16 GB GPU holds a 7B or a 14B, never both.** A level on the other model pays one swap of 2.4 to 5.8 s at the task's first request, whatever `OLLAMA_MAX_LOADED_MODELS` says. Two `llama-server` processes pay none.

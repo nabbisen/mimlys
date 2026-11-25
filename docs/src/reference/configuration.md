@@ -440,8 +440,8 @@ line, `color: red`. The goal is fixed: *Change the word red to blue in the file
 probe.txt.* The model has three built-in tools, `read_file`, `write_file` and
 `replace_in_file`, and nothing else: no promotion, no host tool, no server, no
 network, and nothing of your projects or your tasks. It may take at most 8 steps
-and 120 seconds (provisional limits LIM-E2 and LIM-E3, set by a measurement
-before 1.0). When it ends, **mimlys reads the file itself**: the model's word that
+and 120 seconds (limits LIM-E2 and LIM-E3, measured in the
+[M8 report](../maintainers/m8-report.md)). When it ends, **mimlys reads the file itself**: the model's word that
 it is done is never the answer.
 
 | Class | What it says |
@@ -498,7 +498,12 @@ is removed by the next command that writes.
   flight, within five seconds; the probe's task and scope are deleted, no class is
   recorded, and one line says so.
 - A result is a measurement of one model on one machine on one day. It is not a
-  guarantee: a model that `acts` on this task may still fail yours.
+  guarantee: a model that `acts` on this task may still fail yours. **The probe
+  tells whether a model acts, never whether it finishes a task**, and the engine
+  matters as much as the model: in the [M8 report](../maintainers/m8-report.md)
+  one 14B file `acts` on Ollama and on a CPU `llama-server`, yet it finished the
+  M4 task on Ollama only. Before you rely on a backend for long tasks, try it on
+  one of yours.
 
 ## Host tools
 
