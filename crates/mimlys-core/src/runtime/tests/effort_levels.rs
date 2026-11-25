@@ -318,13 +318,13 @@ fn req_task_013_the_envelope_records_context_chars_only_when_the_level_sets_it()
         r.scope = scope_of(2);
         r.effort = Some(EffortLevel::Deep);
     });
-    assert_eq!(
-        effort_of(&h, standard).envelope.context_chars,
-        Some(12_000)
-    );
+    assert_eq!(effort_of(&h, standard).envelope.context_chars, Some(12_000));
     assert_eq!(effort_of(&h, on_deep).envelope.context_chars, None);
     let record = serde_json::to_value(effort_of(&h, on_deep)).unwrap();
-    assert!(record["envelope"].get("context_chars").is_none(), "{record}");
+    assert!(
+        record["envelope"].get("context_chars").is_none(),
+        "{record}"
+    );
     // A record of this release's earlier builds, which holds the backend's value resolved at the
     // creation, reads as the level's own: bounded by the backend's now, and no more.
     let held: Effort = serde_json::from_value(serde_json::json!({
@@ -406,17 +406,30 @@ fn req_task_013_lowering_the_backends_context_chars_lowers_a_running_tasks_budge
     // steps before are as they were and the ones after compress.
     let followed = compressed(None, wide, Some(tight));
     assert_eq!(before(&followed), 0, "{followed:?}");
-    assert!(after(&followed) > 0, "the lowered budget reached the task: {followed:?}");
+    assert!(
+        after(&followed) > 0,
+        "the lowered budget reached the task: {followed:?}"
+    );
     // The level's own value stays, and is bounded by the backend's: a value as wide as the
     // backend's was is bounded when the backend is lowered...
     let bounded = compressed(Some(wide), wide, Some(tight));
     assert_eq!(before(&bounded), 0, "{bounded:?}");
-    assert!(after(&bounded) > 0, "bounded by the backend's now: {bounded:?}");
+    assert!(
+        after(&bounded) > 0,
+        "bounded by the backend's now: {bounded:?}"
+    );
     // ...and a level's tighter value is the budget while the backend's is wider, whatever the
     // file says of its backend: the same steps compress as when the backend has that value.
     let own = compressed(Some(tight), wide, None);
-    assert!(own.iter().sum::<u32>() > 0, "the level's own value is the budget: {own:?}");
-    assert_eq!(own, compressed(None, tight, None), "the same budget, from either source");
+    assert!(
+        own.iter().sum::<u32>() > 0,
+        "the level's own value is the budget: {own:?}"
+    );
+    assert_eq!(
+        own,
+        compressed(None, tight, None),
+        "the same budget, from either source"
+    );
 }
 
 /// REQ-TASK-013: a level with no key, shipped or configured, is refused at creation, naming the
@@ -1261,5 +1274,8 @@ fn req_obs_010_the_cost_names_the_steps_decided_and_the_steps_counted() {
         "the step that ends the task is decided and not counted"
     );
     let json = serde_json::to_value(&cost).unwrap();
-    assert_eq!((json["steps_decided"].as_u64(), json["steps_used"].as_u64()), (Some(3), Some(2)));
+    assert_eq!(
+        (json["steps_decided"].as_u64(), json["steps_used"].as_u64()),
+        (Some(3), Some(2))
+    );
 }

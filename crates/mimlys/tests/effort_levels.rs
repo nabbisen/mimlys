@@ -231,7 +231,8 @@ fn req_mdl_010_an_unreachable_backend_refuses_every_creation_that_starts_a_task(
         let (code, stdout, stderr) = env.run(&args);
         assert_eq!(code, 1, "{args:?}: {stdout}{stderr}");
         assert!(
-            stderr.contains("backend `default` does not answer") && stderr.contains("no task was created"),
+            stderr.contains("backend `default` does not answer")
+                && stderr.contains("no task was created"),
             "{args:?}: {stderr}"
         );
         assert_eq!((env.task_count(), env.created_events()), (0, 0), "{args:?}");
@@ -258,7 +259,11 @@ fn req_mdl_010_an_unreachable_backend_refuses_every_creation_that_starts_a_task(
         let (code, _, stderr) = env.run(&all);
         assert_eq!(code, 0, "{all:?}: {stderr}");
     }
-    assert_eq!(a.requests().len() + b.requests().len(), 0, "nothing was contacted");
+    assert_eq!(
+        a.requests().len() + b.requests().len(),
+        0,
+        "nothing was contacted"
+    );
 }
 
 /// REQ-TASK-013, REQ-PERS-015: a task at `deep` sends its requests to the deep engine and none to
@@ -571,7 +576,11 @@ fn req_task_013_task_show_says_whose_context_budget_a_task_has() {
     // `standard` sets none; `quick` sets 20000. Each records only what its level set.
     let (code, standard) = env.json(&["run", "x", "--scope", scope]);
     assert_eq!(code, 0, "{standard}");
-    assert!(standard["effort"]["envelope"].get("context_chars").is_none());
+    assert!(
+        standard["effort"]["envelope"]
+            .get("context_chars")
+            .is_none()
+    );
     let standard = standard["task"]["task_id"].as_str().unwrap().to_owned();
     let scope2 = self::scope();
     let (code, quick) = env.json(&[
