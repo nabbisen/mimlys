@@ -182,6 +182,13 @@ fn req_obs_010_task_show_says_what_each_task_cost() {
         assert_eq!(shown["effort"]["envelope"]["deadline_ms"], deadline_ms);
         let cost = &shown["cost"];
         assert_eq!(cost["steps_used"], 1, "{shown}");
+        // The step that completes the task is decided and not counted against the budget.
+        assert_eq!(cost["steps_decided"], 2, "{shown}");
+        // Nothing of the level records a context budget; the task's is its backend's.
+        assert!(
+            shown["effort"]["envelope"].get("context_chars").is_none(),
+            "{shown}"
+        );
         assert_eq!(cost["steps_envelope"], steps);
         assert_eq!(cost["steps_limit"], steps);
         assert_eq!(cost["deadline_envelope_ms"], deadline_ms);
@@ -204,7 +211,13 @@ fn req_obs_010_task_show_says_what_each_task_cost() {
             "{stdout}"
         );
         assert!(
-            stdout.contains(&format!("cost      1 of {steps} steps; ")),
+            stdout.contains(&format!(
+                "cost      2 steps decided; 1 of {steps} counted against the budget; "
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("context   the backend's (32000 characters)"),
             "{stdout}"
         );
         assert!(stdout.contains("model time"), "{stdout}");

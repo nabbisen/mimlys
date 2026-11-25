@@ -209,6 +209,58 @@ fn req_task_013_each_refusal_at_creation_makes_nothing() {
     assert_eq!(decisions(&a), 0, "the default backend was not asked either");
 }
 
+/// REQ-MDL-010 (external design §20, review of 015c, item 3): a backend that does not answer
+/// refuses every creation that starts a task, at every level and with or without `--effort`: the
+/// backend's name and the reason, and nothing is created. `task new --hold` starts nothing and
+/// contacts no backend, so it creates the task whether or not the backend answers.
+#[test]
+fn req_mdl_010_an_unreachable_backend_refuses_every_creation_that_starts_a_task() {
+    let scope = scope();
+    let scope = scope.path().to_str().unwrap();
+    // Nothing is listening on the port of `default`.
+    let env = Env::new(
+        "config_version = 2\n[runtime]\ndata_dir = \"@DATA@\"\n[backends.default]\nkind = \"openai_compatible\"\nurl = \"http://127.0.0.1:9/v1\"\nmodel = \"small\"\n",
+    );
+    for args in [
+        vec!["run", "x", "--scope", scope],
+        vec!["run", "x", "--scope", scope, "--effort", "standard"],
+        vec!["run", "x", "--scope", scope, "--effort", "quick"],
+        vec!["task", "new", "x", "--scope", scope],
+        vec!["task", "new", "x", "--scope", scope, "--effort", "quick"],
+    ] {
+        let (code, stdout, stderr) = env.run(&args);
+        assert_eq!(code, 1, "{args:?}: {stdout}{stderr}");
+        assert!(
+            stderr.contains("backend `default` does not answer") && stderr.contains("no task was created"),
+            "{args:?}: {stderr}"
+        );
+        assert_eq!((env.task_count(), env.created_events()), (0, 0), "{args:?}");
+    }
+    // `--hold` creates the task on the same closed port.
+    let (code, made) = env.json(&["task", "new", "x", "--hold", "--scope", scope]);
+    assert_eq!(code, 0, "{made}");
+    assert_eq!(made["task"]["state"], "created");
+    assert_eq!((env.task_count(), env.created_events()), (1, 1));
+
+    // And with a live engine, `--hold` sends it nothing at all: not a probe, not a listing.
+    let (a, b) = (engine(), engine());
+    let env = Env::new(&two_engines(&a, &b, ""));
+    let second = self::scope();
+    for (args, scope) in [
+        (vec!["task", "new", "x", "--hold"], scope),
+        (
+            vec!["task", "new", "y", "--hold", "--effort", "deep"],
+            second.path().to_str().unwrap(),
+        ),
+    ] {
+        let mut all = args.clone();
+        all.extend(["--scope", scope]);
+        let (code, _, stderr) = env.run(&all);
+        assert_eq!(code, 0, "{all:?}: {stderr}");
+    }
+    assert_eq!(a.requests().len() + b.requests().len(), 0, "nothing was contacted");
+}
+
 /// REQ-TASK-013, REQ-PERS-015: a task at `deep` sends its requests to the deep engine and none to
 /// `default`'s; its record has the level, who chose it and the envelope, and the creation event
 /// has the same; a task with no flag is `standard` by default on `default`.
@@ -357,10 +409,11 @@ fn req_mdl_010_a_command_that_runs_no_task_contacts_no_backend() {
         "deep",
     ]);
     assert_eq!(code, 0, "{made}");
-    // Creating asked the engine of the task's backend, to probe it, and no other.
+    // `task new --hold` starts nothing and contacts no backend, not even the task's own, to probe
+    // it (external design §20).
     assert_eq!(default_engine.requests().len(), 0, "the default engine");
     let deep_before = deep_engine.requests().len();
-    assert!(deep_before > 0, "the deep engine was probed");
+    assert_eq!(deep_before, 0, "the deep engine was not probed");
     let id = made["task"]["task_id"].as_str().unwrap().to_owned();
     for args in [
         vec!["task", "list"],
@@ -497,4 +550,70 @@ fn req_mdl_010_a_model_changed_under_the_same_name_is_told_at_the_start() {
     );
     let (_, shown) = env.json(&["task", "show", &id]);
     assert_eq!(shown["task"]["state"], "completed");
+}
+
+/// REQ-TASK-013, LIM-C1 (external design §19.4, review of 015c, item 1): `task show` says whose
+/// context budget a task has. A level that sets none has its backend's, read from the file as it
+/// is now, so that the remedy of `status` (lowering `context_chars`) reaches a task already
+/// made; a level's own value stays, and the backend's bounds it.
+#[test]
+fn req_task_013_task_show_says_whose_context_budget_a_task_has() {
+    let a = engine();
+    let scope = scope();
+    let scope = scope.path().to_str().unwrap();
+    let file = |default_chars: usize, extra: &str| {
+        format!(
+            "config_version = 2\n[runtime]\ndata_dir = \"@DATA@\"\n{}context_chars = {default_chars}\n{extra}",
+            backend("default", &a, "small")
+        )
+    };
+    let env = Env::new(&file(32_000, "[effort.quick]\ncontext_chars = 20000\n"));
+    // `standard` sets none; `quick` sets 20000. Each records only what its level set.
+    let (code, standard) = env.json(&["run", "x", "--scope", scope]);
+    assert_eq!(code, 0, "{standard}");
+    assert!(standard["effort"]["envelope"].get("context_chars").is_none());
+    let standard = standard["task"]["task_id"].as_str().unwrap().to_owned();
+    let scope2 = self::scope();
+    let (code, quick) = env.json(&[
+        "run",
+        "x",
+        "--scope",
+        scope2.path().to_str().unwrap(),
+        "--effort",
+        "quick",
+    ]);
+    assert_eq!(code, 0, "{quick}");
+    assert_eq!(quick["effort"]["envelope"]["context_chars"], 20_000);
+    let quick = quick["task"]["task_id"].as_str().unwrap().to_owned();
+
+    let context_line = |id: &str| {
+        let (code, stdout, stderr) = env.run(&["task", "show", id]);
+        assert_eq!(code, 0, "{stderr}");
+        stdout
+            .lines()
+            .find(|l| l.starts_with("context"))
+            .unwrap_or_else(|| panic!("no context line: {stdout}"))
+            .to_owned()
+    };
+    assert_eq!(
+        context_line(&standard),
+        "context   the backend's (32000 characters)"
+    );
+    assert_eq!(
+        context_line(&quick),
+        "context   the level's value, 20000 characters"
+    );
+
+    // The user lowers the backend's `context_chars` for an engine whose window is too small: the
+    // task already made follows it, and the level's value is bounded by it.
+    env.write(&file(8_000, "[effort.quick]\ncontext_chars = 6000\n"));
+    assert_eq!(
+        context_line(&standard),
+        "context   the backend's (8000 characters)"
+    );
+    // The level's recorded 20000 is above the backend's 8000 now: the backend's bounds it.
+    assert_eq!(
+        context_line(&quick),
+        "context   the backend's (8000 characters), which is below the level's 20000"
+    );
 }
