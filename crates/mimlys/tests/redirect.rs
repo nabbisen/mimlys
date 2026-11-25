@@ -90,13 +90,26 @@ fn servers() -> (MockServer, MockServer) {
 
 /// REQ-SEC-010, REQ-MDL-003: a task whose backend answers every request with a redirect is retried
 /// as LIM-M3 says (the same request, again), halts `backend_unavailable`, and the second server
-/// receives nothing: not the decision request, not the probe's listing.
+/// receives nothing: not the decision request, not the probe's listing. The task is made with
+/// `--hold` (which contacts no backend) and started by `resume`: a creation that starts the task is
+/// refused by the backend that does not answer (REQ-MDL-010, external design section 20), and
+/// nothing is created.
 #[test]
 fn req_sec_010_a_task_whose_backend_redirects_halts_backend_unavailable() {
     let (first, second) = servers();
     let rig = Rig::new(&first);
     let scope = rig.scope.to_str().unwrap();
-    let value = rig.json(&["run", "go", "--scope", scope]);
+    // A creation that starts the task is refused, naming the host the redirect points to.
+    let (code, _, stderr) = rig.run(&["run", "go", "--scope", scope]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("does not answer") && stderr.contains("localhost"),
+        "{stderr}"
+    );
+    assert!(rig.json(&["task", "list"]).as_array().unwrap().is_empty());
+    let made = rig.json(&["task", "new", "go", "--hold", "--scope", scope]);
+    let id = made["task"]["task_id"].as_str().unwrap().to_owned();
+    let value = rig.json(&["task", "resume", &id]);
     assert_eq!(value["task"]["state"], "halted", "{value}");
     assert_eq!(
         value["task"]["halt_reason"], "backend_unavailable",
