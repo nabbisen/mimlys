@@ -1088,16 +1088,24 @@ pub fn effort_state(
 }
 
 /// A task is not created when its backend does not answer (REQ-MDL-010; external design §20), at
-/// any level and with or without `--effort`: the backend's name and why. Nothing was created.
-pub fn level_backend_unreachable(level: &str, backend: &str, reason: &str) -> String {
+/// any level and with or without `--effort`: the backend's name and why. Nothing was created. The
+/// line names `[backends.<name>]` to fix, and `[effort.<level>]` only when `chosen_by` is the
+/// level whose `backend` key chose the backend (never a section that does not exist).
+pub fn level_backend_unreachable(chosen_by: Option<&str>, backend: &str, reason: &str) -> String {
+    let fix = match chosen_by {
+        Some(level) => format!(
+            "fix `[backends.{backend}]` (or `backend` in `[effort.{level}]`, which chose it)"
+        ),
+        None => format!("fix `[backends.{backend}]`"),
+    };
     format!(
-        "backend `{backend}` does not answer ({reason}); no task was created. Start its engine, or fix `backends.{backend}` (or the backend that [effort.{level}], the level of this task, names)"
+        "backend `{backend}` does not answer ({reason}); no task was created. Start its engine, or {fix}"
     )
 }
 /// A task found `running` whose backend is no longer configured was halted `backend_unavailable`
 /// (`halt_detail` `backend_not_configured`; external design §5.2, §19.4): nothing was sent, and
-/// nothing moves a task to another backend.
-pub fn backend_not_configured_halt(backend: &str, configured: &[String]) -> String {
+/// nothing moves a task to another backend. Both remedies are given ([`backend_halt_remedies`]).
+pub fn backend_not_configured_halt(task: &str, backend: &str, configured: &[String]) -> String {
     let have = if configured.is_empty() {
         "none is configured".to_owned()
     } else {
@@ -1111,7 +1119,24 @@ pub fn backend_not_configured_halt(backend: &str, configured: &[String]) -> Stri
         )
     };
     format!(
-        "nothing was sent: the task's backend `{backend}` is not configured ({have}), so the task was halted `backend_unavailable`; nothing moves a task to another backend. Write `[backends.{backend}]` in the configuration again, then resume the task"
+        "nothing was sent: the task's backend `{backend}` is not configured ({have}), so the task was halted `backend_unavailable`; nothing moves a task to another backend. {}",
+        backend_halt_remedies(task, backend)
+    )
+}
+/// A task found `running` whose backend is configured but cannot be made was halted
+/// `backend_unavailable` (`halt_detail` `backend_unusable`; external design §5.2, §19.4): nothing
+/// was sent. Both remedies are given ([`backend_halt_remedies`]).
+pub fn backend_unusable_halt(task: &str, backend: &str, reason: &str) -> String {
+    format!(
+        "nothing was sent: the task's backend `{backend}` cannot be used ({reason}), so the task was halted `backend_unavailable`; nothing moves a task to another backend. {}",
+        backend_halt_remedies(task, backend)
+    )
+}
+/// The two ways on from a halt `backend_unavailable`: fix the configuration and resume the task,
+/// or fork it onto another level (external design §19.4).
+fn backend_halt_remedies(task: &str, backend: &str) -> String {
+    format!(
+        "Either fix `[backends.{backend}]` in the configuration and resume the task (`mimlys task resume {task}`), or fork it onto another level (`mimlys task new <goal> --from-task {task} --effort <level>`)"
     )
 }
 /// The backend of a task serves another model than the task last ran with (external design §20):
@@ -2403,5 +2428,33 @@ mod tests {
             task_state("t", &halted),
             task_state_after("t", &halted, false)
         );
+    }
+
+    /// REQ-MDL-010 (external design §5.2, §19.4, review of 015c-6): the line of a halt
+    /// `backend_unavailable` gives both remedies, whichever of the two halts it is: fix the
+    /// configuration and resume, or fork the task onto another level.
+    #[test]
+    fn req_mdl_010_both_backend_halts_give_both_remedies() {
+        let lines = [
+            backend_not_configured_halt("task-1", "deep", &["default".to_owned()]),
+            backend_unusable_halt("task-1", "deep", "the variable DEEP_KEY is not set"),
+        ];
+        for line in &lines {
+            assert!(line.starts_with("nothing was sent"), "{line}");
+            assert!(line.contains("`backend_unavailable`"), "{line}");
+            // Fix the configuration, and resume.
+            assert!(
+                line.contains("fix `[backends.deep]`")
+                    && line.contains("mimlys task resume task-1"),
+                "{line}"
+            );
+            // Or fork onto another level.
+            assert!(
+                line.contains("--from-task task-1 --effort <level>"),
+                "{line}"
+            );
+        }
+        assert!(lines[0].contains("not configured") && lines[0].contains("configured: `default`"));
+        assert!(lines[1].contains("cannot be used") && lines[1].contains("DEEP_KEY"));
     }
 }

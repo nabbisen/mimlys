@@ -18,6 +18,9 @@ struct Directory {
     backends: Mutex<BTreeMap<String, Arc<ScriptedBackend>>>,
     /// The `context_chars` the file gives a backend; the register's default where none is set.
     contexts: Mutex<BTreeMap<String, usize>>,
+    /// The configured backends that cannot be made, and why (a key by reference that the
+    /// environment does not hold).
+    unusable: Mutex<BTreeMap<String, String>>,
 }
 
 impl Directory {
@@ -30,7 +33,18 @@ impl Directory {
                     .collect(),
             ),
             contexts: Mutex::new(BTreeMap::new()),
+            unusable: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// The environment lost what `name` needs (`Some(reason)`), or has it again (`None`): the
+    /// backend is configured and cannot be made.
+    fn set_unusable(&self, name: &str, reason: Option<&str>) {
+        let mut unusable = self.unusable.lock().unwrap();
+        match reason {
+            Some(reason) => unusable.insert(name.to_owned(), reason.to_owned()),
+            None => unusable.remove(name),
+        };
     }
 
     /// A user edited `backends.<name>.context_chars`: the next process reads it.
@@ -54,6 +68,13 @@ impl Directory {
 
 impl BackendDirectory for Directory {
     fn resolve(&self, name: &str) -> Result<ResolvedBackend, UnknownBackend> {
+        if let Some(reason) = self.unusable.lock().unwrap().get(name) {
+            return Err(UnknownBackend {
+                name: name.to_owned(),
+                configured: self.names(),
+                unusable: Some(reason.clone()),
+            });
+        }
         let found = self.backends.lock().unwrap().get(name).cloned();
         match found {
             Some(backend) => Ok(ResolvedBackend {
@@ -815,6 +836,89 @@ fn req_mdl_010_a_backend_removed_from_the_file_refuses_the_start_and_the_task_st
     directory.replace("deep", &deep);
     h.runtime.resume_task(&h.session, held, None).unwrap();
     assert_eq!(h.state(held), TaskState::Running);
+}
+
+/// REQ-MDL-010 (external design §5.2, §19.4, review of 015c-6): a task that is `running` when its
+/// backend is configured but cannot be made (a key by reference that the environment does not
+/// hold) is halted `backend_unavailable`, with `halt_detail` `backend_unusable` and the reason:
+/// in the task, in its state change, and as a script reads it. Nothing is sent, nothing moves it
+/// to another backend and it is not left `running`; with the environment fixed, `resume` goes on.
+#[test]
+fn req_mdl_010_a_running_task_whose_backend_cannot_be_made_is_halted_backend_unusable() {
+    let default = Arc::new(ScriptedBackend::with_decisions(vec![]));
+    let deep = Arc::new(ScriptedBackend::with_decisions(vec![act("read_file", "a")]));
+    let directory = Directory::new(&[("default", &default), ("deep", &deep)]);
+    let h = with(
+        Harness::with_policy(vec![], approval_policy()),
+        &directory,
+        deep_on("deep"),
+    );
+    let running = h.create_with(|r| {
+        r.effort = Some(EffortLevel::Deep);
+        r.scope = scope_of(1);
+    });
+    assert_eq!(h.state(running), TaskState::Running);
+    let reason = "the environment variable DEEP_KEY is not set";
+    directory.set_unusable("deep", Some(reason));
+    let result = futures_block(h.runtime.run_step(running)).unwrap();
+    assert_eq!(result.outcome, StepOutcome::Halted);
+    let detail = HaltDetail::BackendUnusable {
+        backend: "deep".into(),
+        reason: reason.into(),
+    };
+    assert_eq!(
+        h.state(running),
+        TaskState::Halted {
+            halt_reason: HaltReason::BackendUnavailable,
+            halt_detail: Some(detail.clone()),
+        },
+        "halted, and not left running"
+    );
+    // The state change says it too, in the event, and no step was made.
+    let changed: Vec<_> = h
+        .persistence
+        .events()
+        .into_iter()
+        .filter(|e| e.task_id == Some(running))
+        .filter_map(|e| match e.event {
+            crate::event::Event::TaskStateChanged {
+                reason: Some(reason),
+                halt_detail,
+                ..
+            } => Some((reason, halt_detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed, [(HaltReason::BackendUnavailable, Some(detail))]);
+    // And the task as a script reads it.
+    let json = serde_json::to_value(h.runtime.get_task(running).unwrap().task).unwrap();
+    assert_eq!(json["halt_reason"], "backend_unavailable");
+    assert_eq!(
+        json["halt_detail"],
+        json!({"rule": "backend_unusable", "backend": "deep", "reason": reason})
+    );
+    assert!(h.persistence.load_steps(running).unwrap().is_empty());
+    assert!(
+        deep.requests().is_empty() && default.requests().is_empty(),
+        "nothing was sent, and nothing moved"
+    );
+    // While it cannot be made, `resume` is refused and the task stays halted.
+    let refused = h
+        .runtime
+        .resume_task(&h.session, running, None)
+        .unwrap_err();
+    assert!(
+        matches!(&refused, RuntimeError::InvalidRequest { detail } if detail.contains(reason)),
+        "{refused:?}"
+    );
+    assert!(matches!(h.state(running), TaskState::Halted { .. }));
+    // The environment fixed, `resume` goes on, on its own backend.
+    directory.set_unusable("deep", None);
+    h.runtime.resume_task(&h.session, running, None).unwrap();
+    assert_eq!(h.state(running), TaskState::Running);
+    assert_eq!(h.step(running).outcome, StepOutcome::Continued);
+    assert_eq!(deep.requests().len(), 1, "sent to its own backend");
+    assert!(default.requests().is_empty());
 }
 
 /// REQ-SEC-010 (external design §20): a level on a remote backend under a profile without

@@ -626,3 +626,103 @@ fn req_task_013_task_show_says_whose_context_budget_a_task_has() {
         "context   the backend's (8000 characters), which is below the level's 20000"
     );
 }
+
+/// REQ-TASK-013, LIM-C1 (external design §19.4, review of 015c-6, item 2): `task show --json`
+/// says the context budget in force as the configuration is now, the same as the human line:
+/// `cost.context_chars` and `cost.context_source`, `backend` for a level that sets none (and for
+/// one whose value the backend's is below), `level` for a value of its own. It follows an edit of
+/// the file between two commands.
+#[test]
+fn req_task_013_task_show_json_says_the_context_budget_in_force() {
+    let a = engine();
+    let scope = scope();
+    let scope = scope.path().to_str().unwrap();
+    let file = |default_chars: usize, extra: &str| {
+        format!(
+            "config_version = 2\n[runtime]\ndata_dir = \"@DATA@\"\n{}context_chars = {default_chars}\n{extra}",
+            backend("default", &a, "small")
+        )
+    };
+    let env = Env::new(&file(32_000, "[effort.quick]\ncontext_chars = 20000\n"));
+    let (code, standard) = env.json(&["run", "x", "--scope", scope]);
+    assert_eq!(code, 0, "{standard}");
+    let standard = standard["task"]["task_id"].as_str().unwrap().to_owned();
+    let scope2 = self::scope();
+    let (code, quick) = env.json(&[
+        "run",
+        "x",
+        "--scope",
+        scope2.path().to_str().unwrap(),
+        "--effort",
+        "quick",
+    ]);
+    assert_eq!(code, 0, "{quick}");
+    let quick = quick["task"]["task_id"].as_str().unwrap().to_owned();
+
+    let budget = |id: &str| {
+        let (code, shown) = env.json(&["task", "show", id]);
+        assert_eq!(code, 0, "{shown}");
+        (
+            shown["cost"]["context_chars"].clone(),
+            shown["cost"]["context_source"].clone(),
+        )
+    };
+    // The level sets none: the backend's. The level sets one that the backend's is not below:
+    // the level's.
+    assert_eq!(budget(&standard), (json!(32_000), json!("backend")));
+    assert_eq!(budget(&quick), (json!(20_000), json!("level")));
+    // The backend's is lowered below the level's: the backend's bounds it, and says so.
+    env.write(&file(8_000, "[effort.quick]\ncontext_chars = 6000\n"));
+    assert_eq!(budget(&standard), (json!(8_000), json!("backend")));
+    assert_eq!(budget(&quick), (json!(8_000), json!("backend")));
+    // The level's own value, raised no higher than the backend's: the level's.
+    env.write(&file(32_000, "[effort.quick]\ncontext_chars = 20000\n"));
+    assert_eq!(budget(&quick), (json!(20_000), json!("level")));
+    // The human line says the same of the same task.
+    let (_, stdout, _) = env.run(&["task", "show", &quick]);
+    assert!(
+        stdout.contains("context   the level's value, 20000 characters"),
+        "{stdout}"
+    );
+}
+
+/// REQ-MDL-010 (external design §20, review of 015c-6, item 3): the line that refuses a creation
+/// on a backend that does not answer names `[backends.<name>]`, and names `[effort.<level>]` only
+/// when that level's `backend` key chose the backend: never a section that does not exist, such as
+/// `[effort.standard]` for plain `standard` on `default`.
+#[test]
+fn req_mdl_010_the_unreachable_line_names_what_to_fix() {
+    let scope = scope();
+    let scope = scope.path().to_str().unwrap();
+    // Nothing is listening on port 9. `default` is unreachable, and so is `deep`, which `[effort.deep]`
+    // chose.
+    let env = Env::new(
+        "config_version = 2\n[runtime]\ndata_dir = \"@DATA@\"\n[backends.default]\nkind = \"openai_compatible\"\nurl = \"http://127.0.0.1:9/v1\"\nmodel = \"small\"\n[backends.deep]\nkind = \"openai_compatible\"\nurl = \"http://127.0.0.1:9/v1\"\nmodel = \"large\"\n[effort.deep]\nbackend = \"deep\"\n",
+    );
+    // `standard` (with or without the flag) and `quick` have no `backend` key: they run on
+    // `default`, and there is no section of their own to fix.
+    for args in [
+        vec!["run", "x", "--scope", scope],
+        vec!["run", "x", "--scope", scope, "--effort", "standard"],
+        vec!["task", "new", "x", "--scope", scope, "--effort", "quick"],
+    ] {
+        let (code, _, stderr) = env.run(&args);
+        assert_eq!(code, 1, "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("fix `[backends.default]`"),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("[effort."), "{args:?}: {stderr}");
+    }
+    // `deep` chose its backend: both sections are named.
+    let (code, _, stderr) = env.run(&["run", "x", "--scope", scope, "--effort", "deep"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("backend `deep` does not answer")
+            && stderr.contains("`[backends.deep]`")
+            && stderr.contains("`backend` in `[effort.deep]`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("[effort.standard]"), "{stderr}");
+    assert_eq!((env.task_count(), env.created_events()), (0, 0));
+}

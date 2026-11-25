@@ -229,23 +229,17 @@ impl Runtime {
         }
         let now = self.deps.clock.now();
         // A task found `running` whose backend is no longer configured (recovery resumed it
-        // before the file changed) is halted `backend_unavailable`, naming the backend and the
-        // configured ones: nothing is sent, nothing moves it to another backend, and it is never
-        // left `running` (external design §19.4). `resume` after the file is fixed goes on.
-        if let Some((backend, configured)) = self.backend_not_configured_for(&task) {
+        // before the file changed), or is configured and cannot be made (a key by reference that
+        // the environment does not hold), is halted `backend_unavailable`, with the detail that
+        // says which: nothing is sent, nothing moves it to another backend, and it is never left
+        // `running` (external design §19.4). `resume` after the file is fixed goes on.
+        if let Some(detail) = self.backend_halt_for(&task) {
             tracing::warn!(
                 target: "mimlys_core",
                 task = %task_id,
-                backend = %backend,
-                "the task's backend is no longer configured: the task is halted before anything is sent"
+                "the task's backend is not configured or cannot be made: the task is halted before anything is sent"
             );
-            let halted = task.transition(
-                TaskInput::HaltBackendNotConfigured(HaltDetail::BackendNotConfigured {
-                    backend,
-                    configured,
-                }),
-                now,
-            )?;
+            let halted = task.transition(TaskInput::HaltBackendUnavailable(detail), now)?;
             self.persist_task(&task, &halted)?;
             return Ok(StepResultView {
                 outcome: StepOutcome::Halted,

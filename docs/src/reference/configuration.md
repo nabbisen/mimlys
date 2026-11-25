@@ -305,10 +305,14 @@ extension. The backend is found by its **name** at every start, so a restart fin
 name is no longer in your file, the start is refused naming the backend and the ones that are
 configured, the task stays as it was, and nothing moves it to another backend (a task found `running`
 when its backend is gone is halted `backend_unavailable`, its `halt_detail` `backend_not_configured`
-naming the backend and the configured ones, with nothing sent; `resume` goes on once the file has the
-backend again). **A task is not created when its backend does not answer**: `run`, and `task new`
+naming the backend and the configured ones, with nothing sent; and so is one whose backend is
+configured but cannot be made, a key by reference that the environment does not hold for example, its
+`halt_detail` `backend_unusable` with the reason. Either halt prints both ways on: fix the
+configuration and `resume`, or fork the task onto another level with
+`task new <goal> --from-task <task> --effort <level>`). **A task is not created when its backend does not answer**: `run`, and `task new`
 without `--hold`, at every level and with or without `--effort`, say the backend's name and the reason
-and create nothing; `task new --hold` starts nothing and contacts no backend. If the backend serves
+and create nothing, and tell you to fix `[backends.<name>]` (and `[effort.<level>]` only when that level's
+`backend` key chose the backend); `task new --hold` starts nothing and contacts no backend. If the backend serves
 another model under the same name, the task goes on, the start says both models, and each step records
 the model it was decided with.
 

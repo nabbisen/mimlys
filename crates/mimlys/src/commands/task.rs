@@ -53,6 +53,9 @@ pub fn show(app: &ReadApp, task: &str, arguments: bool, out: &Output) -> Result<
         .backends
         .get(&view.effort.envelope.backend)
         .map(|b| b.context_chars);
+    // The same budget, for a script (`cost.context_chars`, `cost.context_source`).
+    view.cost
+        .set_context(view.effort.envelope.context_chars, backend_context);
     for line in messages::show_lines(&view, backend_context) {
         out.line(line);
     }

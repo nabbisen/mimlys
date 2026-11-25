@@ -592,7 +592,9 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     {
         return Err(AppError::Io {
             detail: mimlys::messages::level_backend_unreachable(
-                creation.level.name(),
+                creation
+                    .backend_chosen_by_level
+                    .then(|| creation.level.name()),
                 backend,
                 probe.detail.as_deref().unwrap_or("no answer"),
             ),

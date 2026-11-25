@@ -30,7 +30,7 @@ use crate::spi::{
     BackendError, Cancellation, ModelBackend, Persistence, PersistenceError, UnknownBackend,
     WorkspaceError, WorkspaceProvider,
 };
-use crate::task::{StateError, Task};
+use crate::task::{HaltDetail, StateError, Task};
 use std::sync::Arc;
 
 /// The session the control API acts under (v1: the CLI process).
@@ -359,7 +359,7 @@ impl Runtime {
 
     /// [`Runtime::backend_named`] with the cause kept apart: a name that is no longer configured
     /// is told from a configured backend that could not be made, because a task found `running`
-    /// on the first is halted (external design §19.4) and the second is not.
+    /// is halted with a different `halt_detail` for each (external design §19.4).
     fn find_backend(&self, name: &str) -> Result<TaskBackend, BackendLookup> {
         if name == self.deps.backend_name {
             return Ok(TaskBackend {
@@ -389,16 +389,26 @@ impl Runtime {
         }
     }
 
-    /// The name a task's backend is found by, and the configured names, when it is no longer
-    /// configured: `Some` only in that case (external design §19.4). Nothing is contacted.
-    pub(crate) fn backend_not_configured_for(&self, task: &Task) -> Option<(String, Vec<String>)> {
-        let name = match &task.effort {
+    /// The halt a task found `running` is given when its backend cannot be had, and `None` when
+    /// it can: the backend is no longer configured (`backend_not_configured`, naming the
+    /// configured ones), or it is configured and cannot be made (`backend_unusable`, with the
+    /// reason) (external design §19.4). Nothing is contacted.
+    pub(crate) fn backend_halt_for(&self, task: &Task) -> Option<HaltDetail> {
+        let backend = match &task.effort {
             Some(effort) => effort.envelope.backend.clone(),
             None => self.deps.backend_name.clone(),
         };
-        match self.find_backend(&name) {
-            Err(BackendLookup::NotConfigured(configured)) => Some((name, configured)),
-            _ => None,
+        match self.find_backend(&backend) {
+            Err(BackendLookup::NotConfigured(configured)) => {
+                Some(HaltDetail::BackendNotConfigured {
+                    backend,
+                    configured,
+                })
+            }
+            Err(BackendLookup::Unusable(reason)) => {
+                Some(HaltDetail::BackendUnusable { backend, reason })
+            }
+            Ok(_) => None,
         }
     }
 
