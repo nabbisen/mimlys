@@ -45,7 +45,15 @@ pub fn show(app: &ReadApp, task: &str, arguments: bool, out: &Output) -> Result<
             &id.to_string(),
         );
     }
-    for line in messages::show_lines(&view) {
+    // The backend's `context_chars` as the configuration has it now: the task's budget follows it
+    // (external design §19.4).
+    let backend_context = app
+        .loaded
+        .config
+        .backends
+        .get(&view.effort.envelope.backend)
+        .map(|b| b.context_chars);
+    for line in messages::show_lines(&view, backend_context) {
         out.line(line);
     }
     for record in &newer {

@@ -477,8 +477,11 @@ Where this is written: [Getting started](./getting-started.md#bringing-the-resul
 ## An effort level: a budget chosen at creation
 
 A task is created at a level, `quick`, `standard` or `deep` (`--effort`; `standard` without it). The level
-is chosen once and **never changes during the task**: the budgets, the deadline, the context budget
-and the backend it runs on are fixed at the creation and written on the task (`task show` says them).
+is chosen once and **never changes during the task**: the budgets, the deadline and the backend it
+runs on are fixed at the creation and written on the task (`task show` says them). The context budget
+is the one exception in how it is kept: a level that sets `context_chars` has it written on the task,
+bounded at each step by its backend's; otherwise the task's budget is its backend's as it is at each
+step, so that lowering it for an engine whose window is too small reaches a task already made.
 A level is a budget, never a permission: every action is checked, approved and confined the same way at
 each. Which backend a level names is looked up by its name each time the task starts, so a restart finds
 it again; a name that has left your configuration refuses the start and moves nothing. See [Effort

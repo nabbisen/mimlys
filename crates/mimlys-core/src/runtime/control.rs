@@ -357,7 +357,7 @@ impl Runtime {
             });
         }
         // The envelope: a flag wins over the level, the level over the profile, and the profile
-        // over the register's default; every key resolved (external design §19.4).
+        // over the register's default (external design §19.4); the context budget is recorded only when the level sets it.
         let envelope = crate::effort::resolve(
             &crate::effort::Inputs {
                 keys: self.levels.keys(plan.level),
@@ -366,7 +366,6 @@ impl Runtime {
                 profile_steps: profile.budgets.steps,
                 default_backend: &self.deps.backend_name,
             },
-            |_| u32::try_from(task_backend.context_chars).unwrap_or(u32::MAX),
         );
         let deadline_ms = envelope.deadline_ms;
         if deadline_ms < LIM_T5_DEADLINE_MS_RANGE.0 || deadline_ms > LIM_T5_DEADLINE_MS_RANGE.1 {

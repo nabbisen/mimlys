@@ -91,12 +91,51 @@ pub struct Envelope {
     pub steps: u32,
     /// LIM-T5, in milliseconds from the creation.
     pub deadline_ms: i64,
-    /// LIM-C1: the level's, else its backend's. Absent only in the reading of a record written
-    /// before 0.13, whose budget was its backend's.
+    /// LIM-C1: recorded **only when the level sets it** (review of 015c). Absent, the task's budget
+    /// is its backend's as it is at each step, so that lowering it reaches a task already made;
+    /// present, it is the level's own value, bounded at each step by the backend's as it is then
+    /// ([`context_budget`]). A record that holds a value the level did not set (a build of 0.13
+    /// before the review) reads as the level's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_chars: Option<u32>,
     /// LIM-C3: steps kept whole under compression.
     pub recent_steps: u32,
+}
+
+/// Whose value a task's context budget is at a step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BudgetSource {
+    /// The level's own `context_chars`, which is not above the backend's.
+    Level,
+    /// The backend's `context_chars`: the level sets none, or sets one that the backend's, as it
+    /// is now, is below.
+    Backend,
+}
+
+/// A task's context budget at one step and whose it is (LIM-C1; external design §19.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextBudget {
+    /// The budget in characters.
+    pub chars: usize,
+    /// Whose it is.
+    pub source: BudgetSource,
+}
+
+/// The context budget of a task at a step: the level's value (`level`, the envelope's
+/// `context_chars`) bounded by `backend`'s as it is **then**, or the backend's alone when the
+/// level sets none (external design §19.4, review of 015c). It is read at every step, never
+/// recorded.
+pub fn context_budget(level: Option<u32>, backend: usize) -> ContextBudget {
+    match level {
+        Some(own) if own as usize <= backend => ContextBudget {
+            chars: own as usize,
+            source: BudgetSource::Level,
+        },
+        _ => ContextBudget {
+            chars: backend,
+            source: BudgetSource::Backend,
+        },
+    }
 }
 
 /// A task's level, who chose it and the envelope it runs with: `task.created{effort}` and the
@@ -300,18 +339,15 @@ pub struct Inputs<'a> {
 }
 
 /// Resolves the envelope of a level: a flag wins over the level, the level over the profile, and
-/// the profile over the register's default (§19.4). `backend_context_chars` is the context budget
-/// of the backend the envelope names, which a level without `context_chars` takes.
-pub fn resolve(inputs: &Inputs<'_>, backend_context_chars: impl FnOnce(&str) -> u32) -> Envelope {
+/// the profile over the register's default (§19.4). The envelope's `context_chars` is the level's
+/// alone: a level that sets none leaves it out, and the task's budget is its backend's at each
+/// step ([`context_budget`]).
+pub fn resolve(inputs: &Inputs<'_>) -> Envelope {
     let backend = inputs
         .keys
         .backend
         .clone()
         .unwrap_or_else(|| inputs.default_backend.to_owned());
-    let context_chars = inputs
-        .keys
-        .context_chars
-        .unwrap_or_else(|| backend_context_chars(&backend));
     Envelope {
         steps: inputs
             .flag_steps
@@ -322,7 +358,7 @@ pub fn resolve(inputs: &Inputs<'_>, backend_context_chars: impl FnOnce(&str) -> 
             .or(inputs.keys.deadline_ms)
             .unwrap_or(LIM_T5_DEADLINE_MS),
         backend,
-        context_chars: Some(context_chars),
+        context_chars: inputs.keys.context_chars,
         recent_steps: inputs
             .keys
             .recent_steps
@@ -347,8 +383,15 @@ pub struct BackendUsed {
 /// and every backend and model it was decided with. Read from the task and its steps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cost {
-    /// Steps taken (the task's counter).
+    /// Steps counted against the budget (the task's counter). The step that ends a task
+    /// (`complete`, `give_up`) is decided and not counted, so this is `steps_decided` less one
+    /// for a task that ended so.
     pub steps_used: u32,
+    /// Steps the task has finished, whether or not they count against the budget (from the review
+    /// of 015c): `steps_used` alone is what a task halts on. A task found `running` shows the
+    /// steps it has finished, not the one in flight.
+    #[serde(default)]
+    pub steps_decided: u32,
     /// The envelope's steps: what the level gave.
     pub steps_envelope: u32,
     /// The steps in force: the envelope's, and what `resume --extend-steps` made of it.
@@ -400,6 +443,8 @@ impl Cost {
         };
         let mut cost = Cost {
             steps_used: task.counters.steps,
+            steps_decided: u32::try_from(steps.iter().filter(|s| s.outcome.is_some()).count())
+                .unwrap_or(u32::MAX),
             steps_envelope: effort.envelope.steps,
             steps_limit: task.budgets.steps,
             elapsed_ms: task.created_at.millis_until(end).max(0),

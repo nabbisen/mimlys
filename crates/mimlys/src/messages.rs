@@ -903,7 +903,14 @@ pub fn effort_line(
 /// What a task cost, for `task show` (REQ-OBS-010): the level and who chose it with its envelope,
 /// the steps used of it, the time against the deadline, the model's time, the tokens where the
 /// backend reported them, and every backend and model the task used.
-pub fn cost_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
+///
+/// `backend_context_chars` is the `context_chars` of the task's backend in the configuration now
+/// (`None` when it is no longer configured): the task's budget is read from it at every step, so
+/// it is what the next step would use (external design §19.4).
+pub fn cost_lines(
+    view: &mimlys_core::runtime::TaskView,
+    backend_context_chars: Option<usize>,
+) -> Vec<String> {
     let (effort, cost) = (&view.effort, &view.cost);
     let e = &effort.envelope;
     let mut lines = vec![format!(
@@ -915,7 +922,16 @@ pub fn cost_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         e.backend,
         e.recent_steps
     )];
-    let mut used = format!("{} of {} steps", cost.steps_used, cost.steps_envelope);
+    // Both counts, each named: the step that ends a task is decided and not counted against the
+    // budget (§19.4), so the two differ for a task that completed or gave up.
+    lines.push(context_line(e.context_chars, backend_context_chars));
+    let mut used = format!(
+        "{} step{} decided; {} of {} counted against the budget",
+        cost.steps_decided,
+        if cost.steps_decided == 1 { "" } else { "s" },
+        cost.steps_used,
+        cost.steps_envelope
+    );
     if cost.steps_limit != cost.steps_envelope {
         used.push_str(&format!(" (extended to {})", cost.steps_limit));
     }
@@ -968,6 +984,34 @@ pub fn cost_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         }
     }
     lines
+}
+
+/// Whose context budget a task has, and its value (external design §19.4): the level's own, or the
+/// backend's as the configuration has it now, which is what bounds the level's and replaces it
+/// where the level sets none. `level` is the envelope's `context_chars`.
+pub fn context_line(level: Option<u32>, backend: Option<usize>) -> String {
+    use mimlys_core::effort::{BudgetSource, context_budget};
+    match (level, backend) {
+        (_, Some(backend)) => {
+            let budget = context_budget(level, backend);
+            match (budget.source, level) {
+                (BudgetSource::Level, _) => {
+                    format!("context   the level's value, {} characters", budget.chars)
+                }
+                (BudgetSource::Backend, None) => {
+                    format!("context   the backend's ({} characters)", budget.chars)
+                }
+                (BudgetSource::Backend, Some(own)) => format!(
+                    "context   the backend's ({} characters), which is below the level's {own}",
+                    budget.chars
+                ),
+            }
+        }
+        (Some(own), None) => format!(
+            "context   the level's value, {own} characters (its backend is not configured now)"
+        ),
+        (None, None) => "context   the backend's (its backend is not configured now)".to_owned(),
+    }
 }
 
 /// One level in `status` (REQ-TASK-013): its backend and its keys, or why it would be refused.
@@ -1043,11 +1087,31 @@ pub fn effort_state(
     text
 }
 
-/// A task is not created at a level whose backend does not answer (REQ-TASK-013; external design
-/// §20): the backend's name and why. Nothing was created.
+/// A task is not created when its backend does not answer (REQ-MDL-010; external design §20), at
+/// any level and with or without `--effort`: the backend's name and why. Nothing was created.
 pub fn level_backend_unreachable(level: &str, backend: &str, reason: &str) -> String {
     format!(
-        "effort level `{level}` refused: its backend `{backend}` does not answer ({reason}); no task was created. Start the engine of backend `{backend}`, or name another backend in [effort.{level}]"
+        "backend `{backend}` does not answer ({reason}); no task was created. Start its engine, or fix `backends.{backend}` (or the backend that [effort.{level}], the level of this task, names)"
+    )
+}
+/// A task found `running` whose backend is no longer configured was halted `backend_unavailable`
+/// (`halt_detail` `backend_not_configured`; external design §5.2, §19.4): nothing was sent, and
+/// nothing moves a task to another backend.
+pub fn backend_not_configured_halt(backend: &str, configured: &[String]) -> String {
+    let have = if configured.is_empty() {
+        "none is configured".to_owned()
+    } else {
+        format!(
+            "configured: {}",
+            configured
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    format!(
+        "nothing was sent: the task's backend `{backend}` is not configured ({have}), so the task was halted `backend_unavailable`; nothing moves a task to another backend. Write `[backends.{backend}]` in the configuration again, then resume the task"
     )
 }
 /// The backend of a task serves another model than the task last ran with (external design §20):
@@ -1998,7 +2062,10 @@ pub fn recovered(task_id: &str, disposition: &str, state: &str) -> String {
     format!("recovered task {task_id}: {disposition}, now {state}")
 }
 /// The task view's header.
-pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
+pub fn show_lines(
+    view: &mimlys_core::runtime::TaskView,
+    backend_context_chars: Option<usize>,
+) -> Vec<String> {
     let t = &view.task;
     let mut lines = vec![
         format!("task      {}", t.task_id),
@@ -2016,7 +2083,7 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         format!("deadline  {}", t.deadline.to_rfc3339()),
     ];
     // What the task cost, and the level it runs at (REQ-OBS-010).
-    lines.extend(cost_lines(view));
+    lines.extend(cost_lines(view, backend_context_chars));
     if let Some(waiting) = &view.waiting {
         lines.push(waiting_line(waiting));
     }

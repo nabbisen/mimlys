@@ -23,13 +23,11 @@ pub struct Target {
     pub creation: Option<Creation>,
 }
 
-/// The level a creation resolved to, and whether the user chose it.
+/// The level a creation resolved to.
 #[derive(Clone, Copy, Debug)]
 pub struct Creation {
     /// The level.
     pub level: EffortLevel,
-    /// `--effort` was given.
-    pub flag_given: bool,
 }
 
 impl Target {
@@ -49,10 +47,7 @@ impl Target {
         Some(Self {
             backend: plan.backend,
             task: None,
-            creation: Some(Creation {
-                level: plan.level,
-                flag_given: effort.is_some(),
-            }),
+            creation: Some(Creation { level: plan.level }),
         })
     }
 
@@ -68,12 +63,12 @@ impl Target {
         })
     }
 
-    /// Whether the creation must be refused when the backend does not answer: a level the user
-    /// chose with `--effort`, or one that runs on a backend of its own (REQ-TASK-013). A task
-    /// that runs on `default` without a flag is created as it always was, and halts
-    /// `backend_unavailable` at its first request.
+    /// Whether the creation must be refused when the backend does not answer: every creation
+    /// that starts a task (`run`, and `task new` without `--hold`), at every level and with or
+    /// without `--effort`, so that one level on one backend behaves one way (external design §20;
+    /// review of 015c). `task new --hold` starts nothing and contacts no backend, so it never
+    /// asks.
     pub fn refuses_unreachable(&self) -> bool {
-        self.creation
-            .is_some_and(|c| c.flag_given || self.backend != crate::backends::DEFAULT)
+        self.creation.is_some()
     }
 }

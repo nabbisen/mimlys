@@ -182,10 +182,9 @@ fn effort_max_bounds_the_level() {
 }
 
 /// §19.4, "The envelope": a flag wins over the level, the level over the profile, and the profile
-/// over the register's default; the context budget is the level's, else its backend's.
+/// over the register's default; the context budget is the level's alone (the backend's is read at each step).
 #[test]
 fn the_envelope_is_resolved_by_precedence() {
-    let backend_context = |name: &str| if name == "big" { 24_000 } else { 32_000 };
     let none = LevelKeys::default();
     let level = LevelKeys {
         backend: Some("big".into()),
@@ -210,18 +209,18 @@ fn the_envelope_is_resolved_by_precedence() {
 
     // Nothing but the profile: today's behaviour, every key resolved.
     assert_eq!(
-        resolve(&base(&none, None, None), backend_context),
+        resolve(&base(&none, None, None)),
         Envelope {
             backend: "default".into(),
             steps: 40,
             deadline_ms: LIM_T5_DEADLINE_MS,
-            context_chars: Some(32_000),
+            context_chars: None,
             recent_steps: 6,
         }
     );
     // The level over the profile and the register's default.
     assert_eq!(
-        resolve(&base(&level, None, None), backend_context),
+        resolve(&base(&level, None, None)),
         Envelope {
             backend: "big".into(),
             steps: 30,
@@ -231,19 +230,39 @@ fn the_envelope_is_resolved_by_precedence() {
         }
     );
     // The flag over the level.
-    let flagged = resolve(&base(&level, Some(12), Some(120_000)), backend_context);
+    let flagged = resolve(&base(&level, Some(12), Some(120_000)));
     assert_eq!(flagged.steps, 12);
     assert_eq!(flagged.deadline_ms, 120_000);
     assert_eq!(flagged.backend, "big", "a flag changes only what it names");
-    // A level that names a backend and not a context budget takes its backend's.
+    // A level that names a backend and not a context budget records none: the budget is its
+    // backend's as it is at each step, never a copy of what it was at the creation.
     let named = LevelKeys {
         backend: Some("big".into()),
         ..LevelKeys::default()
     };
-    assert_eq!(
-        resolve(&base(&named, None, None), backend_context).context_chars,
-        Some(24_000)
-    );
+    assert_eq!(resolve(&base(&named, None, None)).context_chars, None);
+}
+
+/// The context budget at a step: the level's value bounded by the backend's as it is then, or the
+/// backend's alone (external design §19.4, review of 015c).
+#[test]
+fn the_context_budget_is_the_levels_bounded_by_the_backends_at_each_step() {
+    use super::{BudgetSource, ContextBudget, context_budget};
+    let level = |chars| ContextBudget {
+        chars,
+        source: BudgetSource::Level,
+    };
+    let backend = |chars| ContextBudget {
+        chars,
+        source: BudgetSource::Backend,
+    };
+    // No level value: the backend's, whatever it is now.
+    assert_eq!(context_budget(None, 32_000), backend(32_000));
+    assert_eq!(context_budget(None, 8_000), backend(8_000));
+    // The level's own value stays while the backend's is not below it, and is bounded after.
+    assert_eq!(context_budget(Some(20_000), 32_000), level(20_000));
+    assert_eq!(context_budget(Some(20_000), 20_000), level(20_000));
+    assert_eq!(context_budget(Some(20_000), 8_000), backend(8_000));
 }
 
 /// The record's words: a level, who chose it and the envelope, with no field added that is empty.
