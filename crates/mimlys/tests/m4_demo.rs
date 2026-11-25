@@ -470,6 +470,9 @@ fn env_text(name: &str) -> Option<String> {
 /// `deep` the second backend is `MIMLYS_M4_DEEP_BACKEND_URL` and `MIMLYS_M4_DEEP_MODEL`, written
 /// as `[backends.deep]` and named by `[effort.deep]`; without them the level has no key and is
 /// refused when chosen (REQ-TASK-013), which the test then reports as it is.
+///
+/// **A run on a CPU engine takes minutes**, longer than the suites' bound of 180 s:
+/// `MIMLYS_TEST_BOUND_SECS` raises the bound of the command the test runs (the suites never set it).
 #[test]
 fn m4_real_engine_repairs_the_defect() {
     let (Some(url), Some(model)) = (
