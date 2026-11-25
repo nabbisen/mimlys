@@ -234,13 +234,11 @@ model = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"
 
 [effort.deep]
 backend = "large"                        # `deep` is the larger model you name
-steps = 60
-deadline = "4h"
 ```
 
 ```console
 $ mimlys run "fix the failing test" --effort deep
-effort    deep (you chose): steps 60, deadline 4h, backend large (Qwen2.5-14B-Instruct-Q4_K_M.gguf)
+effort    deep (you chose): steps 40, deadline 2h, backend large (Qwen2.5-14B-Instruct-Q4_K_M.gguf)
 ```
 
 - **`quick` stops a task that wanders sooner.** It ships two keys: `steps = 22` and `deadline =

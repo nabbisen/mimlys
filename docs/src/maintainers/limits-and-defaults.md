@@ -64,7 +64,7 @@
 |---|---|---:|---|---|
 | LIM-C1 | Context budget per model request | 32000 characters | 4000 – 1000000 | Measured (M4 report §7, run B, 2026-11-10): at 3.35 characters per token in the `tool_calls` transport, about 9 600 tokens, which with LIM-M2 fits a 16 384-token engine context; the largest request measured was under 12 000 characters; per-backend override |
 | LIM-C2 | Observation excerpt (head + tail); also the most `read_file` returns at once (`max_chars`) | 4000 characters (3000 + 1000); `max_chars` at most LIM-I19 | fixed (no configuration key reads it) | Compiler errors cluster at the tail; never above LIM-I19, so one excerpt cannot exceed what the model reads of a result (handoff 013c; the ceiling was 64 000, twice LIM-C1) |
-| LIM-C3 | Recent steps kept in full | 6 | 1–50, per effort level (`[effort.<level>] recent_steps`, from 0.13; until then no key reads it) | Prefix stability |
+| LIM-C3 | Recent steps kept in full, and the batch in which the oldest summaries are dropped (§15.3) | 6 | 1–50, per effort level (`[effort.<level>] recent_steps`, from 0.13), recorded on the task | Prefix stability |
 | LIM-C4 | Summary of a compressed step | 300 characters | fixed | Rule-based summaries (D-12) |
 | LIM-C5 | Steps of a forked task's history shown as context | 20 | 1–200 | REQ-TASK-004; the decision and outcome of each, no file content |
 

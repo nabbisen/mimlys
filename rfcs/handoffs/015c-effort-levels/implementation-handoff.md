@@ -1,5 +1,7 @@
 # Handoff 015c — Effort levels: a budget per task, on the backend it names (release 0.13, phase 3)
 
+**Status (2026-11-26):** items 1 to 5 and the acceptance landed at `439c4b1` (`.git-exclude/reviewed/handoff-015c/README.md`); 015c-6 next.
+
 **RFC.** [RFC 015](../../accepted/015-adaptive-effort.md), decisions 1, 4 and 7, read with its **Amendment 1** (items 1 to 4) and the decisions at the review of handoff 015-0. **From.** The scope of 0.13 (`ROADMAP.md`, "Release 0.13", phase 3) and the [M8 report](../../../docs/src/maintainers/m8-report.md).
 
 **Specification** (amended before this handoff):
@@ -112,3 +114,42 @@ This is the ROADMAP's "the M4 task under each level, measured".
   - the mutations, each with what killed it;
   - the acceptance's numbers;
   - anything in §19.4 that the code showed to be wrong or unclear. Say it, and do not work around it.
+
+## After review: 015c-6
+
+The review of 2026-11-26 (`.git-exclude/reviewed/handoff-015c/README.md`) approved #212 to #216. They landed as one linear series, `main` fast-forwarded to `439c4b1` (CI of #216). Four of your questions are decided against what the code does today; each is a small change. External design §19.4, §5.2, §15.3 and §20 were amended with the landing.
+
+1. **A task's context budget follows its backend** (your question 3).
+   - **What is wrong:** the envelope records the backend's `context_chars` at creation, so a user who lowers it for an engine whose window is too small (the remedy `status` gives) reaches only new tasks. The halted task, resumed, overflows again.
+   - **Change:**
+     - the envelope records `context_chars` only when the level sets it;
+     - at each step the budget is the level's value bounded by the backend's as it is then, or the backend's alone when the level sets none (`loop_.rs:569`);
+     - `task show` names which: the level's value, or `the backend's (N)`.
+   - **A record of this release's builds that holds a resolved `context_chars`** reads as the level's own. Nothing of a release carries one, so no migration is needed.
+2. **`task show` names both step counts** (your question 4).
+   - **What is wrong:** `cost      1 of 22 steps` and `backends  default (…): 2 steps` in one view, about one task. The numbers contradict each other unless the reader knows that the ending step is not counted.
+   - **Change:** the cost line says both, each named: `7 steps decided; 6 of 22 counted against the budget` (§19.4). The JSON keeps `steps_used` as the counter and gains `steps_decided`. The CLI reference says what each is.
+3. **An unreachable backend refuses every creation that starts a task** (your question 1).
+   - **What is wrong:** today `run` refuses on a down engine with `--effort standard` and not without it, for the same level on the same backend. One rule, whether or not a flag was typed.
+   - **Change:**
+     - `run`, and `task new` without `--hold`, at every level, with or without `--effort`: refused with the backend's name and the reason, and nothing is created (§20);
+     - `task new --hold` contacts no backend.
+   - **This changes 0.12's behaviour** (a task created and then halted `backend_unavailable`), so the CHANGELOG entry goes under **Changed**.
+4. **A `running` task whose backend is gone is halted, not left `running`** (your question 6).
+   - **Change:** halt `backend_unavailable` with `halt_detail` `backend_not_configured`, naming the backend and the configured ones (§5.2, §19.4). Nothing is sent. `resume` after the file is fixed goes on.
+
+**Accepted as you did them** (no change): questions 2, 5 and 7 to 11. The spec now says 7, 9, 10 and 11 in its own words. Question 2 changes no outcome: `standard` always counts, and it runs on `default`, which is what an unconfigured `deep` would name.
+
+**Also, in the book (done with the landing):** the `deep` example in `configuration.md` no longer sets `steps = 60` and `deadline = "4h"`. The M8 report found no measurement behind them, and an example reads as advice.
+
+**Tests:**
+- item 1: lowering a backend's `context_chars` between two processes lowers a running task's budget; a level's own value stays, bounded by the backend's;
+- item 2: the human and JSON forms for a completed task;
+- item 3: `run` without a flag on a closed port creates nothing; `task new --hold` on it creates the task and contacts nothing;
+- item 4: the halt, its detail and its event, and no request sent.
+
+**Mutations:** for items 1, 3 and 4, one each, and say which test kills it.
+
+**Process, from the lead's notes:** one `pkill -f` was refused by the permission system, and one `cd` used an absolute path. Kill only by the pids you recorded, and keep `cd` relative.
+
+**Return:** `.git-exclude/review-requests/015c-6-after-review/README.md`.
