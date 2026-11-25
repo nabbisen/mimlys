@@ -89,28 +89,7 @@ pub fn print_view(view: &TaskView, out: &Output) {
 
 /// Parses `30s`, `15m`, `2h` or `1d` into milliseconds.
 pub fn parse_duration_ms(text: &str) -> Result<i64, AppError> {
-    let text = text.trim();
-    let (number, unit) = text.split_at(
-        text.trim_end_matches(|c: char| c.is_ascii_alphabetic())
-            .len(),
-    );
-    let value: i64 = number.parse().map_err(|_| AppError::Io {
-        detail: format!("`{text}` is not a duration; use a number with s, m, h or d"),
-    })?;
-    let factor = match unit {
-        "s" => 1000,
-        "m" | "" => 60_000,
-        "h" => 3_600_000,
-        "d" => 86_400_000,
-        _ => {
-            return Err(AppError::Io {
-                detail: format!("`{text}` is not a duration; use a number with s, m, h or d"),
-            });
-        }
-    };
-    value.checked_mul(factor).ok_or(AppError::Io {
-        detail: "duration too large".into(),
-    })
+    crate::config::parse_duration_ms(text).map_err(|detail| AppError::Io { detail })
 }
 
 #[cfg(test)]

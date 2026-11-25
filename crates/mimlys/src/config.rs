@@ -21,6 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod effort;
+pub use effort::EffortSection;
+
 /// The configuration schema version this binary writes and understands (REQ-CFG-007, from 0.13).
 pub const CONFIG_VERSION: u32 = 2;
 /// The oldest version still read: one `[backend]`, read as `backends.default`, through 0.14. The
@@ -57,6 +60,28 @@ impl ConfigError {
             reason: reason.into(),
         }
     }
+}
+
+/// Parses `30s`, `15m`, `2h` or `1d` into milliseconds (a bare number is minutes): the text of
+/// `--deadline` and of `[effort.<level>] deadline`.
+pub(crate) fn parse_duration_ms(text: &str) -> Result<i64, String> {
+    let text = text.trim();
+    let (number, unit) = text.split_at(
+        text.trim_end_matches(|c: char| c.is_ascii_alphabetic())
+            .len(),
+    );
+    let not_a_duration = || format!("`{text}` is not a duration; use a number with s, m, h or d");
+    let value: i64 = number.parse().map_err(|_| not_a_duration())?;
+    let factor = match unit {
+        "s" => 1000,
+        "m" | "" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => return Err(not_a_duration()),
+    };
+    value
+        .checked_mul(factor)
+        .ok_or_else(|| "duration too large".to_owned())
 }
 
 pub(crate) fn range<T: PartialOrd + std::fmt::Display>(
@@ -156,6 +181,11 @@ pub struct Config {
     /// this is `None` in every configuration it returns.
     #[serde(default, skip_serializing)]
     backend: Option<BackendSection>,
+    /// `[effort.<level>]` (REQ-TASK-013, REQ-CFG-007; from 0.13): the keys a level sets, by level
+    /// name. A level that is absent here has the keys it ships with: `quick` its two
+    /// (LIM-E4, LIM-E5), `standard` and `deep` none. A key in a section replaces the shipped one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effort: BTreeMap<String, EffortSection>,
     /// `[policy]`.
     #[serde(default)]
     pub policy: PolicySection,
@@ -197,6 +227,7 @@ impl Default for Config {
                 BackendSection::default(),
             )]),
             backend: None,
+            effort: BTreeMap::new(),
             policy: PolicySection::default(),
             sandbox: SandboxSection::default(),
             workspace: WorkspaceSection::default(),
@@ -720,6 +751,10 @@ pub struct CeilingSection {
     /// (LIM-H7; clause C's CPU part, REQ-CONF-013).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_share: Option<u32>,
+    /// The highest effort level any profile may allow (REQ-TASK-013): `quick`, `standard` or
+    /// `deep`; absent means `deep`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_max: Option<String>,
 }
 
 /// `[policy.profiles.<name>]`: a shipped profile is overlaid; a new one
@@ -763,6 +798,10 @@ pub struct ProfileSection {
     /// Whether the task may communicate outside the host (a `remote` backend).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external: Option<bool>,
+    /// The highest effort level this profile allows, at most the ceiling's (REQ-TASK-013):
+    /// `quick`, `standard` or `deep`; absent means the ceiling's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_max: Option<String>,
 }
 
 /// `[policy.exclusions]`.
@@ -855,6 +894,9 @@ impl PolicySection {
         if let Some(v) = c.cpu_share {
             policy.ceiling.cpu_share = v;
         }
+        if let Some(v) = &c.effort_max {
+            policy.ceiling.effort_max = Some(effort_max_level("policy.ceiling.effort_max", v)?);
+        }
         if let Some(v) = &self.exclusions.materialize {
             policy.exclusions.materialize = v.clone();
         }
@@ -880,6 +922,7 @@ impl PolicySection {
                     external: false,
                     on_reject: OnReject::Continue,
                     on_cancel: OnCancel::Rollback,
+                    effort_max: None,
                 },
             };
             if let Some(v) = &section.tools {
@@ -918,6 +961,12 @@ impl PolicySection {
             if let Some(v) = section.external {
                 profile.external = v;
             }
+            if let Some(v) = &section.effort_max {
+                profile.effort_max = Some(effort_max_level(
+                    &format!("policy.profiles.{name}.effort_max"),
+                    v,
+                )?);
+            }
             policy.profiles.insert(name.clone(), profile);
         }
         policy
@@ -925,6 +974,15 @@ impl PolicySection {
             .map_err(|e| ConfigError::new(&format!("policy.{}", e.key), e.reason))?;
         Ok(policy)
     }
+}
+
+/// The level an `effort_max` names, or the refusal that names the key and the levels there are.
+fn effort_max_level(
+    key: &str,
+    text: &str,
+) -> Result<mimlys_core::effort::EffortLevel, ConfigError> {
+    mimlys_core::effort::EffortLevel::parse(text)
+        .ok_or_else(|| ConfigError::new(key, crate::messages::not_an_effort_level(text)))
 }
 
 /// `[sandbox]` (M2 uses it; M1 validates it).
@@ -1378,7 +1436,8 @@ impl Config {
                 }
             }
         }
-        self.resolve_policy()?;
+        let policy = self.resolve_policy()?;
+        self.validate_effort(&policy)?;
         let s = &self.sandbox;
         range("sandbox.fuel", s.fuel, LIM_S1_FUEL_RANGE)?;
         range(

@@ -80,6 +80,7 @@ pub fn profile(external: bool) -> Profile {
         external,
         on_reject: OnReject::Continue,
         on_cancel: OnCancel::Rollback,
+        effort_max: None,
     }
 }
 

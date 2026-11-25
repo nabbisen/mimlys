@@ -26,6 +26,7 @@ pub mod confine;
 pub mod context;
 pub mod decision;
 pub mod effect;
+pub mod effort;
 pub mod event;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake_admission;

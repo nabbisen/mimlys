@@ -91,6 +91,14 @@ pub const LIM_C1_CONTEXT_CHARS: usize = 32_000;
 pub const LIM_C1_CONTEXT_CHARS_RANGE: (usize, usize) = (4000, 1_000_000);
 /// LIM-C3: recent steps kept in full under compression.
 pub const LIM_C3_RECENT_STEPS: usize = 6;
+/// LIM-C3: configurable range, per effort level (`[effort.<level>] recent_steps`, from 0.13).
+pub const LIM_C3_RECENT_STEPS_RANGE: (u32, u32) = (1, 50);
+/// LIM-E4: steps of the `quick` level, shipped (`[effort.quick] steps`): twice the longest run of
+/// the M4 task that completed (M8 report §3.2).
+pub const LIM_E4_QUICK_STEPS: u32 = 22;
+/// LIM-E5: deadline of the `quick` level, shipped (`[effort.quick] deadline`), in milliseconds
+/// (10 min): twice the slowest completed run of the 7B, rounded up (M8 report §3.2).
+pub const LIM_E5_QUICK_DEADLINE_MS: i64 = 10 * 60 * 1000;
 /// LIM-C4: summary of a compressed step, in characters.
 pub const LIM_C4_SUMMARY_CHARS: usize = 300;
 /// LIM-C2: observation excerpt head, in characters.

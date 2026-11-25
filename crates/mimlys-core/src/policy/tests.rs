@@ -275,3 +275,57 @@ fn req_conf_013_the_ceiling_names_the_cpu_share_within_its_range() {
         assert!(e.reason.contains("1..=100"), "{e}");
     }
 }
+
+/// REQ-TASK-013: `effort_max` is the highest level a ceiling or a profile allows; a profile's is at
+/// most the ceiling's, the key is named when it is not, and a policy that sets none keeps the
+/// content hash it always had (LIM-U6).
+#[test]
+fn req_task_013_effort_max_of_the_ceiling_and_of_a_profile() {
+    use crate::effort::{Bound, EffortLevel};
+    let before = Policy::shipped().hash();
+    let mut p = Policy::shipped();
+    assert_eq!(p.ceiling.effort_max, None);
+    assert!(
+        p.profiles
+            .values()
+            .all(|profile| profile.effort_max.is_none())
+    );
+    let workspace = p.profile("workspace").unwrap().clone();
+    assert_eq!(
+        p.effort_bound(&workspace),
+        (EffortLevel::Deep, Bound::None),
+        "absent means every level"
+    );
+
+    p.ceiling.effort_max = Some(EffortLevel::Standard);
+    p.validate().unwrap();
+    assert_ne!(p.hash(), before, "a policy that sets one is another policy");
+    assert_eq!(
+        p.effort_bound(&workspace),
+        (EffortLevel::Standard, Bound::Ceiling)
+    );
+
+    // A profile may lower it, not raise it.
+    p.profiles.get_mut("workspace").unwrap().effort_max = Some(EffortLevel::Quick);
+    p.validate().unwrap();
+    let workspace = p.profile("workspace").unwrap().clone();
+    assert_eq!(
+        p.effort_bound(&workspace),
+        (EffortLevel::Quick, Bound::Profile("workspace".into()))
+    );
+    p.profiles.get_mut("workspace").unwrap().effort_max = Some(EffortLevel::Deep);
+    let e = p.validate().unwrap_err();
+    assert_eq!(e.key, "profiles.workspace.effort_max");
+    assert!(
+        e.reason.contains("`deep`") && e.reason.contains("`standard`"),
+        "{e}"
+    );
+
+    // Setting none writes nothing: the shipped policy's hash is the one of 0.12.
+    assert_eq!(Policy::shipped().hash(), before);
+    assert!(
+        !serde_json::to_string(&Policy::shipped())
+            .unwrap()
+            .contains("effort_max")
+    );
+}

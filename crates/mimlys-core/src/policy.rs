@@ -71,6 +71,13 @@ pub struct Ceiling {
         skip_serializing_if = "is_default_cpu_share"
     )]
     pub cpu_share: u32,
+    /// The highest effort level any profile may allow (REQ-TASK-013; from 0.13). Absent means
+    /// `deep`, every level.
+    ///
+    /// Not written while it is absent, so that a policy that sets none has the content hash it
+    /// always had (LIM-U6, a golden test).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_max: Option<crate::effort::EffortLevel>,
 }
 
 fn default_cpu_share() -> u32 {
@@ -176,6 +183,10 @@ pub struct Profile {
     /// On cancellation of a running write action.
     #[serde(default)]
     pub on_cancel: OnCancel,
+    /// The highest effort level this profile allows, at most the ceiling's (REQ-TASK-013; from
+    /// 0.13). Absent means the ceiling's. Not written while absent (see [`Ceiling::effort_max`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_max: Option<crate::effort::EffortLevel>,
 }
 
 impl Profile {
@@ -269,6 +280,7 @@ impl Policy {
             external: false,
             on_reject: OnReject::Continue,
             on_cancel: OnCancel::Rollback,
+            effort_max: None,
         };
         let workspace = Profile {
             name: "workspace".into(),
@@ -299,6 +311,7 @@ impl Policy {
                 host_tools: vec![],
                 max_steps: LIM_T1_STEPS_RANGE.1.min(200),
                 cpu_share: LIM_H7_CPU_SHARE_PERCENT,
+                effort_max: None,
             },
             profiles,
             exclusions: Exclusions {
@@ -318,6 +331,15 @@ impl Policy {
     /// The profile by name.
     pub fn profile(&self, name: &str) -> Option<&Profile> {
         self.profiles.get(name)
+    }
+
+    /// The highest effort level a task of `profile` may have, and what sets it (REQ-TASK-013):
+    /// the lower of the profile's `effort_max` and the ceiling's.
+    pub fn effort_bound(
+        &self,
+        profile: &Profile,
+    ) -> (crate::effort::EffortLevel, crate::effort::Bound) {
+        crate::effort::bound_of(self.ceiling.effort_max, &profile.name, profile.effort_max)
     }
 
     /// Validates the policy against the ceiling and the limits register (REQ-CAP-003, REQ-CFG-004).
@@ -401,6 +423,16 @@ impl Policy {
                         ),
                     });
                 }
+            }
+            if let (Some(profile_max), Some(ceiling_max)) = (p.effort_max, self.ceiling.effort_max)
+                && profile_max > ceiling_max
+            {
+                return Err(PolicyError {
+                    key: format!("profiles.{name}.effort_max"),
+                    reason: format!(
+                        "`{profile_max}` is above `{ceiling_max}`, the ceiling's effort_max (policy.ceiling.effort_max); a profile allows at most the ceiling's level"
+                    ),
+                });
             }
             let b = &p.budgets;
             let key = |f: &str| format!("profiles.{name}.budgets.{f}");

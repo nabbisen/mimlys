@@ -839,6 +839,10 @@ pub fn no_backend_named(name: &str, configured: &[&str]) -> String {
         format!("no backend is named `{name}` ({have})")
     }
 }
+/// A name that is not an effort level (REQ-TASK-013): in `[effort.<name>]` or an `effort_max`.
+pub fn not_an_effort_level(name: &str) -> String {
+    format!("`{name}` is not an effort level; the levels are `quick`, `standard` and `deep`")
+}
 /// A task that was halted `policy` because its backend is remote under a profile without
 /// `external` (REQ-SEC-010; external design §20): nothing was sent, and the line says what to
 /// change. The backend's name is the one the task runs on.
