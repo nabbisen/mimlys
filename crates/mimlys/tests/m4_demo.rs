@@ -442,7 +442,23 @@ fn m4_structured_output_is_visible() {
     assert_eq!(code, 0);
     assert_eq!(status["backend"]["reachable"], false);
     assert_eq!(status["backend"]["detail"], "transport");
-    let (code, value) = env.json(&["run", GOAL, "--scope", scope.path().to_str().unwrap()]);
+    // A creation that starts the task is refused, and nothing is created (external design 20).
+    let (code, _, stderr) = env.run(&["run", GOAL, "--scope", scope.path().to_str().unwrap()]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("does not answer"), "{stderr}");
+    assert!(stderr.contains("no task was created"), "{stderr}");
+    // A task held and started later meets the backend at its first request, and halts.
+    let (code, made) = env.json(&[
+        "task",
+        "new",
+        GOAL,
+        "--hold",
+        "--scope",
+        scope.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{made}");
+    let id = made["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, value) = env.json(&["task", "resume", &id]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(value["task"]["state"], "halted", "{value}");
     assert_eq!(

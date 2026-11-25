@@ -303,6 +303,14 @@ pub struct Runtime {
     levels: crate::effort::Levels,
 }
 
+/// Why a backend name was not found.
+enum BackendLookup {
+    /// Nothing is configured under the name; these are the configured names.
+    NotConfigured(Vec<String>),
+    /// A configured backend that could not be made, and why.
+    Unusable(String),
+}
+
 /// The backend a task runs on, found by its name (see [`Runtime::backend_named`]).
 #[derive(Clone)]
 pub(crate) struct TaskBackend {
@@ -339,6 +347,20 @@ impl Runtime {
     /// that name. A name nothing has is refused, naming the configured ones, and never moved to
     /// another backend. Nothing is contacted: the backend is made, not asked.
     pub(crate) fn backend_named(&self, name: &str) -> Result<TaskBackend, RuntimeError> {
+        self.find_backend(name).map_err(|lookup| match lookup {
+            BackendLookup::NotConfigured(names) => RuntimeError::InvalidRequest {
+                detail: crate::runtime::backend_not_configured(name, &names),
+            },
+            BackendLookup::Unusable(reason) => RuntimeError::InvalidRequest {
+                detail: format!("backend `{name}` cannot be used: {reason}"),
+            },
+        })
+    }
+
+    /// [`Runtime::backend_named`] with the cause kept apart: a name that is no longer configured
+    /// is told from a configured backend that could not be made, because a task found `running`
+    /// on the first is halted (external design §19.4) and the second is not.
+    fn find_backend(&self, name: &str) -> Result<TaskBackend, BackendLookup> {
         if name == self.deps.backend_name {
             return Ok(TaskBackend {
                 name: name.to_owned(),
@@ -347,17 +369,10 @@ impl Runtime {
                 context_chars: self.deps.context_chars,
             });
         }
-        let configured = || -> Vec<String> {
-            match &self.backends {
-                Some(directory) => directory.names(),
-                None => vec![self.deps.backend_name.clone()],
-            }
-        };
-        let not_configured = |names: Vec<String>| RuntimeError::InvalidRequest {
-            detail: crate::runtime::backend_not_configured(name, &names),
-        };
         let Some(directory) = &self.backends else {
-            return Err(not_configured(configured()));
+            return Err(BackendLookup::NotConfigured(vec![
+                self.deps.backend_name.clone(),
+            ]));
         };
         match directory.resolve(name) {
             Ok(found) => Ok(TaskBackend {
@@ -369,10 +384,21 @@ impl Runtime {
             Err(UnknownBackend {
                 unusable: Some(reason),
                 ..
-            }) => Err(RuntimeError::InvalidRequest {
-                detail: format!("backend `{name}` cannot be used: {reason}"),
-            }),
-            Err(unknown) => Err(not_configured(unknown.configured)),
+            }) => Err(BackendLookup::Unusable(reason)),
+            Err(unknown) => Err(BackendLookup::NotConfigured(unknown.configured)),
+        }
+    }
+
+    /// The name a task's backend is found by, and the configured names, when it is no longer
+    /// configured: `Some` only in that case (external design §19.4). Nothing is contacted.
+    pub(crate) fn backend_not_configured_for(&self, task: &Task) -> Option<(String, Vec<String>)> {
+        let name = match &task.effort {
+            Some(effort) => effort.envelope.backend.clone(),
+            None => self.deps.backend_name.clone(),
+        };
+        match self.find_backend(&name) {
+            Err(BackendLookup::NotConfigured(configured)) => Some((name, configured)),
+            _ => None,
         }
     }
 

@@ -272,7 +272,7 @@ one a level ships with, key by key.
 | `backend` | a name from `[backends]` | configured; a level that names none runs on `default` |
 | `steps` | the step budget | 1–1000, at most `[policy.ceiling] max_steps` |
 | `deadline` | the time budget, written as `--deadline` is (`30s`, `15m`, `2h`, `1d`) | 1 minute – 24 hours |
-| `context_chars` | the characters sent to the model at each step | 4000 – 1 000 000, at most the backend's own |
+| `context_chars` | the characters sent to the model at each step; leave it out and the task's budget is its backend's, as it is at each step | 4000 – 1 000 000, at most the backend's own |
 | `recent_steps` | the latest steps sent whole when the context is over its budget | 1–50 (6 when no level sets it) |
 
 **Choosing.** `--effort <level>` on `run` and `task new`; a name that is not one of the three is a
@@ -295,11 +295,20 @@ the ceiling's.
 
 **What a task records.** `task.created` and the task record carry the level, who chose it
 (`user`, `default` or `fork`) and the envelope, every key resolved: what the task runs with, not what the
-file said. A later change of `[effort.*]` applies to new tasks only; `resume --extend-steps` and
+file said. The one exception is `context_chars`, recorded only when the level sets it: otherwise the
+task's budget is its backend's `context_chars` **as it is at each step**, so that lowering it for an
+engine whose window is too small (the remedy `status` gives) reaches a task that overflowed too, and a
+level's own value is bounded by the backend's as it is then. `task show` says which it is, the level's
+or the backend's, with the value. A later change of `[effort.*]` applies to new tasks only; `resume --extend-steps` and
 `--extend-deadline` extend a task as they always did, and `task show` shows both the envelope and the
 extension. The backend is found by its **name** at every start, so a restart finds it again; if its
 name is no longer in your file, the start is refused naming the backend and the ones that are
-configured, the task stays as it was, and nothing moves it to another backend. If the backend serves
+configured, the task stays as it was, and nothing moves it to another backend (a task found `running`
+when its backend is gone is halted `backend_unavailable`, its `halt_detail` `backend_not_configured`
+naming the backend and the configured ones, with nothing sent; `resume` goes on once the file has the
+backend again). **A task is not created when its backend does not answer**: `run`, and `task new`
+without `--hold`, at every level and with or without `--effort`, say the backend's name and the reason
+and create nothing; `task new --hold` starts nothing and contacts no backend. If the backend serves
 another model under the same name, the task goes on, the start says both models, and each step records
 the model it was decided with.
 

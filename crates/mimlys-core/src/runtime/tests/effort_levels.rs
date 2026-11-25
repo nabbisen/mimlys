@@ -8,6 +8,7 @@
 use super::*;
 use crate::effort::{ChosenBy, Effort, EffortLevel, Envelope, LevelKeys, Levels};
 use crate::spi::{BackendDirectory, ModelBackend, ResolvedBackend, UnknownBackend};
+use crate::task::HaltDetail;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -15,6 +16,8 @@ use std::sync::Mutex;
 /// that is removed is a backend that the file no longer has.
 struct Directory {
     backends: Mutex<BTreeMap<String, Arc<ScriptedBackend>>>,
+    /// The `context_chars` the file gives a backend; the register's default where none is set.
+    contexts: Mutex<BTreeMap<String, usize>>,
 }
 
 impl Directory {
@@ -26,7 +29,13 @@ impl Directory {
                     .map(|(name, b)| ((*name).to_owned(), Arc::clone(b)))
                     .collect(),
             ),
+            contexts: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// A user edited `backends.<name>.context_chars`: the next process reads it.
+    fn set_context(&self, name: &str, chars: usize) {
+        self.contexts.lock().unwrap().insert(name.to_owned(), chars);
     }
 
     /// The file no longer has `name`.
@@ -50,7 +59,13 @@ impl BackendDirectory for Directory {
             Some(backend) => Ok(ResolvedBackend {
                 backend: backend as Arc<dyn ModelBackend>,
                 gate: None,
-                context_chars: crate::limits::LIM_C1_CONTEXT_CHARS,
+                context_chars: self
+                    .contexts
+                    .lock()
+                    .unwrap()
+                    .get(name)
+                    .copied()
+                    .unwrap_or(crate::limits::LIM_C1_CONTEXT_CHARS),
             }),
             None => Err(UnknownBackend {
                 name: name.to_owned(),
@@ -99,7 +114,7 @@ fn standard_envelope(steps: u32, deadline_ms: i64) -> Envelope {
         backend: "default".into(),
         steps,
         deadline_ms,
-        context_chars: Some(crate::limits::LIM_C1_CONTEXT_CHARS as u32),
+        context_chars: None,
         recent_steps: 6,
     }
 }
@@ -279,33 +294,141 @@ fn req_task_013_the_envelope_follows_the_precedence_flag_level_profile_default()
     }
 }
 
-/// REQ-TASK-013: the flag does not change a level's other keys, and a level that names a backend
-/// takes that backend's context budget when it sets none.
+/// REQ-TASK-013, LIM-C1 (external design §19.4, review of 015c): the envelope records
+/// `context_chars` only when the level sets it, a record that holds a value reads as the level's
+/// own, and the budget at a step is the level's value bounded by the backend's as it is then, or
+/// the backend's alone.
 #[test]
-fn req_task_013_a_level_takes_its_backends_context_budget() {
+fn req_task_013_the_envelope_records_context_chars_only_when_the_level_sets_it() {
     let default = Arc::new(ScriptedBackend::with_decisions(vec![]));
     let deep = Arc::new(ScriptedBackend::with_decisions(vec![]));
     let directory = Directory::new(&[("default", &default), ("deep", &deep)]);
+    let mut levels = deep_on("deep");
+    levels.standard.context_chars = Some(12_000);
     let h = with(
         Harness::with_context(vec![], Policy::shipped(), vec![], 16_000),
         &directory,
-        deep_on("deep"),
+        levels,
     );
-    let on_default = h.create_with(|r| r.hold = true);
+    // `standard` sets a value: it is recorded. `deep` sets none: nothing is recorded, though its
+    // backend has one.
+    let standard = h.create_with(|r| r.hold = true);
     let on_deep = h.create_with(|r| {
         r.hold = true;
         r.scope = scope_of(2);
         r.effort = Some(EffortLevel::Deep);
     });
-    assert_eq!(
-        effort_of(&h, on_default).envelope.context_chars,
-        Some(16_000),
-        "the runtime's own backend: its context_chars"
+    assert_eq!(effort_of(&h, standard).envelope.context_chars, Some(12_000));
+    assert_eq!(effort_of(&h, on_deep).envelope.context_chars, None);
+    let record = serde_json::to_value(effort_of(&h, on_deep)).unwrap();
+    assert!(
+        record["envelope"].get("context_chars").is_none(),
+        "{record}"
     );
-    // The directory's backend has the register's default budget.
+    // A record of this release's earlier builds, which holds the backend's value resolved at the
+    // creation, reads as the level's own: bounded by the backend's now, and no more.
+    let held: Effort = serde_json::from_value(serde_json::json!({
+        "level": "deep", "chosen_by": "user",
+        "envelope": {"backend": "deep", "steps": 40, "deadline_ms": 1_800_000,
+                     "context_chars": 32_000, "recent_steps": 6}
+    }))
+    .unwrap();
+    assert_eq!(held.envelope.context_chars, Some(32_000));
     assert_eq!(
-        effort_of(&h, on_deep).envelope.context_chars,
-        Some(crate::limits::LIM_C1_CONTEXT_CHARS as u32)
+        crate::effort::context_budget(held.envelope.context_chars, 8_000).chars,
+        8_000
+    );
+}
+
+/// REQ-TASK-013, LIM-C1 (review of 015c, item 1): lowering a backend's `context_chars` between
+/// two processes lowers the budget of a task already made, the remedy `status` gives for an engine
+/// whose window is too small; a level's own value stays, bounded by the backend's. Each case runs
+/// the scenario of `req_ctx_003`: what the budget did is the steps it had to compress.
+#[test]
+fn req_task_013_lowering_the_backends_context_chars_lowers_a_running_tasks_budget() {
+    const N: usize = 14;
+    const LOWERED_AT: usize = 7;
+    // The sizes the tight budget is derived from, as `recent_steps`' test does.
+    let generous = Harness::new(context_scenario(N));
+    script_context_outcomes(&generous, N);
+    let id = generous.create_with(|r| r.profile = Some("read_only".into()));
+    for _ in 0..N {
+        generous.step(id);
+    }
+    let (last, first) = (request_chars(&generous, N - 1), request_chars(&generous, 0));
+    let tight = first + (last - first) / 3;
+    let wide = crate::limits::LIM_C1_CONTEXT_CHARS;
+
+    // The steps each request compressed. The task is created on a backend whose `context_chars` is
+    // `at_creation`; the file is edited to `lowered` before step `LOWERED_AT`, as a user does
+    // between two commands; the level sets `level` or nothing.
+    let compressed = |level: Option<usize>, at_creation: usize, lowered: Option<usize>| {
+        let default = Arc::new(ScriptedBackend::with_decisions(vec![]));
+        let deep = Arc::new(ScriptedBackend::with_decisions(context_scenario(N)));
+        let directory = Directory::new(&[("default", &default), ("deep", &deep)]);
+        directory.set_context("deep", at_creation);
+        let mut levels = deep_on("deep");
+        levels.deep.context_chars = level.map(|chars| chars as u32);
+        let h = with(
+            Harness::with_policy(vec![], Policy::shipped()),
+            &directory,
+            levels,
+        );
+        script_context_outcomes(&h, N);
+        let id = h.create_with(|r| {
+            r.profile = Some("read_only".into());
+            r.effort = Some(EffortLevel::Deep);
+        });
+        assert_eq!(
+            effort_of(&h, id).envelope.context_chars,
+            level.map(|chars| chars as u32),
+            "the envelope holds the level's value and nothing else"
+        );
+        for k in 0..N {
+            if k == LOWERED_AT
+                && let Some(chars) = lowered
+            {
+                directory.set_context("deep", chars);
+            }
+            assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+        }
+        (0..N)
+            .map(|k| measures(&h, id, k).context.compressed_steps)
+            .collect::<Vec<u32>>()
+    };
+    let before = |c: &[u32]| c[..LOWERED_AT].iter().sum::<u32>();
+    let after = |c: &[u32]| c[LOWERED_AT..].iter().sum::<u32>();
+
+    // The control: nothing lowered, nothing compressed.
+    let kept = compressed(None, wide, None);
+    assert_eq!((before(&kept), after(&kept)), (0, 0), "{kept:?}");
+    // The level sets none: the backend's budget as it is at each step. Lowered in the middle, the
+    // steps before are as they were and the ones after compress.
+    let followed = compressed(None, wide, Some(tight));
+    assert_eq!(before(&followed), 0, "{followed:?}");
+    assert!(
+        after(&followed) > 0,
+        "the lowered budget reached the task: {followed:?}"
+    );
+    // The level's own value stays, and is bounded by the backend's: a value as wide as the
+    // backend's was is bounded when the backend is lowered...
+    let bounded = compressed(Some(wide), wide, Some(tight));
+    assert_eq!(before(&bounded), 0, "{bounded:?}");
+    assert!(
+        after(&bounded) > 0,
+        "bounded by the backend's now: {bounded:?}"
+    );
+    // ...and a level's tighter value is the budget while the backend's is wider, whatever the
+    // file says of its backend: the same steps compress as when the backend has that value.
+    let own = compressed(Some(tight), wide, None);
+    assert!(
+        own.iter().sum::<u32>() > 0,
+        "the level's own value is the budget: {own:?}"
+    );
+    assert_eq!(
+        own,
+        compressed(None, tight, None),
+        "the same budget, from either source"
     );
 }
 
@@ -624,8 +747,9 @@ fn req_mdl_010_a_backend_removed_from_the_file_refuses_the_start_and_the_task_st
         .unwrap();
     assert!(matches!(h.state(approval), TaskState::Halted { .. }));
 
-    // A task that is running when its backend is gone is not driven: the step is an error that
-    // names it, the task stays `running`, and nothing is sent.
+    // A task that is running when its backend is gone is halted `backend_unavailable`, with
+    // `halt_detail` `backend_not_configured` naming it and the configured ones, and not left
+    // `running`: nothing is sent (external design §19.4).
     directory.replace("deep", &deep);
     let running = h.create_with(|r| {
         r.effort = Some(EffortLevel::Deep);
@@ -633,11 +757,58 @@ fn req_mdl_010_a_backend_removed_from_the_file_refuses_the_start_and_the_task_st
     });
     directory.remove("deep");
     let sent = deep.requests().len();
-    let error = futures_block(h.runtime.run_step(running)).unwrap_err();
-    refusal(error);
+    let result = futures_block(h.runtime.run_step(running)).unwrap();
+    assert_eq!(result.outcome, StepOutcome::Halted);
+    let state = h.state(running);
+    assert_eq!(
+        state,
+        TaskState::Halted {
+            halt_reason: HaltReason::BackendUnavailable,
+            halt_detail: Some(HaltDetail::BackendNotConfigured {
+                backend: "deep".into(),
+                configured: vec!["default".into()],
+            }),
+        }
+    );
+    // The state change says it too, in the event, and no step was made.
+    let changed: Vec<_> = h
+        .persistence
+        .events()
+        .into_iter()
+        .filter(|e| e.task_id == Some(running))
+        .filter_map(|e| match e.event {
+            crate::event::Event::TaskStateChanged {
+                reason: Some(reason),
+                halt_detail,
+                ..
+            } => Some((reason, halt_detail)),
+            _ => None,
+        })
+        .collect();
+    let detail = HaltDetail::BackendNotConfigured {
+        backend: "deep".into(),
+        configured: vec!["default".into()],
+    };
+    assert_eq!(
+        changed,
+        [(HaltReason::BackendUnavailable, Some(detail.clone()))]
+    );
+    // And the task as a script reads it.
+    let json = serde_json::to_value(h.runtime.get_task(running).unwrap().task).unwrap();
+    assert_eq!(json["halt_reason"], "backend_unavailable");
+    assert_eq!(
+        json["halt_detail"],
+        json!({"rule": "backend_not_configured", "backend": "deep", "configured": ["default"]})
+    );
+    assert!(h.persistence.load_steps(running).unwrap().is_empty());
+    assert_eq!(deep.requests().len(), sent, "nothing was sent");
+    assert!(default.requests().is_empty(), "and nothing moved");
+    // The file fixed, `resume` goes on: the task is running again, on its own backend.
+    directory.replace("deep", &deep);
+    h.runtime.resume_task(&h.session, running, None).unwrap();
     assert_eq!(h.state(running), TaskState::Running);
-    assert_eq!(deep.requests().len(), sent);
-    assert!(default.requests().is_empty());
+    assert_eq!(h.step(running).outcome, StepOutcome::Continued);
+    assert_eq!(deep.requests().len(), sent + 1, "sent to its own backend");
 
     // The file has it again: the held task starts, on that backend (one task runs at a time).
     h.runtime.cancel_task(&h.session, running).unwrap();
@@ -1074,4 +1245,37 @@ fn req_task_013_a_fork_takes_its_sources_level() {
     });
     assert_eq!(effort_of(&h, old).level, EffortLevel::Standard);
     assert_eq!(effort_of(&h, old).chosen_by, ChosenBy::Fork);
+}
+
+/// REQ-OBS-010 (external design §19.4, review of 015c, item 2): the cost says both step counts.
+/// The steps decided are every step the task finished; the steps counted against the budget are
+/// the task's counter, and the step that ends a task (`complete`) is decided and not counted.
+#[test]
+fn req_obs_010_the_cost_names_the_steps_decided_and_the_steps_counted() {
+    let h = Harness::new(vec![
+        act("read_file", "a"),
+        act("read_file", "b"),
+        json!({"decision": "complete", "summary": "done"}),
+    ]);
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create_with(|_| {});
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    assert_eq!(h.step(id).outcome, StepOutcome::Continued);
+    let running = h.runtime.get_task(id).unwrap().cost;
+    assert_eq!((running.steps_decided, running.steps_used), (2, 2));
+    assert_eq!(h.step(id).outcome, StepOutcome::Completed);
+    let cost = h.runtime.get_task(id).unwrap().cost;
+    assert_eq!(
+        (cost.steps_decided, cost.steps_used, cost.steps_envelope),
+        (3, 2, 40),
+        "the step that ends the task is decided and not counted"
+    );
+    let json = serde_json::to_value(&cost).unwrap();
+    assert_eq!(
+        (json["steps_decided"].as_u64(), json["steps_used"].as_u64()),
+        (Some(3), Some(2))
+    );
 }

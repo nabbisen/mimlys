@@ -105,6 +105,15 @@ pub enum HaltDetail {
     /// The configured completion check was refused by the validator, or would need the user's
     /// approval, which a check never gets (REQ-TASK-007).
     CompletionCheckRefused,
+    /// A task found `running` whose backend is no longer configured (recovery resumed it before
+    /// the file changed): halted `backend_unavailable` before anything was sent, naming the
+    /// backend and the ones the configuration has (external design §5.2, §19.4).
+    BackendNotConfigured {
+        /// The backend's name, as the task's envelope has it.
+        backend: String,
+        /// The names the configuration has now.
+        configured: Vec<String>,
+    },
 }
 
 /// How a task completed (external design §5.3, REQ-TASK-010).
@@ -489,6 +498,9 @@ pub enum TaskInput {
     Halt(HaltReason),
     /// The runtime halts the task `policy`, naming the rule (from 0.13).
     HaltPolicy(HaltDetail),
+    /// The runtime halts the task `backend_unavailable`, naming the rule: its backend is no
+    /// longer configured (from 0.13).
+    HaltBackendNotConfigured(HaltDetail),
     /// The task completed.
     Complete(Completion),
     /// The task failed.
@@ -541,7 +553,9 @@ impl TaskInput {
             TaskInput::PlanApproved => "plan_approved",
             TaskInput::UserHalted => "user_halted",
             TaskInput::Expired => "expired",
-            TaskInput::Halt(_) | TaskInput::HaltPolicy(_) => "halt",
+            TaskInput::Halt(_)
+            | TaskInput::HaltPolicy(_)
+            | TaskInput::HaltBackendNotConfigured(_) => "halt",
             TaskInput::Complete(_) => "complete",
             TaskInput::Fail(_) => "fail",
             TaskInput::StartRecovery => "start_recovery",
@@ -710,6 +724,12 @@ impl Task {
                 halt_reason: HaltReason::Policy,
                 halt_detail: Some(detail.clone()),
             },
+            (TaskState::Running, TaskInput::HaltBackendNotConfigured(detail)) => {
+                TaskState::Halted {
+                    halt_reason: HaltReason::BackendUnavailable,
+                    halt_detail: Some(detail.clone()),
+                }
+            }
             (TaskState::Running, TaskInput::Complete(completion)) => TaskState::Completed {
                 completion: *completion,
             },

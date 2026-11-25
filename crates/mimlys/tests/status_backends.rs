@@ -432,6 +432,7 @@ fn req_mdl_010_one_backend_that_cannot_be_used_does_not_hide_the_others() {
 
 /// REQ-MDL-010: the other commands that start a task probe the backend that runs it, `default`,
 /// and print its context warning only: a backend that is not `default` is not contacted at all.
+/// `task new --hold` starts nothing and contacts no backend (external design §20).
 #[test]
 fn req_mdl_010_a_command_that_starts_a_task_uses_default_only() {
     let small = MockServer::start(llama_cpp(2048), vec![]);
@@ -440,8 +441,16 @@ fn req_mdl_010_a_command_that_starts_a_task_uses_default_only() {
     let scope = tempfile::tempdir().unwrap();
     std::fs::write(scope.path().join("a.txt"), "a\n").unwrap();
     let scope = scope.path().to_str().unwrap();
+    // `--hold` contacts nothing: not `default`, not the other.
     let (code, _, stderr) = rig.run(&["task", "new", "go", "--scope", scope, "--hold"]);
     assert_eq!(code, 0, "{stderr}");
+    assert!(big.requests().is_empty(), "{:?}", big.requests());
+    assert!(small.requests().is_empty(), "{:?}", small.requests());
+    // A command that starts a task probes `default`, and no warning is printed for a window that
+    // is large enough. The script is empty, so the task halts at its first request: what is
+    // checked is who was asked.
+    let rig = Rig::new(&[("default", big.url(), ""), ("tiny", small.url(), "")]);
+    let (_, _, stderr) = rig.run(&["task", "new", "go", "--scope", scope]);
     assert!(!stderr.contains("warning:"), "{stderr}");
     assert!(!big.requests().is_empty(), "default was probed");
     assert!(small.requests().is_empty(), "{:?}", small.requests());
@@ -449,8 +458,7 @@ fn req_mdl_010_a_command_that_starts_a_task_uses_default_only() {
     // And when `default` is the small one, its warning is printed, once.
     let rig = Rig::new(&[("default", small.url(), ""), ("big", big.url(), "")]);
     let before = big.requests().len();
-    let (code, _, stderr) = rig.run(&["task", "new", "go", "--scope", scope, "--hold"]);
-    assert_eq!(code, 0, "{stderr}");
+    let (_, _, stderr) = rig.run(&["task", "new", "go", "--scope", scope]);
     assert_eq!(
         stderr
             .lines()

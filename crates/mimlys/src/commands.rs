@@ -59,6 +59,10 @@ pub async fn finish(
                 messages::start_refused(backend, profile)
             }
             HaltDetail::CompletionCheckRefused => messages::completion_check_refused(),
+            HaltDetail::BackendNotConfigured {
+                backend,
+                configured,
+            } => messages::backend_not_configured_halt(backend, configured),
         });
     }
     Ok(())

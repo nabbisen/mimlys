@@ -228,6 +228,30 @@ impl Runtime {
             }));
         }
         let now = self.deps.clock.now();
+        // A task found `running` whose backend is no longer configured (recovery resumed it
+        // before the file changed) is halted `backend_unavailable`, naming the backend and the
+        // configured ones: nothing is sent, nothing moves it to another backend, and it is never
+        // left `running` (external design §19.4). `resume` after the file is fixed goes on.
+        if let Some((backend, configured)) = self.backend_not_configured_for(&task) {
+            tracing::warn!(
+                target: "mimlys_core",
+                task = %task_id,
+                backend = %backend,
+                "the task's backend is no longer configured: the task is halted before anything is sent"
+            );
+            let halted = task.transition(
+                TaskInput::HaltBackendNotConfigured(HaltDetail::BackendNotConfigured {
+                    backend,
+                    configured,
+                }),
+                now,
+            )?;
+            self.persist_task(&task, &halted)?;
+            return Ok(StepResultView {
+                outcome: StepOutcome::Halted,
+                state: halted.state,
+            });
+        }
         // REQ-SEC-010 at every start, before anything is sent. Every start of a task (a creation
         // that runs, `resume_task`, an approval, a rejection or an answer that sets it running
         // again, a recovered task under `recovery.auto_resume`) ends in this function for its
@@ -562,12 +586,14 @@ impl Runtime {
             approvals: &approvals,
             history: history.as_ref(),
             unavailable: &unavailable,
-            // The task's envelope sets it, else its backend's own (LIM-C1).
-            budget: task
-                .effort
-                .as_ref()
-                .and_then(|e| e.envelope.context_chars)
-                .map_or(backend.context_chars, |chars| chars as usize),
+            // The level's value bounded by the backend's as it is now, or the backend's alone
+            // when the level sets none: read at every step, never recorded (LIM-C1; external
+            // design §19.4).
+            budget: crate::effort::context_budget(
+                task.effort.as_ref().and_then(|e| e.envelope.context_chars),
+                backend.context_chars,
+            )
+            .chars,
             now,
             transport,
             functions: &offer.functions,

@@ -579,8 +579,9 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     {
         out.line(notice);
     }
-    // A level whose backend does not answer is refused at its creation, before anything is
-    // made (REQ-TASK-013; external design §20).
+    // A creation that starts a task, at any level and with or without `--effort`, is refused
+    // when its backend does not answer, before anything is made (REQ-MDL-010; external design
+    // §20).
     if steps.contacts_backend()
         && !forbidden
         && let Some(target) = &target
@@ -680,8 +681,9 @@ enum Steps {
     /// being a start of its own: it needs the backend a task runs on to exist, and contacts none
     /// (`grant`, `revoke`).
     May,
-    /// It creates a task and runs no step (`task new --hold`): the backend is probed, as the
-    /// creation checks it.
+    /// It creates a task and runs no step (`task new --hold`): no backend is contacted, not even
+    /// to be probed (external design §20), and the task is created whether or not its backend
+    /// answers.
     Creates,
     /// It creates a task and runs it, or sets one running (`run`, `task new`, `task resume`,
     /// `approve`, `reject`, `answer`): the backend is made sure to be able to answer, and probed
@@ -727,9 +729,10 @@ impl Steps {
         self != Steps::Never
     }
 
-    /// The backend is probed first, and its context warning is printed.
+    /// The backend is probed first, and its context warning is printed. A creation that starts
+    /// the task is refused when the backend does not answer; `task new --hold` contacts none.
     fn contacts_backend(self) -> bool {
-        matches!(self, Steps::Creates | Steps::Starts)
+        self == Steps::Starts
     }
 
     /// The backend must be able to answer (a fake one needs a script): said here, not at the first
