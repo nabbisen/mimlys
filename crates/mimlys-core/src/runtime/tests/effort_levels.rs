@@ -957,6 +957,40 @@ fn req_task_013_a_record_of_0_12_reads_as_standard_and_empty_fields_are_absent()
     assert_eq!(json["effort"]["envelope"]["backend"], "default");
 }
 
+/// REQ-OBS-010: the time a task took. A task that is over is stamped when the step that ended it
+/// began, so its own request would be missing from its time: the end is the later of that and the
+/// end of the last model request, and the model's time never exceeds the time the task took. A
+/// task that is not over runs until now.
+#[test]
+fn req_obs_010_the_time_of_a_finished_task_includes_its_last_request() {
+    let h = Harness::new(vec![json!({"decision": "complete", "summary": "done"})]);
+    let id = h.create();
+    assert_eq!(h.step(id).outcome, StepOutcome::Completed);
+    let task = h.runtime.get_task(id).unwrap().task;
+    assert!(task.state.is_terminal());
+    let mut steps = h.persistence.load_steps(id).unwrap();
+    // The request took 5 s; the clock, which the fake does not move, stamped the task at its start.
+    steps[0].measures.as_mut().unwrap().model_ms = Some(5000);
+    let cost = crate::effort::Cost::of(&task, &steps, task.updated_at);
+    assert_eq!(cost.model_ms, 5000);
+    assert_eq!(cost.elapsed_ms, 5000, "the request's end, after the stamp");
+    // Without a measure the stamp is the end.
+    steps[0].measures.as_mut().unwrap().model_ms = None;
+    let cost = crate::effort::Cost::of(&task, &steps, task.updated_at);
+    assert_eq!(cost.elapsed_ms, 0);
+
+    // A task that is not over runs until now.
+    let h = Harness::new(vec![act("read_file", "a")]);
+    h.tools
+        .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
+    let id = h.create();
+    h.step(id);
+    h.clock.advance_millis(7000);
+    let cost = h.runtime.get_task(id).unwrap().cost;
+    assert_eq!(cost.elapsed_ms, 7000);
+    assert_eq!(cost.deadline_envelope_ms, crate::limits::LIM_T5_DEADLINE_MS);
+}
+
 /// REQ-TASK-013: a task of 0.12 (no level in its record) and a task of this release at `standard`
 /// send the same requests to the same backend, byte for byte: a valid configuration of 0.12 runs
 /// as it did.

@@ -383,8 +383,18 @@ impl Cost {
         now: crate::clock::Instant,
     ) -> Self {
         let effort = task.effort_in_force();
+        // A task that is over ends at its last change, which is stamped when the step that ended
+        // it began: the model's time of that step is after it, so the end is the later of that
+        // and the end of the last model request (a step's start and its model time). A task that
+        // is not over runs until now.
         let end = if task.state.is_terminal() {
-            task.updated_at
+            steps
+                .iter()
+                .filter_map(|s| {
+                    let model_ms = s.measures.as_ref()?.model_ms?;
+                    s.started_at.plus_millis(model_ms).ok()
+                })
+                .fold(task.updated_at, |end, request_end| end.max(request_end))
         } else {
             now
         };
