@@ -111,6 +111,23 @@ impl Env {
         Self { data, config }
     }
 
+    /// A `config_version = 2` file with `backends` written after `[runtime]`: the backends and
+    /// the effort levels of the real-engine test.
+    fn with_backends(backends: &str) -> Self {
+        let data = tempfile::tempdir().unwrap();
+        let config = data.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "config_version = 2\n[runtime]\ndata_dir = {:?}\n[interpreters.javascript]\nmodule = {:?}\n{backends}",
+                data.path().join("data").to_string_lossy(),
+                qjs().to_string_lossy(),
+            ),
+        )
+        .unwrap();
+        Self { data, config }
+    }
+
     fn run(&self, args: &[&str]) -> (i32, String, String) {
         let mut cmd = common::mimlys();
         cmd.arg("--config")
@@ -434,27 +451,49 @@ fn m4_structured_output_is_visible() {
     );
 }
 
+/// The text of an environment variable when it is set and not empty.
+fn env_text(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|s| !s.is_empty())
+}
+
 /// External design §23, M4, against a real local engine: run when
 /// `MIMLYS_M4_BACKEND_URL` and `MIMLYS_M4_MODEL` are set (llama-server or
 /// Ollama). Prints the transcript and the measures for the report.
+///
+/// **The verdict is the completion check, and nothing else** (handoff 015c, item 1): the task
+/// passes when it is `completed` with the completion `verified` (the check ran the test file
+/// after the last change and it printed `ok`). The text of the repair is not looked at: `i <= n`
+/// is one correct repair and `return total + n` is another, and a verified completion must not
+/// be reported as a failure for being the second (M8 report §3).
+///
+/// **The level** is `MIMLYS_M4_EFFORT` (`quick`, `standard` or `deep`; absent: no flag). For
+/// `deep` the second backend is `MIMLYS_M4_DEEP_BACKEND_URL` and `MIMLYS_M4_DEEP_MODEL`, written
+/// as `[backends.deep]` and named by `[effort.deep]`; without them the level has no key and is
+/// refused when chosen (REQ-TASK-013), which the test then reports as it is.
 #[test]
 fn m4_real_engine_repairs_the_defect() {
     let (Some(url), Some(model)) = (
-        std::env::var("MIMLYS_M4_BACKEND_URL")
-            .ok()
-            .filter(|s| !s.is_empty()),
-        std::env::var("MIMLYS_M4_MODEL")
-            .ok()
-            .filter(|s| !s.is_empty()),
+        env_text("MIMLYS_M4_BACKEND_URL"),
+        env_text("MIMLYS_M4_MODEL"),
     ) else {
         eprintln!(
             "skipped: set MIMLYS_M4_BACKEND_URL and MIMLYS_M4_MODEL to run against a local engine"
         );
         return;
     };
-    let env = Env::new(&format!(
-        "kind = \"openai_compatible\"\nurl = {url:?}\nmodel = {model:?}\nstructured_output = \"auto\"\ntimeout_ms = 600000"
-    ));
+    let effort = env_text("MIMLYS_M4_EFFORT");
+    let mut backends = format!(
+        "[backends.default]\nkind = \"openai_compatible\"\nurl = {url:?}\nmodel = {model:?}\nstructured_output = \"auto\"\ntimeout_ms = 600000\n"
+    );
+    if let (Some(deep_url), Some(deep_model)) = (
+        env_text("MIMLYS_M4_DEEP_BACKEND_URL"),
+        env_text("MIMLYS_M4_DEEP_MODEL"),
+    ) {
+        backends.push_str(&format!(
+            "[backends.deep]\nkind = \"openai_compatible\"\nurl = {deep_url:?}\nmodel = {deep_model:?}\nstructured_output = \"auto\"\ntimeout_ms = 600000\n[effort.deep]\nbackend = \"deep\"\n"
+        ));
+    }
+    let env = Env::with_backends(&backends);
     let scope = scope();
     let (_, status) = env.json(&["status"]);
     eprintln!(
@@ -462,14 +501,19 @@ fn m4_real_engine_repairs_the_defect() {
         serde_json::to_string_pretty(&status["backend"]).unwrap()
     );
     assert_eq!(status["backend"]["reachable"], true, "{status}");
-    let (code, value) = env.json(&[
+    let mut args = vec![
         "run",
         GOAL,
         "--scope",
         scope.path().to_str().unwrap(),
         "--completion-check",
-        &completion_check(),
-    ]);
+    ];
+    let check = completion_check();
+    args.push(&check);
+    if let Some(level) = &effort {
+        args.extend(["--effort", level]);
+    }
+    let (code, value) = env.json(&args);
     let id = value["task"]["task_id"]
         .as_str()
         .unwrap_or_default()
@@ -481,12 +525,14 @@ fn m4_real_engine_repairs_the_defect() {
         "metrics: {}",
         serde_json::to_string_pretty(&metrics["context"]).unwrap()
     );
+    // What the task cost, as `task show` says it (the acceptance of handoff 015c records it).
+    let (_, shown) = env.json(&["task", "show", &id]);
+    eprintln!("cost: {}", shown["cost"]);
+    // What the repair was, for the transcript only: it decides nothing.
+    if let Ok(sum) = std::fs::read_to_string(env.tree(&id).join("tools/sum.js")) {
+        eprintln!("repaired tools/sum.js:\n{sum}");
+    }
     assert_eq!(code, 0, "{value}");
     assert_eq!(value["task"]["state"], "completed", "{value}");
     assert_eq!(value["task"]["completion"], "verified", "{value}");
-    assert!(
-        std::fs::read_to_string(env.tree(&id).join("tools/sum.js"))
-            .unwrap()
-            .contains("i <= n")
-    );
 }
