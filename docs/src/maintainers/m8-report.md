@@ -449,3 +449,104 @@ that slowness the 120 s is the bound a user would still sit through.
   during the measurement, so some first loads were cold in fact.
 - **More than one trajectory on Ollama:** at temperature 0 every cell repeated;
   there is no sample of the engine's variation.
+
+## 9. The shipped levels
+
+Handoff 015c landed the levels. This section runs the M4 task at each of them as the product ships
+them, through `--effort`, and records what `mimlys task show` said each task cost (§3 measured the
+candidate envelopes by hand with environment knobs; here nothing is a knob: the level is a flag and
+its keys are the shipped ones, or the one a test file names).
+
+**What ran.** `m4_real_engine_repairs_the_defect` (item 1 of the handoff: its verdict is the task
+`completed` with the completion check `verified`, and nothing else), once per run, at
+`MIMLYS_M4_EFFORT` `quick`, `standard` or `deep`. `quick` is the shipped one: **22 steps, 10
+minutes**, no other key (LIM-E4, LIM-E5). `standard` has no key: the profile's 40 steps and the
+register's 2 hours. `deep` names a second backend, `[backends.deep]` with the 14B, in the test's own
+configuration, and nothing else: its steps and deadline are the profile's (40 steps, 2 hours), because
+`deep` ships no key. The cost figures below are the `cost` object of `task show --json`, read at
+the end of each run (`steps used` is the budget's counter, one lower than the steps decided when the
+step that ends the task is not counted; "decided" is the number of steps that recorded a backend).
+
+**Machine and engines** as §2 (Ryzen 9 9950X, RTX 5060 Ti; Ollama 0.40.17; `llama-server` build 12359),
+the same files: the SHA-256 of the three 14B parts and the two 7B parts, and of the merged files
+Ollama was given, are the ones of §2 (`evidence/model-hashes.txt`: each equal). Release builds of
+`mimlys` and of the test, from the head of the handoff's last pull request with item 1's two commits. Ollama on its own port, with
+its own home and model store, `OLLAMA_MAX_LOADED_MODELS` 2 and `OLLAMA_KEEP_ALIVE` 30 m (§2's runs used 5 m;
+the 7B was resident when each task started, as in §3, and `deep` paid the 7B-to-14B swap at its
+first request); the CPU engines as the owner's limit sets them: **`nice -n 19`, `taskset -c 0-7`,
+`llama-server -t 8`**, one engine of each size (the 7B on port 8191, the 14B on port 8192), at most
+8 cores of the series' own at once. **This is a deviation from the packaged defaults** (16 threads, all
+cores), as in §3.2: the CPU wall times are not comparable with a machine that has its cores free.
+The thermal guard (wait while the CPU reads above 85 C, until 80 C or lower) held two runs, and
+`load.log` has the load and the temperature before and after every run. No GPU and CPU series ran
+together.
+
+### 9.1 Ollama (GPU, `num_ctx` 16 384), 3 runs per level
+
+| Level | Backend | Completed | Steps used of the envelope (decided) | Task time | Model time | Prompt / cached / completion tokens |
+|---|---|---|---|---|---|---|
+| `quick` (22 steps, 10 min) | 7B-Instruct | **3 of 3** | 6 of 22 (7) | 9.4, 8.8, 8.7 s | 9.3, 8.7, 8.6 s | 17 331 / 14 466, 16 408, 16 408 / 635 |
+| `standard` (40 steps, 2 h) | 7B-Instruct | **3 of 3** | 6 of 40 (7) | 8.7, 8.8, 8.8 s | 8.6, 8.7, 8.6 s | 17 331 / 16 408 / 635 |
+| `deep` (the 14B; 40 steps, 2 h) | 14B-Instruct | **3 of 3** | 4 of 40 (5) | 17.5, 17.3, 17.4 s | 17.3, 17.2, 17.2 s | 11 799 / 9 066 / 636 |
+
+At `quick` and at `standard` the model saw the same requests (the same 17 331 prompt tokens and 635
+completion tokens, seven steps, 8.6 to 9.4 s): **a level that sets only budgets changes nothing for a
+task that completes**, as §3.1 found for the candidate envelopes (the first `quick` run's 14 466 cached
+tokens, against 16 408, is the engine's cache on its first request of that process). `deep` is the
+14B, which takes five steps and about twice the time, the swap included. Every task wrote
+`backend default (qwen2.5-7b-instruct)` or `backend deep (qwen2.5-14b-instruct)` on its steps, and
+no request of a `deep` task went to the 7B's backend (a test of the product checks it, and so does
+the backend column of `task show`).
+
+### 9.2 `llama-server` (CPU, capped, build 12359)
+
+| Level | Backend | Completed | Steps used of the envelope (decided) | Task time | Model time | Prompt / cached / completion tokens | How the other ended |
+|---|---|---|---|---|---|---|---|
+| `quick`, 3 runs | 7B-Instruct | **3 of 3** | 4 of 22 (5), 4 of 22 (5), 4 of 22 (5) | 54.0, 54.3, 54.3 s | 53.8, 54.2, 54.2 s | 11 656 / 10 949 / 472; 11 656 / 10 949 / 470; 11 700 / 10 971 / 470 | |
+| `standard`, 3 runs | 7B-Instruct | **2 of 3** | 4 of 40 (5), 8 of 40 (9), 40 of 40 (40) | 69.8 s, 101.8 s, **18.7 min** | 69.6 s, 101.7 s, 18.6 min | 11 700 / 10 971 / 619; 24 835 / 23 555 / 855; 239 886 / 221 050 / 7 617 | run 3: **`halted budget_steps` after 40 steps**; it was inside the 2 hours `standard` allows, and past the 10 minutes `quick` ships |
+| `deep`, 1 run | 14B-Instruct | **0 of 1** | 31 of 40 (31) | **19.8 min** | 19.7 min | 153 594 / 146 926 / 4 463 | `halted convergence` (LIM-T4: three identical decisions), one trajectory of §3.3 |
+
+Three things the table says, and what it does not:
+- **`deep` here is the report's known 0 of 5, confirmed once**, as the handoff asked: the same 14B file
+  that completes the task in five steps on Ollama reads, replaces and runs again for 31 steps on a CPU
+  `llama-server` until `convergence` ends it, 19.8 minutes. The product did what it was asked: it ran
+  the task on the backend the level named, it recorded that, and `task show` said it. **A level is as good
+  as its backend, and a backend is an engine and a model** (§6.3, §7).
+- **`quick`'s three completions were short runs; `standard`'s third run is the case `quick` exists
+  for.** `standard`'s run 3 used all 40 steps and 18.7 minutes and did not complete; `quick`'s three runs
+  completed in four steps. The samples are too few, and this engine is not repeatable (§3.2), so the
+  table does **not** say that `quick` completes more often. It says what `quick` is for: the 22 steps and the
+  10 minutes are a bound that a wandering task reaches in about half the steps and about half the time
+  that `standard` allows it (`standard`'s run went on to 40 steps and 18.7 minutes). Whether that
+  third run, cut at `quick`'s bound, would have been cut before it would have completed is not known
+  (§3.2 found completions at most 11 steps).
+- **`quick` does not make a task that completes faster**: on Ollama it is the same seven steps and 8.7 to 9.4 s
+  as `standard`; on `llama-server` the three `quick` runs and `standard`'s first took 54 to 70 s
+  with one trajectory shape. To make `quick` faster, name a smaller model's backend in `[effort.quick]`.
+
+### 9.3 What `task show` said each task cost
+
+The `cost` object of each run, read from `task show --json` at the end of the run (the whole of the
+harness's output is in `evidence/acceptance/`; the one-line summary of each run is
+`summary.jsonl`): the level and who chose it (`user`, every time), the steps used against the
+envelope (22 for `quick`, 40 for `standard` and for `deep`), the time against the deadline (10 minutes, 2
+hours), the model time, the tokens, and `backends`: `default (qwen2.5-7b-instruct)` with its steps for
+every `quick` and `standard` task, `deep (qwen2.5-14b-instruct)` with its steps for every `deep` task.
+Nothing was a surprise: the cost of a `deep` task on Ollama is its five steps on the 14B and no
+step on the 7B, and the model's time never exceeds the task's time (an early build of the cost
+read the time of a finished task from the stamp of the step that ended it, so it was shorter than
+the model's time by that step's request; the fix is in the handoff's last pull request, and the table
+above is of the fixed build).
+
+### 9.4 What was not done
+
+- **No more than one `deep` run on the CPU engine**, as the handoff says: it is the report's known
+  result, run once to confirm it.
+- **No `quick` run was made to hit its bound**: the 22 steps and the 10 minutes are not shown to
+  stop a run here; `standard`'s third run is the nearest thing, and it was not run at `quick`.
+- **Three runs of each Ollama cell are one trajectory** (temperature 0), as in §3.1: they show
+  that the product's flags and records are right, not the engine's variation.
+- **The GPU and the CPU series ran one after the other**, never together, and the CPU series
+  at the owner's cap; the first Ollama pass was made with a build whose M4 test still had the text
+  assertion, and was dropped (its tasks completed, the test failed on the old assertion); the series
+  above is the second pass, on the build of the handoff.
