@@ -1,6 +1,6 @@
 # Handoff 015c — Effort levels: a budget per task, on the backend it names (release 0.13, phase 3)
 
-**Status (2026-11-26):** items 1 to 5 and the acceptance landed at `439c4b1` (`.git-exclude/reviewed/handoff-015c/README.md`); 015c-6 next.
+**Status (2026-11-26):** items 1 to 5 and the acceptance landed at `439c4b1`, and 015c-6 at `cda5eb5` (`.git-exclude/reviewed/handoff-015c/README.md`, `.git-exclude/reviewed/handoff-015c-6/README.md`); 015c-7 next.
 
 **RFC.** [RFC 015](../../accepted/015-adaptive-effort.md), decisions 1, 4 and 7, read with its **Amendment 1** (items 1 to 4) and the decisions at the review of handoff 015-0. **From.** The scope of 0.13 (`ROADMAP.md`, "Release 0.13", phase 3) and the [M8 report](../../../docs/src/maintainers/m8-report.md).
 
@@ -153,3 +153,29 @@ The review of 2026-11-26 (`.git-exclude/reviewed/handoff-015c/README.md`) approv
 **Process, from the lead's notes:** one `pkill -f` was refused by the permission system, and one `cd` used an absolute path. Kill only by the pids you recorded, and keep `cd` relative.
 
 **Return:** `.git-exclude/review-requests/015c-6-after-review/README.md`.
+
+## After review: 015c-7
+
+The review of 2026-11-26 (`.git-exclude/reviewed/handoff-015c-6/README.md`) approved #217. It landed as one commit, `cda5eb5`: the tree of its head `ea1591e`, which CI ran, with your two `wip` and `fmt` commits squashed at the landing. Three of your questions need one more small change each. External design §5.2, §19.4 and §20 were amended with the landing.
+
+1. **A `running` task whose backend cannot be made is halted too** (your question 2).
+   - **What is wrong:** a configured backend that cannot be made leaves the task `running`, with every step failing. It is the shape item 4 removed, and it is real outside the tests: a key by reference that the environment does not hold.
+   - **Change:** halt `backend_unavailable`, with `halt_detail` `backend_unusable` and the reason. Nothing is sent.
+   - **For both halts,** the printed line gives both remedies: fix the configuration and resume, or fork the task onto another level (`task new --from-task <task> --effort <level>`).
+2. **`task show --json` says the context budget in force** (your question 3).
+   - **What is wrong:** a script cannot learn the budget a task runs with, only the level's own value.
+   - **Change:** `cost.context_chars` and `cost.context_source` (`level` or `backend`), as the configuration is now, the same as the human line.
+3. **The unreachable message names what to fix** (your question 4).
+   - **What is wrong:** for `standard` on `default` it says to fix "the backend that [effort.standard], the level of this task, names", a section that does not exist.
+   - **Change:** name `[backends.<name>]`. Name `[effort.<level>]` only when that level's `backend` key chose the backend.
+
+**Accepted as you did them:**
+- **Question 1:** "decided" means finished. §19.4 now says so.
+- **Question 5:** `--hold` prints no probe notices; they come at the start.
+- **`m7b_cpu_part` failing on this machine:** its cgroup is not delegated here, and CI ran it delegated.
+
+**Tests:** one per item. Item 1: the halt, its detail and its event; no request; the resume after the fix. Item 2: both sources, in JSON. Item 3: the line at `standard` without a section, and at a level whose `backend` key chose the backend.
+
+**Mutations:** one for item 1. Say which test kills it.
+
+**Return:** `.git-exclude/review-requests/015c-7-after-review/README.md`.
