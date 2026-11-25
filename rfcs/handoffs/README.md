@@ -91,6 +91,7 @@ Adaptive effort, part one (ROADMAP, "Release 0.13"; RFC 015 with its Amendment 1
 | 4 | [015-0 The M8 measurements: levels, the swap, and the probe](./015-0-m8-measurements/implementation-handoff.md) | RFC 015 | 015a (the probe) |
 | 5 | [015c Effort levels: a budget per task, on the backend it names](./015c-effort-levels/implementation-handoff.md) | RFC 015 | 015a, 015-0 |
 | 6 | [013f The registry's tests under load](./013f-registry-tests-under-load/implementation-handoff.md) | RFC 013 | — |
+| 7 | [015d Release candidate 0.13.0](./015d-release-0.13.0/implementation-handoff.md) | RFC 015 (part one complete with 0.13.0) | every 0.13 handoff, 013f |
 
 ## Release 0.12
 
