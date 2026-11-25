@@ -37,10 +37,21 @@
 - **Before and after:** the failing count of the reproduction, before and after the fix (as 015b-2's lock fix was measured: 64 of 500 before, 0 of 500 after).
 - **A test by state** for the cause you find.
 
+## Housekeeping (the owner's rule of 2026-11-26)
+
+**A PR is closed, and its branch deleted, as soon as its role is finished,** by the architect or by you. Never leave them for the owner. On GitHub, every finished PR is now closed and every finished branch deleted: only `main` remains. The heads are archived in `.git-exclude/archive/branches-before-cleanup-2026-11-26.bundle`.
+
+**Your local copies are yours to clear:** 72 worktrees under `.claude/worktrees/` (1.6 TB with their targets) and 285 local branches.
+- **Keep** a worktree you are working in, and one with changes that are not committed. Commit those first, or say why they stay.
+- **Remove** every other worktree (`git worktree remove`), and delete the local branches whose work is on `main` or whose role is over.
+- **From now on,** remove a worktree and its branch when its PR is closed. Close your own throwaway PRs and delete their branches when their review is over.
+- **Report** what you removed and what you kept, with the reason, in the request.
+
 ## Return
 
 - **A PR on `main`,** with its CI.
 - **The request:** `.git-exclude/review-requests/013f-registry-tests-under-load/README.md`, with:
   - the cause, with its evidence;
   - the reproduction's counts before and after;
-  - anything you could not settle.
+  - anything you could not settle;
+  - the housekeeping: what was removed, and what was kept and why.
