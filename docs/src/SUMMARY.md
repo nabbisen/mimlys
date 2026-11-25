@@ -28,5 +28,6 @@
 - [M6b report](./maintainers/m6b-report.md)
 - [M6c report](./maintainers/m6c-report.md)
 - [M7b report](./maintainers/m7b-report.md)
+- [M8 report](./maintainers/m8-report.md)
 - [Repository guards](./maintainers/repository-guards.md)
 - [Glossary](./maintainers/glossary.md)
