@@ -20,6 +20,16 @@ use std::time::{Duration, Instant};
 /// The bound of one run.
 pub const BOUND: Duration = Duration::from_secs(180);
 
+/// The bound a run is held to: [`BOUND`], or `MIMLYS_TEST_BOUND_SECS` when it is set. The suites
+/// never set it. The opt-in real-engine test (`m4_real_engine_repairs_the_defect`) does, for an
+/// engine on a CPU, where one task takes minutes (handoff 015c, item 1).
+fn bound() -> Duration {
+    std::env::var("MIMLYS_TEST_BOUND_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(BOUND, Duration::from_secs)
+}
+
 /// A registry directory (RFC 013) holding an entry held by this process, for the suites that
 /// run a host tool under confinement: the registry is under the user's runtime directory, outside
 /// every write set (Amendment 1; THR-38), so a tool can neither forge, change nor remove an entry.
@@ -202,11 +212,12 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
         .stderr(std::fs::File::create(&err_path).unwrap());
     let mut child = cmd.spawn().expect("spawn");
     let started = Instant::now();
+    let bound = bound();
     let status = loop {
         if let Some(s) = child.try_wait().unwrap() {
             break Some(s);
         }
-        if started.elapsed() > BOUND {
+        if started.elapsed() > bound {
             let _ = child.kill();
             let _ = child.wait();
             break None;
@@ -218,7 +229,7 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
     let Some(status) = status else {
         panic!(
             "the process did not exit within {} s\nstdout: {stdout}\nstderr: {stderr}",
-            BOUND.as_secs()
+            bound.as_secs()
         );
     };
     Bounded {
