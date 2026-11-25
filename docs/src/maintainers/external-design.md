@@ -705,13 +705,13 @@ No timer and no collector: everything on disk belongs to one task (RFC 006 §6).
 
 Events are written by a writing runtime only; a read command (REQ-PERS-013) records none, `runtime.started` and `runtime.stopped` included.
 
-`task.created`, `task.state_changed{from, to, reason?, rollback_failed?}`, `task.admission_changed{state: waiting | admitted | unadmitted, slots_taken?, waited_ms?, reason?}` (§19.3, 0.12; `waited_ms` on `admitted`; a wait the stop request or the deadline ends records no closing event, the action's `stopped_before_start` and the task's pause or halt say how it ended), `task.pause_requested`, `task.deleted{audit}`, `step.started`, `step.finished{outcome}`, `decision.received{hash, transport, text_chars?}` (from 0.9: `transport` is `tool_calls` or `envelope`; `text_chars` counts text beside a structured call, which is not part of the decision), `decision.rejected{code, reason?, grant_kind?}`, `action.proposed`, `action.authorized`, `action.started`, `execution.finished{attempt, termination}`, `action.finished{status, cause?}`, `approval.requested`, `approval.decided{decision}`, `plan.approval_requested{version}` and `plan.approval_decided{version, decision}` (plan first, from 0.13; an approval's or a rejection's note is not in the event, as for an action), `approval.invalidated`, `question.asked`, `question.answered`, `grant.issued`, `grant.revoked`, `workspace.materialized`, `workspace.snapshot{reason}`, `workspace.rollback`, `workspace.unreadable{path, kind?}`, `workspace.promotion_started{files}`, `workspace.promoted{files}`, `workspace.promotion_failed{reason}`, `task.recovered{disposition}`, `tool.pinned`, `tool.unpinned`, `server.started{server, version?}`, `server.stopped{server, reason}`, `runtime.started{tier, backend}`, `runtime.stopped`, `runtime.orphans_killed{count}`, `snapshot.journals_recovered{finished, undone, objects_removed}` (from 0.10: the start finished or undid snapshot journals a crash left, REQ-WS-012; recorded only when it did). `backend` is the descriptor `{kind, model?, locality}` of the backend in force (REQ-SEC-010, RFC 008); the same descriptor is recorded on every task's versions at creation.
+`task.created{effort?}` (from 0.13: the level, who chose it and the resolved envelope, §19.4), `task.state_changed{from, to, reason?, rollback_failed?}`, `task.admission_changed{state: waiting | admitted | unadmitted, slots_taken?, waited_ms?, reason?}` (§19.3, 0.12; `waited_ms` on `admitted`; a wait the stop request or the deadline ends records no closing event, the action's `stopped_before_start` and the task's pause or halt say how it ended), `task.pause_requested`, `task.deleted{audit}`, `step.started`, `step.finished{outcome}`, `decision.received{hash, transport, text_chars?}` (from 0.9: `transport` is `tool_calls` or `envelope`; `text_chars` counts text beside a structured call, which is not part of the decision), `decision.rejected{code, reason?, grant_kind?}`, `action.proposed`, `action.authorized`, `action.started`, `execution.finished{attempt, termination}`, `action.finished{status, cause?}`, `approval.requested`, `approval.decided{decision}`, `plan.approval_requested{version}` and `plan.approval_decided{version, decision}` (plan first, from 0.13; an approval's or a rejection's note is not in the event, as for an action), `approval.invalidated`, `question.asked`, `question.answered`, `grant.issued`, `grant.revoked`, `workspace.materialized`, `workspace.snapshot{reason}`, `workspace.rollback`, `workspace.unreadable{path, kind?}`, `workspace.promotion_started{files}`, `workspace.promoted{files}`, `workspace.promotion_failed{reason}`, `task.recovered{disposition}`, `tool.pinned`, `tool.unpinned`, `server.started{server, version?}`, `server.stopped{server, reason}`, `runtime.started{tier, backend}`, `runtime.stopped`, `runtime.orphans_killed{count}`, `snapshot.journals_recovered{finished, undone, objects_removed}` (from 0.10: the start finished or undid snapshot journals a crash left, REQ-WS-012; recorded only when it did). `backend` is the descriptor `{kind, model?, locality}` of the backend in force (REQ-SEC-010, RFC 008); the same descriptor is recorded on every task's versions at creation.
 
 Every event carries `event_id`, `at` (LIM-U4), `actor` (`user{session, os_user}`, `runtime`, `model`, `tool{name}`), `task_id?`, `step_id?`, `action_id?`, `policy_hash`.
 
 ### 17.2 Metrics (REQ-OBS-003)
 
-Per task and aggregated: tasks by state; events by name; rejections by code; halts by reason; approvals by decision; finished actions by status; and under `context`, over the steps that carry measures: `measured_steps`, `context_chars_avg`, `prefix_ratio` (Σ shared prefix / Σ context over steps after a task's first: what a prefix cache may reuse), `compression_ratio` (Σ characters before the rules / Σ after), `over_budget_steps`, `compressed_steps`, `dropped_steps`, `model_ms_avg`, `prompt_tokens`, `completion_tokens`, `cached_tokens` (as the backend reported them), `chars_per_prompt_token` (the number to set `context_chars` from a model's window). Execution latency and sandbox overhead stay in each observation's `metrics`.
+Per task and aggregated: tasks by state; events by name; rejections by code; halts by reason; approvals by decision; finished actions by status; and under `context`, over the steps that carry measures: `measured_steps`, `context_chars_avg`, `prefix_ratio` (Σ shared prefix / Σ context over steps after a task's first: what a prefix cache may reuse), `compression_ratio` (Σ characters before the rules / Σ after), `over_budget_steps`, `compressed_steps`, `dropped_steps`, `model_ms_avg`, `prompt_tokens`, `completion_tokens`, `cached_tokens` (as the backend reported them), `chars_per_prompt_token` (the number to set `context_chars` from a model's window). From 0.13, `by_effort.<level>` aggregates per level (§19.4). Execution latency and sandbox overhead stay in each observation's `metrics`.
 
 ### 17.3 Logs (REQ-OBS-004)
 
@@ -790,6 +790,7 @@ network_domains = []
 host_read_roots = []                   # reserved: refused when non-empty (§9.1)
 host_write_roots = []                  # reserved: refused when non-empty (§9.1)
 max_steps = 200
+# effort_max = "deep"                  # the highest level any profile may allow (§19.4); absent means deep
 [policy.profiles.workspace]
 tools = ["read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm"]
 host_tools = []                        # declared host tools granted at creation (`host_tool` grants)
@@ -803,6 +804,7 @@ on_reject = "continue"                 # continue | halt
 on_cancel = "rollback"                 # rollback | keep
 promote = false                        # the `project` profile sets true
 external = false                       # may the task communicate outside the host (a remote backend); false in every shipped profile
+# effort_max = "standard"              # the highest level this profile allows, at most the ceiling's (§19.4)
 [policy.exclusions]
 materialize = [".git/", ".hg/", ".svn/", "target/", "node_modules/"]   # LIM-W4
 secrets = [".env", ".env.*", "*.pem", "*.key", "id_*", ".ssh/", ".aws/", ".gnupg/"]  # LIM-W5
@@ -870,8 +872,8 @@ Validation refuses an unknown `config_version`, an unknown key, an inline secret
 
 | Command | Behaviour |
 |---|---|
-| `mimlys run <goal> [--scope DIR] [--profile P] [--grant …] [--plan-first]` | Create and start a task, follow its events, prompt when it waits |
-| `mimlys task new <goal> [--hold] [--plan-first] [--from-task T [--from-snapshot S]]` · `show` · `list` · `resume [--extend-steps N] [--extend-deadline D]` · `pause` · `cancel` · `delete [--audit] [--yes]` · `output <task> [<action>] [--attempt N] [--stdout \| --stderr \| --result]` | Task control; `delete` shows the footprint and asks; `output` shows an action's whole copies (REQ-PERS-005; `--attempt` from handoff 004d-4): without a flag, what the action has (its result and each stream, each with its size and whether the model's copy was cut), with a flag that copy itself, the text as it is to standard output (on a terminal a carriage return that ends no line is shown as `\r`), the result as JSON; the action defaults to the task's latest that ran, and the copy is the latest execution's; a reader, served by the read-only open (handoff 004d). An action is named by its id or a prefix of at least four characters; refusals: an unknown action or a whole copy that is not there `not_found` (never shown as if whole), an action that never ran or an external tool's stream `state`, a prefix too short or ambiguous `invalid_request`. On a terminal a last line without a newline is ended; piped, nothing is added. `--json` without a flag: `{task_id, action_id, execution_id, tool, attempt, attempts: [{attempt, execution_id, status}], copies: [{kind: result \| stdout \| stderr, bytes, cut, capture_cut, captured_bytes?, copy_cut, source: blob \| excerpt \| full_payload \| payload, flag, unavailable?: no_streams \| not_kept \| removed}]}` (`capture_cut`: the tool printed more than its bound and the first `captured_bytes` are kept; `copy_cut`: the stored copy was itself cut, which only a redaction that lengthens the text past three times the bound can do, handoff 004d-5); `--attempt N` picks the action's execution of that attempt (an attempt it does not have is `not_found`, naming those it has), and the text index names the attempts when there is more than one; with a flag: the same header with `kind, bytes, cut, source` and `text` (a stream) or `result` (the JSON value), exact |
+| `mimlys run <goal> [--scope DIR] [--profile P] [--grant …] [--effort LEVEL] [--plan-first]` | Create and start a task, follow its events, prompt when it waits; `--effort` from 0.13 (§19.4) |
+| `mimlys task new <goal> [--hold] [--effort LEVEL] [--plan-first] [--from-task T [--from-snapshot S]]` · `show` · `list` · `resume [--extend-steps N] [--extend-deadline D]` · `pause` · `cancel` · `delete [--audit] [--yes]` · `output <task> [<action>] [--attempt N] [--stdout \| --stderr \| --result]` | Task control; `delete` shows the footprint and asks; `output` shows an action's whole copies (REQ-PERS-005; `--attempt` from handoff 004d-4): without a flag, what the action has (its result and each stream, each with its size and whether the model's copy was cut), with a flag that copy itself, the text as it is to standard output (on a terminal a carriage return that ends no line is shown as `\r`), the result as JSON; the action defaults to the task's latest that ran, and the copy is the latest execution's; a reader, served by the read-only open (handoff 004d). An action is named by its id or a prefix of at least four characters; refusals: an unknown action or a whole copy that is not there `not_found` (never shown as if whole), an action that never ran or an external tool's stream `state`, a prefix too short or ambiguous `invalid_request`. On a terminal a last line without a newline is ended; piped, nothing is added. `--json` without a flag: `{task_id, action_id, execution_id, tool, attempt, attempts: [{attempt, execution_id, status}], copies: [{kind: result \| stdout \| stderr, bytes, cut, capture_cut, captured_bytes?, copy_cut, source: blob \| excerpt \| full_payload \| payload, flag, unavailable?: no_streams \| not_kept \| removed}]}` (`capture_cut`: the tool printed more than its bound and the first `captured_bytes` are kept; `copy_cut`: the stored copy was itself cut, which only a redaction that lengthens the text past three times the bound can do, handoff 004d-5); `--attempt N` picks the action's execution of that attempt (an attempt it does not have is `not_found`, naming those it has), and the text index names the attempts when there is more than one; with a flag: the same header with `kind, bytes, cut, source` and `text` (a stream) or `result` (the JSON value), exact |
 | `mimlys approve <task> [--note T]` · `reject <task> [--note T] [--halt]` · `answer <task> <text>` | User items: an action awaiting approval, a question, or (from 0.13) a plan-first task's plan, shown as an approval card is. `approve --note` passes the note to the model as a labelled `user` segment (`approval_note`) for an action as for a plan. `task show` shows the plan in force of every task, and for a plan-first task whether it is approved |
 | `mimlys grant <task> tool NAME` · `host_tool NAME` · `network DOMAIN[:PORT]` · `revoke <task> <grant>` | Grants within the ceiling; `host_read` and `host_write` are refused as reserved (§9.1) |
 | `mimlys rollback <task> [--snapshot ID \| --promotion ID]` · `promote <task> [--yes] [--summary] [--patch]` | Workspace: restore, or reverse a promotion; promote after the diff and the confirmation, or print a patch |
@@ -916,6 +918,47 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 
 `metrics` gains `admission_wait_ms`, `admission_waits`, `engine_wait_ms` and `engine_waits`, per task with `--task` and over all tasks without, as its other counts. The words `running`, `waiting` and `slot` are used nowhere else with another meaning.
 
+### 19.4 Effort levels (REQ-TASK-013, REQ-CFG-007, REQ-OBS-010, REQ-PERS-015; RFC 015 with Amendment 1, from 0.13)
+
+A task is created at one of three levels, `quick`, `standard` or `deep`: fixed identifiers, ordered `quick` < `standard` < `deep`. A level is a budget, never a permission: no level grants a tool, a path, a destination or an effect.
+
+**The envelope.** A level is an overlay of five keys, `[effort.<level>]`:
+- `backend` (a name from `[backends]`), `steps` (LIM-T1), `deadline` (LIM-T5, a duration as `--deadline` takes it), `context_chars` (LIM-C1) and `recent_steps` (LIM-C3, 1 to 50);
+- **precedence:** a flag (`--steps`, `--deadline`) wins over the level, the level over the profile, and the profile over the register's default. The guard counters (LIM-T2, T3, T4, T6) are the profile's alone;
+- **shipped:** `standard` and `deep` have no keys; `quick` has `steps = 22` (LIM-E4) and `deadline = "10m"` (LIM-E5). A key in the file replaces the shipped one; a key left out is the profile's.
+- **A level other than `standard` with no key, shipped or configured, is refused when chosen** (`deep` until it is configured), naming `[effort.<level>]` and what to set in it; no task is created (§20).
+
+**`check` refuses** (each naming the level, the key and the bound):
+- a level name other than the three;
+- a `backend` that is not configured;
+- a `context_chars` above its backend's;
+- a `steps` above the ceiling's `max_steps`, a `deadline` outside LIM-T5's range, a `recent_steps` outside 1 to 50;
+- levels whose backends are not all local or all on one remote URL (REQ-CFG-007);
+- an `effort_max` that is not a level, or a profile's `effort_max` above the ceiling's.
+
+**`effort_max`** (`[policy.ceiling]` and `[policy.profiles.<name>]`; absent means `deep`). A task's level must be at most the lower of the two:
+- `--effort` above it is refused, naming the profile or the ceiling that bounds it; no task is created (§20);
+- **without `--effort`** the level is `standard`, or the bound when it is lower (`chosen_by: default`, and the creation's first line says which).
+
+**Choosing.** `run --effort <level>` and `task new --effort <level>`. A fork takes its source's level unless `--effort` is given, its envelope resolved from the configuration now. A level name that is not one of the three is a usage error (exit 2).
+
+**Recorded and fixed.** `task.created` and the task record carry `effort{level, chosen_by: user | default | fork, envelope{backend, steps, deadline_ms, context_chars, recent_steps}}`, every key resolved: what the task runs with, not what the file said.
+- The envelope never changes during the task. A later change of `[effort.*]` applies to new tasks; `resume --extend-steps` and `--extend-deadline` extend as they always did, and `task show` shows both the envelope and the extension.
+- The backend is resolved by its name at every start (Amendment 1, item 3; §20). The step records `backend`, `model` and `transport` (REQ-PERS-015), so that a task whose backend's model changed shows it.
+- A task record without `effort` (written before 0.13) reads as `standard`, `chosen_by: default`, with the envelope of its own budgets. Every field is optional and the schema version does not change.
+
+**Shown.**
+- **`run` and `task new`** print the level and its envelope as their first line: `effort    quick (you chose): steps 22, deadline 10m, backend default (qwen2.5-7b-instruct)`.
+- **`task show`** answers what the task cost (REQ-OBS-010): the level and who chose it, steps used of the envelope (`steps 7 of 22`), the time against the deadline, the model time, the prompt, cached and completion tokens where reported, and the backend and model, every one of them when the task used more than one.
+- **`status`** lists the three levels, each with its backend and its keys, and `not configured` for a level that would be refused.
+- **`metrics`** aggregates under `by_effort.<level>`: tasks by state, steps, model time, and prompt, cached and completion tokens. With `--task`, the task's own level.
+
+**What a level is, for the user** (the book; the M8 report):
+- **`quick` stops a task that wanders sooner.** It does not make a completing task faster. A smaller model's backend in `[effort.quick]` makes it faster.
+- **`deep` is the larger model you name.**
+  - The fitness probe tells whether a model acts, never whether it finishes a task, and the engine matters as much as the model.
+  - On one consumer GPU, a level on another model pays one swap at the task's first request; two `llama-server` processes pay none.
+
 ## 20. Failure and degradation
 
 | Condition | Visible behaviour | Requirement |
@@ -923,6 +966,7 @@ Exit codes: 0 success, 1 runtime or configuration error, 2 usage error. `--json`
 | Backend unreachable | retries per LIM-M3, then halt `backend_unavailable` | REQ-MDL-003 |
 | A model backend answers with a redirect (from 0.13) | not followed; the request fails naming the host the redirect points to, as an unreachable backend does; nothing is sent there | REQ-SEC-010 |
 | A level chosen that has no key, shipped or configured (from 0.13; `deep` until it is configured) | `run --effort <level>` and `task new --effort <level>` refused, naming `[effort.<level>]` and what to set in it (a backend, or a budget); no task is created | REQ-TASK-013 |
+| A level above the profile's or the ceiling's `effort_max` (from 0.13) | `run --effort <level>` and `task new --effort <level>` refused, naming the bound and where it is set; no task is created | REQ-TASK-013 |
 | An effort level's backend unreachable at creation (from 0.13) | `run --effort <level>` and `task new --effort <level>` refused with the backend's name and the reason; no task is created | REQ-MDL-010 |
 | A task's backend no longer configured at a start (from 0.13) | the start refused, naming the backend and the configured ones; the task stays as it was; nothing moves it to another backend | REQ-MDL-010 |
 | A task's backend now `remote` under a profile without `external`, at a start | the task halts `policy`, naming the backend and the profile, before any request is sent | REQ-SEC-010 |
@@ -1211,7 +1255,7 @@ Every requirement of the baseline and the section of this document that satisfie
 | REQ-OBS-010 | Cost visibility | M8 | §17 (RFC 015 decision 7) |
 | REQ-ARCH-009 | Two deployment modes | M9 | §1 System context; §4 (RFC 014 decision 1) |
 | REQ-SEC-016 | The daemon's transport | M9 | §21 Security (RFC 014 decisions 3, 8) |
-| REQ-TASK-013 | Effort levels | M8 | §5 Task state machine; §19.1 (RFC 015 decision 1, Amendment 1) |
+| REQ-TASK-013 | Effort levels | M8 | §19.1 Configuration; §19.4 Effort levels (RFC 015 decision 1, Amendment 1) |
 | REQ-TASK-015 | Plan first | M8 | §5; §6.4 Rejection vocabulary (RFC 015 decision 6, Amendment 1) |
 | REQ-CFG-007 | Effort and backends configuration | M8 | §19.1 Configuration (RFC 015 decisions 1, 3) |
 | REQ-MDL-010 | Several backends | M8 | §19.1; §20 (RFC 015 decision 3) |

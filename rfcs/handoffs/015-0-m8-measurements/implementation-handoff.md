@@ -1,5 +1,7 @@
 # Handoff 015-0 — The M8 measurements: levels, the swap, and the probe (release 0.13, phase 2)
 
+**Status (2026-11-25): done.** The report landed at `a798e36`, and the decisions at `9945fe0` (`.git-exclude/reviewed/handoff-015-0/README.md`).
+
 **RFC.** [RFC 015](../../accepted/015-adaptive-effort.md), decision 8, read with its **Amendment 1**. **From.** The scope of 0.13 (`ROADMAP.md`, "Release 0.13", phase 2; the scope's §2.6).
 
 **Purpose.** This handoff measures and writes the report. It builds nothing for the product. Handoff 015c (the effort levels) is written from the report, and the numbers it fixes are registered at its review:
