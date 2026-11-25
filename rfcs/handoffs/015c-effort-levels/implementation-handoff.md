@@ -1,6 +1,6 @@
 # Handoff 015c — Effort levels: a budget per task, on the backend it names (release 0.13, phase 3)
 
-**Status (2026-11-26):** items 1 to 5 and the acceptance landed at `439c4b1`, and 015c-6 at `cda5eb5` (`.git-exclude/reviewed/handoff-015c/README.md`, `.git-exclude/reviewed/handoff-015c-6/README.md`); 015c-7 next.
+**Status (2026-11-26): done.** Items 1 to 5 and the acceptance landed at `439c4b1`, 015c-6 at `cda5eb5` and 015c-7 at `b1fc3da` (`.git-exclude/reviewed/handoff-015c/README.md`, `.git-exclude/reviewed/handoff-015c-6/README.md`, `.git-exclude/reviewed/handoff-015c-7/README.md`).
 
 **RFC.** [RFC 015](../../accepted/015-adaptive-effort.md), decisions 1, 4 and 7, read with its **Amendment 1** (items 1 to 4) and the decisions at the review of handoff 015-0. **From.** The scope of 0.13 (`ROADMAP.md`, "Release 0.13", phase 3) and the [M8 report](../../../docs/src/maintainers/m8-report.md).
 
