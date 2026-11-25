@@ -394,6 +394,7 @@ impl Loop {
             from_task: None,
             from_snapshot: None,
             plan_first: false,
+            effort: None,
         };
         self.runtime
             .create_task(&self.session, request)

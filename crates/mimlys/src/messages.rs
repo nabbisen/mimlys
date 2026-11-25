@@ -839,6 +839,20 @@ pub fn no_backend_named(name: &str, configured: &[&str]) -> String {
         format!("no backend is named `{name}` ({have})")
     }
 }
+/// A task is not created at a level whose backend does not answer (REQ-TASK-013; external design
+/// §20): the backend's name and why. Nothing was created.
+pub fn level_backend_unreachable(level: &str, backend: &str, reason: &str) -> String {
+    format!(
+        "effort level `{level}` refused: its backend `{backend}` does not answer ({reason}); no task was created. Start the engine of backend `{backend}`, or name another backend in [effort.{level}]"
+    )
+}
+/// The backend of a task serves another model than the task last ran with (external design §20):
+/// the task goes on, and each step records its model.
+pub fn model_changed_notice(backend: &str, was: &str, now: &str) -> String {
+    format!(
+        "notice: backend `{backend}` serves model `{now}` now; the task last ran with `{was}`. It goes on with `{now}`, and each step records the model it was decided with (`mimlys task show` says so when a task used more than one)"
+    )
+}
 /// A name that is not an effort level (REQ-TASK-013): in `[effort.<name>]` or an `effort_max`.
 pub fn not_an_effort_level(name: &str) -> String {
     format!("`{name}` is not an effort level; the levels are `quick`, `standard` and `deep`")

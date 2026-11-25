@@ -178,6 +178,7 @@ fn req_task_015_the_gate_and_the_approved_version_hold_across_restarts() {
                     from_task: None,
                     from_snapshot: None,
                     plan_first: true,
+                    effort: None,
                 },
             )
             .unwrap()
@@ -277,6 +278,7 @@ fn req_task_015_an_expired_plan_wait_halts_approval_expired() {
                     from_task: None,
                     from_snapshot: None,
                     plan_first: true,
+                    effort: None,
                 },
             )
             .unwrap()

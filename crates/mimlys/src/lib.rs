@@ -34,5 +34,6 @@ pub mod probe_results;
 pub mod prompt;
 pub mod registry;
 pub mod storage;
+pub mod target;
 pub mod toolchain;
 pub mod workspace;

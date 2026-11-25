@@ -11,7 +11,7 @@ use crate::context::{
 };
 use crate::decision::DECISION_SCHEMA_VERSION;
 use crate::grant::GrantSet;
-use crate::limits::{LIM_C3_RECENT_STEPS, LIM_C4_SUMMARY_CHARS};
+use crate::limits::LIM_C4_SUMMARY_CHARS;
 use crate::native::{self, DecisionTransport};
 use crate::observation::Observation;
 use crate::question::Question;
@@ -289,22 +289,24 @@ pub fn assemble(inputs: &ContextInputs<'_>) -> Assembled {
         messages = build(&forms, collapse);
         chars = count(&messages);
     }
-    // Rule 3: every step older than the last LIM-C3 becomes a summary.
-    if chars > inputs.budget && n > LIM_C3_RECENT_STEPS {
-        for f in forms.iter_mut().take(n - LIM_C3_RECENT_STEPS) {
+    // Rule 3: every step older than the last `recent_steps` (LIM-C3, read from the task's
+    // envelope; 6 for a task that has none) becomes a summary.
+    let recent = inputs.task.recent_steps();
+    if chars > inputs.budget && n > recent {
+        for f in forms.iter_mut().take(n - recent) {
             *f = Form::Summary;
         }
         messages = build(&forms, collapse);
         chars = count(&messages);
     }
-    // Rule 4: the oldest summaries go, LIM-C3 at a time, retained ones never.
+    // Rule 4: the oldest summaries go, `recent_steps` at a time, retained ones never.
     while chars > inputs.budget {
         let mut dropped = 0;
         for (i, f) in forms.iter_mut().enumerate() {
             if *f == Form::Summary && !entries[i].retained {
                 *f = Form::Dropped;
                 dropped += 1;
-                if dropped == LIM_C3_RECENT_STEPS {
+                if dropped == recent {
                     break;
                 }
             }

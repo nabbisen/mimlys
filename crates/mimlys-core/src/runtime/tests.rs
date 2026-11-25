@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod approval_card;
 mod definitions_bound;
+mod effort_levels;
 mod engine_gate;
 mod halt_detail;
 mod interrupt;
@@ -178,6 +179,7 @@ impl Harness {
             from_task: None,
             from_snapshot: None,
             plan_first: false,
+            effort: None,
         };
         edit(&mut request);
         self.runtime
@@ -946,6 +948,7 @@ fn req_task_012_scope_overlap_conflict() {
                 from_task: None,
                 from_snapshot: None,
                 plan_first: false,
+                effort: None,
             },
         )
         .unwrap_err();
@@ -1194,6 +1197,7 @@ fn req_sched_002_one_step_and_one_execution_at_a_time_per_task() {
                 from_task: None,
                 from_snapshot: None,
                 plan_first: false,
+                effort: None,
             },
         )
         .unwrap()
@@ -1373,6 +1377,7 @@ fn req_task_001_invalid_requests() {
         from_task: None,
         from_snapshot: None,
         plan_first: false,
+        effort: None,
     };
     let mut empty = base();
     empty.goal = String::new();
@@ -1973,6 +1978,7 @@ fn req_task_004_fork() {
             from_task: Some(source),
             from_snapshot: None,
             plan_first: false,
+            effort: None,
         },
     );
     let fork = err.unwrap();
@@ -2662,6 +2668,7 @@ fn req_sec_010_remote_backend_needs_external_profile() {
                 from_task: None,
                 from_snapshot: None,
                 plan_first: false,
+                effort: None,
             },
         )
         .unwrap_err();
@@ -2783,6 +2790,7 @@ fn inv_11_grants_never_exceed_the_ceiling() {
                 from_task: None,
                 from_snapshot: None,
                 plan_first: false,
+                effort: None,
             },
         )
         .unwrap_err();
@@ -2914,6 +2922,7 @@ fn inv_05_a_transition_is_durable_before_its_consequence_is_visible() {
                 from_task: None,
                 from_snapshot: None,
                 plan_first: false,
+                effort: None,
             },
         )
         .unwrap()
@@ -3383,6 +3392,7 @@ fn create_request() -> CreateTask {
         from_task: None,
         from_snapshot: None,
         plan_first: false,
+        effort: None,
     }
 }
 
@@ -3621,6 +3631,7 @@ fn req_ws_006_a_promotions_backup_is_not_a_fork_source() {
                 from_task: Some(id),
                 from_snapshot: snapshot,
                 plan_first: false,
+                effort: None,
             },
         )
     };

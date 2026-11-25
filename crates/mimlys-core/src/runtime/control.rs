@@ -11,9 +11,7 @@ use crate::clock::Instant;
 use crate::event::{Actor, ApprovalDecision, Event};
 use crate::grant::{Grant, GrantKind, GrantSet};
 use crate::ids::{ActionId, GrantId, SnapshotId, TaskId};
-use crate::limits::{
-    LIM_D4_TEXT_CHARS, LIM_T5_DEADLINE_MS, LIM_T5_DEADLINE_MS_RANGE, LIM_X1_RUNNING_TASKS,
-};
+use crate::limits::{LIM_D4_TEXT_CHARS, LIM_T5_DEADLINE_MS_RANGE, LIM_X1_RUNNING_TASKS};
 use crate::question::Question;
 use crate::rejection::RejectionCode;
 use crate::snapshot::{
@@ -52,6 +50,10 @@ pub struct CreateTask {
     /// `--plan-first` (REQ-TASK-015): the task's first plan is approved by the user before
     /// anything acts. A fork is plan-first only when it is created with this itself.
     pub plan_first: bool,
+    /// `--effort` (REQ-TASK-013): the level the user chose. Without it the level is `standard`
+    /// (or the lower `effort_max`), or the source's for a fork. `budgets` and `deadline_ms`
+    /// stand for `--steps` and `--deadline`: a flag wins over the level.
+    pub effort: Option<crate::effort::EffortLevel>,
 }
 
 /// A task as the control API shows it.
@@ -337,20 +339,39 @@ impl Runtime {
                     self.deps.policy.profiles.keys().collect::<Vec<_>>()
                 ),
             })?;
-        if self.remote_forbidden(&profile)? {
+        // The level, and the backend its envelope names (REQ-TASK-013): refused here, before
+        // anything is made, when it is above `effort_max` or has no key, shipped or configured.
+        let plan = self.plan_effort(&profile, request.effort, request.from_task)?;
+        let task_backend = self.backend_named(&plan.backend)?;
+        if self.remote_forbidden_on(&task_backend, &profile)? {
             return Err(RuntimeError::Denied {
                 detail: format!(
                     "profile {profile_name} forbids external communication (external = false); the backend is remote"
                 ),
             });
         }
-        let deadline_ms = request.deadline_ms.unwrap_or(LIM_T5_DEADLINE_MS);
+        // The envelope: a flag wins over the level, the level over the profile, and the profile
+        // over the register's default; every key resolved (external design §19.4).
+        let envelope = crate::effort::resolve(
+            &crate::effort::Inputs {
+                keys: self.levels.keys(plan.level),
+                flag_steps: request.budgets.map(|b| b.steps),
+                flag_deadline_ms: request.deadline_ms,
+                profile_steps: profile.budgets.steps,
+                default_backend: &self.deps.backend_name,
+            },
+            |_| u32::try_from(task_backend.context_chars).unwrap_or(u32::MAX),
+        );
+        let deadline_ms = envelope.deadline_ms;
         if deadline_ms < LIM_T5_DEADLINE_MS_RANGE.0 || deadline_ms > LIM_T5_DEADLINE_MS_RANGE.1 {
             return Err(RuntimeError::InvalidRequest {
                 detail: format!("deadline_ms must be within {:?}", LIM_T5_DEADLINE_MS_RANGE),
             });
         }
-        let budgets = request.budgets.unwrap_or(profile.budgets);
+        let budgets = Budgets {
+            steps: envelope.steps,
+            ..request.budgets.unwrap_or(profile.budgets)
+        };
         if budgets.steps > self.deps.policy.ceiling.max_steps {
             return Err(RuntimeError::Denied {
                 detail: format!(
@@ -469,7 +490,7 @@ impl Runtime {
             action_schema_version: crate::action::ACTION_SCHEMA_VERSION,
             tool_definition_hashes: hashes,
             runtime_version: self.deps.runtime_version.clone(),
-            backend: Some(self.guard(MODEL_BACKEND, || self.deps.backend.describe())?),
+            backend: Some(self.guard(MODEL_BACKEND, || task_backend.backend.describe())?),
             tool_imports: self.guard(PROVIDER, || tools.imports())?,
         };
         // Drained before anything is persisted (REQ-SEC-011): a provider that
@@ -495,6 +516,12 @@ impl Runtime {
         if let Some(check) = request.completion_check {
             task = task.with_completion_check(check);
         }
+        // Recorded with every key resolved, and never changed during the task (REQ-TASK-013).
+        task = task.with_effort(crate::effort::Effort {
+            level: plan.level,
+            chosen_by: plan.chosen_by,
+            envelope,
+        });
         task.forked_from = fork.as_ref().map(|(source, _)| source.task_id);
         // A fork copies the source's active grants, never widened (REQ-TASK-004).
         let inherited: Vec<GrantKind> = match &fork {
@@ -541,6 +568,7 @@ impl Runtime {
                 None,
                 Event::TaskCreated {
                     plan_first: task.plan_first,
+                    effort: task.effort.clone(),
                 },
             ),
         )?;
@@ -941,25 +969,70 @@ impl Runtime {
         )
     }
 
-    /// Whether the backend that decides is `remote` and `profile` forbids external communication
-    /// (REQ-SEC-010; `external = false`). The one place the rule is evaluated: a task's creation
-    /// and every start of it ask it.
-    pub(crate) fn remote_forbidden(
+    /// Whether `backend` is `remote` and `profile` forbids external communication (REQ-SEC-010;
+    /// `external = false`). The one place the rule is evaluated: a task's creation and every
+    /// start of it ask it, of the backend the task runs on.
+    pub(crate) fn remote_forbidden_on(
         &self,
+        backend: &super::TaskBackend,
         profile: &crate::policy::Profile,
     ) -> Result<bool, RuntimeError> {
-        let locality = self.guard(MODEL_BACKEND, || self.deps.backend.locality())?;
+        let locality = self.guard(MODEL_BACKEND, || backend.backend.locality())?;
         Ok(locality == crate::spi::Locality::Remote && !profile.external)
     }
 
-    /// Whether a task created under `profile` (the policy's default when `None`) would be refused
-    /// the backend in force (REQ-SEC-010): `false` for a profile the policy does not have, which
-    /// the creation reports by itself. Lets a command that creates a task know, before it
-    /// contacts the backend for anything, that the creation will be refused.
-    pub fn creation_forbidden(&self, profile: Option<&str>) -> Result<bool, RuntimeError> {
+    /// The level a task would be given and the backend its envelope names, from what the user
+    /// asked (`requested`, `--effort`) and the fork's source (REQ-TASK-013; external design
+    /// §19.4): no I/O but the source's record, and nothing created. Refused when the level is
+    /// above `effort_max` (naming what sets it) or has no key, shipped or configured (naming the
+    /// section that configures it). `create_task` asks this itself, so what a command is told
+    /// before it contacts a backend is what the creation will say.
+    pub fn plan_effort(
+        &self,
+        profile: &crate::policy::Profile,
+        requested: Option<crate::effort::EffortLevel>,
+        from_task: Option<TaskId>,
+    ) -> Result<EffortPlan, RuntimeError> {
+        let source = match from_task {
+            Some(id) => Some(self.writable(id)?.effort_in_force().level),
+            None => None,
+        };
+        let bound = self.deps.policy.effort_bound(profile);
+        let (level, chosen_by) = crate::effort::choose(requested, source, &bound, &self.levels)
+            .map_err(|refusal| match refusal {
+                crate::effort::Refusal::AboveMax { .. } => RuntimeError::Denied {
+                    detail: refusal.to_string(),
+                },
+                crate::effort::Refusal::NoKeys { .. } => RuntimeError::InvalidRequest {
+                    detail: refusal.to_string(),
+                },
+            })?;
+        let backend = self
+            .levels
+            .keys(level)
+            .backend
+            .clone()
+            .unwrap_or_else(|| self.deps.backend_name.clone());
+        Ok(EffortPlan {
+            level,
+            chosen_by,
+            backend,
+        })
+    }
+
+    /// Whether a task created under `profile` (the policy's default when `None`) on `backend`
+    /// (the name its level's envelope gives, [`Runtime::plan_effort`]) would be refused it
+    /// (REQ-SEC-010): `false` for a profile the policy does not have, which the creation reports
+    /// by itself. Lets a command that creates a task know, before it contacts the backend for
+    /// anything, that the creation will be refused.
+    pub fn creation_forbidden(
+        &self,
+        profile: Option<&str>,
+        backend: &str,
+    ) -> Result<bool, RuntimeError> {
         let name = profile.unwrap_or(&self.deps.policy.default_profile);
         match self.deps.policy.profile(name) {
-            Some(profile) => self.remote_forbidden(profile),
+            Some(profile) => self.remote_forbidden_on(&self.backend_named(backend)?, profile),
             None => Ok(false),
         }
     }
@@ -968,13 +1041,52 @@ impl Runtime {
     /// (REQ-SEC-010). It is the answer the next step gives: the task halts `policy` before any
     /// request is sent (external design §20). The rule is asked of the backend and the profile *in
     /// force*, not of the ones the task was created under: the configuration may have been edited
-    /// since, and a task never sends where its profile forbids.
+    /// since, and a task never sends where its profile forbids. The backend is the task's own,
+    /// found by its name: a name that is no longer configured is an error naming the configured
+    /// ones, and nothing moves the task to another backend (external design §20).
     pub fn start_refusal(&self, task: &Task) -> Result<Option<StartRefusal>, RuntimeError> {
         let profile = self.profile_of(task)?;
-        Ok(self.remote_forbidden(&profile)?.then(|| StartRefusal {
-            backend: self.deps.backend_name.clone(),
-            profile: task.profile.clone(),
-        }))
+        let backend = self.backend_of(task)?;
+        Ok(self
+            .remote_forbidden_on(&backend, &profile)?
+            .then(|| StartRefusal {
+                backend: backend.name.clone(),
+                profile: task.profile.clone(),
+            }))
+    }
+
+    /// The model the task's backend names now when it is not the one the task last ran with: the
+    /// last step that recorded a model, else the task's creation (external design §20). The task
+    /// goes on, and the command that starts it says both models (a notice at the start); each
+    /// step records its model, so the notice is made once per change. `None` when the model is
+    /// the same, or the backend names none.
+    pub fn model_change(&self, task: &Task) -> Result<Option<ModelChange>, RuntimeError> {
+        let backend = self.backend_of(task)?;
+        let now = self
+            .guard(MODEL_BACKEND, || backend.backend.describe())?
+            .model;
+        let last_step_model = self
+            .deps
+            .persistence
+            .load_steps(task.task_id)?
+            .into_iter()
+            .rev()
+            .find_map(|s| s.model);
+        let was = last_step_model.or_else(|| task.versions.backend.as_ref()?.model.clone());
+        Ok(match (was, now) {
+            (Some(was), Some(now)) if was != now => Some(ModelChange {
+                backend: backend.name,
+                was,
+                now,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Refuses the start of `task` when its backend is no longer configured (RFC 015, Amendment 1,
+    /// item 4): before any state changes, so the task stays as it was. Nothing is contacted.
+    fn ensure_backend_configured(&self, task: &Task) -> Result<(), RuntimeError> {
+        self.backend_of(task).map(|_| ())
     }
 
     /// Resumes from `created`, `paused` or `halted` (REQ-TASK-005).
@@ -985,6 +1097,8 @@ impl Runtime {
         extend: Option<Extension>,
     ) -> Result<Task, RuntimeError> {
         let task = self.writable(task_id)?;
+        // A task whose backend is no longer configured is not started, and stays as it was.
+        self.ensure_backend_configured(&task)?;
         // At most LIM-X1 tasks run at once (REQ-SCHED-001).
         let running = self.deps.persistence.tasks_in_state("running")?;
         if running.len() >= LIM_X1_RUNNING_TASKS && !running.contains(&task_id) {
@@ -1124,6 +1238,9 @@ impl Runtime {
         note: Option<String>,
     ) -> Result<Task, RuntimeError> {
         let task = self.writable(task_id)?;
+        // Approving sets the task running again: a task whose backend is no longer configured
+        // is not started, and stays as it was (the approval stays pending).
+        self.ensure_backend_configured(&task)?;
         if matches!(
             task.state,
             TaskState::WaitingUser {
@@ -1177,6 +1294,13 @@ impl Runtime {
         halt: Option<bool>,
     ) -> Result<Task, RuntimeError> {
         let task = self.writable(task_id)?;
+        // A rejection that does not halt sets the task running again: a task whose backend is no
+        // longer configured is not started, and stays as it was.
+        let halting =
+            halt.unwrap_or(self.profile_of(&task)?.on_reject == crate::policy::OnReject::Halt);
+        if !halting {
+            self.ensure_backend_configured(&task)?;
+        }
         if matches!(
             task.state,
             TaskState::WaitingUser {
@@ -1244,6 +1368,9 @@ impl Runtime {
         answer: &str,
     ) -> Result<Task, RuntimeError> {
         let task = self.writable(task_id)?;
+        // Answering sets the task running again: a task whose backend is no longer configured is
+        // not started, and stays as it was (the question stays pending).
+        self.ensure_backend_configured(&task)?;
         if !matches!(
             task.state,
             TaskState::WaitingUser {
@@ -1886,4 +2013,28 @@ pub struct StartRefusal {
     pub backend: String,
     /// The task's profile.
     pub profile: String,
+}
+
+/// The level a task is to be given and the backend its envelope names, before anything is created
+/// ([`Runtime::plan_effort`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffortPlan {
+    /// The level.
+    pub level: crate::effort::EffortLevel,
+    /// Who chose it.
+    pub chosen_by: crate::effort::ChosenBy,
+    /// The backend the envelope names: the level's `backend`, else the runtime's own.
+    pub backend: String,
+}
+
+/// A backend that serves another model under the same name than the task last ran with
+/// ([`Runtime::model_change`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelChange {
+    /// The backend's name.
+    pub backend: String,
+    /// The model the task last ran with.
+    pub was: String,
+    /// The model the backend names now.
+    pub now: String,
 }

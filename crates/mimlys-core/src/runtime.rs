@@ -12,7 +12,10 @@ mod loop_;
 mod read;
 mod storage;
 
-pub use control::{CreateTask, RuntimeStatus, StartRefusal, TaskView, UnknownAction, Waiting};
+pub use control::{
+    CreateTask, EffortPlan, ModelChange, RuntimeStatus, StartRefusal, TaskView, UnknownAction,
+    Waiting,
+};
 pub use loop_::{PROMPT_LOG_TARGET, StepResultView};
 pub use read::{Activity, Reader, TaskShown, WaitWord, readable_footprint_records};
 pub use storage::{Holdings, TaskHolding};
@@ -24,10 +27,10 @@ use crate::ids::{ActionId, EventId, IdSource, StepId, TaskId};
 use crate::path::PlatformRules;
 use crate::policy::{ExclusionMatcher, Policy};
 use crate::spi::{
-    BackendError, Cancellation, ModelBackend, Persistence, PersistenceError, WorkspaceError,
-    WorkspaceProvider,
+    BackendError, Cancellation, ModelBackend, Persistence, PersistenceError, UnknownBackend,
+    WorkspaceError, WorkspaceProvider,
 };
-use crate::task::StateError;
+use crate::task::{StateError, Task};
 use std::sync::Arc;
 
 /// The session the control API acts under (v1: the CLI process).
@@ -239,6 +242,27 @@ pub struct IrreversibleAction {
     pub effect: crate::action::EffectKind,
 }
 
+/// What the start of a task is refused with when its backend is no longer configured (external
+/// design §20; RFC 015, Amendment 1, item 4): the backend's name and the configured ones. The task
+/// stays as it was, and nothing moves it to another backend.
+pub fn backend_not_configured(name: &str, configured: &[String]) -> String {
+    let have = if configured.is_empty() {
+        "none is configured".to_owned()
+    } else {
+        format!(
+            "configured: {}",
+            configured
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    format!(
+        "the task's backend `{name}` is not configured ({have}); nothing moves a task to another backend: write `[backends.{name}]` in the configuration again, then start the task"
+    )
+}
+
 /// The component of `RuntimeError::Unavailable` and of the guarded calls into the model backend
 /// (REQ-SEC-011): the word the command line gives as `detail.component` of an `unavailable` error
 /// (handoff 004d).
@@ -270,9 +294,97 @@ pub struct Runtime {
     /// The tasks whose last execution went on unadmitted, so that the event and the warning are
     /// made once while it lasts, not at every execution.
     unadmitted: std::sync::Mutex<std::collections::HashSet<TaskId>>,
+    /// The configured backends by name, where a task's backend other than `deps.backend` is found
+    /// (REQ-CFG-007, REQ-MDL-010); none in a runtime built without one, which then has the one
+    /// backend of `deps` and no other.
+    backends: Option<Arc<dyn crate::spi::BackendDirectory>>,
+    /// The keys of the three effort levels (REQ-TASK-013): what ships, and what the configuration
+    /// replaces it with.
+    levels: crate::effort::Levels,
+}
+
+/// The backend a task runs on, found by its name (see [`Runtime::backend_named`]).
+#[derive(Clone)]
+pub(crate) struct TaskBackend {
+    /// The name it was found by.
+    pub(crate) name: String,
+    /// The adapter.
+    pub(crate) backend: Arc<dyn ModelBackend>,
+    /// The gate of its endpoint among the user's runtimes, when it has one.
+    pub(crate) gate: Option<Arc<dyn crate::spi::Admission>>,
+    /// Its context budget in characters.
+    pub(crate) context_chars: usize,
 }
 
 impl Runtime {
+    /// Adds the configured backends by name: a task whose envelope names another backend than
+    /// `deps.backend` runs on the one found here, resolved again at every start (REQ-CFG-007;
+    /// RFC 015, Amendment 1, item 4). Nothing is contacted by adding it.
+    #[must_use]
+    pub fn with_backends(mut self, backends: Arc<dyn crate::spi::BackendDirectory>) -> Self {
+        self.backends = Some(backends);
+        self
+    }
+
+    /// Sets the keys of the effort levels (REQ-TASK-013). A runtime built without them has what
+    /// ships: `quick`'s two keys, none for `standard` and `deep`.
+    #[must_use]
+    pub fn with_effort_levels(mut self, levels: crate::effort::Levels) -> Self {
+        self.levels = levels;
+        self
+    }
+
+    /// **The one place a backend name is resolved** (RFC 015, Amendment 1, item 4): the backend
+    /// of `deps` when the name is its own (`backend_name`), else the one the directory has under
+    /// that name. A name nothing has is refused, naming the configured ones, and never moved to
+    /// another backend. Nothing is contacted: the backend is made, not asked.
+    pub(crate) fn backend_named(&self, name: &str) -> Result<TaskBackend, RuntimeError> {
+        if name == self.deps.backend_name {
+            return Ok(TaskBackend {
+                name: name.to_owned(),
+                backend: Arc::clone(&self.deps.backend),
+                gate: self.engine_gate.clone(),
+                context_chars: self.deps.context_chars,
+            });
+        }
+        let configured = || -> Vec<String> {
+            match &self.backends {
+                Some(directory) => directory.names(),
+                None => vec![self.deps.backend_name.clone()],
+            }
+        };
+        let not_configured = |names: Vec<String>| RuntimeError::InvalidRequest {
+            detail: crate::runtime::backend_not_configured(name, &names),
+        };
+        let Some(directory) = &self.backends else {
+            return Err(not_configured(configured()));
+        };
+        match directory.resolve(name) {
+            Ok(found) => Ok(TaskBackend {
+                name: name.to_owned(),
+                backend: found.backend,
+                gate: found.gate,
+                context_chars: found.context_chars,
+            }),
+            Err(UnknownBackend {
+                unusable: Some(reason),
+                ..
+            }) => Err(RuntimeError::InvalidRequest {
+                detail: format!("backend `{name}` cannot be used: {reason}"),
+            }),
+            Err(unknown) => Err(not_configured(unknown.configured)),
+        }
+    }
+
+    /// The backend a task runs on: the one its envelope names, or, for a task written before
+    /// 0.13, the runtime's own.
+    pub(crate) fn backend_of(&self, task: &Task) -> Result<TaskBackend, RuntimeError> {
+        match &task.effort {
+            Some(effort) => self.backend_named(&effort.envelope.backend),
+            None => self.backend_named(&self.deps.backend_name.clone()),
+        }
+    }
+
     /// Adds the gate of the backend's endpoint: a model request takes it before it is sent and
     /// returns it when its answer is read (RFC 013 decision 7; external design §19.3).
     #[must_use]
@@ -322,6 +434,8 @@ impl Runtime {
             admission: None,
             engine_gate: None,
             unadmitted: std::sync::Mutex::new(std::collections::HashSet::new()),
+            backends: None,
+            levels: crate::effort::Levels::shipped(),
         })
     }
 

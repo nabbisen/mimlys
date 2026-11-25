@@ -157,6 +157,7 @@ impl Run {
                     from_task: None,
                     from_snapshot: None,
                     plan_first: false,
+                    effort: None,
                 },
             )
             .unwrap()

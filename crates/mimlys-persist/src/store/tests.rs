@@ -170,7 +170,13 @@ pub(crate) fn sequence_with(
         .create_task(
             &task,
             &grants,
-            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+            &fx.event(
+                &task,
+                Event::TaskCreated {
+                    plan_first: false,
+                    effort: None,
+                },
+            ),
         )
         .unwrap();
     let task = task
@@ -1058,7 +1064,13 @@ fn crash_child_sequence() {
             .create_task(
                 &other,
                 &[],
-                &fx.event(&other, Event::TaskCreated { plan_first: false }),
+                &fx.event(
+                    &other,
+                    Event::TaskCreated {
+                        plan_first: false,
+                        effort: None,
+                    },
+                ),
             )
             .unwrap();
         let rows = store
@@ -1262,7 +1274,13 @@ mod snapshots_m3 {
             .create_task(
                 &other,
                 &[],
-                &fx.event(&other, Event::TaskCreated { plan_first: false }),
+                &fx.event(
+                    &other,
+                    Event::TaskCreated {
+                        plan_first: false,
+                        effort: None,
+                    },
+                ),
             )
             .unwrap();
         snapshot_with(&store, &files, &fx, &other, b"shared", SnapshotReason::Base);

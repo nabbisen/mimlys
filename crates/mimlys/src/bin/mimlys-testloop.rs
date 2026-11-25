@@ -236,6 +236,7 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
                     from_task: None,
                     from_snapshot: None,
                     plan_first: cli.plan_first,
+                    effort: None,
                 },
             )?
             .task_id

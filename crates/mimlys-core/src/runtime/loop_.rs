@@ -113,6 +113,9 @@ struct Decided {
     /// The task's deadline passed while the request waited for the engine's gate: nothing was
     /// sent, so the engine did not fail and the task halts `budget_deadline` (013d-4).
     deadline_in_gate: bool,
+    /// The backend the decision was asked of: its name and the model it named when the request
+    /// was made, which the step records (REQ-PERS-015).
+    backend: (String, Option<String>),
 }
 
 /// What the user is shown of an action that needs approval (REQ-APR-002).
@@ -449,12 +452,13 @@ impl Runtime {
     /// comes back as `Unavailable`; the step then halts `backend_unavailable`.
     async fn resolve_transport(
         &self,
+        backend: &super::TaskBackend,
         cancel: &Cancellation,
     ) -> Result<DecisionTransport, BackendError> {
         let mut attempt = 0;
         loop {
             let call = contained(
-                || self.deps.backend.decision_transport(cancel.clone()),
+                || backend.backend.decision_transport(cancel.clone()),
                 |panicked| self.log_contained_panic(MODEL_BACKEND, panicked),
             );
             match call.await {
@@ -482,7 +486,15 @@ impl Runtime {
     ) -> Result<Decided, RuntimeError> {
         let persistence = &self.deps.persistence;
         let cancel = self.step_interruption(task.task_id);
-        let transport = match self.resolve_transport(&cancel).await {
+        // The task's own backend, found by its name at every step (RFC 015, Amendment 1,
+        // item 4); the one place a name is resolved is `Runtime::backend_named`.
+        let backend = self.backend_of(task)?;
+        let asked = (
+            backend.name.clone(),
+            self.guard(MODEL_BACKEND, || backend.backend.describe())?
+                .model,
+        );
+        let transport = match self.resolve_transport(&backend, &cancel).await {
             Ok(transport) => transport,
             Err(error) => {
                 return Ok(Decided {
@@ -491,6 +503,7 @@ impl Runtime {
                     transport: DecisionTransport::Envelope,
                     text_chars: None,
                     deadline_in_gate: false,
+                    backend: asked,
                 });
             }
         };
@@ -549,7 +562,12 @@ impl Runtime {
             approvals: &approvals,
             history: history.as_ref(),
             unavailable: &unavailable,
-            budget: self.deps.context_chars,
+            // The task's envelope sets it, else its backend's own (LIM-C1).
+            budget: task
+                .effort
+                .as_ref()
+                .and_then(|e| e.envelope.context_chars)
+                .map_or(backend.context_chars, |chars| chars as usize),
             now,
             transport,
             functions: &offer.functions,
@@ -590,7 +608,7 @@ impl Runtime {
             // step ends cancelled as an interrupted request does) and by the task's deadline.
             // The request's own deadline starts when it is sent, so it is worked out after the
             // wait. The gate is returned when the answer has been read, whatever it was.
-            let gate = match self.enter_engine_gate(task).await? {
+            let gate = match self.enter_engine_gate(task, backend.gate.as_ref()).await? {
                 EngineGate::Entered { held, waited_ms } => {
                     engine_wait_ms += waited_ms as i64;
                     held
@@ -617,7 +635,7 @@ impl Runtime {
                 );
             }
             let call = contained(
-                || self.deps.backend.generate(request.clone(), cancel.clone()),
+                || backend.backend.generate(request.clone(), cancel.clone()),
                 |panicked| self.log_contained_panic(MODEL_BACKEND, panicked),
             );
             let answered = call.await;
@@ -649,7 +667,7 @@ impl Runtime {
             // The model's time: what the request took, not what it waited for the gate.
             measures.model_ms =
                 Some((started.millis_until(self.deps.clock.now()) - engine_wait_ms).max(0));
-            measures.usage = match contained_call(|| self.deps.backend.last_usage()) {
+            measures.usage = match contained_call(|| backend.backend.last_usage()) {
                 Ok(usage) => usage,
                 Err(panicked) => {
                     self.log_contained_panic(MODEL_BACKEND, &panicked);
@@ -658,7 +676,7 @@ impl Runtime {
             };
         }
         let text_chars = match result {
-            Ok(_) => match contained_call(|| self.deps.backend.last_text_chars()) {
+            Ok(_) => match contained_call(|| backend.backend.last_text_chars()) {
                 Ok(chars) => chars,
                 Err(panicked) => {
                     self.log_contained_panic(MODEL_BACKEND, &panicked);
@@ -673,6 +691,7 @@ impl Runtime {
             transport,
             text_chars,
             deadline_in_gate,
+            backend: asked,
         })
     }
 
@@ -741,7 +760,13 @@ impl Runtime {
             transport,
             text_chars,
             deadline_in_gate,
+            backend: (backend_name, backend_model),
         } = self.decide(&task, env, now).await?;
+        // The backend, model and transport the decision was asked with (REQ-PERS-015): the
+        // transport only when it was settled, which a request that was assembled shows.
+        step.backend = Some(backend_name);
+        step.model = backend_model;
+        step.transport = measures.as_ref().map(|_| transport);
         step.measures = measures;
         let raw = match decided {
             Ok(bytes) => bytes,
@@ -1588,8 +1613,12 @@ impl Runtime {
     /// a log line and the step's `engine_wait_ms`; it observes the weakest stop request and
     /// the task's deadline. A registry that cannot be used is said once, as for the slots, and
     /// the request goes on.
-    async fn enter_engine_gate(&self, task: &Task) -> Result<EngineGate, RuntimeError> {
-        let Some(gate) = &self.engine_gate else {
+    async fn enter_engine_gate(
+        &self,
+        task: &Task,
+        gate: Option<&Arc<dyn crate::spi::Admission>>,
+    ) -> Result<EngineGate, RuntimeError> {
+        let Some(gate) = gate else {
             return Ok(EngineGate::Entered {
                 held: None,
                 waited_ms: 0,

@@ -71,6 +71,11 @@ struct NewArgs {
     /// The model must plan before it acts; you approve the plan before anything acts.
     #[arg(long)]
     plan_first: bool,
+    /// The effort level: how much the task may spend (`quick`, `standard` or `deep`; without it,
+    /// `standard`, or the level `effort_max` allows if lower; a fork takes its source's). A level
+    /// is a budget, never a permission.
+    #[arg(long, value_name = "LEVEL", value_parser = ["quick", "standard", "deep"])]
+    effort: Option<String>,
 }
 
 impl NewArgs {
@@ -87,6 +92,10 @@ impl NewArgs {
             from_task: self.from_task,
             from_snapshot: self.from_snapshot,
             plan_first: self.plan_first,
+            effort: self
+                .effort
+                .as_deref()
+                .and_then(mimlys_core::effort::EffortLevel::parse),
         }
     }
 }
@@ -548,25 +557,63 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
         let id = app.resolve_task(task)?;
         mimlys_core::newer::refuse_if_newer(app.runtime.persistence(), id)?;
     }
+    // The backend the task of this command runs on: the one its level's envelope names, found by
+    // that name (REQ-TASK-013). A command opens a connection to that backend and to no other.
+    let target = target_of(&app, &cli.command);
+    let backend = target
+        .as_ref()
+        .map_or(mimlys::backends::DEFAULT, |t| t.backend.as_str());
     if steps.starts_a_task() {
         app.backend_ready()?;
+        if backend != mimlys::backends::DEFAULT {
+            app.backend_ready_for(backend)?;
+        }
     }
     // REQ-SEC-010: a backend that the start of this command's task is refused is not contacted,
     // not even to be probed; the command goes on and says why (the creation is refused, or the
     // task halts `policy`).
-    let forbidden = start_is_forbidden(&app, &cli.command);
+    let forbidden = start_is_forbidden(&app, &cli.command, backend);
     if steps.contacts_backend()
         && !forbidden
-        && let Some(notice) = app.probe_backend().await?
+        && let Some(notice) = app.probe_backend_named(backend).await?
     {
         out.line(notice);
+    }
+    // A level whose backend does not answer is refused at its creation, before anything is
+    // made (REQ-TASK-013; external design §20).
+    if steps.contacts_backend()
+        && !forbidden
+        && let Some(target) = &target
+        && target.refuses_unreachable()
+        && let Some(probe) = app.backend_probe_of(backend)
+        && !probe.reachable
+        && let Some(creation) = target.creation
+    {
+        return Err(AppError::Io {
+            detail: mimlys::messages::level_backend_unreachable(
+                creation.level.name(),
+                backend,
+                probe.detail.as_deref().unwrap_or("no answer"),
+            ),
+        });
     }
     // A context below the need is a warning on standard error, never an error:
     // the run goes on (REQ-MDL-003).
     if steps.contacts_backend()
-        && let Some(warning) = app.context_warning()
+        && let Some(warning) = app.context_warning_for(backend)
     {
         mimlys::output::diag(warning);
+    }
+    // A backend that serves another model than the task last ran with: the task goes on, and
+    // the start says both models (external design §20).
+    if let Some(task) = target.as_ref().and_then(|t| t.task.as_ref())
+        && let Ok(Some(change)) = app.runtime.model_change(task)
+    {
+        mimlys::output::diag(mimlys::messages::model_changed_notice(
+            &change.backend,
+            &change.was,
+            &change.now,
+        ));
     }
     let interactive =
         !cli.json && std::io::stdin().is_terminal() && mimlys::output::stdout_is_terminal();
@@ -694,7 +741,7 @@ impl Steps {
 
 /// Whether the task this command creates or starts is one the profile forbids the backend for
 /// (REQ-SEC-010). An error, or a task that is not there, is "no": the command reports it itself.
-fn start_is_forbidden(app: &App, command: &Command) -> bool {
+fn start_is_forbidden(app: &App, command: &Command, backend: &str) -> bool {
     let named = match command {
         Command::Task(TaskCommand::Resume { task, .. })
         | Command::Approve { task, .. }
@@ -713,10 +760,40 @@ fn start_is_forbidden(app: &App, command: &Command) -> bool {
                 Command::Task(TaskCommand::New { args, .. }) => args.profile.as_deref(),
                 _ => return false,
             };
-            Ok(app.runtime.creation_forbidden(profile).unwrap_or(false))
+            Ok(app
+                .runtime
+                .creation_forbidden(profile, backend)
+                .unwrap_or(false))
         }
     };
     forbidden.unwrap_or(false)
+}
+
+/// The backend the task of this command runs on (REQ-TASK-013): the level's, for a command that
+/// creates a task, and the task's own, for a command that sets one running. `None` for any other
+/// command, and when the creation is refused already or the task is not there: the command says
+/// so itself.
+fn target_of(app: &App, command: &Command) -> Option<mimlys::target::Target> {
+    use mimlys::target::Target;
+    let new = |args: &NewArgs| {
+        Target::for_new(
+            app,
+            args.profile.as_deref(),
+            args.effort
+                .as_deref()
+                .and_then(mimlys_core::effort::EffortLevel::parse),
+            args.from_task.as_deref(),
+        )
+    };
+    match command {
+        Command::Run(args) => new(args),
+        Command::Task(TaskCommand::New { args, .. }) => new(args),
+        Command::Task(TaskCommand::Resume { task, .. })
+        | Command::Approve { task, .. }
+        | Command::Reject { task, .. }
+        | Command::Answer { task, .. } => Target::for_task(app, task),
+        _ => None,
+    }
 }
 
 /// The commands that only read (REQ-PERS-013), and what each needs of the

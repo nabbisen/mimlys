@@ -102,6 +102,10 @@ pub enum Event {
         /// as `false`, in earlier records and for a task without the flag.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         plan_first: bool,
+        /// The level the task was created at, who chose it and the envelope it runs with, every
+        /// key resolved (from 0.13; REQ-TASK-013): absent in earlier records.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<crate::effort::Effort>,
     },
     /// A task changed state.
     #[serde(rename = "task.state_changed")]

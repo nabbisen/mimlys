@@ -33,7 +33,13 @@ fn promoted(
         .create_task(
             &task,
             &[],
-            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+            &fx.event(
+                &task,
+                Event::TaskCreated {
+                    plan_first: false,
+                    effort: None,
+                },
+            ),
         )
         .unwrap();
     let backup = SnapshotRecord {

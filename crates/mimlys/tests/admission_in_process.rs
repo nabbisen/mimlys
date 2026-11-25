@@ -122,6 +122,7 @@ fn rig(dir: &Path, pid: u32) -> Rig {
                 from_task: None,
                 from_snapshot: None,
                 plan_first: false,
+                effort: None,
             },
         )
         .unwrap()

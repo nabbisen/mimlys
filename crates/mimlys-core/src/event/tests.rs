@@ -6,7 +6,10 @@ use crate::ids::ScriptedIds;
 fn every_event() -> Vec<Event> {
     let ids = ScriptedIds::default();
     vec![
-        Event::TaskCreated { plan_first: false },
+        Event::TaskCreated {
+            plan_first: false,
+            effort: None,
+        },
         Event::TaskStateChanged {
             from: "running".into(),
             to: "halted".into(),

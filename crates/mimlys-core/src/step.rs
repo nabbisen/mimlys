@@ -111,6 +111,17 @@ pub struct Step {
     /// the user rejected after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_wait: Option<crate::plan_wait::PlanWait>,
+    /// The name of the backend the step's decision was asked of (from 0.13; REQ-PERS-015): absent
+    /// in a record written before, and in a step that sent no request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// The model that backend named when the request was sent: a task whose backend serves another
+    /// model under the same name shows it step by step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The decision transport the request was made in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<crate::native::DecisionTransport>,
 }
 
 /// What the assembler's rules did to one request (REQ-CTX-010).
@@ -168,6 +179,9 @@ impl Step {
             finished_at: None,
             measures: None,
             plan_wait: None,
+            backend: None,
+            model: None,
+            transport: None,
         }
     }
 

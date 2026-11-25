@@ -233,6 +233,44 @@ pub trait ModelBackend: Send + Sync {
     }
 }
 
+/// A backend found by its name: what the runtime needs to send a task's requests to it.
+#[derive(Clone)]
+pub struct ResolvedBackend {
+    /// The adapter that talks to it.
+    pub backend: std::sync::Arc<dyn ModelBackend>,
+    /// The gate of its endpoint among the user's runtimes (RFC 013 decision 7); none for a backend
+    /// that has no endpoint (the fake backend).
+    pub gate: Option<std::sync::Arc<dyn Admission>>,
+    /// Its context budget in characters (LIM-C1, as configured for it): what a task whose
+    /// envelope sets none runs with.
+    pub context_chars: usize,
+}
+
+/// A name that no configured backend has (REQ-CFG-007; RFC 015, Amendment 1, item 4): nothing falls
+/// back to another backend, so the error says which there are. A configured backend that could
+/// not be made (a script that cannot be read) is this too, with the reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownBackend {
+    /// The name that was asked for.
+    pub name: String,
+    /// The configured names, in order.
+    pub configured: Vec<String>,
+    /// Why a configured backend could not be made; `None` when the name is not configured.
+    pub unusable: Option<String>,
+}
+
+/// The configured backends, by name (REQ-CFG-007, REQ-MDL-010; RFC 015 decision 3): where the
+/// runtime finds the backend a task names. Resolving a name **makes** the backend and contacts
+/// nothing, and a command that runs no task resolves none: a connection is opened only by a
+/// request, and a request is sent only by a step.
+pub trait BackendDirectory: Send + Sync {
+    /// The backend configured under `name`. An error names the configured ones.
+    fn resolve(&self, name: &str) -> Result<ResolvedBackend, UnknownBackend>;
+
+    /// The configured names, in order.
+    fn names(&self) -> Vec<String>;
+}
+
 /// A backend's identity, recorded at start and on every task's versions
 /// (REQ-SEC-010): the kind (`fake`, `openai_compatible`), the model name
 /// when the kind has one, and the locality.
@@ -1187,6 +1225,7 @@ pub mod fake {
         transport_error: Mutex<Option<BackendError>>,
         text_chars: Mutex<VecDeque<Option<u64>>>,
         last_text_chars: Mutex<Option<u64>>,
+        model: Mutex<Option<String>>,
     }
 
     impl ScriptedBackend {
@@ -1207,7 +1246,20 @@ pub mod fake {
                 transport_error: Mutex::new(None),
                 text_chars: Mutex::new(VecDeque::new()),
                 last_text_chars: Mutex::new(None),
+                model: Mutex::new(None),
             }
+        }
+
+        /// The same backend naming `model`, which `describe` reports (REQ-PERS-015 tests).
+        pub fn with_model(self, model: &str) -> Self {
+            self.set_model(Some(model));
+            self
+        }
+
+        /// From now on the backend names `model` (or none): the engine serves another model
+        /// under the same name between two starts of a task (REQ-MDL-010 tests).
+        pub fn set_model(&self, model: Option<&str>) {
+            *self.model.lock().expect("fake lock") = model.map(str::to_owned);
         }
 
         /// The same backend in the `tool_calls` transport: the scripted
@@ -1344,7 +1396,7 @@ pub mod fake {
             panic_if_set(&self.panicking_methods, "describe");
             BackendDescriptor {
                 kind: "scripted".into(),
-                model: None,
+                model: self.model.lock().expect("fake lock").clone(),
                 locality: if self.remote.load(std::sync::atomic::Ordering::SeqCst) {
                     Locality::Remote
                 } else {
@@ -1868,6 +1920,16 @@ pub mod fake {
             for step in &mut self.inner.lock().expect("fake lock").steps {
                 if step.task_id == task_id {
                     step.rejection_detail = None;
+                }
+            }
+        }
+
+        /// Drops the effort level of the task's record, as a store written before 0.13 holds it:
+        /// the record reads as `standard` (REQ-TASK-013).
+        pub fn forget_effort(&self, task_id: TaskId) {
+            for task in &mut self.inner.lock().expect("fake lock").tasks {
+                if task.task_id == task_id {
+                    task.effort = None;
                 }
             }
         }

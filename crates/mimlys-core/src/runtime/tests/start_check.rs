@@ -212,10 +212,22 @@ fn req_sec_010_the_creation_and_the_start_ask_one_rule() {
         vec![],
         crate::limits::LIM_C1_CONTEXT_CHARS,
     );
-    assert!(h.runtime.creation_forbidden(None).unwrap());
-    assert!(h.runtime.creation_forbidden(Some("workspace")).unwrap());
-    assert!(!h.runtime.creation_forbidden(Some("open")).unwrap());
-    assert!(!h.runtime.creation_forbidden(Some("nope")).unwrap());
+    assert!(h.runtime.creation_forbidden(None, "default").unwrap());
+    assert!(
+        h.runtime
+            .creation_forbidden(Some("workspace"), "default")
+            .unwrap()
+    );
+    assert!(
+        !h.runtime
+            .creation_forbidden(Some("open"), "default")
+            .unwrap()
+    );
+    assert!(
+        !h.runtime
+            .creation_forbidden(Some("nope"), "default")
+            .unwrap()
+    );
     let err = h
         .runtime
         .create_task(&h.session, create_request())
@@ -225,5 +237,5 @@ fn req_sec_010_the_creation_and_the_start_ask_one_rule() {
         "{err}"
     );
     h.backend.set_remote(false);
-    assert!(!h.runtime.creation_forbidden(None).unwrap());
+    assert!(!h.runtime.creation_forbidden(None, "default").unwrap());
 }

@@ -76,8 +76,12 @@ fn req_task_015_a_task_without_the_flag_has_no_key_and_no_gate() {
         .into_iter()
         .find(|e| e.event.name() == "task.created")
         .unwrap();
+    // The event carries the level since 0.13 (REQ-TASK-013); the flag's own key is what it was.
+    let mut event = serde_json::to_value(&created.event).unwrap();
+    assert_eq!(event["effort"]["level"], "standard", "{event}");
+    event.as_object_mut().unwrap().remove("effort");
     assert_eq!(
-        serde_json::to_value(&created.event).unwrap(),
+        event,
         json!({"event": "task.created"}),
         "the event of a task without the flag is what it was"
     );
@@ -97,10 +101,9 @@ fn req_task_015_the_flag_is_in_the_record_and_in_the_creation_event() {
         .into_iter()
         .find(|e| e.event.name() == "task.created")
         .unwrap();
-    assert_eq!(
-        serde_json::to_value(&created.event).unwrap(),
-        json!({"event": "task.created", "plan_first": true})
-    );
+    let mut event = serde_json::to_value(&created.event).unwrap();
+    event.as_object_mut().unwrap().remove("effort");
+    assert_eq!(event, json!({"event": "task.created", "plan_first": true}));
 }
 
 /// REQ-TASK-015: an `act` first is rejected `state{plan_required}` with the fixed hint, nothing

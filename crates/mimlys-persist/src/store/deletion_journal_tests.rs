@@ -25,7 +25,13 @@ fn task_with_a_snapshot(
         .create_task(
             &task,
             &[],
-            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+            &fx.event(
+                &task,
+                Event::TaskCreated {
+                    plan_first: false,
+                    effort: None,
+                },
+            ),
         )
         .unwrap();
     let hash = hash_bytes(content);

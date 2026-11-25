@@ -2,7 +2,7 @@
 //! session (external design §19; RFC 010 deployment v1). One `App` per
 //! command invocation; the store's lock keeps a second process out.
 
-use crate::backends::Backend;
+use crate::backends::{Backend, ConfiguredBackends};
 use crate::config::{Config, ConfigError, Loaded};
 use crate::workspace::LocalWorkspaces;
 use mimlys_core::clock::SystemClock;
@@ -240,11 +240,15 @@ pub struct App {
     pub runtime: Arc<Runtime>,
     /// This process as a session.
     pub session: Session,
-    /// The backend a task runs on: the one named `default` (REQ-CFG-007), until a level names
-    /// another (RFC 015, 015c).
+    /// The backend named `default` (REQ-CFG-007): the one a task runs on unless its level's
+    /// envelope names another (RFC 015, REQ-TASK-013), and the one the runtime's status shows.
     pub backend: Backend,
-    /// What the backend probe found, once it ran (LIM-M4).
-    backend_probe: std::sync::Mutex<Option<BackendProbe>>,
+    /// The configured backends by name, where the runtime finds the backend a task names, at
+    /// every start. A backend is made when it is first asked for: a command that runs no task
+    /// makes none of them but `default`.
+    pub backends: Arc<ConfiguredBackends>,
+    /// What each backend probe found, once it ran, by the backend's name (LIM-M4).
+    backend_probe: std::sync::Mutex<std::collections::BTreeMap<String, BackendProbe>>,
     /// The store, as the runtime holds it: the fitness probe builds a runtime of its own over it
     /// (REQ-MDL-011).
     pub(crate) store: Arc<dyn Persistence>,
@@ -788,6 +792,18 @@ impl App {
         // RFC 013 decision 7: the model requests of the user's runtimes to one endpoint share
         // `max_in_flight` places, in the same registry. The fake backend has no endpoint.
         let gate = backend.gate(registry_dir.clone(), owner.clone());
+        // The configured backends by name, for a task whose envelope names another than `default`
+        // (RFC 015, Amendment 1, item 4). `default` is the one made above; none other is made
+        // before a task asks for it.
+        let backends = Arc::new(ConfiguredBackends::new(
+            loaded.clone(),
+            registry_dir.clone(),
+            owner.clone(),
+            config
+                .backends
+                .contains_key(crate::backends::DEFAULT)
+                .then(|| Arc::new(backend.clone())),
+        ));
         let confinement = probe.clone();
         let shared_store = Arc::clone(&store);
         let runtime = Runtime::new(RuntimeDeps {
@@ -805,7 +821,9 @@ impl App {
             context_chars: backend.section.context_chars,
             output_bytes: config.sandbox.output_bytes as usize,
         })?
-        .with_admission(admission);
+        .with_admission(admission)
+        .with_backends(backends.clone())
+        .with_effort_levels(config.effort_levels());
         let runtime = match gate {
             Some(gate) => runtime.with_engine_gate(gate),
             None => runtime,
@@ -825,7 +843,8 @@ impl App {
                 os_user: os_user(),
             },
             backend,
-            backend_probe: std::sync::Mutex::new(None),
+            backends,
+            backend_probe: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             store: shared_store,
             confinement,
             registry_dir,
@@ -878,18 +897,25 @@ impl App {
             .collect()
     }
 
-    /// Probes the backend once (LIM-M4; RFC 008 §4): the model listing and
-    /// the structured-output mode. A `schema` backend whose server refuses the
-    /// schema is an error naming the fix. Returns the notice to print when
-    /// `auto` fell back to plain text.
-    pub async fn probe_backend(&self) -> Result<Option<String>, AppError> {
-        if self.backend_probe.lock().expect("probe lock").is_some() {
+    /// Probes the backend named `name` once (LIM-M4; RFC 008 §4): the model listing and the
+    /// structured-output mode. A `schema` backend whose server refuses the schema is an error
+    /// naming the fix. Returns the notice to print when `auto` fell back to plain text. The
+    /// backend is the one the task about to start runs on, found by its name: no other is
+    /// contacted.
+    pub async fn probe_backend_named(&self, name: &str) -> Result<Option<String>, AppError> {
+        if self
+            .backend_probe
+            .lock()
+            .expect("probe lock")
+            .contains_key(name)
+        {
             return Ok(None);
         }
-        let (probe, notice) = self.backend.probe().await?;
+        let backend = self.backends.get(name)?;
+        let (probe, notice) = backend.probe().await?;
         // Ollama chooses its context when it loads the model: where the probe could not
         // read it, it is read once more after the first reply (REQ-MDL-003).
-        if let (Some(adapter), Some(needed)) = (&self.backend.openai, probe.context_needed_tokens)
+        if let (Some(adapter), Some(needed)) = (&backend.openai, probe.context_needed_tokens)
             && probe.context_engine == Some(mimlys_model::openai::context::Engine::Ollama)
             && probe.context_tokens.is_none()
         {
@@ -902,21 +928,23 @@ impl App {
                 ));
             });
         }
-        *self.backend_probe.lock().expect("probe lock") = Some(probe);
+        self.backend_probe
+            .lock()
+            .expect("probe lock")
+            .insert(name.to_owned(), probe);
         Ok(notice)
     }
 
-    /// The warning for the probe's finding, when the engine's context is below
-    /// the need (REQ-MDL-003): one line, for standard error. The run goes on.
-    pub fn context_warning(&self) -> Option<String> {
-        let probe = self.backend_probe()?;
-        probe.context_warning()
+    /// The warning for the probe's finding of the backend `name`, when the engine's context is
+    /// below the need (REQ-MDL-003): one line, for standard error. The run goes on.
+    pub fn context_warning_for(&self, name: &str) -> Option<String> {
+        self.backend_probe_of(name)?.context_warning()
     }
 
-    /// Whether the configured backend can produce decisions at all: the fake
-    /// backend without a script cannot, and a command that runs steps says so
-    /// before creating or continuing anything (REQ-CFG-002 lets such a
-    /// process run `status`, `check` and the task commands that need no decision).
+    /// Whether the configured backend can produce decisions at all: the fake backend without a
+    /// script cannot, and a command that runs steps says so before creating or continuing
+    /// anything (REQ-CFG-002 lets such a process run `status`, `check` and the task commands
+    /// that need no decision).
     pub fn backend_ready(&self) -> Result<(), AppError> {
         // A configuration without a backend named `default` has none to run a task on, and no
         // command picks another (RFC 015, Amendment 1): it says so, and lists the configured ones.
@@ -924,9 +952,18 @@ impl App {
         self.backend.ready()
     }
 
-    /// The probe result, when the probe ran.
-    pub fn backend_probe(&self) -> Option<BackendProbe> {
-        self.backend_probe.lock().expect("probe lock").clone()
+    /// As [`App::backend_ready`] for the backend `name`, which a task's level names.
+    pub fn backend_ready_for(&self, name: &str) -> Result<(), AppError> {
+        self.backends.get(name)?.ready()
+    }
+
+    /// The probe result of the backend `name`, when the probe ran.
+    pub fn backend_probe_of(&self, name: &str) -> Option<BackendProbe> {
+        self.backend_probe
+            .lock()
+            .expect("probe lock")
+            .get(name)
+            .cloned()
     }
 
     /// Ends the worker (REQ-CONF-009) and records `runtime.stopped`.

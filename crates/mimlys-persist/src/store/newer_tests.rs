@@ -28,7 +28,13 @@ fn store_of_every_kind(dir: &std::path::Path) -> (Store, Task) {
                 steps: vec!["look".into()],
                 created_at: fx.now(),
             },
-            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+            &fx.event(
+                &task,
+                Event::TaskCreated {
+                    plan_first: false,
+                    effort: None,
+                },
+            ),
         )
         .unwrap();
     let question = mimlys_core::question::Question::ask(
@@ -43,7 +49,13 @@ fn store_of_every_kind(dir: &std::path::Path) -> (Store, Task) {
         .record_question(
             &task,
             &question,
-            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+            &fx.event(
+                &task,
+                Event::TaskCreated {
+                    plan_first: false,
+                    effort: None,
+                },
+            ),
         )
         .unwrap();
     let backup = SnapshotRecord {
@@ -90,7 +102,13 @@ fn store_of_every_kind(dir: &std::path::Path) -> (Store, Task) {
     store
         .record_promotion(
             &promotion,
-            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+            &fx.event(
+                &task,
+                Event::TaskCreated {
+                    plan_first: false,
+                    effort: None,
+                },
+            ),
         )
         .unwrap();
     (store, task)

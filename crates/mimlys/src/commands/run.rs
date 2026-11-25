@@ -35,6 +35,9 @@ pub struct NewTask {
     pub from_snapshot: Option<String>,
     /// The model must plan before it acts; you approve the plan before anything acts.
     pub plan_first: bool,
+    /// `--effort`: the level the user chose (REQ-TASK-013); without it, the level is decided by
+    /// the configuration (`standard`, the lower `effort_max`, or a fork's source's).
+    pub effort: Option<mimlys_core::effort::EffortLevel>,
 }
 
 /// Builds the request (REQ-TASK-001) and creates the task.
@@ -123,6 +126,7 @@ pub fn create(app: &App, args: &NewTask) -> Result<mimlys_core::task::Task, AppE
             from_task,
             from_snapshot,
             plan_first: args.plan_first,
+            effort: args.effort,
         },
     )?;
     Ok(task)

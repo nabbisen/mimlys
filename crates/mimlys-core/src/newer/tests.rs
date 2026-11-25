@@ -170,6 +170,9 @@ fn req_main_006_two_unknown_words_of_a_record_are_both_named() {
         finished_at: None,
         measures: None,
         plan_wait: None,
+        backend: None,
+        model: None,
+        transport: None,
     };
     let mut value = json_of(&step);
     value["phase"] = json!("planning_ahead");
@@ -185,7 +188,10 @@ fn req_main_006_two_unknown_words_of_a_record_are_both_named() {
 /// known event with a word it has not got (a rejection code) is held by that.
 #[test]
 fn req_main_006_an_unknown_event_is_held_by_its_name_and_fields() {
-    let mut value = json_of(&event(Event::TaskCreated { plan_first: false }));
+    let mut value = json_of(&event(Event::TaskCreated {
+        plan_first: false,
+        effort: None,
+    }));
     value["event"] = json!("session.attached");
     value["client"] = json!("tui");
     let newer = newer_of::<EventRecord>(&value);
@@ -309,7 +315,10 @@ fn req_main_006_a_free_string_before_the_halt_reason_of_a_change_is_not_the_plac
 /// REQ-MAIN-006: an event of a newer release: a field of its own (free) before its name.
 #[test]
 fn req_main_006_a_free_string_before_the_name_of_an_event_is_not_the_place_named() {
-    let mut unknown_event = json_of(&event(Event::TaskCreated { plan_first: false }));
+    let mut unknown_event = json_of(&event(Event::TaskCreated {
+        plan_first: false,
+        effort: None,
+    }));
     unknown_event["event"] = json!("session.attached");
     unknown_event["client"] = json!("session.attached");
     names_the_vocabulary_not_the_free_string::<EventRecord>(
@@ -413,7 +422,10 @@ fn req_main_006_a_state_is_never_read_without_its_kind() {
 /// of the payload it prints is the type's.
 #[test]
 fn req_main_006_the_envelope_fields_are_the_event_records() {
-    let mut record = event(Event::TaskCreated { plan_first: false });
+    let mut record = event(Event::TaskCreated {
+        plan_first: false,
+        effort: None,
+    });
     record.actor = Actor::User {
         session: "pid:1".into(),
         os_user: "someone".into(),

@@ -560,6 +560,7 @@ fn req_task_004_the_fork_of_a_halted_source_names_both_ways_on() {
                 from_task: Some(source),
                 from_snapshot: None,
                 plan_first: false,
+                effort: None,
             },
         )
     };
@@ -590,6 +591,7 @@ fn req_task_004_the_fork_of_a_halted_source_names_both_ways_on() {
             from_task: None,
             from_snapshot: None,
             plan_first: false,
+            effort: None,
         },
     );
     let message = other.unwrap_err().to_string();

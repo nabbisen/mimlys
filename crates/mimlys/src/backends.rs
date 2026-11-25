@@ -571,6 +571,110 @@ impl Backend {
     }
 }
 
+/// The configured backends, found by name (REQ-CFG-007, REQ-MDL-010; RFC 015, Amendment 1): the
+/// directory the runtime resolves a task's backend in, at every start.
+///
+/// A backend is **made when it is first asked for**, and never before: making one builds an
+/// adapter and contacts nothing, and a command that runs no task asks for none, so it opens a
+/// connection to none. A backend that has been made is kept, so that the runtime, `status` and
+/// the probe of a start share one adapter (and its HTTP client) for a name. What is configured is
+/// what the process read when it started: a later edit of the file is read by the next process,
+/// and a task's backend is resolved again by its name there.
+pub struct ConfiguredBackends {
+    loaded: Loaded,
+    registry_dir: Result<std::path::PathBuf, String>,
+    owner: crate::registry::Owner,
+    made: std::sync::Mutex<BTreeMap<String, Arc<Backend>>>,
+}
+
+impl ConfiguredBackends {
+    /// The directory of `loaded`'s backends. `default`, when `made` holds it, is that one (the
+    /// backend the process made at its start, or a test's own); nothing else is made yet.
+    pub fn new(
+        loaded: Loaded,
+        registry_dir: Result<std::path::PathBuf, String>,
+        owner: crate::registry::Owner,
+        made: Option<Arc<Backend>>,
+    ) -> Self {
+        let held = made
+            .into_iter()
+            .map(|backend| (backend.name.clone(), backend))
+            .collect();
+        Self {
+            loaded,
+            registry_dir,
+            owner,
+            made: std::sync::Mutex::new(held),
+        }
+    }
+
+    /// The backend named `name`, made now if it has not been. An unknown name is the error
+    /// [`Config::backend`] gives, naming the configured ones.
+    pub fn get(&self, name: &str) -> Result<Arc<Backend>, AppError> {
+        let mut made = self.made.lock().expect("backends lock");
+        if let Some(backend) = made.get(name) {
+            return Ok(Arc::clone(backend));
+        }
+        let backend = Arc::new(Backend::make(&self.loaded, name, None)?);
+        made.insert(name.to_owned(), Arc::clone(&backend));
+        Ok(backend)
+    }
+
+    /// The names of the backends made so far: what a command opened, and no other.
+    pub fn made_names(&self) -> Vec<String> {
+        self.made
+            .lock()
+            .expect("backends lock")
+            .keys()
+            .cloned()
+            .collect()
+    }
+}
+
+impl mimlys_core::spi::BackendDirectory for ConfiguredBackends {
+    fn resolve(
+        &self,
+        name: &str,
+    ) -> Result<mimlys_core::spi::ResolvedBackend, mimlys_core::spi::UnknownBackend> {
+        let configured = || {
+            self.loaded
+                .config
+                .backend_names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        if !self.loaded.config.backends.contains_key(name) {
+            return Err(mimlys_core::spi::UnknownBackend {
+                name: name.to_owned(),
+                configured: configured(),
+                unusable: None,
+            });
+        }
+        let backend = self
+            .get(name)
+            .map_err(|error| mimlys_core::spi::UnknownBackend {
+                name: name.to_owned(),
+                configured: configured(),
+                unusable: Some(error.to_string()),
+            })?;
+        Ok(mimlys_core::spi::ResolvedBackend {
+            backend: Arc::clone(&backend.adapter),
+            gate: backend.gate(self.registry_dir.clone(), self.owner.clone()),
+            context_chars: backend.section.context_chars,
+        })
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.loaded
+            .config
+            .backend_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
 /// What probing one backend gave: the probe, and the notice to print for it, or why it could not
 /// be probed.
 pub type Probed = Result<(BackendProbe, Option<String>), AppError>;

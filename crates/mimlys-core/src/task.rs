@@ -433,6 +433,11 @@ pub struct Task {
     /// plan-first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_approved: Option<u32>,
+    /// The effort level, who chose it and the envelope the task runs with, resolved at creation
+    /// and never changed during the task (from 0.13; REQ-TASK-013). Absent in a record written
+    /// before 0.13, which reads as `standard` ([`Task::effort_in_force`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<crate::effort::Effort>,
 }
 
 /// A budget extension requested at resumption from a budget halt (REQ-TASK-005).
@@ -588,7 +593,43 @@ impl Task {
             forked_from: None,
             plan_first: spec.plan_first,
             plan_approved: None,
+            effort: None,
         })
+    }
+
+    /// Records the level the task was created at and the envelope it runs with.
+    pub fn with_effort(mut self, effort: crate::effort::Effort) -> Self {
+        self.effort = Some(effort);
+        self
+    }
+
+    /// The task's level, who chose it and its envelope. A record written before 0.13 has none:
+    /// it reads as `standard`, chosen by default, with the envelope of its own budgets (the
+    /// backend `default`, its steps, its deadline from creation, no context budget of its own
+    /// and LIM-C3's recent steps).
+    pub fn effort_in_force(&self) -> crate::effort::Effort {
+        self.effort
+            .clone()
+            .unwrap_or_else(|| crate::effort::Effort {
+                level: crate::effort::EffortLevel::Standard,
+                chosen_by: crate::effort::ChosenBy::Default,
+                envelope: crate::effort::Envelope {
+                    backend: crate::effort::DEFAULT_BACKEND.to_owned(),
+                    steps: self.budgets.steps,
+                    deadline_ms: self.created_at.millis_until(self.deadline),
+                    context_chars: None,
+                    recent_steps: crate::limits::LIM_C3_RECENT_STEPS as u32,
+                },
+            })
+    }
+
+    /// The steps kept whole under compression (LIM-C3, `recent_steps`), read from the task.
+    pub fn recent_steps(&self) -> usize {
+        self.effort
+            .as_ref()
+            .map_or(crate::limits::LIM_C3_RECENT_STEPS, |e| {
+                e.envelope.recent_steps as usize
+            })
     }
 
     /// Whether the gate of a plan-first task is closed: an `act` or a `complete` is rejected

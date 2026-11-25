@@ -24,7 +24,13 @@ fn create(store: &dyn Persistence, fx: &Fx) -> Task {
         .create_task(
             &task,
             &[],
-            &fx.event(&task, Event::TaskCreated { plan_first: false }),
+            &fx.event(
+                &task,
+                Event::TaskCreated {
+                    plan_first: false,
+                    effort: None,
+                },
+            ),
         )
         .unwrap();
     task
