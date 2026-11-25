@@ -357,7 +357,8 @@ impl Runtime {
             });
         }
         // The envelope: a flag wins over the level, the level over the profile, and the profile
-        // over the register's default (external design §19.4); the context budget is recorded only when the level sets it.
+        // over the register's default (external design §19.4); the context budget is recorded
+        // only when the level sets it.
         let envelope = crate::effort::resolve(&crate::effort::Inputs {
             keys: self.levels.keys(plan.level),
             flag_steps: request.budgets.map(|b| b.steps),
