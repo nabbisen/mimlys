@@ -30,7 +30,16 @@ impl Env {
     fn write(&self, config: &str) {
         std::fs::write(
             &self.config,
-            config.replace("@DATA@", &self.dir.path().join("data").to_string_lossy()),
+            // The path is written into a TOML string: a Windows path's backslashes are escaped.
+            config.replace(
+                "@DATA@",
+                &self
+                    .dir
+                    .path()
+                    .join("data")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
+            ),
         )
         .unwrap();
     }
