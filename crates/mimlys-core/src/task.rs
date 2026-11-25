@@ -114,6 +114,16 @@ pub enum HaltDetail {
         /// The names the configuration has now.
         configured: Vec<String>,
     },
+    /// A task found `running` whose backend is configured but cannot be made (for example a key
+    /// by reference that the environment does not hold, or a script that cannot be read): halted
+    /// `backend_unavailable` before anything was sent, with the reason (external design §5.2,
+    /// §19.4; from 0.13).
+    BackendUnusable {
+        /// The backend's name, as the task's envelope has it.
+        backend: String,
+        /// Why it cannot be made.
+        reason: String,
+    },
 }
 
 /// How a task completed (external design §5.3, REQ-TASK-010).
@@ -499,8 +509,8 @@ pub enum TaskInput {
     /// The runtime halts the task `policy`, naming the rule (from 0.13).
     HaltPolicy(HaltDetail),
     /// The runtime halts the task `backend_unavailable`, naming the rule: its backend is no
-    /// longer configured (from 0.13).
-    HaltBackendNotConfigured(HaltDetail),
+    /// longer configured, or is configured and cannot be made (from 0.13).
+    HaltBackendUnavailable(HaltDetail),
     /// The task completed.
     Complete(Completion),
     /// The task failed.
@@ -555,7 +565,7 @@ impl TaskInput {
             TaskInput::Expired => "expired",
             TaskInput::Halt(_)
             | TaskInput::HaltPolicy(_)
-            | TaskInput::HaltBackendNotConfigured(_) => "halt",
+            | TaskInput::HaltBackendUnavailable(_) => "halt",
             TaskInput::Complete(_) => "complete",
             TaskInput::Fail(_) => "fail",
             TaskInput::StartRecovery => "start_recovery",
@@ -724,12 +734,10 @@ impl Task {
                 halt_reason: HaltReason::Policy,
                 halt_detail: Some(detail.clone()),
             },
-            (TaskState::Running, TaskInput::HaltBackendNotConfigured(detail)) => {
-                TaskState::Halted {
-                    halt_reason: HaltReason::BackendUnavailable,
-                    halt_detail: Some(detail.clone()),
-                }
-            }
+            (TaskState::Running, TaskInput::HaltBackendUnavailable(detail)) => TaskState::Halted {
+                halt_reason: HaltReason::BackendUnavailable,
+                halt_detail: Some(detail.clone()),
+            },
             (TaskState::Running, TaskInput::Complete(completion)) => TaskState::Completed {
                 completion: *completion,
             },

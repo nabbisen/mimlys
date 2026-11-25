@@ -322,13 +322,18 @@ fn req_cfg_007_grant_and_revoke_are_refused_before_anything_is_driven() {
     assert_eq!(value["task"]["state"], "waiting_user", "{value}");
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let grant = value["grants"][0]["grant_id"].as_str().unwrap().to_owned();
-    // The time a task has taken so far is read from the clock (`cost.elapsed_ms`, from 0.13), so
-    // two looks at a task that is not over differ by it and by nothing else.
+    // The time a task has taken so far is read from the clock (`cost.elapsed_ms`, from 0.13), and
+    // the context budget in force is read from the file as it is now (`cost.context_chars` and
+    // `cost.context_source`, 015c-7: absent once the task's backend is not configured), so two
+    // looks at a task that is not over, across an edit of the file, differ by them and by nothing
+    // else.
     let without_elapsed = |mut shown: Value| {
-        shown["cost"]
+        let cost = shown["cost"]
             .as_object_mut()
-            .expect("a task shows its cost")
-            .remove("elapsed_ms");
+            .expect("a task shows its cost");
+        for key in ["elapsed_ms", "context_chars", "context_source"] {
+            cost.remove(key);
+        }
         shown
     };
     let (_, before) = env.json(&["task", "show", &id]);

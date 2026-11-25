@@ -103,7 +103,8 @@ pub struct Envelope {
 }
 
 /// Whose value a task's context budget is at a step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BudgetSource {
     /// The level's own `context_chars`, which is not above the backend's.
     Level,
@@ -404,6 +405,15 @@ pub struct Cost {
     pub deadline_limit_ms: i64,
     /// Milliseconds the model took, summed over the steps that measured it.
     pub model_ms: i64,
+    /// The context budget in force as the configuration is now, in characters: what the task's
+    /// next step would use (external design §19.4). Set by `task show` only
+    /// ([`Cost::set_context`]); absent where it is not asked, and when the level sets none and the
+    /// backend is no longer configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_chars: Option<u64>,
+    /// Whose it is: `level` or `backend`. Present with `context_chars`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_source: Option<BudgetSource>,
     /// Prompt tokens, summed over the steps that reported them; absent when none did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_tokens: Option<u64>,
@@ -419,6 +429,23 @@ pub struct Cost {
 }
 
 impl Cost {
+    /// Sets the context budget in force as the configuration is now: `level` is the envelope's
+    /// `context_chars`, `backend` the `context_chars` of the task's backend in the configuration
+    /// (`None` when it is no longer configured). The same rule as the step's ([`context_budget`]);
+    /// with no backend, the level's own value, and nothing when the level sets none.
+    pub fn set_context(&mut self, level: Option<u32>, backend: Option<usize>) {
+        let budget = match (level, backend) {
+            (_, Some(backend)) => Some(context_budget(level, backend)),
+            (Some(own), None) => Some(ContextBudget {
+                chars: own as usize,
+                source: BudgetSource::Level,
+            }),
+            (None, None) => None,
+        };
+        self.context_chars = budget.map(|b| b.chars as u64);
+        self.context_source = budget.map(|b| b.source);
+    }
+
     /// What `task` cost, from its steps. `now` closes the time of a task that is not over.
     pub fn of(
         task: &crate::task::Task,
@@ -451,6 +478,8 @@ impl Cost {
             deadline_envelope_ms: effort.envelope.deadline_ms,
             deadline_limit_ms: task.created_at.millis_until(task.deadline),
             model_ms: 0,
+            context_chars: None,
+            context_source: None,
             prompt_tokens: None,
             cached_tokens: None,
             completion_tokens: None,

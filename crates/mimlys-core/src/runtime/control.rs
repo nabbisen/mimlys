@@ -1011,16 +1011,14 @@ impl Runtime {
                     detail: refusal.to_string(),
                 },
             })?;
-        let backend = self
-            .levels
-            .keys(level)
-            .backend
-            .clone()
-            .unwrap_or_else(|| self.deps.backend_name.clone());
+        let chose = self.levels.keys(level).backend.clone();
+        let backend_chosen_by_level = chose.is_some();
+        let backend = chose.unwrap_or_else(|| self.deps.backend_name.clone());
         Ok(EffortPlan {
             level,
             chosen_by,
             backend,
+            backend_chosen_by_level,
         })
     }
 
@@ -2029,6 +2027,9 @@ pub struct EffortPlan {
     pub chosen_by: crate::effort::ChosenBy,
     /// The backend the envelope names: the level's `backend`, else the runtime's own.
     pub backend: String,
+    /// Whether the level's own `backend` key chose it (and not the runtime's `default`): what
+    /// tells a message whether `[effort.<level>]` is a section that names the backend.
+    pub backend_chosen_by_level: bool,
 }
 
 /// A backend that serves another model under the same name than the task last ran with

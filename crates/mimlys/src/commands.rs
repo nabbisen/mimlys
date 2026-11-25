@@ -62,7 +62,14 @@ pub async fn finish(
             HaltDetail::BackendNotConfigured {
                 backend,
                 configured,
-            } => messages::backend_not_configured_halt(backend, configured),
+            } => messages::backend_not_configured_halt(
+                &view.task.task_id.to_string(),
+                backend,
+                configured,
+            ),
+            HaltDetail::BackendUnusable { backend, reason } => {
+                messages::backend_unusable_halt(&view.task.task_id.to_string(), backend, reason)
+            }
         });
     }
     Ok(())

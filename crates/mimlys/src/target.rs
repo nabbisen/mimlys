@@ -28,6 +28,8 @@ pub struct Target {
 pub struct Creation {
     /// The level.
     pub level: EffortLevel,
+    /// Whether the level's `backend` key chose the backend (and not `default`).
+    pub backend_chosen_by_level: bool,
 }
 
 impl Target {
@@ -47,7 +49,10 @@ impl Target {
         Some(Self {
             backend: plan.backend,
             task: None,
-            creation: Some(Creation { level: plan.level }),
+            creation: Some(Creation {
+                level: plan.level,
+                backend_chosen_by_level: plan.backend_chosen_by_level,
+            }),
         })
     }
 
