@@ -765,6 +765,16 @@ fn req_mdl_010_a_model_changed_under_the_same_name_is_told_once_and_the_task_goe
         .map(|s| s.model)
         .collect();
     assert_eq!(models, [Some("m1".to_owned()), Some("m2".to_owned())]);
+    // What the task cost says it used both models (REQ-OBS-010), each with its steps.
+    let cost = h.runtime.get_task(id).unwrap().cost;
+    assert_eq!(
+        cost.backends
+            .iter()
+            .map(|b| (b.backend.as_str(), b.model.as_deref(), b.steps))
+            .collect::<Vec<_>>(),
+        [("default", Some("m1"), 1), ("default", Some("m2"), 1)]
+    );
+    assert_eq!((cost.steps_used, cost.steps_envelope), (2, 40));
     // The step recorded it, so the change is not told again.
     assert_eq!(h.runtime.model_change(&task()).unwrap(), None);
     // A backend that names no model has nothing to compare.

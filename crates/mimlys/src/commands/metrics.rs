@@ -35,6 +35,27 @@ pub fn run(app: &ReadApp, task: Option<&str>, out: &Output) -> Result<(), AppErr
             out.line(messages::marked(&line, unknown));
         }
     }
+    // REQ-OBS-010: what the tasks at each effort level cost.
+    for (level, at) in &metrics.by_effort {
+        for (state, count) in &at.tasks_by_state {
+            out.line(messages::metric_line(
+                &format!("by_effort.{level}.tasks_by_state.{state}"),
+                *count,
+            ));
+        }
+        for (name, value) in [
+            ("steps", at.steps),
+            ("model_ms", at.model_ms),
+            ("prompt_tokens", at.prompt_tokens),
+            ("cached_tokens", at.cached_tokens),
+            ("completion_tokens", at.completion_tokens),
+        ] {
+            out.line(messages::metric_line(
+                &format!("by_effort.{level}.{name}"),
+                value,
+            ));
+        }
+    }
     // REQ-OBS-009: what the executions waited for a slot and the requests for the engine's gate.
     for (name, value) in [
         ("admission_wait_ms", metrics.admission_wait_ms),

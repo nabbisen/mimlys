@@ -54,6 +54,17 @@ temperature = 0.0               # 0.0–2.0; 0 for the most repeatable decisions
 # url = "http://127.0.0.1:11434/v1"
 # model = "qwen2.5:3b-instruct"
 
+# [effort.quick]                # an effort level: an overlay of five keys; see Effort levels
+#                               # shipped: steps = 22, deadline = "10m"; a key here replaces it
+# backend = "small"             # a name from [backends]; every level local, or every level on one remote endpoint
+# steps = 20                    # LIM-T1, within the ceiling's max_steps
+# deadline = "30m"              # LIM-T5, 1m to 24h
+# context_chars = 16000         # LIM-C1, at most the backend's
+# recent_steps = 4              # LIM-C3, 1–50: the steps kept whole when the context is compressed
+# [effort.standard]             # ships with no keys: the behaviour of 0.12
+# [effort.deep]                 # ships with no keys: refused when chosen until it is configured
+# backend = "large"
+
 [policy]
 default_profile = "workspace"
 remote_backend_allowed = false
@@ -67,6 +78,7 @@ network_domains = []
 # host_write_roots = []         reserved likewise
 max_steps = 200                 # LIM-T1 range
 cpu_share = 50                  # LIM-H7, 1–100: percent of the machine's cores a host tool's tree may take (at least one core)
+# effort_max = "deep"           # the highest effort level any profile may allow (quick | standard | deep); absent means deep
 
 [policy.profiles.workspace]     # overlays on a shipped profile; a new profile needs `tools`
 tools = ["read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm"]
@@ -81,6 +93,7 @@ on_reject = "continue"          # continue | halt
 on_cancel = "rollback"          # rollback | keep (M3)
 promote = false                 # the `project` profile sets true (M3)
 external = false                # may the task communicate outside the host (a remote backend); false in every shipped profile
+# effort_max = "standard"       # the highest effort level this profile allows, at most the ceiling's
 
 [policy.exclusions]
 materialize = [".git/", ".hg/", ".svn/", "target/", "node_modules/"]            # LIM-W4
@@ -180,9 +193,9 @@ model = "qwen2.5:3b-instruct"
   configured. That is every command that can lead to a step: `run`, `task new`,
   `task resume`, `approve`, `reject`, `answer`, and `grant` and `revoke` too (a grant
   or a revocation can set a task running again), each refused before anything is
-  created, granted, revoked or run. (A level of effort that names a backend arrives in a later release;
-  until then a task runs on `default` only, and the other entries are for
-  `status`.)
+  created, granted, revoked or run. The one exception is a task at an [effort
+  level](#effort-levels) whose `[effort.<level>]` names another backend: it runs on that
+  one, and on no other.
 - **Two entries on one URL must agree on `max_in_flight`.** The limit is counted
   for the URL (one gate for all your runtimes), so two limits for one count cannot
   both hold; `check` refuses the file and names both entries. Two URLs are
@@ -199,6 +212,102 @@ model = "qwen2.5:3b-instruct"
   To move a file, set `config_version = 2` and write
   `[backends.default]` where `[backend]` was. Messages name keys in the version-2
   form (`backends.default.timeout_ms`).
+
+## Effort levels
+
+A task is created at one of three levels, `quick`, `standard` or `deep`. A level is **a budget,
+never a permission**: it sets how many steps a task may take, how long it may run, how much of
+the history it sends, and which backend (which model) it runs on. It grants no tool, no path, no
+destination and no effect, and the approvals, the confinement and the checks are the same at every
+level. You choose it when you create the task, and it never changes during the task.
+
+```toml
+[backends.default]
+kind = "openai_compatible"
+url = "http://127.0.0.1:8080/v1"
+model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+
+[backends.large]                         # a larger model, on its own engine
+kind = "openai_compatible"
+url = "http://127.0.0.1:8081/v1"
+model = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"
+
+[effort.deep]
+backend = "large"                        # `deep` is the larger model you name
+steps = 60
+deadline = "4h"
+```
+
+```console
+$ mimlys run "fix the failing test" --effort deep
+effort    deep (you chose): steps 60, deadline 4h, backend large (Qwen2.5-14B-Instruct-Q4_K_M.gguf)
+```
+
+- **`quick` stops a task that wanders sooner.** It ships two keys: `steps = 22` and `deadline =
+  "10m"` (measured: [the M8 report](../maintainers/m8-report.md)). It does **not** make a task that
+  completes any faster: the same task takes the same requests at `quick` as at `standard`. To make
+  `quick` faster, name a smaller model's backend in `[effort.quick]`.
+- **`standard` is today's behaviour exactly.** It ships no key, so a task at `standard` runs on
+  `default` with the budgets of its profile, as it did before levels existed. A configuration of
+  0.12 loads unchanged and runs at `standard`.
+- **`deep` is the larger model you name.** It ships no key, because only you can name your
+  larger model, and `--effort deep` is **refused until `[effort.deep]` is configured**, saying what to set
+  and creating nothing. Budgets alone would cost more and finish nothing more: the M4 task never needed
+  more than 11 steps. A level other than `standard` that has no key is refused in the same way.
+  - **A level is as good as its backend, and a backend is an engine and a model.** The same 14B file
+    completed the M4 task on Ollama (5 of 5) and not on a CPU `llama-server` (0 of 5), and the
+    fitness probe said `acts` for both. The probe tells whether a model acts, never whether it
+    finishes a task, and the engine matters as much as the model ([Is this model
+    appropriate?](#is-this-model-appropriate-mimlys-model-probe)).
+  - **On one consumer GPU** a level on another model pays one swap, 2.4 to 5.8 s, at the task's
+    first request; two `llama-server` processes pay none.
+
+**The keys.** Each level is an overlay of five keys; a key a level leaves out is the profile's (and,
+for the backend and the context budget, `default`'s). The order is: **a flag** (`--steps`,
+`--deadline`) wins over the level, the level over the profile, the profile over the register's
+default, and the ceiling bounds all of them. The guard counters (consecutive rejections, failures,
+identical decisions, executions per action) are the profile's alone. A key in your file replaces the
+one a level ships with, key by key.
+
+| Key | Meaning | Range |
+|---|---|---|
+| `backend` | a name from `[backends]` | configured; a level that names none runs on `default` |
+| `steps` | the step budget | 1–1000, at most `[policy.ceiling] max_steps` |
+| `deadline` | the time budget, written as `--deadline` is (`30s`, `15m`, `2h`, `1d`) | 1 minute – 24 hours |
+| `context_chars` | the characters sent to the model at each step | 4000 – 1 000 000, at most the backend's own |
+| `recent_steps` | the latest steps sent whole when the context is over its budget | 1–50 (6 when no level sets it) |
+
+**Choosing.** `--effort <level>` on `run` and `task new`; a name that is not one of the three is a
+usage error (exit code 2). Without it a task is at `standard`, or at the lower level `effort_max`
+allows. A fork takes its source's level unless you give `--effort`, with its keys read from your
+file now. The first line of `run` and `task new` says the level, who chose it, and what the task runs
+with.
+
+**`effort_max`**, in `[policy.ceiling]` and in each `[policy.profiles.<name>]`, is the highest level
+that profile allows (absent means `deep`); a profile's is at most the ceiling's. `--effort` above it
+is refused naming what sets it, and a task created without the flag gets `standard`, or the bound
+when that is lower.
+
+**What `check` refuses**, each case naming the level, the key and the bound: a level name other than
+the three; a backend that is not configured; a `context_chars` above its backend's; a `steps` above the
+ceiling's `max_steps`; a `deadline` or `recent_steps` outside its range; and levels that do not all
+run on local backends, or all on one remote endpoint (a level never changes where a task's data goes,
+and effort is a budget, never a permission); an `effort_max` that is not a level, or a profile's above
+the ceiling's.
+
+**What a task records.** `task.created` and the task record carry the level, who chose it
+(`user`, `default` or `fork`) and the envelope, every key resolved: what the task runs with, not what the
+file said. A later change of `[effort.*]` applies to new tasks only; `resume --extend-steps` and
+`--extend-deadline` extend a task as they always did, and `task show` shows both the envelope and the
+extension. The backend is found by its **name** at every start, so a restart finds it again; if its
+name is no longer in your file, the start is refused naming the backend and the ones that are
+configured, the task stays as it was, and nothing moves it to another backend. If the backend serves
+another model under the same name, the task goes on, the start says both models, and each step records
+the model it was decided with.
+
+`mimlys status` lists the three levels with their backends and keys, and says `not configured` for a
+level that would be refused. `mimlys task show` says what a task cost: see [`task
+show`](./cli.md).
 
 ### Where a backend is: `locality`
 

@@ -21,6 +21,8 @@ pub fn metrics(
         let mut m = Metrics::default();
         // The names a newer release wrote, by the group that counts them (REQ-MAIN-006).
         let mut unknown: std::collections::BTreeSet<UnknownWord> = Default::default();
+        // Each task's level, by its id, for the steps that follow.
+        let mut level_of: std::collections::BTreeMap<String, String> = Default::default();
         let mut stmt = conn
             .prepare("SELECT state, record FROM tasks WHERE ?1 IS NULL OR task_id = ?1")
             .map_err(storage("prepare"))?;
@@ -37,6 +39,20 @@ pub fn metrics(
             {
                 unknown.insert(UnknownWord::new("tasks_by_state", state.clone()));
             }
+            // The level of the task: a record written before 0.13 has none and is `standard`.
+            let level = match Read::<Task>::parse(&record) {
+                Ok(Read::Known(task)) => task.effort_in_force().level.name().to_owned(),
+                _ => mimlys_core::effort::EffortLevel::Standard.name().to_owned(),
+            };
+            if let Some(id) = task_id_of(&record) {
+                level_of.insert(id, level.clone());
+            }
+            *m.by_effort
+                .entry(level)
+                .or_default()
+                .tasks_by_state
+                .entry(state.clone())
+                .or_default() += 1;
             *m.tasks_by_state.entry(state).or_default() += 1;
         }
         let mut stmt = conn
@@ -123,18 +139,34 @@ pub fn metrics(
             }
         }
         let mut stmt = conn
-            .prepare("SELECT record FROM steps WHERE ?1 IS NULL OR task_id = ?1 ORDER BY idx")
+            .prepare(
+                "SELECT task_id, record FROM steps WHERE ?1 IS NULL OR task_id = ?1 ORDER BY idx",
+            )
             .map_err(storage("prepare"))?;
         let rows = stmt
             .query_map(params![task_id.map(|t| t.to_string())], |r| {
-                r.get::<_, String>(0)
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .map_err(storage("query"))?;
         let mut sums = ContextSums::default();
         for row in rows {
-            let text = row.map_err(storage("row"))?;
+            let (owner, text) = row.map_err(storage("row"))?;
             if let Ok(step) = serde_json::from_str::<Step>(&text) {
                 sums.add(&step);
+                // REQ-OBS-010: the steps and the cost by the level of the task they belong to.
+                let level = level_of.get(&owner).cloned().unwrap_or_else(|| {
+                    mimlys_core::effort::EffortLevel::Standard.name().to_owned()
+                });
+                let at = m.by_effort.entry(level).or_default();
+                at.steps += 1;
+                if let Some(measures) = &step.measures {
+                    at.model_ms += measures.model_ms.unwrap_or(0).max(0) as u64;
+                    if let Some(usage) = &measures.usage {
+                        at.prompt_tokens += usage.prompt_tokens.unwrap_or(0);
+                        at.cached_tokens += usage.cached_tokens.unwrap_or(0);
+                        at.completion_tokens += usage.completion_tokens.unwrap_or(0);
+                    }
+                }
                 // REQ-OBS-009: the requests that waited for the engine's gate.
                 if let Some(waited) = step.measures.as_ref().and_then(|m| m.engine_wait_ms) {
                     m.engine_wait_ms += waited.max(0) as u64;
@@ -146,6 +178,15 @@ pub fn metrics(
         m.unknown_to_this_release = unknown.into_iter().collect();
         Ok(m)
     })()
+}
+
+/// The `task_id` of a task's record, as the `tasks` table keys it.
+fn task_id_of(record: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(record)
+        .ok()?
+        .get("task_id")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Which map of the metrics counts a word, and the name of that group.

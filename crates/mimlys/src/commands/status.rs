@@ -18,6 +18,9 @@ struct Status<'a> {
     /// Every configured backend, `default` first, then by name: each probed at once within one
     /// LIM-M4 (REQ-MDL-010).
     backends: Vec<BackendView>,
+    /// The three effort levels (REQ-TASK-013): each with its backend and its keys, and whether a
+    /// task could be created at it now (`configured`, `allowed`).
+    effort: Vec<EffortView>,
     data_dir: String,
     /// The configured data directory is inside the temporary directory (REQ-WS-001).
     data_dir_in_temporary_directory: bool,
@@ -52,6 +55,100 @@ struct Status<'a> {
     store: StoreView,
     /// The user's runtimes, the slots and the engine gates (RFC 013 decision 8).
     machine: crate::machine::Machine,
+}
+
+/// One effort level in the status (REQ-TASK-013; external design §19.4, "Shown"): the keys it sets,
+/// the backend it runs on, and why a task could not be created at it, when it could not.
+#[derive(Serialize)]
+struct EffortView {
+    level: &'static str,
+    /// The level has a key, shipped or configured; `standard` always has (it is today's behaviour).
+    /// A level that is not configured is refused when chosen.
+    configured: bool,
+    /// The default profile's `effort_max` allows it.
+    allowed: bool,
+    /// The `effort_max` of the default profile, and what sets it, when one is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort_max: Option<String>,
+    /// The backend it runs on: its own, else `default`.
+    backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    steps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_chars: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recent_steps: Option<u32>,
+}
+
+/// The three levels as the configuration leaves them (REQ-TASK-013), and the lines that say them.
+fn effort_views(
+    config: &crate::config::Config,
+    policy: &mimlys_core::policy::Policy,
+    backends: &[BackendView],
+) -> (Vec<EffortView>, Vec<String>) {
+    use mimlys_core::effort::{Bound, EffortLevel};
+    let levels = config.effort_levels();
+    let (max, bound) = policy
+        .profile(&policy.default_profile)
+        .map(|p| policy.effort_bound(p))
+        .unwrap_or((EffortLevel::Deep, Bound::None));
+    let set_by = match &bound {
+        Bound::Profile(name) => Some(format!("[policy.profiles.{name}] effort_max")),
+        Bound::Ceiling => Some("[policy.ceiling] effort_max".to_owned()),
+        Bound::None => None,
+    };
+    let mut views = Vec::new();
+    let mut lines = Vec::new();
+    for level in EffortLevel::ALL {
+        let keys = levels.keys(level);
+        let backend = keys
+            .backend
+            .clone()
+            .unwrap_or_else(|| crate::backends::DEFAULT.to_owned());
+        let model = backends
+            .iter()
+            .find(|v| v.name == backend)
+            .and_then(|v| v.model.clone());
+        let view = EffortView {
+            level: level.name(),
+            configured: levels.is_configured(level),
+            allowed: level <= max,
+            effort_max: set_by.as_ref().map(|by| format!("{max} ({by})")),
+            backend,
+            model,
+            steps: keys.steps,
+            deadline_ms: keys.deadline_ms,
+            context_chars: keys.context_chars,
+            recent_steps: keys.recent_steps,
+        };
+        lines.push(messages::status_effort_line(
+            level.name(),
+            &messages::effort_state(&view.state_parts(), set_by.as_deref(), max),
+        ));
+        views.push(view);
+    }
+    (views, lines)
+}
+
+impl EffortView {
+    /// What the line of the level is made of.
+    fn state_parts(&self) -> messages::EffortState<'_> {
+        messages::EffortState {
+            level: self.level,
+            configured: self.configured,
+            allowed: self.allowed,
+            backend: &self.backend,
+            model: self.model.as_deref(),
+            steps: self.steps,
+            deadline_ms: self.deadline_ms,
+            context_chars: self.context_chars,
+            recent_steps: self.recent_steps,
+        }
+    }
 }
 
 /// One declared host tool: its command, whether it is the dependency step
@@ -236,6 +333,10 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     for line in backend_lines {
         out.line(line);
     }
+    let (effort, effort_lines) = effort_views(config, &policy, &views);
+    for line in effort_lines {
+        out.line(line);
+    }
     out.line(messages::status_tier_line(&status.tier));
     for warning in warnings {
         out.line(warning);
@@ -376,6 +477,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         runtime: &status,
         backend: backend_view,
         backends: views,
+        effort,
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         data_dir_in_temporary_directory: data_dir_in_temp,
         xcrun_cache_missing: xcrun_missing,

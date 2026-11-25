@@ -474,6 +474,16 @@ Where this is written: [Getting started](./getting-started.md#bringing-the-resul
 [fork](./maintainers/external-design.md#54-fork-req-task-004),
 [recovery](./maintainers/external-design.md#163-recovery-at-startup-req-pers-006-req-pers-007).
 
+## An effort level: a budget chosen at creation
+
+A task is created at a level, `quick`, `standard` or `deep` (`--effort`; `standard` without it). The level
+is chosen once and **never changes during the task**: the budgets, the deadline, the context budget
+and the backend it runs on are fixed at the creation and written on the task (`task show` says them).
+A level is a budget, never a permission: every action is checked, approved and confined the same way at
+each. Which backend a level names is looked up by its name each time the task starts, so a restart finds
+it again; a name that has left your configuration refuses the start and moves nothing. See [Effort
+levels](./reference/configuration.md#effort-levels).
+
 ## What is bounded today
 
 Bounds are per task, with the defaults below. Reaching one halts the task

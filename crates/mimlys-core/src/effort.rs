@@ -330,5 +330,109 @@ pub fn resolve(inputs: &Inputs<'_>, backend_context_chars: impl FnOnce(&str) -> 
     }
 }
 
+/// One backend (and model) a task was decided with, and how many of its steps (REQ-PERS-015).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendUsed {
+    /// The backend's name.
+    pub backend: String,
+    /// The model it named at those steps; absent for a backend that names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Steps decided with this pair.
+    pub steps: u32,
+}
+
+/// What a task cost (REQ-OBS-010; external design §19.4, "Shown"): the steps used of its envelope,
+/// the time against its deadline, the model's time, the tokens where the backend reported them,
+/// and every backend and model it was decided with. Read from the task and its steps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cost {
+    /// Steps taken (the task's counter).
+    pub steps_used: u32,
+    /// The envelope's steps: what the level gave.
+    pub steps_envelope: u32,
+    /// The steps in force: the envelope's, and what `resume --extend-steps` made of it.
+    pub steps_limit: u32,
+    /// Milliseconds from creation to now, or to the task's last change when it is over.
+    pub elapsed_ms: i64,
+    /// The envelope's deadline, in milliseconds from creation.
+    pub deadline_envelope_ms: i64,
+    /// The deadline in force, in milliseconds from creation (after `--extend-deadline`).
+    pub deadline_limit_ms: i64,
+    /// Milliseconds the model took, summed over the steps that measured it.
+    pub model_ms: i64,
+    /// Prompt tokens, summed over the steps that reported them; absent when none did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
+    /// Prompt tokens served from the engine's cache, where reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+    /// Completion tokens, where reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<u64>,
+    /// The backends and models the steps were decided with, in the order they were first used.
+    /// Empty for a task whose steps recorded none (written before 0.13).
+    pub backends: Vec<BackendUsed>,
+}
+
+impl Cost {
+    /// What `task` cost, from its steps. `now` closes the time of a task that is not over.
+    pub fn of(
+        task: &crate::task::Task,
+        steps: &[crate::step::Step],
+        now: crate::clock::Instant,
+    ) -> Self {
+        let effort = task.effort_in_force();
+        let end = if task.state.is_terminal() {
+            task.updated_at
+        } else {
+            now
+        };
+        let mut cost = Cost {
+            steps_used: task.counters.steps,
+            steps_envelope: effort.envelope.steps,
+            steps_limit: task.budgets.steps,
+            elapsed_ms: task.created_at.millis_until(end).max(0),
+            deadline_envelope_ms: effort.envelope.deadline_ms,
+            deadline_limit_ms: task.created_at.millis_until(task.deadline),
+            model_ms: 0,
+            prompt_tokens: None,
+            cached_tokens: None,
+            completion_tokens: None,
+            backends: Vec::new(),
+        };
+        let add = |into: &mut Option<u64>, from: Option<u64>| {
+            if let Some(n) = from {
+                *into = Some(into.unwrap_or(0) + n);
+            }
+        };
+        for step in steps {
+            if let Some(m) = &step.measures {
+                cost.model_ms += m.model_ms.unwrap_or(0);
+                if let Some(u) = &m.usage {
+                    add(&mut cost.prompt_tokens, u.prompt_tokens);
+                    add(&mut cost.cached_tokens, u.cached_tokens);
+                    add(&mut cost.completion_tokens, u.completion_tokens);
+                }
+            }
+            if let Some(backend) = &step.backend {
+                match cost
+                    .backends
+                    .iter_mut()
+                    .find(|b| &b.backend == backend && b.model == step.model)
+                {
+                    Some(used) => used.steps += 1,
+                    None => cost.backends.push(BackendUsed {
+                        backend: backend.clone(),
+                        model: step.model.clone(),
+                        steps: 1,
+                    }),
+                }
+            }
+        }
+        cost
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -954,6 +954,29 @@ pub struct Metrics {
     /// How many requests waited for it.
     #[serde(default)]
     pub engine_waits: u64,
+    /// The tasks by effort level (REQ-OBS-010; from 0.13): `quick`, `standard`, `deep`, each only
+    /// when a task is at it. A task whose record has no level is `standard`. Absent from the JSON
+    /// when there is no task.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_effort: std::collections::BTreeMap<String, EffortMetrics>,
+}
+
+/// What the tasks at one effort level cost (REQ-OBS-010): the tasks by state, the steps they took,
+/// the model's time and the tokens the backends reported.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct EffortMetrics {
+    /// Tasks by state name.
+    pub tasks_by_state: std::collections::BTreeMap<String, u64>,
+    /// Steps taken, summed.
+    pub steps: u64,
+    /// Milliseconds the model took, summed.
+    pub model_ms: u64,
+    /// Prompt tokens reported, summed.
+    pub prompt_tokens: u64,
+    /// Cached prompt tokens reported, summed.
+    pub cached_tokens: u64,
+    /// Completion tokens reported, summed.
+    pub completion_tokens: u64,
 }
 
 /// Averages and ratios over the steps that carry measures (REQ-CTX-010).

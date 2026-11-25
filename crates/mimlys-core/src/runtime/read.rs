@@ -170,6 +170,18 @@ fn view_of(
         Some((path, kind)) => (Some(path), kind),
         None => (None, None),
     };
+    // The steps that read: one that holds a word of a newer release is left out of the cost, as it
+    // is left out of the view (REQ-MAIN-006).
+    let steps: Vec<crate::step::Step> =
+        crate::newer::read_records::<crate::step::Step>(persistence, RecordKind::Step, task_id)?
+            .into_iter()
+            .filter_map(|(_, record)| match record {
+                Read::Known(step) => Some(step),
+                Read::Newer(_) => None,
+            })
+            .collect();
+    let effort = task.effort_in_force();
+    let cost = crate::effort::Cost::of(&task, &steps, now);
     Ok(TaskView {
         task,
         pending_approval,
@@ -184,6 +196,8 @@ fn view_of(
         unreadable_kind,
         rollback_failed,
         waiting: None,
+        effort,
+        cost,
     })
 }
 

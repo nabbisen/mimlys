@@ -140,6 +140,17 @@ pub async fn run(
     out: &Output,
 ) -> Result<(), AppError> {
     let task = create(app, args)?;
+    // The level, who chose it and what the task runs with, first (REQ-TASK-013).
+    if let Some(effort) = &task.effort {
+        out.line(messages::effort_line(
+            effort,
+            task.versions
+                .backend
+                .as_ref()
+                .and_then(|b| b.model.as_deref()),
+            lowered_by(app, &task).as_deref(),
+        ));
+    }
     out.line(messages::task_created(
         &task.task_id.to_string(),
         &task.state,
@@ -149,6 +160,23 @@ pub async fn run(
         return Ok(());
     }
     finish(app, task.task_id, interaction, out).await
+}
+
+/// What sets the level of a task that is below `standard` without having been asked for: the
+/// `effort_max` of its profile or of the ceiling (external design §19.4).
+fn lowered_by(app: &App, task: &mimlys_core::task::Task) -> Option<String> {
+    use mimlys_core::effort::{Bound, ChosenBy, EffortLevel};
+    let effort = task.effort.as_ref()?;
+    if effort.chosen_by != ChosenBy::Default || effort.level >= EffortLevel::Standard {
+        return None;
+    }
+    let policy = app.runtime.policy();
+    let profile = policy.profile(&task.profile)?;
+    match policy.effort_bound(profile).1 {
+        Bound::Profile(name) => Some(format!("[policy.profiles.{name}] effort_max")),
+        Bound::Ceiling => Some("[policy.ceiling] effort_max".to_owned()),
+        Bound::None => None,
+    }
 }
 
 fn path_text(path: &Path) -> String {

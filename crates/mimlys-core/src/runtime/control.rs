@@ -97,6 +97,12 @@ pub struct TaskView {
     /// the registry fills it in. The task is `running` meanwhile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
+    /// The task's level, who chose it and its envelope (REQ-TASK-013): a record written before
+    /// 0.13 reads as `standard`, chosen by default, with the envelope of its own budgets.
+    pub effort: crate::effort::Effort,
+    /// What the task cost so far (REQ-OBS-010): steps against the envelope, time against the
+    /// deadline, the model's time, tokens where reported, and the backends and models used.
+    pub cost: crate::effort::Cost,
 }
 
 /// What a `running` task waits for among the user's runtimes (external design §19.3).

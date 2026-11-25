@@ -839,6 +839,210 @@ pub fn no_backend_named(name: &str, configured: &[&str]) -> String {
         format!("no backend is named `{name}` ({have})")
     }
 }
+/// A duration as `--deadline` writes it when it is whole (`2h`, `10m`, `90s`), else in seconds.
+pub fn duration_written(ms: i64) -> String {
+    for (unit, size) in [
+        ("d", 86_400_000),
+        ("h", 3_600_000),
+        ("m", 60_000),
+        ("s", 1000),
+    ] {
+        if ms >= size && ms % size == 0 {
+            return format!("{}{unit}", ms / size);
+        }
+    }
+    format!("{:.1}s", ms as f64 / 1000.0)
+}
+
+/// A time spent, for a person: `850 ms`, `41.2 s`, `3 m 12 s`, `1 h 05 m`.
+pub fn elapsed_text(ms: i64) -> String {
+    let ms = ms.max(0);
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else if ms < 60_000 {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    } else if ms < 3_600_000 {
+        format!("{} m {:02} s", ms / 60_000, (ms % 60_000) / 1000)
+    } else {
+        format!("{} h {:02} m", ms / 3_600_000, (ms % 3_600_000) / 60_000)
+    }
+}
+
+/// What `effort_line` says of who chose the level.
+fn chosen_text(by: mimlys_core::effort::ChosenBy) -> &'static str {
+    match by {
+        mimlys_core::effort::ChosenBy::User => "you chose",
+        mimlys_core::effort::ChosenBy::Default => "default",
+        mimlys_core::effort::ChosenBy::Fork => "its source's",
+    }
+}
+
+/// The first line of `run` and `task new` (REQ-TASK-013; external design §19.4, "Shown"): the level,
+/// who chose it, and what the task runs with. `model` is the backend's model; `bound` says, for a
+/// level that is the default only because `effort_max` is below `standard`, what sets it.
+pub fn effort_line(
+    effort: &mimlys_core::effort::Effort,
+    model: Option<&str>,
+    bound: Option<&str>,
+) -> String {
+    let e = &effort.envelope;
+    format!(
+        "effort    {} ({}{}): steps {}, deadline {}, backend {}{}",
+        effort.level,
+        chosen_text(effort.chosen_by),
+        bound
+            .map(|b| format!(", the most {b} allows"))
+            .unwrap_or_default(),
+        e.steps,
+        duration_written(e.deadline_ms),
+        e.backend,
+        model.map(|m| format!(" ({m})")).unwrap_or_default()
+    )
+}
+
+/// What a task cost, for `task show` (REQ-OBS-010): the level and who chose it with its envelope,
+/// the steps used of it, the time against the deadline, the model's time, the tokens where the
+/// backend reported them, and every backend and model the task used.
+pub fn cost_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
+    let (effort, cost) = (&view.effort, &view.cost);
+    let e = &effort.envelope;
+    let mut lines = vec![format!(
+        "effort    {} ({}); envelope: steps {}, deadline {}, backend {}, recent_steps {}",
+        effort.level,
+        chosen_text(effort.chosen_by),
+        e.steps,
+        duration_written(e.deadline_ms),
+        e.backend,
+        e.recent_steps
+    )];
+    let mut used = format!("{} of {} steps", cost.steps_used, cost.steps_envelope);
+    if cost.steps_limit != cost.steps_envelope {
+        used.push_str(&format!(" (extended to {})", cost.steps_limit));
+    }
+    let mut time = format!(
+        "{} of {}",
+        elapsed_text(cost.elapsed_ms),
+        duration_written(cost.deadline_envelope_ms)
+    );
+    if cost.deadline_limit_ms != cost.deadline_envelope_ms {
+        time.push_str(&format!(
+            " (extended to {})",
+            duration_written(cost.deadline_limit_ms)
+        ));
+    }
+    lines.push(format!(
+        "cost      {used}; {time}; model time {}",
+        elapsed_text(cost.model_ms)
+    ));
+    if cost.prompt_tokens.is_some() || cost.completion_tokens.is_some() {
+        let n = |v: Option<u64>| v.map_or("not reported".to_owned(), |v| v.to_string());
+        lines.push(format!(
+            "tokens    prompt {} (cached {}), completion {}",
+            n(cost.prompt_tokens),
+            n(cost.cached_tokens),
+            n(cost.completion_tokens)
+        ));
+    }
+    if !cost.backends.is_empty() {
+        let used: Vec<String> = cost
+            .backends
+            .iter()
+            .map(|b| {
+                format!(
+                    "{}{}: {} step{}",
+                    b.backend,
+                    b.model
+                        .as_deref()
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default(),
+                    b.steps,
+                    if b.steps == 1 { "" } else { "s" }
+                )
+            })
+            .collect();
+        lines.push(format!("backends  {}", used.join(", ")));
+        if cost.backends.len() > 1 {
+            lines.push(
+                "          the task was decided with more than one backend or model".to_owned(),
+            );
+        }
+    }
+    lines
+}
+
+/// One level in `status` (REQ-TASK-013): its backend and its keys, or why it would be refused.
+pub fn status_effort_line(level: &str, state: &str) -> String {
+    format!("effort    {level:<9} {state}")
+}
+
+/// What `status` knows of one level, to say it.
+pub struct EffortState<'a> {
+    /// The level's name.
+    pub level: &'a str,
+    /// It has a key, shipped or configured (or is `standard`).
+    pub configured: bool,
+    /// The default profile's `effort_max` allows it.
+    pub allowed: bool,
+    /// The backend it runs on.
+    pub backend: &'a str,
+    /// That backend's model.
+    pub model: Option<&'a str>,
+    /// The keys it sets.
+    pub steps: Option<u32>,
+    /// The deadline, in milliseconds.
+    pub deadline_ms: Option<i64>,
+    /// The context budget.
+    pub context_chars: Option<u32>,
+    /// The steps kept whole.
+    pub recent_steps: Option<u32>,
+}
+
+/// The text after the level's name in `status`: its backend and keys; `not configured` where a
+/// task could not be created at it for want of a key, and the `effort_max` that forbids it where
+/// that is the reason (`max` is the default profile's bound, set by `set_by`).
+pub fn effort_state(
+    state: &EffortState<'_>,
+    set_by: Option<&str>,
+    max: mimlys_core::effort::EffortLevel,
+) -> String {
+    if !state.configured {
+        return format!(
+            "not configured: `--effort {0}` is refused until [effort.{0}] names a backend or a budget",
+            state.level
+        );
+    }
+    let mut keys = Vec::new();
+    if let Some(v) = state.steps {
+        keys.push(format!("steps {v}"));
+    }
+    if let Some(v) = state.deadline_ms {
+        keys.push(format!("deadline {}", duration_written(v)));
+    }
+    if let Some(v) = state.context_chars {
+        keys.push(format!("context_chars {v}"));
+    }
+    if let Some(v) = state.recent_steps {
+        keys.push(format!("recent_steps {v}"));
+    }
+    let keys = if keys.is_empty() {
+        "no key of its own: the profile's budgets".to_owned()
+    } else {
+        keys.join(", ")
+    };
+    let mut text = format!(
+        "backend {}{}; {keys}",
+        state.backend,
+        state.model.map(|m| format!(" ({m})")).unwrap_or_default()
+    );
+    if !state.allowed {
+        text.push_str(&format!(
+            "; refused for the default profile: above `{max}`, its effort_max{}",
+            set_by.map(|by| format!(" ({by})")).unwrap_or_default()
+        ));
+    }
+    text
+}
+
 /// A task is not created at a level whose backend does not answer (REQ-TASK-013; external design
 /// §20): the backend's name and why. Nothing was created.
 pub fn level_backend_unreachable(level: &str, backend: &str, reason: &str) -> String {
@@ -1811,6 +2015,8 @@ pub fn show_lines(view: &mimlys_core::runtime::TaskView) -> Vec<String> {
         format!("steps     {} of {}", t.counters.steps, t.budgets.steps),
         format!("deadline  {}", t.deadline.to_rfc3339()),
     ];
+    // What the task cost, and the level it runs at (REQ-OBS-010).
+    lines.extend(cost_lines(view));
     if let Some(waiting) = &view.waiting {
         lines.push(waiting_line(waiting));
     }

@@ -322,7 +322,17 @@ fn req_cfg_007_grant_and_revoke_are_refused_before_anything_is_driven() {
     assert_eq!(value["task"]["state"], "waiting_user", "{value}");
     let id = value["task"]["task_id"].as_str().unwrap().to_owned();
     let grant = value["grants"][0]["grant_id"].as_str().unwrap().to_owned();
+    // The time a task has taken so far is read from the clock (`cost.elapsed_ms`, from 0.13), so
+    // two looks at a task that is not over differ by it and by nothing else.
+    let without_elapsed = |mut shown: Value| {
+        shown["cost"]
+            .as_object_mut()
+            .expect("a task shows its cost")
+            .remove("elapsed_ms");
+        shown
+    };
     let (_, before) = env.json(&["task", "show", &id]);
+    let before = without_elapsed(before);
     let (_, events_before) = env.json(&["events", &id]);
 
     env.rewrite(2, &configured("small"));
@@ -342,6 +352,7 @@ fn req_cfg_007_grant_and_revoke_are_refused_before_anything_is_driven() {
         assert_eq!(value["error"]["kind"], "invalid_request", "{value}");
     }
     let (_, after) = env.json(&["task", "show", &id]);
+    let after = without_elapsed(after);
     assert_eq!(after, before, "nothing was granted, revoked or driven");
     let (_, events_after) = env.json(&["events", &id]);
     assert_eq!(events_after, events_before, "no event was written");
