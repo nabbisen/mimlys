@@ -1371,7 +1371,11 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
             kill_server(&server).await;
             server.list().await.unwrap();
         }
-        assert_eq!(server.restarts_of(task), None, "a listing counts for no task");
+        assert_eq!(
+            server.restarts_of(task),
+            None,
+            "a listing counts for no task"
+        );
         let mut deaths = 0;
         // The task's allowance: its first need of the server is free (the listings
         // above started it, and the task's count is still 0 after its first start),
