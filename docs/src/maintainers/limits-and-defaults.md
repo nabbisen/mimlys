@@ -137,6 +137,7 @@
 | LIM-O12 | Engine requests in flight per backend endpoint per user (`max_in_flight`) | 1 | 1–16 | One consumer GPU serves one request at a time; nothing in the M7b report argues otherwise (§6) |
 | LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
 | LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
+| LIM-O15 | Wait of a cancel for the step in flight to end (external design §4) | LIM-O2 as configured + 3000 ms | follows LIM-O2 | Design choice (review of 014a): the step's execution is terminated within LIM-O2, then the step writes its end; a fixed wait shorter than a configured LIM-O2 would refuse a cancel that was about to succeed |
 | LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
 | LIM-O17 | Wait of `events --follow` for a runtime to take the store of a `running` task no runtime holds, before it says `recovery pending` and ends | 5000 ms | fixed | A runtime takes the lock within a process start; ten polls of LIM-O15 (handoff 002d) |
 | LIM-O18 | Window of the rate bound on a server's standard error (LIM-I18) | 1000 ms | fixed | One count line per second at most (handoff 009h) |

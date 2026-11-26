@@ -281,10 +281,13 @@ unavailable, with the reason in `status`, rather than half imported.
   listing at a step boundary does not finish within `startup_ms`, a call to that
   server in the same step is `tool_unavailable` with the same reason at once,
   without waiting again; the next boundary asks again.
-- **A server's start counts.** The first start of a server is free; every start
-  after it made for a task counts against the restart limit of 3 per task, a
-  start that fails (the program cannot be run, or does not initialize or list)
-  as well as a server that died. Past it the tools are `tool_unavailable` with
+- **A server's start counts, for its task.** A task's first need of a server is
+  free (whether the server must be started then or is already running); every
+  start made for that task after it counts against the restart limit of 3 per
+  task. A start that `status` or the import of the tools makes counts for no
+  task. A start counts whether it follows a server that died or a start that
+  failed (the program cannot be run, or does not initialize or list). Past it
+  the tools are `tool_unavailable` with
   `restart_limit_reached`, and when the last start failed its reason follows
   (`restart_limit_reached (last: list:protocol)`).
 - **A server has a session of its own.** On Linux and macOS the server is the

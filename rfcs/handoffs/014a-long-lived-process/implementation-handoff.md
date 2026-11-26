@@ -1,5 +1,7 @@
 # Handoff 014a — What a long-lived process needs (release 0.14, phase 1)
 
+**Status (2026-11-27):** items 1 to 4 landed at `388cbc1` (`.git-exclude/reviewed/handoff-014a/README.md`); 014a-5 next.
+
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), decision 6's notes, read with its **Amendment 1**, item 3. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 1).
 
 **Specification** (amended before this handoff):
@@ -81,3 +83,33 @@ Run each, and say which test kills it:
   - the mutations, each with what killed it;
   - what is still open, and why;
   - anything in external design §4 that the code showed to be wrong or unclear. Say it, and do not work around it.
+
+## After review: 014a-5
+
+The review of 2026-11-27 (`.git-exclude/reviewed/handoff-014a/README.md`) approved #221 and landed it by fast-forward (`main` = `388cbc1`). Your reading of item 4 is confirmed: a task's **first need** is free. External design §11.1 and the book's `reference/external-tools.md` now say so, and external design §4 has your two sentences. Three things remain, each small.
+
+1. **The cancel's wait follows LIM-O2** (your question 2).
+   - **What is wrong:** the wait is LIM-O1 (5 s), a limit with another meaning, while the execution it waits for is terminated within LIM-O2, which a user may set up to 10 s. A user who raised LIM-O2 would see a cancel refused that was about to succeed.
+   - **Change:** the wait is **LIM-O15** (new in the register): LIM-O2 as configured, plus 3000 ms for the step to write its end. The refusal's message names LIM-O15's value. One test: with LIM-O2 raised, a step that ends within it is cancelled, not refused.
+2. **The tools of an ended task are dropped** (your note).
+   - **What is wrong:** `LocalWorkspaces::tools` keeps a provider per task and never removes it, which is a leak per task in a daemon.
+   - **Change:** `task_ended` drops it. A later `tools(task)` for an ended task builds nothing and imports no server: it is refused, or answers with no tools, whichever is true to its callers. Say which you chose, and why.
+3. **The tests' registries are their own, and fresh** (found by this review: run `45803688149`, on `6bec79f`, windows-latest).
+   - **What happened:** `closed_pipe::req_cli_009_a_command_whose_standard_error_closes_after_its_first_line_ends_with_its_own_code` failed. Its first `status` said `admission: not yet used`, and its second `admission: ready (0 of 2 slots taken)`.
+   - **The cause:** `common::run_dir` names a registry `registry-<pid>-<counter>` under `CARGO_TARGET_TMPDIR`, which every test binary shares and nobody cleans. Windows reuses process ids quickly, so a later binary can meet a directory that an earlier one left under the same pid and counter. Each command also gets a registry of its own, so two commands of one test environment never share one.
+   - **Change:**
+     - a test environment owns one registry, made fresh (a temporary directory that the environment removes), and every command of that environment uses it;
+     - a command alone (`common::mimlys()` with no environment) gets a fresh one too;
+     - no name may repeat across processes.
+
+     Keep the guard of 015b-3: a run without a registry of its own fails at once.
+   - **Look for the same shape:** a test that runs two commands and expects them to share a registry, or not to. Fix each one you find.
+
+**Accepted as you did them:**
+- **Question 4:** the in-process rig of a real worker under `cancel_task`. 014c's acceptance holds the test that matters, a second client cancelling a running host tool, with the tree gone within LIM-O2.
+- **Question 5:** the other verbs racing a step. External design §4 now says what 014b gives them: they take effect at the step's end, never written over.
+- **The registry's lock held across one read of the store.**
+
+**Tests:** one per item. **Mutations:** for items 1 and 2, one each, and say which test kills it. For item 3, the before and after: the failing test run many times on Windows CI, or the collision forced locally by a fixed pid and counter.
+
+**Return:** `.git-exclude/review-requests/014a-5-after-review/README.md`.
