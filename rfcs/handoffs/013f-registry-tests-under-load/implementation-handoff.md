@@ -1,5 +1,7 @@
 # Handoff 013f — The registry's tests under load (release 0.13, before the candidate)
 
+**Status (2026-11-27): done.** Landed at `3659f66` (`.git-exclude/reviewed/handoff-013f/README.md`). Both failures were faults of the tests; the registry's message now says only what the code knows.
+
 **RFC.** [RFC 013](../../done/013-operation-on-one-machine.md), part two (the admission registry; external design §19.3; LIM-O11). **Found by.** The reviews of 015c-7, the dev team's and mine (`.git-exclude/reviewed/handoff-015c-7/README.md`).
 
 **Purpose.** Two tests of `crates/mimlys/src/registry/tests.rs` fail on a loaded machine. A test that fails under load either hides a defect of the product or is itself one, and the release candidate must not carry either.
