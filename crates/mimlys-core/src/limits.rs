@@ -268,6 +268,13 @@ pub const LIM_O2_CANCEL_MS: u64 = 2_000;
 /// step is LIM-O2 as configured plus this ([`cancel_wait_ms`]); not configurable.
 pub const LIM_O15_CANCEL_WAIT_SLACK_MS: u64 = 3_000;
 
+/// LIM-X6 (proposed by handoff 014a-5 item 2; the architect registers it): how many of the
+/// tasks that have ended a provider of workspaces remembers by id, so that a late request for
+/// the tools of one of them is refused and builds nothing. The memory is bounded so that a
+/// runtime that lives for many tasks keeps nothing per task; a request later than that many
+/// endings is not a thing a caller makes (they all refuse an ended task first). Not configurable.
+pub const LIM_X6_ENDED_TASKS_REMEMBERED: usize = 1024;
+
 /// LIM-O15: how long a cancel waits for the step in flight to end, in milliseconds, given
 /// LIM-O2 as configured: the execution is terminated within LIM-O2, then the step writes
 /// its end.

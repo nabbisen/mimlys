@@ -1330,7 +1330,11 @@ impl LocalWorkspaces {
         }
         // The task's tools hold a handle on its tree: on Windows a directory with
         // an open handle cannot be removed, so they go first.
-        self.tools.lock().expect("workspace tools").remove(&task_id);
+        self.tools
+            .lock()
+            .expect("workspace tools")
+            .open
+            .remove(&task_id);
         remove_tree(&self.task_dir(task_id), &self.data_dir, &mut failed);
         if failed.is_empty() {
             self.files.finish_deletion(task_id).map_err(persist)?;

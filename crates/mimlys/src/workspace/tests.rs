@@ -1,6 +1,8 @@
 use super::*;
 use mimlys_core::ids::ScriptedIds;
-use mimlys_core::limits::{LIM_W4_MATERIALIZE_EXCLUSIONS, LIM_W5_SECRET_PATTERNS};
+use mimlys_core::limits::{
+    LIM_W4_MATERIALIZE_EXCLUSIONS, LIM_W5_SECRET_PATTERNS, LIM_X6_ENDED_TASKS_REMEMBERED,
+};
 use mimlys_core::policy::Policy;
 
 fn patterns() -> Vec<String> {
@@ -227,6 +229,65 @@ fn req_ws_002_copy_with_exclusions() {
             && LIM_W5_SECRET_PATTERNS.contains(&".env")
     );
     assert!(tree.join("..").join("tmp").is_dir());
+}
+
+/// REQ-SCHED-005 (handoff 014a-5, item 2): the tools of an ended task are dropped when it ends,
+/// and a later request for them is refused: nothing is built, and no provider is held again.
+/// Another task's tools are untouched, and the memory of the ended tasks is bounded.
+#[test]
+fn req_sched_005_the_tools_of_an_ended_task_are_dropped_and_not_built_again() {
+    let scope = scope();
+    let data = tempfile::tempdir().unwrap();
+    let ids = ScriptedIds::default();
+    let (task, other) = (TaskId::new(&ids), TaskId::new(&ids));
+    let p = provider(data.path());
+    for id in [task, other] {
+        p.materialize(
+            id,
+            &ScopeSpec {
+                root: scope.path().to_string_lossy().into_owned(),
+                include: vec![],
+            },
+        )
+        .unwrap();
+    }
+    let held = p.tools(task).unwrap();
+    let kept = p.tools(other).unwrap();
+    assert_eq!(p.tool_cache_sizes(), (2, 0));
+    assert_eq!(Arc::strong_count(&held), 2, "the cache holds one");
+    p.task_ended(task);
+    assert_eq!(p.tool_cache_sizes(), (1, 1), "the provider is dropped");
+    assert_eq!(Arc::strong_count(&held), 1, "the cache's hold is gone");
+    // Refused, with the task named; nothing built, nothing held again.
+    let refused = p.tools(task).err().expect("refused");
+    assert!(
+        matches!(&refused, WorkspaceError::Refused { reason } if reason.contains(&task.to_string())),
+        "{refused:?}"
+    );
+    assert_eq!(p.tool_cache_sizes(), (1, 1));
+    // The task that has not ended still has its provider, the same one.
+    assert!(Arc::ptr_eq(&p.tools(other).unwrap(), &kept));
+    // Ending a task twice remembers it once.
+    p.task_ended(task);
+    assert_eq!(p.tool_cache_sizes(), (1, 1));
+}
+
+/// REQ-SCHED-005: what is remembered of the ended tasks is bounded, oldest first.
+#[test]
+fn req_sched_005_the_memory_of_ended_tasks_is_bounded() {
+    let data = tempfile::tempdir().unwrap();
+    let ids = ScriptedIds::default();
+    let p = provider(data.path());
+    let all: Vec<TaskId> = (0..LIM_X6_ENDED_TASKS_REMEMBERED + 5)
+        .map(|_| TaskId::new(&ids))
+        .collect();
+    for id in &all {
+        p.task_ended(*id);
+    }
+    assert_eq!(p.tool_cache_sizes(), (0, LIM_X6_ENDED_TASKS_REMEMBERED));
+    let cache = p.tools.lock().unwrap();
+    assert!(!cache.has_ended(all[0]), "the oldest is forgotten");
+    assert!(cache.has_ended(*all.last().unwrap()));
 }
 
 /// REQ-WS-002: a scope above the limits is refused with the measured size

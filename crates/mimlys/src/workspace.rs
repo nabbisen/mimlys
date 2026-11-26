@@ -8,6 +8,7 @@
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use mimlys_core::ids::TaskId;
+use mimlys_core::limits::LIM_X6_ENDED_TASKS_REMEMBERED;
 use mimlys_core::path::{CaseMode, WorkspacePath};
 use mimlys_core::policy::ExclusionMatcher;
 use mimlys_core::snapshot::target_resolves_inside_root;
@@ -39,13 +40,42 @@ const INFO_FILE: &str = "workspace.json";
 /// The case probe's file name (created in the tree, removed at once).
 const CASE_PROBE: &str = ".mimlys-case-probe";
 
+/// The providers of the tasks that have not ended, and a bounded memory of the ones that have
+/// (handoff 014a-5, item 2): a runtime that lives for many tasks keeps a provider only for a task
+/// that has one to use, and builds none for a task that is over.
+#[derive(Default)]
+struct ToolCache {
+    open: HashMap<TaskId, Arc<dyn ToolProvider>>,
+    /// The tasks `task_ended` was called for, the oldest first; at most
+    /// [`LIM_X6_ENDED_TASKS_REMEMBERED`].
+    ended: std::collections::VecDeque<TaskId>,
+}
+
+impl ToolCache {
+    fn has_ended(&self, task_id: TaskId) -> bool {
+        self.ended.contains(&task_id)
+    }
+
+    /// Notes that the task ended and takes its provider out, for the caller to drop outside
+    /// the lock.
+    fn end(&mut self, task_id: TaskId) -> Option<Arc<dyn ToolProvider>> {
+        if !self.has_ended(task_id) {
+            if self.ended.len() >= LIM_X6_ENDED_TASKS_REMEMBERED {
+                self.ended.pop_front();
+            }
+            self.ended.push_back(task_id);
+        }
+        self.open.remove(&task_id)
+    }
+}
+
 /// Workspaces under `<data_dir>/workspaces/<task_id>/`.
 pub struct LocalWorkspaces {
     data_dir: PathBuf,
     patterns: Vec<String>,
     max_bytes: u64,
     max_files: u64,
-    tools: Mutex<HashMap<TaskId, Arc<dyn ToolProvider>>>,
+    tools: Mutex<ToolCache>,
     sandbox: Option<SandboxTools>,
     external: Option<Arc<mimlys_mcp::tools::Servers>>,
     files: mimlys_persist::snapshots::SnapshotFiles,
@@ -129,6 +159,14 @@ struct Measured {
 }
 
 impl LocalWorkspaces {
+    /// Test only: how many tasks have a provider of tools held, and how many ended tasks are
+    /// remembered.
+    #[cfg(test)]
+    fn tool_cache_sizes(&self) -> (usize, usize) {
+        let cache = self.tools.lock().expect("workspace tools");
+        (cache.open.len(), cache.ended.len())
+    }
+
     /// A provider over `data_dir` with the policy's exclusion patterns and
     /// the workspace limits (LIM-W1, LIM-W2).
     pub fn new(
@@ -147,7 +185,7 @@ impl LocalWorkspaces {
             patterns,
             max_bytes,
             max_files,
-            tools: Mutex::new(HashMap::new()),
+            tools: Mutex::new(ToolCache::default()),
             sandbox: None,
             external: None,
             files,
@@ -167,7 +205,7 @@ impl LocalWorkspaces {
             patterns,
             max_bytes: 0,
             max_files: 0,
-            tools: Mutex::new(HashMap::new()),
+            tools: Mutex::new(ToolCache::default()),
             sandbox: None,
             external: None,
             files,
@@ -594,7 +632,15 @@ impl WorkspaceProvider for LocalWorkspaces {
 
     fn tools(&self, task_id: TaskId) -> Result<Arc<dyn ToolProvider>, WorkspaceError> {
         let mut cache = self.tools.lock().expect("workspace tools");
-        if let Some(tools) = cache.get(&task_id) {
+        // A task that has ended has no tools to offer: nothing is built and no server is
+        // imported for it (every caller refuses an ended task before it asks; an answer with no
+        // tools would let one carry on as if the task could still act).
+        if cache.has_ended(task_id) {
+            return Err(WorkspaceError::Refused {
+                reason: format!("task {task_id} has ended: its tools are no longer offered"),
+            });
+        }
+        if let Some(tools) = cache.open.get(&task_id) {
             return Ok(Arc::clone(tools));
         }
         self.read_info(task_id)?;
@@ -632,11 +678,14 @@ impl WorkspaceProvider for LocalWorkspaces {
             }
             None => local,
         };
-        cache.insert(task_id, Arc::clone(&tools));
+        cache.open.insert(task_id, Arc::clone(&tools));
         Ok(tools)
     }
 
     fn task_ended(&self, task_id: TaskId) {
+        // The task's tools go with it (handoff 014a-5, item 2): dropped outside the lock.
+        let dropped = self.tools.lock().expect("workspace tools").end(task_id);
+        drop(dropped);
         // LIM-X3: the restarts counted for the task, by the servers and by the workers.
         if let Some(servers) = &self.external {
             servers.forget_task(task_id);
