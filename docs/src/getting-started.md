@@ -217,7 +217,9 @@ see [Storage](./reference/storage.md): `mimlys status --storage` and
 - **If the registry cannot be used,** your work goes on. A runtime that cannot
   read or write the registry within two seconds runs as if it were alone, says
   so with a warning, records `task.admission_changed` with the state
-  `unadmitted` and the reason in the task's events, and `mimlys status` shows
+  `unadmitted` and the reason in the task's events (for a lock that stays
+  held: `the registry's lock is held by another operation (of this runtime or
+  another)`), and `mimlys status` shows
   `admission: unavailable (<reason>)` until the registry works again. A
   runtime that ended without returning its slot (killed, or the machine lost
   power) leaves a stale entry; the next runtime that takes a slot removes it,

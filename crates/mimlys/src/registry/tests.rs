@@ -80,6 +80,39 @@ fn leave_stale(dir: &Path, pid: u32) -> String {
     stem
 }
 
+/// Takes `registry.lock` for the test once it is free, waiting for that by state and not by the
+/// clock: the lock is free when no open copy of its file descriptor holds it, and a copy
+/// outlives the handle that took it. A child that the process forked while the lock was held has
+/// one until it executes, which on a loaded machine takes longer than a short wait (013f; see
+/// `a_lock_lives_as_long_as_any_copy_of_its_descriptor`). Every lock the test takes, and every
+/// call that has only a short wait for the lock, comes after a lock that was held before.
+async fn held_lock(dir: &Path) -> std::fs::File {
+    let started = std::time::Instant::now();
+    loop {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("registry.lock"))
+            .unwrap();
+        match file.try_lock() {
+            Ok(()) => return file,
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => panic!("the lock cannot be taken: {e}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the registry's lock was never free"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// Waits until `registry.lock` is free (see [`held_lock`]).
+async fn until_lock_free(dir: &Path) {
+    held_lock(dir).await.unlock().unwrap();
+}
+
 async fn granted(registry: &Arc<Registry>, class: &Class, pid: u32) -> Handle {
     match registry
         .take(class, Some("task".into()), &owner(pid), None)
@@ -300,11 +333,7 @@ async fn req_sched_006_a_registry_that_cannot_be_used_fails_with_a_reason() {
     // The lock is held by someone else (a runtime that stopped in the middle of an operation).
     let registry = registry_in(dir.path(), bounds);
     drop(granted(&registry, &slot(1), 1).await);
-    let lock = std::fs::OpenOptions::new()
-        .write(true)
-        .open(dir.path().join("registry.lock"))
-        .unwrap();
-    lock.try_lock().unwrap();
+    let lock = held_lock(dir.path()).await;
     let Err(reason) = registry
         .take(&slot(1), None, &owner(2), None)
         .await
@@ -312,17 +341,19 @@ async fn req_sched_006_a_registry_that_cannot_be_used_fails_with_a_reason() {
     else {
         panic!("the lock is held");
     };
-    assert_eq!(reason, "another runtime holds the registry's lock");
+    assert_eq!(reason, LOCK_HELD);
+    // The holder is this runtime's own test, so the words name no runtime (013f).
+    assert!(!reason.contains("another runtime"), "{reason}");
     // So does the reap, which waits for the same lock the same way.
     let held = registry.clone();
     let reaped = tokio::task::spawn_blocking(move || held.reap())
         .await
         .unwrap();
-    assert_eq!(
-        reaped.map(|_| ()),
-        Err("another runtime holds the registry's lock".to_owned())
-    );
+    assert_eq!(reaped.map(|_| ()), Err(LOCK_HELD.to_owned()));
     drop(lock);
+    // A copy of the lock's descriptor may outlive the `drop` above (`held_lock`), and the next
+    // call has only 20 ms for the lock: it waits for the lock to be free first, not for a time.
+    until_lock_free(dir.path()).await;
     drop(granted(&registry, &slot(1), 1).await);
     // A file where the directory should be.
     let file = dir.path().join("not-a-dir");
@@ -374,10 +405,104 @@ fn req_sched_006_the_lock_deadline_is_measured_from_the_operations_start() {
     let result = bounded_from(start, short, move |deadline| {
         lock_mutex(&path, deadline).map(|_| ())
     });
+    assert_eq!(result, Err(LOCK_HELD.to_owned()));
+}
+
+/// REQ-SCHED-006 (013f): a lock lives as long as any copy of its file descriptor, not as long as
+/// the handle that took it. A child process forked while the lock is held has a copy until it
+/// executes, so the lock can be held after its holder dropped it (seen on a loaded machine, in
+/// a test whose next call waited 20 ms). Such a lock is held: an operation says so in words that
+/// name no runtime, and it is free the moment the last copy is closed, which a test that needs
+/// it free waits for by state (`held_lock`), not by time.
+#[tokio::test]
+async fn req_sched_006_a_lock_lives_as_long_as_any_copy_of_its_descriptor() {
+    let dir = tempfile::tempdir().unwrap();
+    let bounds = Bounds {
+        lock: Duration::from_millis(20),
+        ..fast()
+    };
+    let registry = registry_in(dir.path(), bounds);
+    drop(granted(&registry, &slot(1), 1).await);
+    let lock = held_lock(dir.path()).await;
+    // What a forked child holds until it executes: a copy of the same open file description.
+    let copy = lock.try_clone().unwrap();
+    drop(lock);
+    let Err(reason) = registry
+        .take(&slot(1), None, &owner(2), None)
+        .await
+        .map(|_| ())
+    else {
+        panic!("a copy of the descriptor still holds the lock");
+    };
+    assert_eq!(reason, LOCK_HELD);
+    // Nothing can free it but the copy: the wait for a free lock ends only when it is closed.
+    let free = tokio::spawn({
+        let dir = dir.path().to_owned();
+        async move { until_lock_free(&dir).await }
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(!free.is_finished(), "the lock was reported free while held");
+    drop(copy);
+    free.await.unwrap();
+    drop(granted(&registry, &slot(1), 1).await);
+}
+
+/// REQ-SCHED-006, LIM-O11 (013f): an operation that was given up (the filesystem did not answer
+/// within the bound) and completes later leaves nothing behind: what it made is dropped, on its
+/// thread, as the module's text says. The test waits for the thread to be over (it says so when
+/// its result is dropped), never for a time.
+#[test]
+fn req_sched_006_what_an_operation_makes_after_it_was_given_up_is_dropped() {
+    /// The result of the work: the handle it made, and a signal sent after the handle is gone
+    /// (fields drop in order).
+    struct Made {
+        _handle: Handle,
+        _over: Over,
+    }
+    struct Over(std::sync::mpsc::Sender<()>);
+    impl Drop for Over {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bounds = Bounds::new(Duration::from_millis(50), Duration::from_millis(10));
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (over, is_over) = std::sync::mpsc::channel::<()>();
+    let (made, was_made) = std::sync::mpsc::channel::<Vec<String>>();
+    let path = dir.path().to_owned();
+    let result = bounded(bounds, move |_| {
+        // The filesystem does not answer: not until the test lets it, long after the bound.
+        released.recv().unwrap();
+        let entry = Entry {
+            v: ENTRY_VERSION,
+            kind: Kind::Slot,
+            state: State::Held,
+            pid: 1,
+            data_dir: "/d".into(),
+            task_id: None,
+            since: Instant::from_unix_millis(0).unwrap(),
+            limit: 1,
+            key: None,
+            url: None,
+        };
+        let handle = create(&path, &entry)?;
+        made.send(names(&path)).unwrap();
+        Ok(Made {
+            _handle: handle,
+            _over: Over(over),
+        })
+    });
     assert_eq!(
-        result,
-        Err("another runtime holds the registry's lock".to_owned())
+        result.map(|_| ()),
+        Err("the registry did not answer within 50 ms".to_owned())
     );
+    release.send(()).unwrap();
+    is_over
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the given-up operation never ended");
+    assert_eq!(was_made.recv().unwrap().len(), 2, "it made its entry");
+    assert!(names(dir.path()).is_empty(), "{:?}", names(dir.path()));
 }
 
 /// REQ-SCHED-006: a directory that cannot be written is a registry that cannot be used (Unix
@@ -531,6 +656,20 @@ async fn until_waiting(registry: &Arc<Registry>, count: usize) {
     }
 }
 
+/// Waits (by what the observer was told, not by the clock) until `count` changes were reported:
+/// a waiting entry is in the directory before the waiter's task has told its observer, so a test
+/// that saw the entry has not seen the report (013f).
+async fn until_reported(changes: &Changes, count: usize) {
+    let started = std::time::Instant::now();
+    while changes.lock().unwrap().len() < count {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "{count} change(s) were never reported"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
 /// REQ-SCHED-006: a wait for a slot reports `Waiting` once with the slots taken and the processes
 /// that hold them, leaves a waiting entry that names the task, and is admitted when the holder
 /// returns its slot, reporting `Admitted` with how long it waited; the waiting entry is gone.
@@ -566,6 +705,7 @@ async fn req_sched_006_a_wait_ends_when_the_holder_returns_its_slot() {
         })
     };
     until_waiting(&first, 1).await;
+    until_reported(&changes, 1).await;
     let entries = first.list().unwrap().live;
     let waits: Vec<&Seen> = entries
         .iter()

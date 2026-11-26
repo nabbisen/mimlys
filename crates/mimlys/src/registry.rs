@@ -159,6 +159,16 @@ pub fn endpoint_of(url: &str) -> Option<(String, String)> {
     Some((key, shown))
 }
 
+/// What an operation says when the writers' mutex stays held for the whole of its wait (013f).
+///
+/// It says what the code knows: `registry.lock` is locked by some open file description. That is
+/// another operation of this runtime (its own `take` and `reap` run on threads of their own), an
+/// operation of another runtime, or, for the few milliseconds of a start, a child process that
+/// inherited the descriptor and has not executed yet (an operating system keeps a lock until
+/// every copy of the descriptor is closed). The code cannot tell these apart, so it names none.
+pub const LOCK_HELD: &str =
+    "the registry's lock is held by another operation (of this runtime or another)";
+
 /// The share of an operation's bound that the wait for the writers' mutex may take by default.
 /// What is left is the margin in which a mutex that stays held is told as that, before the
 /// operation is given up as one that did not answer.
@@ -171,8 +181,8 @@ pub struct Bounds {
     pub op: Duration,
     /// How long an operation that writes waits for the writers' mutex, measured from the start
     /// of the operation: less than `op`. The difference is the margin in which a held mutex is
-    /// told as "another runtime holds the registry's lock"; only a filesystem that does not
-    /// answer within `op` is told as a registry that did not answer.
+    /// told as [`LOCK_HELD`]; only a filesystem that does not answer within `op` is told as a
+    /// registry that did not answer.
     pub lock: Duration,
     /// How often a wait looks again.
     pub poll: Duration,
@@ -555,7 +565,7 @@ fn lock_mutex(dir: &Path, deadline: std::time::Instant) -> Result<File, Reason> 
             Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) => {
                 if std::time::Instant::now() >= deadline {
-                    return Err("another runtime holds the registry's lock".to_owned());
+                    return Err(LOCK_HELD.to_owned());
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
