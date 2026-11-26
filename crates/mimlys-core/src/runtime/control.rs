@@ -1160,8 +1160,8 @@ impl Runtime {
     /// ([`Runtime::interrupt_step_anyway`]), so that a model request is aborted, an execution is
     /// terminated within LIM-O2, and an action that cannot be undone is recorded with its
     /// outcome unknown and listed by the task's view. The cancel then waits for the step to end,
-    /// at most LIM-O1, and only then reads the task and writes. A task with no step in flight is
-    /// cancelled as before.
+    /// at most LIM-O15 (LIM-O2 as configured plus 3000 ms), and only then reads the task and
+    /// writes. A task with no step in flight is cancelled as before.
     ///
     /// **Made safe against the step finishing while the cancel runs** (the slot of
     /// `runtime::steps`). The step writes from the task it loaded when it began, and so does
@@ -1174,7 +1174,7 @@ impl Runtime {
     /// the task `cancelled`, and a step that begins after it is refused by the state.
     ///
     /// It blocks the calling thread while it waits: it must not be called from inside the step
-    /// it waits for. A step that has not ended LIM-O1 after the request is not waited for any
+    /// it waits for. A step that has not ended LIM-O15 after the request is not waited for any
     /// longer: the cancel is refused as `conflict`, nothing of the task is changed, the request
     /// stays, and the step ends `cancelled` when it does.
     pub fn cancel_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
@@ -1189,12 +1189,12 @@ impl Runtime {
             Err(RuntimeError::State(_) | RuntimeError::NotFound { .. }) => {}
             Err(other) => return Err(other),
         }
-        let within = std::time::Duration::from_millis(crate::limits::LIM_O1_STOP_MS as u64);
+        let wait_ms = crate::limits::cancel_wait_ms(self.cancel_grace_ms);
+        let within = std::time::Duration::from_millis(wait_ms);
         if !self.steps.wait_for_step_end(task_id, within) {
             return Err(RuntimeError::Conflict {
                 detail: format!(
-                    "the step of task {task_id} did not end within {} ms of the request to stop it: the task was not cancelled; the request stays, and the step ends when it can: cancel again",
-                    crate::limits::LIM_O1_STOP_MS
+                    "the step of task {task_id} did not end within {wait_ms} ms of the request to stop it: the task was not cancelled; the request stays, and the step ends when it can: cancel again",
                 ),
             });
         }

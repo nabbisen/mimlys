@@ -304,6 +304,9 @@ pub struct Runtime {
     /// The keys of the three effort levels (REQ-TASK-013): what ships, and what the configuration
     /// replaces it with.
     levels: crate::effort::Levels,
+    /// LIM-O2 as configured, in milliseconds: the time an execution's tree has to end after a
+    /// cancel. A cancel's wait for the step in flight follows it (LIM-O15).
+    cancel_grace_ms: u64,
 }
 
 /// Why a backend name was not found.
@@ -424,6 +427,16 @@ impl Runtime {
         }
     }
 
+    /// Sets LIM-O2 as configured: the time an execution's tree has to end after a cancel. The
+    /// wait of a cancel for the step in flight is this plus 3000 ms (LIM-O15), so that a cancel
+    /// is not refused while the execution it waits for is still within its own bound. A runtime
+    /// built without it has LIM-O2's default.
+    #[must_use]
+    pub fn with_cancel_grace(mut self, grace: std::time::Duration) -> Self {
+        self.cancel_grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
+        self
+    }
+
     /// Adds the gate of the backend's endpoint: a model request takes it before it is sent and
     /// returns it when its answer is read (RFC 013 decision 7; external design §19.3).
     #[must_use]
@@ -476,6 +489,7 @@ impl Runtime {
             unadmitted: std::sync::Mutex::new(std::collections::HashSet::new()),
             backends: None,
             levels: crate::effort::Levels::shipped(),
+            cancel_grace_ms: crate::limits::LIM_O2_CANCEL_MS,
         })
     }
 

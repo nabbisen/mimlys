@@ -398,12 +398,13 @@ fn req_task_006_a_step_that_finishes_the_task_while_the_cancel_waits_is_not_writ
     assert_eq!(r.h.runtime.steps.held(), 0);
 }
 
-/// REQ-TASK-006, LIM-O1: a step that does not end after the request is not waited for for ever.
-/// The cancel is refused as `conflict`, the task is as the step leaves it, the request stays, and
-/// the step ends `cancelled` as soon as it can: a second cancel then cancels the task. (This
-/// test takes LIM-O1.)
+/// REQ-TASK-006, LIM-O15: a step that does not end after the request is not waited for for
+/// ever. The cancel is refused as `conflict`, its message names the wait (LIM-O2 at its default
+/// and 3000 ms: 5000 ms), the task is as the step leaves it, the request stays, and the step
+/// ends `cancelled` as soon as it can: a second cancel then cancels the task. (This test takes
+/// LIM-O15.)
 #[test]
-fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o1() {
+fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o15() {
     let r = rig(vec![act("read_file", "a")], false);
     let id = r.h.create();
     std::thread::scope(|scope| {
@@ -414,6 +415,10 @@ fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o1() {
         });
         let refused = r.h.runtime.cancel_task(&r.h.session, id).unwrap_err();
         assert_eq!(refused.kind(), "conflict", "{refused}");
+        assert!(
+            refused.to_string().contains("within 5000 ms"),
+            "the message names LIM-O15's value: {refused}"
+        );
         assert_eq!(r.h.state(id), TaskState::Running, "the task is untouched");
         assert!(!r.h.runtime.steps.cancel_in_progress(id));
         // The request stays: the step, when it ends, ends `cancelled` with no action begun.
@@ -424,6 +429,51 @@ fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o1() {
     assert!(r.h.tools.calls().is_empty(), "no action was started");
     let task = r.h.runtime.cancel_task(&r.h.session, id).unwrap();
     assert_eq!(task.state, TaskState::Cancelled);
+}
+
+/// REQ-TASK-006, LIM-O15: the wait is LIM-O2 as configured plus 3000 ms, never a fixed time.
+#[test]
+fn req_task_006_the_wait_of_a_cancel_is_lim_o2_as_configured_plus_three_seconds() {
+    assert_eq!(crate::limits::cancel_wait_ms(2_000), 5_000);
+    assert_eq!(crate::limits::cancel_wait_ms(10_000), 13_000);
+    assert_eq!(crate::limits::cancel_wait_ms(500), 3_500);
+    assert_eq!(crate::limits::cancel_wait_ms(u64::MAX), u64::MAX);
+}
+
+/// REQ-TASK-006, LIM-O15: with LIM-O2 raised (6000 ms: a wait of 9000 ms), a step that ends
+/// after a time that the default wait would not have given it (here, past 5000 ms: LIM-O1's
+/// old value, and the default LIM-O15) is waited for: the cancel ends the task `cancelled`, not
+/// refused. The step is held without seeing the request, as an execution still within its
+/// bound would be. (This test takes a little over 5 s.)
+#[test]
+fn req_task_006_with_lim_o2_raised_a_step_that_ends_within_it_is_cancelled_not_refused() {
+    let mut r = rig(vec![act("read_file", "a")], false);
+    r.h.runtime = r.h.runtime.with_cancel_grace(Duration::from_millis(6_000));
+    let id = r.h.create();
+    std::thread::scope(|scope| {
+        let _release = Release(&r.front);
+        let stepping = scope.spawn(|| block_on_waiting(r.h.runtime.run_step(id)));
+        until("the model request is held", || {
+            r.front.entered.load(Ordering::SeqCst)
+        });
+        let cancelling = scope.spawn(|| r.h.runtime.cancel_task(&r.h.session, id));
+        until("the cancel has asked the step to stop", || {
+            r.h.runtime.no_new_action_requested(id)
+        });
+        // Past the default wait, still within the raised one: nothing has ended or been refused.
+        std::thread::sleep(Duration::from_millis(5_200));
+        assert!(!cancelling.is_finished(), "the cancel is still waiting");
+        assert_eq!(r.h.state(id), TaskState::Running);
+        // The step ends (its request, past stopping, is let go) and finds the request to stop:
+        // it ends `cancelled` with no action begun; the cancel, which waited, then cancels.
+        r.front.released.store(true, Ordering::SeqCst);
+        let step = stepping.join().unwrap().unwrap();
+        assert_eq!(step.outcome, StepOutcome::Cancelled);
+        let task = cancelling.join().unwrap().unwrap();
+        assert_eq!(task.state, TaskState::Cancelled);
+    });
+    assert!(r.h.tools.calls().is_empty(), "no action was started");
+    assert_eq!(r.h.state(id), TaskState::Cancelled);
 }
 
 type Request = fn(&Runtime, TaskId) -> Result<(), RuntimeError>;

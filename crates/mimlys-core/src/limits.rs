@@ -263,6 +263,18 @@ pub const LIM_O10_DOWNLOAD_RETRIES: usize = 3;
 pub const LIM_O10_DOWNLOAD_WAITS_MS: [u64; LIM_O10_DOWNLOAD_RETRIES] = [1_000, 2_000, 4_000];
 /// LIM-O2: time until a cancelled execution's tree is terminated, in milliseconds.
 pub const LIM_O2_CANCEL_MS: u64 = 2_000;
+/// LIM-O15 (handoff 014a-5, item 1): the time a cancel allows the step in flight to write its
+/// end once its execution has been terminated, in milliseconds. The cancel's wait for the
+/// step is LIM-O2 as configured plus this ([`cancel_wait_ms`]); not configurable.
+pub const LIM_O15_CANCEL_WAIT_SLACK_MS: u64 = 3_000;
+
+/// LIM-O15: how long a cancel waits for the step in flight to end, in milliseconds, given
+/// LIM-O2 as configured: the execution is terminated within LIM-O2, then the step writes
+/// its end.
+#[must_use]
+pub const fn cancel_wait_ms(lim_o2_ms: u64) -> u64 {
+    lim_o2_ms.saturating_add(LIM_O15_CANCEL_WAIT_SLACK_MS)
+}
 /// LIM-O7: wait for another runtime's write of the same directory's
 /// permissions (Windows), in milliseconds; at the end of it the write is
 /// refused (`acl_not_applied`), never made on a stale base.
