@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 type Found = Arc<Mutex<Option<Option<crate::action::Action>>>>;
 
 /// The three stop requests, each stronger than the one before and implying it.
-type Request = fn(&Runtime, TaskId);
+type Request = fn(&Runtime, TaskId) -> Result<(), RuntimeError>;
 const REQUESTS: [(&str, Request); 3] = [
     ("start_no_new_action", Runtime::start_no_new_action),
     ("interrupt_step", Runtime::interrupt_step),
@@ -54,7 +54,7 @@ fn req_cli_005_a_signal_raised_inside_the_record_of_the_start_is_seen_by_the_sec
                         let found = found.clone();
                         // The signal's handler: the request first, the look after.
                         std::thread::spawn(move || {
-                            request(&runtime, task);
+                            request(&runtime, task).unwrap();
                             *found.lock().unwrap() =
                                 Some(persistence.load_running_action(task).unwrap());
                         })
@@ -110,7 +110,7 @@ fn req_cli_005_a_first_signal_made_as_the_check_is_reached_is_seen_by_it() {
                         return;
                     }
                     let runtime = runtime.clone();
-                    std::thread::spawn(move || runtime.start_no_new_action(task))
+                    std::thread::spawn(move || runtime.start_no_new_action(task).unwrap())
                         .join()
                         .unwrap();
                 }),

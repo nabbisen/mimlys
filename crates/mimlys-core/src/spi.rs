@@ -780,6 +780,14 @@ pub trait WorkspaceProvider: WorkspaceRead {
     /// Bytes the workspace may still grow by, when tracked.
     fn remaining_bytes(&self, task_id: TaskId) -> Result<Option<u64>, WorkspaceError>;
 
+    /// The task has ended, or was deleted: whatever the provider counts for it in memory goes
+    /// with it (the restarts of the worker and of the MCP servers, LIM-X3). A runtime that
+    /// lives for many tasks keeps nothing of the ones that are over. The default counts
+    /// nothing.
+    fn task_ended(&self, task_id: TaskId) {
+        let _ = task_id;
+    }
+
     /// Prepares a snapshot of the tree: every file hashed, objects and the
     /// manifest written durably, the journal open (REQ-WS-004, REQ-PERS-009).
     /// When the manifest equals `previous`'s, that record is reused and no
@@ -1450,6 +1458,8 @@ pub mod fake {
         fail_tools: Mutex<bool>,
         /// For each removal, the holders of the tool provider at that moment.
         removed_with_holders: Mutex<Vec<usize>>,
+        /// The tasks `task_ended` was called for, in order.
+        ended: Mutex<Vec<TaskId>>,
     }
 
     /// What a test runs when a promotion is applied; an error fails the apply.
@@ -1474,7 +1484,14 @@ pub mod fake {
                 fail_materialize: Mutex::new(false),
                 fail_tools: Mutex::new(false),
                 removed_with_holders: Mutex::new(Vec::new()),
+                ended: Mutex::new(Vec::new()),
             }
+        }
+
+        /// The tasks the runtime told the provider had ended, in order (LIM-X3's counts go
+        /// with them).
+        pub fn ended(&self) -> Vec<TaskId> {
+            self.ended.lock().expect("fake lock").clone()
         }
 
         /// Sets the content of the fake tree: a snapshot taken from now on has a
@@ -1585,6 +1602,10 @@ pub mod fake {
                 return Err(WorkspaceError::Missing);
             }
             Ok(Arc::clone(&self.tools))
+        }
+
+        fn task_ended(&self, task_id: TaskId) {
+            self.ended.lock().expect("fake lock").push(task_id);
         }
 
         fn remaining_bytes(&self, _task_id: TaskId) -> Result<Option<u64>, WorkspaceError> {

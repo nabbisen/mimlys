@@ -24,9 +24,14 @@ enum Ask {
     Undoable,
     /// `Runtime::interrupt_step_anyway`.
     Anyway,
-    /// `Runtime::cancel_task`, as a client of another thread would.
+    /// `Runtime::cancel_task`, as a client of another thread would: the call is made on a
+    /// thread of its own, and the execution then waits for the token it was given, as a real
+    /// one does (the call waits for the step to end, and the step ends when the execution does).
     CancelTask,
 }
+
+/// What the thread that cancelled the task saw right after: its state and its actions' statuses.
+type AfterCancel = Arc<Mutex<Option<(TaskState, Vec<ActionStatus>)>>>;
 
 /// A tool provider that asks, then honours the token it was given.
 struct Asking {
@@ -47,7 +52,9 @@ struct Asking {
     /// anything is sent does (the MCP pin check): it then reports "not started".
     stop_at_start_gate: Mutex<bool>,
     /// The task's state and the actions' statuses right after `cancel_task`.
-    after_cancel_task: Mutex<Option<(TaskState, Vec<ActionStatus>)>>,
+    after_cancel_task: AfterCancel,
+    /// The thread that called `cancel_task` during the action.
+    cancel_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// What the next action does to the world while it runs (a test's own effect), once.
     effect: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
@@ -58,9 +65,9 @@ impl crate::spi::ToolProvider for Asking {
         let task = *self.task.lock().unwrap();
         if let (Some(runtime), Some(task)) = (runtime, task) {
             match *self.ask_at_definitions.lock().unwrap() {
-                Ask::NoNewAction => runtime.start_no_new_action(task),
-                Ask::Undoable => runtime.interrupt_step(task),
-                Ask::Anyway => runtime.interrupt_step_anyway(task),
+                Ask::NoNewAction => runtime.start_no_new_action(task).unwrap(),
+                Ask::Undoable => runtime.interrupt_step(task).unwrap(),
+                Ask::Anyway => runtime.interrupt_step_anyway(task).unwrap(),
                 Ask::Nothing | Ask::CancelTask => {}
             }
         }
@@ -77,20 +84,32 @@ impl crate::spi::ToolProvider for Asking {
             let task = self.task.lock().unwrap().expect("task set");
             match *self.ask.lock().unwrap() {
                 Ask::Nothing => {}
-                Ask::NoNewAction => runtime.start_no_new_action(task),
-                Ask::Undoable => runtime.interrupt_step(task),
-                Ask::Anyway => runtime.interrupt_step_anyway(task),
+                Ask::NoNewAction => runtime.start_no_new_action(task).unwrap(),
+                Ask::Undoable => runtime.interrupt_step(task).unwrap(),
+                Ask::Anyway => runtime.interrupt_step_anyway(task).unwrap(),
                 Ask::CancelTask => {
-                    runtime.cancel_task(&self.session, task).unwrap();
-                    let view = runtime.get_task(task).unwrap();
-                    let statuses = runtime
-                        .persistence()
-                        .load_actions(task)
-                        .unwrap()
-                        .into_iter()
-                        .map(|a| a.status)
-                        .collect();
-                    *self.after_cancel_task.lock().unwrap() = Some((view.task.state, statuses));
+                    let after = Arc::clone(&self.after_cancel_task);
+                    let session = self.session.clone();
+                    let canceller = Arc::clone(&runtime);
+                    *self.cancel_thread.lock().unwrap() = Some(std::thread::spawn(move || {
+                        canceller.cancel_task(&session, task).unwrap();
+                        let view = canceller.get_task(task).unwrap();
+                        let statuses = canceller
+                            .persistence()
+                            .load_actions(task)
+                            .unwrap()
+                            .into_iter()
+                            .map(|a| a.status)
+                            .collect();
+                        *after.lock().unwrap() = Some((view.task.state, statuses));
+                    }));
+                    // The execution ends when it sees the request, as a real one does.
+                    for _ in 0..10_000 {
+                        if context.cancel.is_cancelled() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
                 }
             }
             if let Some(effect) = self.effect.lock().unwrap().take() {
@@ -135,9 +154,9 @@ impl ModelBackend for Stopping {
         let task = *self.task.lock().unwrap();
         if let (Some(runtime), Some(task)) = (runtime, task) {
             match *self.ask.lock().unwrap() {
-                Ask::NoNewAction => runtime.start_no_new_action(task),
-                Ask::Undoable => runtime.interrupt_step(task),
-                Ask::Anyway => runtime.interrupt_step_anyway(task),
+                Ask::NoNewAction => runtime.start_no_new_action(task).unwrap(),
+                Ask::Undoable => runtime.interrupt_step(task).unwrap(),
+                Ask::Anyway => runtime.interrupt_step_anyway(task).unwrap(),
                 Ask::Nothing | Ask::CancelTask => {}
             }
         }
@@ -255,7 +274,8 @@ impl Rig {
             saw_cancelled: Mutex::new(Vec::new()),
             saw_start_gate: Mutex::new(Vec::new()),
             stop_at_start_gate: Mutex::new(false),
-            after_cancel_task: Mutex::new(None),
+            after_cancel_task: Arc::new(Mutex::new(None)),
+            cancel_thread: Mutex::new(None),
             effect: Mutex::new(None),
         });
         provider.inner.script(&name, outcome);
@@ -330,6 +350,13 @@ impl Rig {
             workspaces,
             session,
             task,
+        }
+    }
+
+    /// Waits for the thread that called `cancel_task` during the action, if there was one.
+    fn join_cancel(&self) {
+        if let Some(thread) = self.provider.cancel_thread.lock().unwrap().take() {
+            thread.join().expect("the cancel did not panic");
         }
     }
 
@@ -532,12 +559,14 @@ fn req_task_006_cancel_task_records_an_interrupted_action_that_cannot_be_undone_
         rig.ask(Ask::CancelTask);
         // The step's own end after a cancellation from outside is not the subject.
         let _ = futures_block(rig.runtime.run_step(rig.task));
+        rig.join_cancel();
         if rig.runtime.get_task(rig.task).unwrap().task.state != TaskState::Cancelled {
             // An action that needs approval: approve, then run it.
             rig.runtime
                 .approve_action(&rig.session, rig.task, None)
                 .unwrap();
             let _ = futures_block(rig.runtime.run_step(rig.task));
+            rig.join_cancel();
         }
         let (state, statuses) = rig
             .provider
@@ -581,7 +610,7 @@ fn req_sched_004_a_request_made_while_no_step_runs_does_not_reach_a_step_after_a
     let id = h.create();
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
     // No step runs: a request is made, then the task is paused and resumed.
-    h.runtime.interrupt_step(id);
+    h.runtime.interrupt_step(id).unwrap();
     h.runtime.pause_task(&h.session, id).unwrap();
     let mut paused = false;
     for _ in 0..2 {
@@ -615,7 +644,7 @@ fn req_sched_004_a_request_made_while_the_task_is_paused_is_cleared_by_the_resum
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
     h.runtime.pause_task(&h.session, id).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Paused);
-    h.runtime.interrupt_step(id);
+    h.runtime.interrupt_step(id).unwrap();
     assert!(h.runtime.step_interruption(id).is_cancelled());
     h.runtime.resume_task(&h.session, id, None).unwrap();
     assert!(
@@ -667,7 +696,7 @@ fn req_sched_004_a_request_made_while_the_task_waits_is_cleared_when_the_user_de
     let rig = Rig::new(definition);
     let waited = futures_block(rig.runtime.run_step(rig.task)).unwrap();
     assert_eq!(waited.outcome, StepOutcome::Waited);
-    rig.runtime.interrupt_step_anyway(rig.task);
+    rig.runtime.interrupt_step_anyway(rig.task).unwrap();
     rig.runtime
         .approve_action(&rig.session, rig.task, None)
         .unwrap();
@@ -760,7 +789,7 @@ fn req_cli_005_a_first_signal_during_the_model_request_starts_no_new_action() {
 /// imply the weakest.
 #[test]
 fn req_cli_005_no_new_step_begins_after_a_stop_signal() {
-    type Ask = fn(&Runtime, TaskId);
+    type Ask = fn(&Runtime, TaskId) -> Result<(), RuntimeError>;
     let asks: [(&str, Ask); 3] = [
         ("start_no_new_action", Runtime::start_no_new_action),
         ("interrupt_step", Runtime::interrupt_step),
@@ -781,7 +810,7 @@ fn req_cli_005_no_new_step_begins_after_a_stop_signal() {
         let requests = h.backend.requests().len();
         assert_eq!(requests, 1, "{name}");
         // No step is in flight: the task is running between two steps.
-        ask(&h.runtime, id);
+        ask(&h.runtime, id).unwrap();
         let cancelled = h.step(id);
         assert_eq!(cancelled.outcome, StepOutcome::Cancelled, "{name}");
         assert_eq!(cancelled.state, TaskState::Running, "{name}");
@@ -825,7 +854,7 @@ fn req_cli_005_the_request_is_spent_by_the_step_it_ended() {
             .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
     }
     let id = h.create();
-    h.runtime.start_no_new_action(id);
+    h.runtime.start_no_new_action(id).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
     assert_eq!(
         h.backend.requests().len(),

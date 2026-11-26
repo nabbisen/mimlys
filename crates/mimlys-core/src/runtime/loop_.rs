@@ -197,8 +197,16 @@ impl Runtime {
     /// (REQ-OBS-004). The span is `error` level so that no log filter drops it
     /// and with it the ids of an `error` line; `step_id` and `action_id` are
     /// recorded when they exist.
+    ///
+    /// **Steps of one task never overlap** (REQ-DEC-001; external design §4). The task is
+    /// claimed before anything is read or written, and held to the end of this function: a
+    /// second `run_step` of a task whose step is in flight, or whose cancel is in progress, is
+    /// refused at once as `conflict` naming the task, and never reaches the store. The claim is
+    /// the runtime's, so that no caller can bypass it, and it is per task: a step of another
+    /// task is not delayed by it.
     pub async fn run_step(&self, task_id: TaskId) -> Result<StepResultView, RuntimeError> {
         use tracing::Instrument;
+        let _step = self.steps.begin_step(task_id)?;
         let span = tracing::error_span!(
             "step",
             task_id = %task_id,
@@ -227,6 +235,9 @@ impl Runtime {
                 input: "run_step",
             }));
         }
+        // From here the step holds the tokens a request reaches (an entry made by a request
+        // before the step is kept).
+        self.begin_interruption(task_id);
         let now = self.deps.clock.now();
         // A task found `running` whose backend is no longer configured (recovery resumed it
         // before the file changed), or is configured and cannot be made (a key by reference that

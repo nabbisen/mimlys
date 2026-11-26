@@ -10,6 +10,7 @@ mod context;
 mod control;
 mod loop_;
 mod read;
+mod steps;
 mod storage;
 
 pub use control::{
@@ -278,6 +279,8 @@ pub struct Runtime {
     exclusions: ExclusionMatcher,
     /// The interruption requests of each task with work in flight (REQ-SCHED-004).
     interruptions: std::sync::Mutex<std::collections::HashMap<TaskId, Interruption>>,
+    /// The tasks with a step in flight or a cancel in progress (REQ-DEC-001, REQ-TASK-006).
+    steps: steps::Steps,
     /// The redactor built from the configured secrets.
     redactor: crate::context::Redactor,
     /// Each task's previous request in this process, for the prefix measure (REQ-CTX-010).
@@ -467,6 +470,7 @@ impl Runtime {
             last_requests: std::sync::Mutex::new(std::collections::HashMap::new()),
             unpinned: std::sync::Mutex::new(std::collections::HashMap::new()),
             interruptions: std::sync::Mutex::new(std::collections::HashMap::new()),
+            steps: steps::Steps::default(),
             admission: None,
             engine_gate: None,
             unadmitted: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -477,18 +481,75 @@ impl Runtime {
 
     /// The token the task's model request and its actions that can be undone
     /// observe (REQ-SCHED-004): set by [`Runtime::interrupt_step`] and by
-    /// [`Runtime::interrupt_step_anyway`].
+    /// [`Runtime::interrupt_step_anyway`]. A reader: it creates no entry, so a
+    /// task that has none (one that is unknown, or ended) gets a token that
+    /// nothing will set.
     pub fn step_interruption(&self, task_id: TaskId) -> Cancellation {
         self.interruption(task_id).undoable
     }
 
+    /// How many tasks have an entry in the registry of interruptions (tests).
+    #[cfg(test)]
+    pub(crate) fn interruption_entries(&self) -> usize {
+        self.interruptions
+            .lock()
+            .expect("interruption registry")
+            .len()
+    }
+
+    /// The task's requests, as they are; nothing is created.
     fn interruption(&self, task_id: TaskId) -> Interruption {
         self.interruptions
             .lock()
             .expect("interruption registry")
+            .get(&task_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The entry of a task whose step begins, so that a request made while the step runs
+    /// reaches the tokens the step holds. The step has just found the task `running`, so the
+    /// task is known and not terminal; a request made earlier is kept.
+    pub(crate) fn begin_interruption(&self, task_id: TaskId) {
+        self.interruptions
+            .lock()
+            .expect("interruption registry")
             .entry(task_id)
-            .or_default()
-            .clone()
+            .or_default();
+    }
+
+    /// The entry a request is made on: of a task that is known and not terminal, and no other
+    /// (REQ-SCHED-004; external design §4). A request for another id would leave an entry that
+    /// nothing removes: `forget_task` runs when a task ends, and the id of a task that never was
+    /// or was deleted would stay for the life of a long-lived process.
+    ///
+    /// The registry stays locked while the task is read, and `forget_task` takes the same lock:
+    /// a request that read the task before it ended finishes its entry before the end removes
+    /// it, and one that comes after reads the end and creates nothing.
+    fn request_on(
+        &self,
+        task_id: TaskId,
+        request: &'static str,
+        set: impl FnOnce(&Interruption),
+    ) -> Result<(), RuntimeError> {
+        let mut registry = self.interruptions.lock().expect("interruption registry");
+        let task =
+            self.deps
+                .persistence
+                .load_task(task_id)?
+                .ok_or_else(|| RuntimeError::NotFound {
+                    what: format!(
+                        "task {task_id}: it is not known, so there is no step to interrupt"
+                    ),
+                })?;
+        if task.state.is_terminal() {
+            return Err(RuntimeError::State(StateError::Illegal {
+                from: task.state.name(),
+                input: request,
+            }));
+        }
+        set(registry.entry(task_id).or_default());
+        Ok(())
     }
 
     /// Whether the step in flight is asked to start no new action
@@ -539,8 +600,13 @@ impl Runtime {
     /// the signal's look at what is in flight did not see was made before the
     /// action was recorded, so the second look finds it (handoff 010f-4; audit
     /// A-33).
-    pub fn start_no_new_action(&self, task_id: TaskId) {
-        self.interruption(task_id).no_new_action.cancel();
+    ///
+    /// A task that is not known, or has ended, is refused, and nothing is
+    /// created: the error says which (external design §4).
+    pub fn start_no_new_action(&self, task_id: TaskId) -> Result<(), RuntimeError> {
+        self.request_on(task_id, "start_no_new_action", |i| {
+            i.no_new_action.cancel();
+        })
     }
 
     /// Asks the task's current step to stop what can be undone, and to start
@@ -562,22 +628,28 @@ impl Runtime {
     /// that a request made while no step runs never reaches a step that began
     /// after a pause and a resume (handoff 010e). A request made while the step
     /// ends otherwise, with no transition, stays for the next step.
-    pub fn interrupt_step(&self, task_id: TaskId) {
-        let interruption = self.interruption(task_id);
-        interruption.no_new_action.cancel();
-        interruption.undoable.cancel();
+    ///
+    /// A task that is not known, or has ended, is refused, and nothing is
+    /// created: the error says which (external design §4).
+    pub fn interrupt_step(&self, task_id: TaskId) -> Result<(), RuntimeError> {
+        self.request_on(task_id, "interrupt_step", |i| {
+            i.no_new_action.cancel();
+            i.undoable.cancel();
+        })
     }
 
     /// As [`Runtime::interrupt_step`], and also for an action that cannot be
     /// undone: it is interrupted, its outcome is recorded unknown (action
     /// status `unknown`) and the task halts `unknown_outcome` with the action
     /// listed, the rule of a crash (external design §16.3). Spent and cleared
-    /// as [`Runtime::interrupt_step`] is.
-    pub fn interrupt_step_anyway(&self, task_id: TaskId) {
-        let interruption = self.interruption(task_id);
-        interruption.no_new_action.cancel();
-        interruption.undoable.cancel();
-        interruption.anyway.cancel();
+    /// as [`Runtime::interrupt_step`] is, and refused for a task that is not
+    /// known or has ended as it is.
+    pub fn interrupt_step_anyway(&self, task_id: TaskId) -> Result<(), RuntimeError> {
+        self.request_on(task_id, "interrupt_step_anyway", |i| {
+            i.no_new_action.cancel();
+            i.undoable.cancel();
+            i.anyway.cancel();
+        })
     }
 
     /// The action of the task now running that cannot be undone, if any: the
@@ -623,8 +695,8 @@ impl Runtime {
     }
 
     /// A terminal task leaves nothing behind in the runtime (REQ-SCHED-005):
-    /// its interruption requests, its previous request and its unpinned tools are
-    /// dropped. Called where a task becomes terminal and where it is deleted;
+    /// its interruption requests, its previous request, its unpinned tools and what
+    /// the providers count for it (`WorkspaceProvider::task_ended`) are dropped. Called where a task becomes terminal and where it is deleted;
     /// a daemon keeps the runtime alive, so an entry left here would be a leak
     /// for every finished task.
     pub(crate) fn forget_task(&self, task_id: TaskId) {
@@ -644,6 +716,8 @@ impl Runtime {
             .lock()
             .expect("unadmitted lock")
             .remove(&task_id);
+        // What the providers count for the task (the restarts of LIM-X3) ends with it.
+        self.deps.workspaces.task_ended(task_id);
     }
 
     /// The policy in force.

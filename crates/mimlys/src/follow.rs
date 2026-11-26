@@ -80,6 +80,21 @@ trait Interrupt: Send + Sync {
     fn irreversible(&self) -> Option<InFlight>;
 }
 
+/// What a signal does with the runtime's answer to a request to interrupt. The runtime refuses a
+/// task that is not known or has ended (external design §4): a signal that arrives as the task
+/// ends has nothing left to interrupt, which is no failure of the command, and the task's own
+/// end is what the command reports. A store that cannot be read is said in the log.
+pub(crate) fn interrupted(result: Result<(), mimlys_core::runtime::RuntimeError>) {
+    use mimlys_core::runtime::RuntimeError;
+    match result {
+        Ok(()) => {}
+        Err(e @ (RuntimeError::State(_) | RuntimeError::NotFound { .. })) => {
+            tracing::debug!("no step to interrupt: {e}");
+        }
+        Err(e) => tracing::warn!("a request to interrupt the step was not made: {e}"),
+    }
+}
+
 /// The runtime as what the signals act on.
 struct StepOf {
     runtime: Arc<Runtime>,
@@ -88,16 +103,16 @@ struct StepOf {
 
 impl Interrupt for StepOf {
     fn start_no_new_action(&self) {
-        self.runtime.start_no_new_action(self.task_id);
+        interrupted(self.runtime.start_no_new_action(self.task_id));
     }
 
     fn interrupt(&self) {
-        self.runtime.interrupt_step(self.task_id);
+        interrupted(self.runtime.interrupt_step(self.task_id));
     }
 
     fn interrupt_anyway(&self) -> Option<InFlight> {
         let in_flight = self.irreversible();
-        self.runtime.interrupt_step_anyway(self.task_id);
+        interrupted(self.runtime.interrupt_step_anyway(self.task_id));
         in_flight
     }
 

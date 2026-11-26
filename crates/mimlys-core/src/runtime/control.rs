@@ -1154,7 +1154,61 @@ impl Runtime {
 
     /// Cancels from any non-terminal state (REQ-TASK-006): an action not
     /// yet terminal is cancelled and a pending approval invalidated.
+    ///
+    /// **A step in flight is asked to stop first** (REQ-TASK-006, "abort a model request in
+    /// flight, terminate an execution in flight"): the request is the strongest one
+    /// ([`Runtime::interrupt_step_anyway`]), so that a model request is aborted, an execution is
+    /// terminated within LIM-O2, and an action that cannot be undone is recorded with its
+    /// outcome unknown and listed by the task's view. The cancel then waits for the step to end,
+    /// at most LIM-O1, and only then reads the task and writes. A task with no step in flight is
+    /// cancelled as before.
+    ///
+    /// **Made safe against the step finishing while the cancel runs** (the slot of
+    /// `runtime::steps`). The step writes from the task it loaded when it began, and so does
+    /// the cancel: neither may write over the other. The cancel claims the task before it reads
+    /// it, so that no step begins meanwhile (it is refused as `conflict`), and it reads the task
+    /// only after the step in flight has ended and written all it will write. Whichever comes
+    /// second finds the other's work done: a step that came first has left the task `running`,
+    /// paused, waiting, halted or ended, and the cancel acts on what it left (a task the step
+    /// completed is refused as the state error it always was); a cancel that came first has left
+    /// the task `cancelled`, and a step that begins after it is refused by the state.
+    ///
+    /// It blocks the calling thread while it waits: it must not be called from inside the step
+    /// it waits for. A step that has not ended LIM-O1 after the request is not waited for any
+    /// longer: the cancel is refused as `conflict`, nothing of the task is changed, the request
+    /// stays, and the step ends `cancelled` when it does.
     pub fn cancel_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
+        let (_cancelling, step_in_flight) = self.steps.begin_cancel(task_id)?;
+        if !step_in_flight {
+            return self.cancel_idle_task(session, task_id);
+        }
+        match self.interrupt_step_anyway(task_id) {
+            Ok(()) => {}
+            // The step ended the task or it was deleted meanwhile: reading it again, once the
+            // step has ended, says which, as for a cancel that found no step.
+            Err(RuntimeError::State(_) | RuntimeError::NotFound { .. }) => {}
+            Err(other) => return Err(other),
+        }
+        let within = std::time::Duration::from_millis(crate::limits::LIM_O1_STOP_MS as u64);
+        if !self.steps.wait_for_step_end(task_id, within) {
+            return Err(RuntimeError::Conflict {
+                detail: format!(
+                    "the step of task {task_id} did not end within {} ms of the request to stop it: the task was not cancelled; the request stays, and the step ends when it can: cancel again",
+                    crate::limits::LIM_O1_STOP_MS
+                ),
+            });
+        }
+        let cancelled = self.cancel_idle_task(session, task_id);
+        if cancelled.is_err() {
+            // The request made for this cancel is not left to meet the next step.
+            self.clear_interruption(task_id);
+        }
+        cancelled
+    }
+
+    /// The cancel itself, with no step of the task in flight and none to begin (the caller
+    /// holds the claim).
+    fn cancel_idle_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
         let task = self.writable(task_id)?;
         let now = self.deps.clock.now();
         let next = task.transition(TaskInput::Cancel, now)?;

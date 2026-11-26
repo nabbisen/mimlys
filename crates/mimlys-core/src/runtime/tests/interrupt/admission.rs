@@ -11,7 +11,7 @@ use crate::event::{AdmissionState, Event};
 use crate::fake_admission::{Script, ScriptedAdmission};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-type Request = fn(&Runtime, TaskId);
+type Request = fn(&Runtime, TaskId) -> Result<(), RuntimeError>;
 const REQUESTS: [(&str, Request); 3] = [
     ("start_no_new_action", Runtime::start_no_new_action),
     ("interrupt_step", Runtime::interrupt_step),
@@ -158,7 +158,7 @@ fn req_sched_006_the_first_stop_request_ends_the_wait_with_the_action_not_begun(
             {
                 let runtime = rig.runtime.clone();
                 let task = rig.task;
-                admission.on_admit(move || request(&runtime, task));
+                admission.on_admit(move || request(&runtime, task).unwrap());
             }
             let result = rig.execute_the_action();
             assert_eq!(result.outcome, StepOutcome::Cancelled, "{name}");
@@ -194,7 +194,7 @@ fn req_sched_006_a_request_made_as_the_slot_is_granted_returns_it_and_begins_not
         {
             let runtime = rig.runtime.clone();
             let task = rig.task;
-            admission.on_admit(move || runtime.start_no_new_action(task));
+            admission.on_admit(move || runtime.start_no_new_action(task).unwrap());
         }
         let result = rig.execute_the_action();
         assert_eq!(result.outcome, StepOutcome::Cancelled, "{name}");
@@ -224,7 +224,7 @@ fn req_sched_006_a_request_made_before_the_check_asks_for_no_slot() {
                 "authorized",
                 Arc::new(move || {
                     if !fired.swap(true, Ordering::SeqCst) {
-                        runtime.start_no_new_action(task);
+                        runtime.start_no_new_action(task).unwrap();
                     }
                 }),
             );
@@ -255,7 +255,7 @@ fn req_sched_006_a_request_made_inside_the_record_of_the_start_returns_the_slot(
                 "running",
                 Arc::new(move || {
                     if !fired.swap(true, Ordering::SeqCst) {
-                        runtime.start_no_new_action(task);
+                        runtime.start_no_new_action(task).unwrap();
                     }
                 }),
             );

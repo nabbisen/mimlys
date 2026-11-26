@@ -79,7 +79,7 @@ impl ModelBackend for Stopping {
         if let Some((runtime, task)) = self.ask.lock().unwrap().as_ref()
             && let Some(runtime) = runtime.upgrade()
         {
-            runtime.start_no_new_action(*task);
+            runtime.start_no_new_action(*task).unwrap();
         }
         self.inner.generate(request, cancel)
     }

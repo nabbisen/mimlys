@@ -204,7 +204,7 @@ async fn req_sched_006_a_stop_request_ends_a_wait_over_the_real_registry() {
         tokio::spawn(async move { rig.runtime.run_step(rig.task).await })
     };
     until_waiting(dir.path(), 2222).await;
-    rig.runtime.start_no_new_action(rig.task);
+    rig.runtime.start_no_new_action(rig.task).unwrap();
     let result = stepping.await.unwrap().unwrap();
     assert_eq!(result.outcome, StepOutcome::Cancelled);
     assert_eq!(result.state, TaskState::Running, "the caller pauses it");

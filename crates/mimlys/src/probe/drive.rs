@@ -70,10 +70,10 @@ impl Stop {
 
     fn interrupt(runtime: &Runtime, task_id: TaskId, first: bool) {
         if first {
-            runtime.start_no_new_action(task_id);
-            runtime.interrupt_step(task_id);
+            crate::follow::interrupted(runtime.start_no_new_action(task_id));
+            crate::follow::interrupted(runtime.interrupt_step(task_id));
         } else {
-            runtime.interrupt_step_anyway(task_id);
+            crate::follow::interrupted(runtime.interrupt_step_anyway(task_id));
         }
     }
 

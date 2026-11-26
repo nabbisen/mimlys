@@ -25,6 +25,7 @@ mod effort_levels;
 mod engine_gate;
 mod halt_detail;
 mod interrupt;
+mod long_lived;
 mod native;
 mod native_context;
 mod newer_records;
@@ -116,6 +117,21 @@ impl Harness {
         context_chars: usize,
         extra: Vec<ToolDefinition>,
     ) -> Self {
+        let front: Arc<dyn crate::spi::ModelBackend> = backend.clone();
+        Self::with_front(front, backend, policy, secrets, context_chars, extra)
+    }
+
+    /// As [`Harness::with_backend_and_tools`], the runtime calling `front`, which stands before
+    /// `backend` (a wrapper that holds a request, or watches it), and `backend` still the
+    /// script the tests read the requests from.
+    fn with_front(
+        front: Arc<dyn crate::spi::ModelBackend>,
+        backend: Arc<ScriptedBackend>,
+        policy: Policy,
+        secrets: Vec<(String, String)>,
+        context_chars: usize,
+        extra: Vec<ToolDefinition>,
+    ) -> Self {
         let persistence = Arc::new(FakePersistence::default());
         let mut definitions = vec![
             tool("read_file", EffectKind::WorkspaceRead),
@@ -131,7 +147,7 @@ impl Harness {
         let workspaces = Arc::new(FakeWorkspaces::new(tools.clone()));
         let runtime = Runtime::new(RuntimeDeps {
             persistence: persistence.clone(),
-            backend: backend.clone(),
+            backend: front,
             backend_name: "default".to_owned(),
             workspaces: workspaces.clone(),
             policy,
@@ -980,7 +996,7 @@ fn req_sched_004_cancellation_reaches_the_step() {
     let h = Harness::new(vec![act("read_file", "a"), act("read_file", "b")]);
     h.tools.script("read_file", ExecutionOutcome::cancelled(1));
     let id = h.create();
-    h.runtime.interrupt_step(id);
+    h.runtime.interrupt_step(id).unwrap();
     let result = h.step(id);
     assert_eq!(
         result.outcome,
@@ -1020,7 +1036,7 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
     h.tools
         .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
     let id = h.create();
-    h.runtime.interrupt_step(id);
+    h.runtime.interrupt_step(id).unwrap();
     let result = h.step(id);
     assert_eq!(result.outcome, StepOutcome::Cancelled);
     assert_eq!(result.state, TaskState::Running);
@@ -1047,7 +1063,7 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
     h.tools
         .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
     let id = h.create();
-    h.runtime.interrupt_step(id);
+    h.runtime.interrupt_step(id).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
 
@@ -1058,7 +1074,7 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
         .script("read_file", ExecutionOutcome::succeeded(json!({}), 1));
     let id = h.create();
     assert_eq!(h.step(id).outcome, StepOutcome::Continued);
-    h.runtime.interrupt_step(id);
+    h.runtime.interrupt_step(id).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
     h.runtime.pause_task(&h.session, id).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Paused);
@@ -1066,7 +1082,7 @@ fn req_sched_004_a_cancelled_step_takes_its_request_and_the_pause_is_taken() {
     // The task that is cancelled afterwards leaves nothing behind.
     let h = Harness::new(vec![act("read_file", "a")]);
     let id = h.create();
-    h.runtime.interrupt_step(id);
+    h.runtime.interrupt_step(id).unwrap();
     assert_eq!(h.step(id).outcome, StepOutcome::Cancelled);
     h.runtime.cancel_task(&h.session, id).unwrap();
     assert!(!h.per_task_entries(id).0);

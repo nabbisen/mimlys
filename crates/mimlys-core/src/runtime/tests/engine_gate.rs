@@ -187,7 +187,7 @@ fn req_sched_007_a_wait_for_the_gate_is_the_steps_engine_wait() {
 /// pause, and no gate is held.
 #[test]
 fn req_sched_007_the_first_stop_request_ends_the_wait_and_nothing_is_sent() {
-    type Request = fn(&Runtime, TaskId);
+    type Request = fn(&Runtime, TaskId) -> Result<(), RuntimeError>;
     let requests: [(&str, Request); 3] = [
         ("start_no_new_action", Runtime::start_no_new_action),
         ("interrupt_step", Runtime::interrupt_step),
@@ -198,7 +198,7 @@ fn req_sched_007_the_first_stop_request_ends_the_wait_and_nothing_is_sent() {
         {
             let runtime = rig.runtime.clone();
             let task = rig.task;
-            rig.gate.on_admit(move || request(&runtime, task));
+            rig.gate.on_admit(move || request(&runtime, task).unwrap());
         }
         let result = step(&rig);
         assert_eq!(result.outcome, StepOutcome::Cancelled, "{name}");
