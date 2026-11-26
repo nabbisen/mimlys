@@ -166,8 +166,14 @@ reason for a halt, an event. What each release does with the same store:
   go on with the task; nothing is lost by waiting.
 - **0.12.0 and earlier fail as before.** They do not read what a later release wrote:
   `events` of 0.11.1 stopped at `storage failure: deserialize` on 0.12's
-  `task.admission_changed`, and 0.12.0 does the same at a word of 0.13. That is a
-  release that is already out, and it is not changed. To read a store that a newer
+  `task.admission_changed`, and 0.12.0 does the same at a word of 0.13: the wait kind
+  `plan` and the events `plan.approval_requested` and `plan.approval_decided` of a
+  plan-first task. A task that waits for its plan makes 0.12.0's `status`, `task show`
+  and `events` fail, and every command of 0.12.0 that writes at its start; `events` of
+  a task that went through a plan wait fails in 0.12.0 even when it is over; a store
+  with no task that waits or waited for a plan is read whole. Before you go back to 0.12.0, approve, reject or
+  cancel every plan wait with 0.13. That is a release that is already out, and it is
+  not changed. To read a store that a newer
   release wrote, use 0.13 or later; to go on with its tasks, the release that wrote
   them.
 
