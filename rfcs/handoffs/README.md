@@ -79,6 +79,14 @@ Handoffs are companion execution documents for RFCs (RFC 000, "Companion handoff
 | 26 | [002e A failed restore is never silent; recovery survives a crash; a built-in never blocks](./002e-loop-and-built-ins-audit/implementation-handoff.md) | RFC 002, RFC 004 | — |
 | 27 | [013b Release candidate 0.10.0](./013b-release-0.10.0/implementation-handoff.md) | RFC 013 (part one complete with 0.10.0) | every 0.10 handoff |
 
+## Release 0.14
+
+The local daemon (ROADMAP, "Release 0.14"; RFC 014 with its Amendment 1). Each later handoff is written when its turn comes.
+
+| Order | Handoff | RFC | Depends on |
+|---|---|---|---|
+| 1 | [014a What a long-lived process needs](./014a-long-lived-process/implementation-handoff.md) | RFC 014 | — |
+
 ## Release 0.13
 
 Adaptive effort, part one (ROADMAP, "Release 0.13"; RFC 015 with its Amendment 1). Each later handoff is written when its turn comes.
