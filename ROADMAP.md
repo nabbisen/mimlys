@@ -114,6 +114,19 @@ Milestones are the unit of planning, release and acceptance. Every requirement i
 | Done when | each handoff's acceptance; the M4 task under each level, measured; the probe classifies the models measured so far; a 0.12 configuration loads unchanged (one with a non-loopback URL declared `local` refused, saying why); every CI job green with skips counted; the threat register's review for 0.13; the CHANGELOG |
 | Next | 0.14: the local daemon (RFC 014, M9). Then the release that prepares 1.0, then 1.0.0 |
 
+## Release 0.14 (scoped 2026-11-27: the local daemon)
+
+| | |
+|---|---|
+| Objective | A task started in one terminal is followed, approved, answered or cancelled from another: one daemon per user and data directory serves the control API over a local socket, and the client that finds none runs embedded, as today. The same requests in both modes, so every code, event, state, field and message means the same (REQ-ARCH-009) |
+| Scope | `.git-exclude/reviewed/scope-0.14/README.md`, every item checked against 0.13.0's code and re-read with the owner's philosophy. RFC 014's Amendment 1 holds it: the control API made real (requests and responses, request ids recorded in the store, the driver apart from the follower), what a long-lived process needs, the mutual identity check and the Windows squatting guard, the refusal of the daemon's own tree, the fixed hello and `stop`, a changed configuration or secret refused |
+| Phase 1, embedded made ready | **014a**: what a long-lived process needs (the per-task step guard; interruptions refused for an unknown or ended task; `cancel_task` interrupts the step in flight; LIM-X3 per task, cleared at its end). **014b**: the control API as requests and responses through one handler, the embedded client, the driver and the follower, the signals as requests, request ids. Nothing a user sees changes |
+| Phase 2, served on Unix | **014c**: the daemon on Linux and macOS (the socket, the mutual credential check, the refusal of the daemon's own tree, `mimlys daemon start\|stop\|restart\|status`, the store's lock, one scheduler over every client, the verified session, the log file, `status` in both modes); the CLI's tests run served in CI |
+| Phase 3, Windows and on demand | **014d**: the named pipe (first instance, the user's SID alone, the client's check of the server), `[runtime] serve = on_demand`, the book page "Running mimlys as a daemon"; served mode in CI on Windows |
+| Cut point | If phase 3 runs long, on-demand start moves to the release that prepares 1.0. Windows does not: a daemon on two platforms of three would not be the same product |
+| Done when | each handoff's acceptance; the CLI's integration tests pass embedded and served on the three platforms; approve, answer and cancel from a second terminal; every CI job green with skips counted; the threat register's review for 0.14; the CHANGELOG |
+| Next | The release that prepares 1.0: conditions 1, 3 and 4, the removal of `config_version` 1 and of `status --json`'s `backend`, the dependency refresh. Then 1.0.0 |
+
 ## After 0.11 (the themes; their releases set in the scope of 0.12, 2026-11-18)
 
 - **The operation theme** (RFC 013 part two, **0.12**): admission per user (at most a new LIM-X5 executions at once), a CPU bound per host-tool tree (a new LIM-H id; LIM-H6 is the macOS tracking interval), one engine request in flight per endpoint, and the machine view in `status`. Defaults are measured first.
@@ -157,7 +170,7 @@ RFCs enter `rfcs/proposed/`, move to `rfcs/accepted/` on the owner's sign-off, a
 
 ## Not in v1
 
-Daemon mode and sessions; multi-user; plan nodes with dependencies or parallel steps; an MCP server surface; a built-in network adapter; model-based summarization; GUI and additional languages; compiled-language adapters; remote access; vector memory; cryptographic audit integrity; policy simulation; metrics export; Windows aarch64 (see requirements §25).
+Authenticated sessions beyond the operating system's user (the local daemon itself is in 0.14, RFC 014); multi-user; plan nodes with dependencies or parallel steps; an MCP server surface; a built-in network adapter; model-based summarization; GUI and additional languages; compiled-language adapters; remote access; vector memory; cryptographic audit integrity; policy simulation; metrics export; Windows aarch64 (see requirements §25).
 
 ## Risks
 

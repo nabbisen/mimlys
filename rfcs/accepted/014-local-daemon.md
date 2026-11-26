@@ -1,6 +1,6 @@
 # RFC 014 — The local daemon
 
-**Status.** Accepted (2026-11-10, by the owner). Milestone M9, decided at 0.10's disposition point. Normative text written 2026-11-10 (requirements, limits, threat register). Drafted by the owner with the startup architect; reviewed by the architect, whose changes are marked *[review]* and argued in `.git-exclude/reviewed/rfc-013-015-review/README.md`. For the owner's sign-off after RFC 013 and RFC 015. The owner's decision of 2026-11-08: the daemon is written in this repository, not as a separate project; it is decided at 0.10's disposition point, after the audit.
+**Status.** Accepted (2026-11-10, by the owner); Amendment 1 authorized 2026-11-27 (the scope of 0.14). Milestone M9, decided at 0.10's disposition point. Normative text written 2026-11-10 (requirements, limits, threat register). Drafted by the owner with the startup architect; reviewed by the architect, whose changes are marked *[review]* and argued in `.git-exclude/reviewed/rfc-013-015-review/README.md`. For the owner's sign-off after RFC 013 and RFC 015. The owner's decision of 2026-11-08: the daemon is written in this repository, not as a separate project; it is decided at 0.10's disposition point, after the audit.
 **Tracks.** DR-002 (daemon mode and client sessions; superseded in part by this RFC, which needs no authentication design because the operating-system user stays the boundary); the owner's proposal `proposal-daemon-rfc.md` (2026-11-08); RFC 013 (whose admission and engine gate this RFC's scheduler absorbs).
 **Touches.** `mimlys-core` (the control API unchanged; the scheduler owning LIM-X1 and LIM-X2 for all clients; sessions naming the client), `mimlys-persist` (the store's lock held by the daemon), `mimlys-exec` (no change: one worker per daemon, spawned as today), `mimlys` (a `daemon` subcommand, the socket, the client path of every command, `status`); requirements §3, §4, §15, §17, §21; external design §1, §2, §4, §16, §17, §19, §20, §21; the limits register (new LIM-O13, LIM-O14); the threat register (new THR-39).
 **Release.** 0.14, before 1.0 (the owner's decision in the scope of 0.12, 2026-11-18; 1.0's condition 7).
@@ -57,3 +57,52 @@ One daemon per operating-system user serves the control API over a local socket 
 ## References
 
 The owner's proposal `.git-exclude/reviewed/owner-review-replanning-after-0.8/proposal-daemon-rfc.md`; RFC 001 (`waiting_user`), RFC 004 (recovery), RFC 005 (framing), RFC 010 (the CLI embeds the runtime), RFC 011 §3, §7, RFC 013; requirements REQ-ARCH-004, REQ-ARCH-008, REQ-PERS-007, REQ-PERS-008, REQ-SCHED-001 … 007, REQ-SEC-001, REQ-MAIN-001; external design §1, §2, §4, §16, §17, §19, §20, §21; invariants INV-01, INV-10, INV-13; DR-002, DR-003.
+
+## Amendment 1 (2026-11-27, the scope of 0.14)
+
+The decisions were written against 0.10's code. Read against 0.13.0's code, and re-read with the owner's philosophy (`.git-exclude/reviewed/scope-0.14/README.md`, §2 and §2.8), they read as follows. The owner authorized them on 2026-11-27.
+
+1. **The control API made real (decision 1; ED §4).** The code has no request or response type, and the CLI calls the runtime's methods directly. Therefore:
+   - the control API is a set of serializable requests and responses in `mimlys-core`, with one handler;
+   - every command sends its requests through a client with two transports: in-process (embedded) and the socket (served). Embedded mode is the same arrangement in one process, so that REQ-ARCH-009 holds by construction;
+   - a **driver** (the scheduler) runs the steps of the tasks it owns. A **follower** prints events, prompts the user, and sends the stop signals as requests. Embedded mode's driver lives as long as the command.
+2. **Request ids, recorded in the store (ED §4).** Every state-changing request carries an id made by the client, recorded with the change it caused in the same write. A request whose id is recorded returns the recorded outcome, and nothing is applied twice. After a broken connection, the client sends the same request once more with the same id, so it never has to say that it does not know whether a request took effect.
+3. **What a long-lived process needs (decision 6's notes, confirmed in the code):**
+   - a per-task guard in the runtime refuses a second step of a task whose step is in flight (`conflict`);
+   - the interruption requests refuse an unknown or ended task, and create nothing;
+   - `cancel_task` interrupts the step in flight first, as REQ-TASK-006 says;
+   - LIM-X3 counts per task, a start made for no task never counts, and the counts are cleared when the task ends.
+4. **Identity in both directions (decision 3; REQ-SEC-016).**
+   - **The check is mutual.** On Unix, the client checks the socket's directory (owned by the user, mode 0700, not a link) and the server's peer credentials, as the server checks the client's.
+   - **On Windows,** the daemon creates the pipe as its first instance with a DACL for the user's SID alone. The client checks that the server's process is its own user's before it sends anything, since a pipe's name is global and another user could create it first.
+   - **Where the code lives:** the Win32 calls live in a second module of `mimlys-exec` under REQ-CONF-010's rule (amended). On Unix the peer credentials have a safe API.
+5. **The daemon refuses its own tree (decision 5; INV-13; THR-39).** A request from the worker, an MCP server or their descendants is refused, with the reason, and the refusal is recorded:
+   - **On Windows,** by Job Object membership;
+   - **On Linux and macOS,** by the peer's ancestry when it connects.
+
+   An MCP server is an unconfined program that the model drives. In embedded mode, only the store's lock stops it from running `mimlys approve`; the daemon keeps that refusal on purpose. **The residual stays in THR-39:** a descendant that detaches itself has the user's authority, as it has over the user's files.
+6. **The session is verified, not claimed (decision 4).** The daemon writes the client's pid from the operating system's peer credentials where the system gives one, and its own user as `os_user`. Where no pid is given, the record says that it is not known; a claim is never written as if verified.
+7. **Upgrades (decision 3):**
+   - **The first frame (the hello) and `stop` are fixed for all versions,** so a client of any version can say which version runs, and stop it.
+   - **`stop`** pauses a running task at its boundary (REQ-CLI-005), lists every task it paused and how to resume it, and resumes nothing.
+   - **`mimlys daemon restart`** resumes exactly the tasks it paused, and says so.
+8. **A changed configuration or secret is refused, not warned about (decision 8).**
+   - **A configuration that differs:** when the client's file hashes differently from the daemon's, state-changing requests are refused, naming `mimlys daemon restart`. Readers are not affected.
+   - **A secret that differs:** for each `env:` reference, the client sends a keyed hash of its own value under a salt from the hello, after it has checked the server. A difference is refused the same way, naming the reference and never the value.
+9. **Modes, signals and following (decision 1; open question 1).**
+   - **Readers stay direct** (REQ-PERS-013), whether or not a daemon runs. Writers and following go through the daemon when one serves.
+   - **Ctrl-C** in a following client pauses the task, as in embedded mode. A client that goes away leaves a served task running.
+   - **Following:** `run`, `approve`, `answer` and `task resume` follow in both modes, unless `--detach` is given. `--detach` needs a daemon and is refused in embedded mode, saying so.
+   - **A task that waits in line** says what it waits for (`queued behind task <id>, running since <time>`).
+10. **Lifecycle and observability (decisions 7, 10).**
+    - **Idle** means no client connected, and no task running, queued or waiting for the user. A task that waits for an approval or an answer keeps the daemon alive.
+    - **LIM-O13 and LIM-O14 are design choices,** not measurements.
+    - **The `client.connected` and `client.disconnected` events are dropped.** Every state-changing event already names the client's session, and connections go to the daemon's log.
+    - **That log is a file under the data directory,** bounded in size and in the number of files.
+11. **Open questions decided:**
+    - **2:** an approval with no client attached waits, with LIM-A1 unchanged;
+    - **3:** one binary;
+    - **4:** on-demand start stays opt-in in 0.14;
+    - **5:** the user's SID alone, with no service account.
+
+    The macOS socket path that does not fit is refused, saying why, never truncated.

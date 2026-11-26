@@ -30,8 +30,11 @@ reaches the model in the next request as your own words
 (`<<user kind="answer">>`). The instructions tell the model to ask only for
 what no tool it has been given can supply: a choice, a missing grant, an
 ambiguity in the goal. It is to read a file with `read_file`, not to ask you
-for it. If you answer from another terminal, the command is
-`mimlys answer <task> <text>`.
+for it. While `run` waits at a terminal, answer there. When the task waits
+after its `run` has ended (a `run` without a terminal ends at the question),
+answer with `mimlys answer <task> <text>` from any terminal. While a `run`
+still holds the store, another terminal's `answer` is refused, naming that
+process ([Getting started](./getting-started.md)).
 
 Where this is written: [Decisions, tools and observations](./reference/decisions-and-tools.md#one-decision-per-step),
 [the segments of a request](./maintainers/external-design.md#151-segments-in-order),

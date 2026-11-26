@@ -81,4 +81,4 @@ Model output is untrusted; execution is validated and effect-classified; grants 
 
 ## 8. Later directions
 
-The deferred requirements (requirements §25) name them: plan nodes with dependencies, daemon mode and sessions, an MCP server surface, a model-based summarizer adapter, compiled-language adapters in the confined worker, a vector-memory adapter, audit integrity, policy simulation, metrics export. None of them changes the anchors above.
+The deferred requirements (requirements §25) name them: plan nodes with dependencies, authenticated sessions beyond the operating system's user (the daemon itself is RFC 014, in 0.14), an MCP server surface, a model-based summarizer adapter, compiled-language adapters in the confined worker, a vector-memory adapter, audit integrity, policy simulation, metrics export. None of them changes the anchors above.

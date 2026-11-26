@@ -119,7 +119,19 @@ ApprovalChannel request(rendered) -> decision        (v1: the CLI prompt)
 | `get_metrics` | — | Derived metrics | REQ-OBS-003 |
 | `get_runtime_status` | — | Version, backend, tier, probe results, running tasks, pending items | REQ-OBS-006 |
 
-Every request carries the session (v1: the CLI process and its operating-system user). Every state-changing request is idempotent for an identical request id.
+**Requests and responses (from 0.14; RFC 014, Amendment 1).**
+- **One handler.** The control API is a set of requests and responses, serializable and versioned with the runtime, handled in one place. Every client sends them: the CLI through an in-process transport in embedded mode, and through the daemon's socket in served mode (§19.5, from 0.14). No command calls the runtime's methods around it.
+- **The driver and the follower.** The driver (the scheduler) runs the steps of the tasks it owns; a step is never run by a client. A client that follows a task reads its events, prompts the user, and sends the stop signals as requests (REQ-CLI-005):
+  - the first asks the task to pause at its next boundary, its step starting no new action;
+  - the second cancels it, which interrupts the step in flight (REQ-TASK-006).
+
+  In embedded mode the driver lives as long as the command.
+- **Steps of one task never overlap** (REQ-DEC-001). The runtime refuses a second step of a task whose step is in flight, as `conflict`. An interruption request for a task that is unknown or ended is refused, and creates nothing.
+
+**The session and the request id.**
+- **The session.** Every request carries it: the client process and its operating-system user. Under a daemon the session is verified, not claimed (§19.5).
+- **The request id.** Every state-changing request carries a request id, made by the client. The id is recorded with the change it caused, in the same write. A request whose id is already recorded returns the recorded outcome and applies nothing again.
+- **A repeated request** is the client's own, with its own id, after a broken connection. A client never tells the user that it does not know whether a request took effect.
 
 ---
 

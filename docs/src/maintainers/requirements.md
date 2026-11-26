@@ -109,7 +109,7 @@ The workspace shall consist of the crates `mimlys-core` (domain model, state mac
 Tokio is the executor. No abstraction over the executor shall exist for the sake of replaceability. (C-14, D-14)
 
 ### REQ-ARCH-004 Three API tiers — M1 · I
-The runtime shall expose exactly three interfaces: the *control API* for clients (tasks, approvals, answers, grants, events, status), the *adapter SPI* (`ModelBackend`, `ToolProvider`, `Executor`, `Persistence`, `WorkspaceProvider` (the baseline's `SnapshotStore`, widened by RFC 006), `ApprovalChannel`), and the *loop API* for embedding. The control API shall contain no operation that submits a decision, validates an action or executes anything directly. (D-01, C-10)
+The runtime shall expose exactly three interfaces: the *control API* for clients (tasks, approvals, answers, grants, events, status), the *adapter SPI* (`ModelBackend`, `ToolProvider`, `Executor`, `Persistence`, `WorkspaceProvider` (the baseline's `SnapshotStore`, widened by RFC 006), `ApprovalChannel`), and the *loop API* for embedding. The control API shall contain no operation that submits a decision, validates an action or executes anything directly. From 0.14 it is a set of serializable requests and responses through one handler, and every client, the embedded CLI included, uses it; every state-changing request carries a request id recorded with its change, and a repeated id returns the recorded outcome. (D-01, C-10; RFC 014, Amendment 1)
 
 ### REQ-ARCH-005 Runtime authority by construction — All · T
 The executor interface shall accept only authorized-action values that the validation pipeline alone can construct, so that no code path, including built-in tools, promotion and recovery, can execute without passing validation. (INV-01)
@@ -906,7 +906,7 @@ A command that reads the store shall show an event, a state, a wait kind or a re
 | ID | Deferred capability | Condition |
 |---|---|---|
 | DR-001 | Plan nodes with dependencies and parallel read-only steps | Own RFC after M5 |
-| DR-002 | Daemon mode and authenticated client sessions | Own RFC, planned after 0.10 (owner's decision of 2026-11-08: in this repository; first scope one daemon per operating-system user, a local socket with a peer-credential check, no network); authentication beyond the operating system's user boundary stays deferred |
+| DR-002 | Daemon mode and authenticated client sessions | **Daemon mode is no longer deferred:** RFC 014 (M9) delivers it in 0.14, before 1.0, one daemon per operating-system user and data directory over a local socket (REQ-ARCH-009, REQ-PERS-014, REQ-SEC-016, REQ-SCHED-008, REQ-CLI-008). What stays deferred is authentication beyond the operating system's user boundary (remote clients, other users): a new RFC and a new trust model |
 | DR-003 | Multi-user isolation | After DR-002 |
 | DR-004 | An MCP server surface for mimlys | Own RFC; approval must stay unreachable by models |
 | DR-005 | Model-based summarizer adapter, output untrusted | Own RFC after M4 measurements |

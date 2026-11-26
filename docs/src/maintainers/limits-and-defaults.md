@@ -98,7 +98,7 @@
 |---|---|---:|---|---|
 | LIM-X1 | Tasks in `running` at once, per runtime | 1 | fixed | v1 is sequential (D-11); no configuration changes it. A later scheduler (the daemon theme) may make it configurable; until then a range here would mislead |
 | LIM-X2 | Executions in flight, per runtime | 1 | fixed | Memory: LIM-X2 × LIM-S3; no configuration changes it (as LIM-X1) |
-| LIM-X3 | Worker or MCP server restarts per task, in one runtime process (external design §11.1) | 3 | 0–10 | Fault containment |
+| LIM-X3 | Worker or MCP server restarts per task, in one runtime process (external design §11.1): counted for that task alone, never for a start made for no task (a listing), and cleared when the task ends, so that a long-lived process (the daemon, from 0.14) keeps one count per task | 3 | 0–10 | Fault containment |
 | LIM-X4 | Worker start, including interpreter compilation | 60000 ms | 5000 – 600000 | Cranelift compiles a multi-megabyte interpreter once per worker |
 | LIM-X5 | Executions of one user at once across runtimes (RFC 013 admission) | 2 | 1–16 | Measured (M7b report §3, 2026-11-19): with LIM-H7 at one half, two bounded trees cost each other ×1.02 to ×1.15 and a third ×1.5 to ×1.7 (rule `floor(1 / share)`); where the CPU part is not a bound, the second slot costs ×1.2 to ×2.0, and the default stays 2 for one rule everywhere |
 
