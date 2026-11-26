@@ -170,6 +170,13 @@ impl Servers {
         while ending.join_next().await.is_some() {}
     }
 
+    /// The task has ended: what every server counts for it (LIM-X3) goes with it.
+    pub fn forget_task(&self, task: TaskId) {
+        for server in &self.servers {
+            server.forget_task(task);
+        }
+    }
+
     /// Server events produced since the last call.
     pub fn drain_events(&self) -> Vec<Event> {
         self.servers.iter().flat_map(|s| s.drain_events()).collect()

@@ -679,6 +679,24 @@ impl Worker {
         outcome.outcome
     }
 
+    /// The task has ended: the restarts counted for it (LIM-X3) go with it, so that a process
+    /// that lives for many tasks keeps a count for each task that is alive and none for the ones
+    /// that are over.
+    pub fn forget_task(&self, task_id: TaskId) {
+        self.restarts.lock().expect("restarts").remove(&task_id);
+    }
+
+    /// The restarts counted for the task: the worker's deaths in its executions (a test's seam
+    /// for LIM-X3).
+    pub fn restarts_of(&self, task_id: TaskId) -> u32 {
+        self.restarts
+            .lock()
+            .expect("restarts")
+            .get(&task_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Kills the worker without a shutdown, for the death tests.
     pub fn kill_for_test(&self) {
         if let Some(l) = self.live.lock().expect("worker").as_mut() {

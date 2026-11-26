@@ -636,6 +636,19 @@ impl WorkspaceProvider for LocalWorkspaces {
         Ok(tools)
     }
 
+    fn task_ended(&self, task_id: TaskId) {
+        // LIM-X3: the restarts counted for the task, by the servers and by the workers.
+        if let Some(servers) = &self.external {
+            servers.forget_task(task_id);
+        }
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.worker.forget_task(task_id);
+            if let Some(fetch) = &sandbox.fetch_worker {
+                fetch.forget_task(task_id);
+            }
+        }
+    }
+
     fn remaining_bytes(&self, task_id: TaskId) -> Result<Option<u64>, WorkspaceError> {
         let dir = Dir::open_ambient_dir(self.tree_path(task_id), ambient_authority())
             .map_err(|_| WorkspaceError::Missing)?;

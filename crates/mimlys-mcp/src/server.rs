@@ -212,6 +212,16 @@ fn start_reason(why: Interrupted) -> String {
     .into()
 }
 
+/// What one task has had of one server (LIM-X3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TaskStarts {
+    /// The restarts counted for the task: every start made for it after its first need.
+    restarts: u32,
+    /// A start was refused for the task, for the limit: it is refused for the rest of the
+    /// task's life, whatever has started the server since (RFC 014, decision 6).
+    refused: bool,
+}
+
 /// One configured server.
 ///
 /// No lock is held across a wait that a deadline and the interruption do not
@@ -232,13 +242,10 @@ pub struct Server {
     /// Counts the shutdowns, so that a start that a shutdown overtook ends
     /// the process it made.
     epoch: AtomicU64,
-    /// Restarts per task (LIM-X3): every start of a server that had started
-    /// before, made for the task (a listing for no task is not counted).
-    restarts: Mutex<HashMap<TaskId, u32>>,
-    /// Whether a start was attempted at least once: a start after that is a
-    /// restart, whatever ended the process before (its death, the kill after
-    /// LIM-O2) and whether or not the first one served.
-    started_once: AtomicBool,
+    /// What each task has had of this server (LIM-X3): an entry is made at the task's first
+    /// need of the server, and removed when the task ends ([`Server::forget_task`]). A start
+    /// made for no task (a listing) touches no entry: it is never counted for any task.
+    tasks: Mutex<HashMap<TaskId, TaskStarts>>,
     /// Why the last start failed; cleared by a start that succeeds.
     last_start_failure: Mutex<Option<String>>,
     /// Events produced and not yet drained (RFC 009 §1).
@@ -259,8 +266,7 @@ impl Server {
             start: tokio::sync::Mutex::new(()),
             relist: tokio::sync::Mutex::new(()),
             epoch: AtomicU64::new(0),
-            restarts: Mutex::new(HashMap::new()),
-            started_once: AtomicBool::new(false),
+            tasks: Mutex::new(HashMap::new()),
             last_start_failure: Mutex::new(None),
             events: Mutex::new(Vec::new()),
             dirty: Arc::new(AtomicBool::new(false)),
@@ -397,6 +403,13 @@ impl Server {
         task: Option<TaskId>,
         cancel: Option<&Cancellation>,
     ) -> Result<Arc<Live>, ServerError> {
+        // The task's first need of this server is free; each start made for it after that is a
+        // restart. A refusal once given stays for the task's life, so it is read before the
+        // process is: a server that a listing (for no task) started since is no way round it.
+        let first_need = match task {
+            Some(task) => self.first_need_of(task)?,
+            None => false,
+        };
         if let Some(live) = self.running() {
             return Ok(live);
         }
@@ -421,29 +434,9 @@ impl Server {
             });
         }
         if let Some(task) = task
-            && self.started_once.load(Ordering::SeqCst)
+            && !first_need
         {
-            let mut restarts = self.restarts.lock().expect("restarts lock");
-            let count = restarts.entry(task).or_insert(0);
-            if *count >= LIM_X3_RESTARTS {
-                return Err(ServerError::RestartLimitReached {
-                    server: self.config.name.clone(),
-                    last: self
-                        .last_start_failure
-                        .lock()
-                        .expect("failure lock")
-                        .clone(),
-                });
-            }
-            *count += 1;
-        }
-        // A start attempted for a task makes every later start a restart, so
-        // that a server that fails to start or to list every time is bounded by
-        // LIM-X3 as one that dies is. An attempt made for no task (`status`, the
-        // import) that fails does not: a listing for no task is never counted
-        // (external design 11.1); one that succeeds does, below.
-        if task.is_some() {
-            self.started_once.store(true, Ordering::SeqCst);
+            self.count_restart(task)?;
         }
         let epoch = self.epoch.load(Ordering::SeqCst);
         let started = self.start_and_list(startup, cancel).await;
@@ -451,7 +444,6 @@ impl Server {
             *self.last_start_failure.lock().expect("failure lock") = Some(error.reason());
         }
         let (connection, info, tools) = started?;
-        self.started_once.store(true, Ordering::SeqCst);
         if self.epoch.load(Ordering::SeqCst) != epoch {
             // A shutdown came while this start was in flight: it ends the
             // process it made.
@@ -471,6 +463,63 @@ impl Server {
         });
         *self.live.lock().expect("live lock") = Some(Arc::clone(&live));
         Ok(live)
+    }
+
+    /// Notes that `task` needs the server; whether this is its first need. A task that was
+    /// refused for the limit is refused again, here, every time it asks.
+    fn first_need_of(&self, task: TaskId) -> Result<bool, ServerError> {
+        let mut tasks = self.tasks.lock().expect("tasks lock");
+        match tasks.entry(task) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(TaskStarts::default());
+                Ok(true)
+            }
+            std::collections::hash_map::Entry::Occupied(entry) if entry.get().refused => {
+                Err(self.restart_limit_reached())
+            }
+            std::collections::hash_map::Entry::Occupied(_) => Ok(false),
+        }
+    }
+
+    /// Counts one restart for `task`, or refuses it for good when its allowance (LIM-X3) is used.
+    fn count_restart(&self, task: TaskId) -> Result<(), ServerError> {
+        let mut tasks = self.tasks.lock().expect("tasks lock");
+        let starts = tasks.entry(task).or_default();
+        if starts.restarts >= LIM_X3_RESTARTS {
+            starts.refused = true;
+            return Err(self.restart_limit_reached());
+        }
+        starts.restarts += 1;
+        Ok(())
+    }
+
+    fn restart_limit_reached(&self) -> ServerError {
+        ServerError::RestartLimitReached {
+            server: self.config.name.clone(),
+            last: self
+                .last_start_failure
+                .lock()
+                .expect("failure lock")
+                .clone(),
+        }
+    }
+
+    /// The task has ended: what is counted for it goes with it (LIM-X3), so that a process
+    /// that lives for many tasks keeps one count for each task that is alive, and none for
+    /// the ones that are over.
+    pub fn forget_task(&self, task: TaskId) {
+        self.tasks.lock().expect("tasks lock").remove(&task);
+    }
+
+    /// The restarts counted for `task`, or `None` when nothing is counted for it (a test's seam
+    /// for LIM-X3).
+    #[cfg(feature = "test-server")]
+    pub fn restarts_of(&self, task: TaskId) -> Option<u32> {
+        self.tasks
+            .lock()
+            .expect("tasks lock")
+            .get(&task)
+            .map(|starts| starts.restarts)
     }
 
     /// Starts the process and reads its first list, each within `startup`.

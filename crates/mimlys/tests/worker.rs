@@ -591,6 +591,60 @@ fn req_arch_008_worker_death_and_restart_budget() {
     assert_eq!(out.termination, Termination::Exited { exit_code: 7 });
 }
 
+/// LIM-X3 (handoff 014a, item 4): the restarts counted for a task go with the task. The worker's
+/// count is the task's own (an execution is always made for a task), is kept while the task
+/// lives, and is cleared when it ends, so that a process that lives for many tasks keeps a count
+/// for each task that is alive and none for the ones that are over; another task's is not touched.
+#[test]
+fn req_arch_008_the_restart_count_is_cleared_when_the_task_ends() {
+    let fx = fx();
+    write_module(&fx, "hello.wasm", HELLO);
+    let task_id = TaskId::new(&fx.ids);
+    let other = TaskId::new(&fx.ids);
+    for who in [task_id, other] {
+        fx.worker.start().unwrap();
+        fx.worker.kill_for_test();
+        let mut e = execution(
+            &fx,
+            "run_wasm",
+            serde_json::json!({"module": "hello.wasm"}),
+            5_000,
+        );
+        e.task_id = who;
+        let out = fx.worker.execute(e, Cancellation::new());
+        assert_eq!(
+            out.termination,
+            Termination::HostFault {
+                detail: HostFaultDetail::WorkerDied
+            }
+        );
+    }
+    assert_eq!(fx.worker.restarts_of(task_id), 1);
+    assert_eq!(fx.worker.restarts_of(other), 1);
+    // The runtime tells its provider that the task ended (`Runtime::forget_task`), and the
+    // provider the worker.
+    let provider = mimlys::workspace::LocalWorkspaces::new(
+        fx._dir.path().join("data"),
+        vec![],
+        1 << 30,
+        1 << 20,
+    )
+    .unwrap()
+    .with_sandbox(mimlys::workspace::SandboxTools {
+        worker: Arc::clone(&fx.worker),
+        host_tools: vec![],
+        host_tools_available: false,
+        fetch_worker: None,
+        languages: vec![],
+        deadline_ms: 5_000,
+    });
+    mimlys_core::spi::WorkspaceProvider::task_ended(&provider, task_id);
+    assert_eq!(fx.worker.restarts_of(task_id), 0, "gone with the task");
+    assert_eq!(fx.worker.restarts_of(other), 1, "the other task's is kept");
+    fx.worker.forget_task(other);
+    assert_eq!(fx.worker.restarts_of(other), 0);
+}
+
 /// A worker process spoken to in the protocol's own frames, killed when the
 /// test ends however it ends.
 struct RawWorker {

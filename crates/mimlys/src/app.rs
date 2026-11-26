@@ -982,7 +982,10 @@ impl App {
         Ok(())
     }
 
-    /// The servers' status without starting any (RFC 009 §8).
+    /// The servers' status (RFC 009 §8). Each server is started, within LIM-O6, and listed, so
+    /// that the status shows the tools as a task would import them: a server that is not running
+    /// is started by it. That start is made for no task, and is never counted against any task's
+    /// restarts (LIM-X3).
     pub fn server_status(&self) -> Vec<mimlys_mcp::ServerStatus> {
         if self.servers.is_empty() {
             return Vec::new();

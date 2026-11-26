@@ -1341,13 +1341,13 @@ fn restarts_past_the_limit(limited_main_stack: bool) {
     );
 }
 
-/// REQ-PERS-008, REQ-TOOL-009 (handoff 010e-5, item 1): the same server with
-/// `die` declared `external_write`: the death on the first call is `unknown`
-/// (the call was sent, the connection was lost) and the task halts. The count is
-/// the task's, not the step's: a later start made for the same task, from the
-/// same `Servers`, goes on from the count it has, so the allowance is LIM-X3 in
-/// all, and the attempt after it is refused as `restart_limit_reached`. A
-/// listing for no task never counts.
+/// REQ-PERS-008, REQ-TOOL-009 (handoff 010e-5, item 1; handoff 014a, item 4): the same server
+/// with `die` declared `external_write`: the death on the first call is `unknown` (the call was
+/// sent, the connection was lost) and the task halts. The count is the task's, not the step's: a
+/// later start made for the same task, from the same `Servers`, goes on from the count it has.
+/// The task's first need of the server is free, whoever started it before (a listing for no task
+/// never counts for any task), and each start after it is a restart: LIM-X3 of them, and the
+/// attempt after them is refused as `restart_limit_reached`.
 #[test]
 fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_never_counts() {
     use mimlys_core::ids::TaskId;
@@ -1371,18 +1371,22 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
             kill_server(&server).await;
             server.list().await.unwrap();
         }
+        assert_eq!(server.restarts_of(task), None, "a listing counts for no task");
         let mut deaths = 0;
-        // The task's allowance: each death is followed by a restart made for it
-        // (the pin check's listing), LIM-X3 times, whichever step it is made in.
-        for i in 0..limit {
+        // The task's allowance: its first need of the server is free (the listings
+        // above started it, and the task's count is still 0 after its first start),
+        // and each death after that is followed by a restart made for it (the pin
+        // check's listing), LIM-X3 times, whichever step it is made in.
+        for i in 0..=limit {
             kill_server(&server).await;
             deaths += 1;
             let current = server
                 .current_hash(task, "web_search", &Cancellation::new())
                 .await;
             assert!(matches!(current, Ok(Some(_))), "{i}: {current:?}");
+            assert_eq!(server.restarts_of(task), Some(i), "{i}");
         }
-        assert_eq!(deaths, limit);
+        assert_eq!(deaths, limit + 1);
         // Another task has its own allowance.
         kill_server(&server).await;
         assert!(
@@ -1431,6 +1435,166 @@ fn req_pers_008_the_restart_count_belongs_to_the_task_and_a_listing_for_no_task_
     });
 }
 
+/// A server whose listing has restarted it, and a task that finds it dead for the first time.
+async fn listed_then_dead() -> (Server, mimlys_core::ids::TaskId) {
+    let mut config = ServerConfig::new("t", testserver(), vec![]);
+    config.env_allow = vec!["PATH".into()];
+    let server = Server::new(config);
+    server.list().await.unwrap();
+    kill_server(&server).await;
+    (
+        server,
+        mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7()),
+    )
+}
+
+/// REQ-TOOL-009, LIM-X3 (handoff 014a, item 4): a server started by a listing for no task, then
+/// a task's first start: the task's count is 0. Only a start made for the task, after its first
+/// need, is a restart; a start made for no task never counts for any task.
+#[test]
+fn req_tool_009_a_task_first_start_after_a_listing_is_not_a_restart() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (server, task) = listed_then_dead().await;
+        assert_eq!(server.restarts_of(task), None, "nothing is counted yet");
+        let found = server
+            .current_hash(task, "web_search", &Cancellation::new())
+            .await;
+        assert!(matches!(found, Ok(Some(_))), "{found:?}");
+        assert_eq!(server.restarts_of(task), Some(0), "the first start is free");
+        // The task's next start is a restart.
+        kill_server(&server).await;
+        server
+            .current_hash(task, "web_search", &Cancellation::new())
+            .await
+            .unwrap();
+        assert_eq!(server.restarts_of(task), Some(1));
+        // A listing for no task, whatever it starts, adds nothing to it.
+        kill_server(&server).await;
+        server.list().await.unwrap();
+        assert_eq!(server.restarts_of(task), Some(1));
+        server.shutdown().await;
+    });
+}
+
+/// REQ-TOOL-009, LIM-X3 (handoff 014a, item 4; RFC 014, decision 6): a task's restarts up to
+/// LIM-X3, then refused; and still refused after a listing for no task restarted the server,
+/// whatever started it since: the task's next pin check finds it alive and makes no call.
+#[test]
+fn req_tool_009_a_refusal_once_given_stays_after_a_listing_restarted_the_server() {
+    let limit = mimlys_core::limits::LIM_X3_RESTARTS;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (server, task) = listed_then_dead().await;
+        // The first need, then LIM-X3 restarts.
+        for i in 0..=limit {
+            server
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await
+                .unwrap_or_else(|e| panic!("{i}: {e:?}"));
+            kill_server(&server).await;
+        }
+        let refused = server
+            .current_hash(task, "web_search", &Cancellation::new())
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
+            ),
+            "{refused:?}"
+        );
+        // A listing for no task starts the server, and it is alive...
+        server.list().await.unwrap();
+        assert!(server.is_running().await);
+        // ...and the task is refused all the same: the pin check, and the call.
+        for _ in 0..2 {
+            let refused = server
+                .current_hash(task, "web_search", &Cancellation::new())
+                .await;
+            assert!(
+                matches!(
+                    refused,
+                    Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
+                ),
+                "{refused:?}"
+            );
+        }
+        let called = server
+            .call(
+                task,
+                "engine_status",
+                Default::default(),
+                None,
+                30_000,
+                &Cancellation::new(),
+                &Cancellation::new(),
+            )
+            .await;
+        assert!(
+            matches!(
+                called,
+                Err(mimlys_mcp::server::ServerError::RestartLimitReached { .. })
+            ),
+            "no call was made: {called:?}"
+        );
+        server.shutdown().await;
+    });
+}
+
+/// LIM-X3 (handoff 014a, item 4): the count is cleared when the task ends, so that a process that
+/// lives for many tasks keeps one for each task that is alive; the same task id would start over,
+/// and another task's count is not touched.
+#[test]
+fn req_tool_009_the_counts_are_gone_when_the_task_ends() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (server, task) = listed_then_dead().await;
+        let other = mimlys_core::ids::TaskId::from_uuid(uuid::Uuid::now_v7());
+        for who in [task, other] {
+            server
+                .current_hash(who, "web_search", &Cancellation::new())
+                .await
+                .unwrap();
+            kill_server(&server).await;
+            server
+                .current_hash(who, "web_search", &Cancellation::new())
+                .await
+                .unwrap();
+        }
+        assert_eq!(server.restarts_of(task), Some(1));
+        assert_eq!(server.restarts_of(other), Some(1));
+        // The runtime tells its provider that the task ended (`Runtime::forget_task`), and the
+        // provider the servers.
+        let servers = std::sync::Arc::new(mimlys_mcp::tools::Servers::new(vec![server]));
+        let data = tempfile::tempdir().unwrap();
+        let provider = mimlys::workspace::LocalWorkspaces::new(
+            data.path().join("data"),
+            vec![],
+            1 << 30,
+            1 << 20,
+        )
+        .unwrap()
+        .with_external(std::sync::Arc::clone(&servers));
+        let server = std::sync::Arc::clone(&servers.all()[0]);
+        mimlys_core::spi::WorkspaceProvider::task_ended(&provider, task);
+        assert_eq!(server.restarts_of(task), None, "gone with the task");
+        assert_eq!(server.restarts_of(other), Some(1), "the other's is kept");
+        servers.forget_task(other);
+        assert_eq!(server.restarts_of(other), None);
+        servers.shutdown().await;
+    });
+}
+
 /// REQ-TOOL-009, REQ-MCP-002 (handoff 010e-5, item 1): the relisting a task's
 /// provider makes at a step boundary (`refresh_pins`, after the list changed) is
 /// made on the task's behalf: a restart it makes counts against the task, and
@@ -1457,7 +1621,9 @@ fn req_tool_009_the_relisting_at_a_step_boundary_counts_for_its_task() {
             mimlys_mcp::tools::McpTools::open(task, std::sync::Arc::clone(&servers)).await;
         let pinned = provider.imports();
         assert!(!pinned.is_empty());
-        for i in 0..limit {
+        // The task's first need of the server is free (the import started it, for no task);
+        // the LIM-X3 after it are counted.
+        for i in 0..=limit {
             kill_server(&server).await;
             server.force_relist();
             let changed = provider.refresh_pins(&pinned, &Cancellation::new());
@@ -3308,9 +3474,9 @@ fn req_tool_009_a_start_that_fails_every_time_is_bounded_by_the_restart_limit() 
         for later in &reasons[1 + limit..] {
             assert_eq!(later.reason(), refused.reason(), "every time");
         }
-        // Another task has its own allowance.
+        // Another task has its own allowance: its first need is free, as the first task's was.
         let other = a_task();
-        for _ in 0..limit {
+        for _ in 0..=limit {
             let answer = server
                 .current_hash(other, "web_search", &Cancellation::new())
                 .await;
@@ -3323,7 +3489,7 @@ fn req_tool_009_a_start_that_fails_every_time_is_bounded_by_the_restart_limit() 
             refused,
             Err(ServerError::RestartLimitReached { .. })
         ));
-        assert_eq!(list_requests_seen(&log), 1 + 2 * limit);
+        assert_eq!(list_requests_seen(&log), 2 * (1 + limit));
         server.shutdown().await;
 
         // A program that cannot be started: the reason of the spawn is kept.
