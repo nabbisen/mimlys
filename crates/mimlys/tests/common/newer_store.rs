@@ -20,6 +20,7 @@ pub const MARKER: &str = "(unknown to this release)";
 pub const MARKER_KEY: &str = "unknown_to_this_release";
 
 pub struct Env {
+    registry: super::Registry,
     pub dir: tempfile::TempDir,
     pub config: PathBuf,
     pub data: PathBuf,
@@ -38,11 +39,16 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { dir, config, data }
+        Self {
+            registry: super::Registry::new(),
+            dir,
+            config,
+            data,
+        }
     }
 
     pub fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = super::mimlys();
+        let mut cmd = super::mimlys_in(&self.registry);
         cmd.arg("--config").arg(&self.config).args(args);
         cmd.env("MIMLYS_CONFIG", "");
         cmd

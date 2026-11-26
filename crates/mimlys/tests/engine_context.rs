@@ -19,6 +19,7 @@ const NEED_TOOL_CALLS: u64 = 13_649;
 const NEED_ENVELOPE: u64 = 11_504;
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
 }
@@ -35,11 +36,15 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

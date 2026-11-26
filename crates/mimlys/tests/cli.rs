@@ -11,6 +11,7 @@ mod common;
 use common::run_bounded;
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: std::path::PathBuf,
 }
@@ -24,11 +25,15 @@ impl Env {
             data.path().join("data").to_string_lossy()
         );
         std::fs::write(&config, text).unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     fn run(&self, args: &[&str], stdin: &str) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config").arg(&self.config).args(args);
         cmd.env("MIMLYS_CONFIG", "");
         cmd.stdin(std::process::Stdio::piped());
@@ -60,7 +65,7 @@ impl Env {
     /// A run bounded by `common::run_bounded` (no standard input): the
     /// exit code and both streams.
     fn bounded(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config").arg(&self.config).args(args);
         cmd.env("MIMLYS_CONFIG", "");
         let out = run_bounded(&mut cmd, self.data.path());
@@ -733,7 +738,7 @@ fn req_ws_001_a_data_directory_in_the_temporary_directory_is_warned_about_not_re
         ),
     )
     .unwrap();
-    let mut cmd = common::mimlys();
+    let mut cmd = common::mimlys_in(&env.registry);
     cmd.arg("--config").arg(&config).arg("check");
     cmd.env("MIMLYS_CONFIG", "");
     let out = run_bounded(&mut cmd, env.data.path());
@@ -767,7 +772,7 @@ fn req_sbx_001_a_failed_download_is_reported_as_unavailable_download() {
         }
     });
     let env = Env::new("");
-    let mut cmd = common::mimlys();
+    let mut cmd = common::mimlys_in(&env.registry);
     cmd.arg("--config")
         .arg(&env.config)
         .args(["--json", "interpreters", "install", "javascript"])

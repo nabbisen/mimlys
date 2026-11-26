@@ -142,6 +142,7 @@ fn book_src() -> Option<PathBuf> {
 }
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
     /// The same store with a script whose first decision is a plan (`--plan-first`).
@@ -175,6 +176,7 @@ impl Env {
         )
         .unwrap();
         Self {
+            registry: common::Registry::new(),
             dir,
             config,
             plan_config,
@@ -182,7 +184,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         let config = if args.contains(&"--plan-first") {
             &self.plan_config
         } else {

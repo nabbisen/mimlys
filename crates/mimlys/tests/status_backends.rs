@@ -21,6 +21,7 @@ use common::run_bounded;
 const CAP: Duration = Duration::from_secs(20);
 
 struct Rig {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
 }
@@ -40,7 +41,11 @@ impl Rig {
         }
         let config = dir.path().join("config.toml");
         std::fs::write(&config, text).unwrap();
-        Self { dir, config }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+        }
     }
 
     fn data(&self) -> PathBuf {
@@ -48,7 +53,7 @@ impl Rig {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

@@ -33,7 +33,8 @@ fn bound() -> Duration {
 /// A registry directory (RFC 013) holding an entry held by this process, for the suites that
 /// run a host tool under confinement: the registry is under the user's runtime directory, outside
 /// every write set (Amendment 1; THR-38), so a tool can neither forge, change nor remove an entry.
-/// `dir` is where the suite keeps its directories that no read set reaches.
+/// The registry is made under a directory of its own, fresh and removed when this is dropped
+/// (handoff 014a-5, item 3).
 pub struct HeldRegistry {
     /// The registry's directory.
     pub dir: std::path::PathBuf,
@@ -41,12 +42,20 @@ pub struct HeldRegistry {
     pub stem: String,
     text: Vec<u8>,
     _held: mimlys::registry::Handle,
+    /// Last of the fields, so the directory goes after the entry's handle.
+    _holder: tempfile::TempDir,
 }
 
 impl HeldRegistry {
-    pub fn new(dir: std::path::PathBuf) -> Self {
+    /// `base` is where the suite keeps its directories that no read set reaches.
+    pub fn new(base: &Path) -> Self {
         use mimlys::registry::{Bounds, Class, Kind, Owner, Registry, Take};
-        let _ = std::fs::remove_dir_all(&dir);
+        let holder = tempfile::Builder::new()
+            .prefix("registry-")
+            .rand_bytes(12)
+            .tempdir_in(base)
+            .expect("a directory for the held registry");
+        let dir = holder.path().join("run");
         let registry = Registry::new(
             dir.clone(),
             Bounds::default(),
@@ -80,6 +89,7 @@ impl HeldRegistry {
             stem,
             text,
             _held: held,
+            _holder: holder,
         }
     }
 
@@ -119,18 +129,51 @@ impl HeldRegistry {
     }
 }
 
-static REGISTRIES: AtomicU64 = AtomicU64::new(0);
+/// The prefix of the directory that holds the registry of one command alone ([`run_dir`]).
+const SOLO: &str = "registry-solo-";
 
-/// A registry directory of its own, for one command (RFC 013): the user's runtimes share
+/// A directory that did not exist, made now under the shared `CARGO_TARGET_TMPDIR`, with a name no
+/// other process can have: the directory is created, which fails if the name is taken, and the name
+/// is random (handoff 014a-5, item 3; a name made of a process id and a counter was met again by
+/// a later test binary on Windows, which reuses process ids quickly).
+fn fresh_holder(prefix: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .rand_bytes(12)
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .expect("a directory for a registry")
+}
+
+/// The registry (RFC 013) of one test environment: every command of the environment names it, so
+/// the environment's commands share one, and no other environment's does. The directory that holds
+/// it is made fresh and removed when this is dropped. The registry's own directory is not made: the
+/// first runtime that takes a slot makes it, as for a user, so that `status` says `not yet used`
+/// until then.
+pub struct Registry {
+    holder: tempfile::TempDir,
+}
+
+impl Registry {
+    pub fn new() -> Self {
+        Self {
+            holder: fresh_holder("registry-"),
+        }
+    }
+
+    /// The path a command names with `MIMLYS_RUN_DIR`.
+    pub fn path(&self) -> std::path::PathBuf {
+        self.holder.path().join("run")
+    }
+}
+
+/// A registry directory of its own, for one command alone (RFC 013): the user's runtimes share
 /// `admission_slots`, so tests that run in parallel on one machine would wait for each other's
 /// executions (and write to the user's real registry) if they used the platform's. A suite that
-/// is about the registry names its own with `MIMLYS_RUN_DIR`.
+/// is about the registry names its own with `MIMLYS_RUN_DIR`. The path is new, and no other process
+/// can have it; [`run_bounded`] removes what the command left there. A test that runs more than one
+/// command takes a [`Registry`] for its environment instead.
 pub fn run_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "registry-{}-{}",
-        std::process::id(),
-        REGISTRIES.fetch_add(1, Ordering::Relaxed)
-    ))
+    fresh_holder(SOLO).keep().join("run")
 }
 
 /// A `mimlys` command alone in the world: its registry is its own ([`run_dir`]).
@@ -140,12 +183,57 @@ pub fn mimlys() -> Command {
     cmd
 }
 
+/// A `mimlys` command of an environment: it names the environment's registry.
+pub fn mimlys_in(registry: &Registry) -> Command {
+    mimlys_at(&registry.path())
+}
+
+/// A `mimlys` command that names the registry at `path`, for an environment whose own
+/// temporary directory holds the registry (a directory the test removes when it ends).
+pub fn mimlys_at(path: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys"));
+    cmd.env("MIMLYS_RUN_DIR", path);
+    cmd
+}
+
 /// The test harness's runtime (`mimlys-testloop`), with a registry of its own.
 #[cfg(feature = "test-bins")]
 pub fn mimlys_testloop() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
     cmd.env("MIMLYS_RUN_DIR", run_dir());
     cmd
+}
+
+/// The harness's runtime of an environment: it names the environment's registry.
+#[cfg(feature = "test-bins")]
+pub fn mimlys_testloop_in(registry: &Registry) -> Command {
+    mimlys_testloop_at(&registry.path())
+}
+
+/// As [`mimlys_at`], for the harness's runtime.
+#[cfg(feature = "test-bins")]
+pub fn mimlys_testloop_at(path: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimlys-testloop"));
+    cmd.env("MIMLYS_RUN_DIR", path);
+    cmd
+}
+
+/// Removes what a command alone left of its registry (the holder [`run_dir`] kept), when the
+/// command names one of those; the registry of an environment is removed by the environment.
+fn remove_solo_registry(cmd: &Command) {
+    let named = cmd
+        .get_envs()
+        .find(|(key, _)| *key == "MIMLYS_RUN_DIR")
+        .and_then(|(_, value)| value);
+    let Some(holder) = named.map(Path::new).and_then(Path::parent) else {
+        return;
+    };
+    let is_solo = holder
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with(SOLO));
+    if is_solo && holder.parent() == Some(Path::new(env!("CARGO_TARGET_TMPDIR"))) {
+        let _ = std::fs::remove_dir_all(holder);
+    }
 }
 
 /// What a bounded run produced.
@@ -202,7 +290,7 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
             || cmd
                 .get_envs()
                 .any(|(key, value)| key == "MIMLYS_RUN_DIR" && value.is_some()),
-        "this run of {:?} names no MIMLYS_RUN_DIR: it would use the user's own registry, shared with every other run (give it `common::run_dir()` after any `env_clear`)",
+        "this run of {:?} names no MIMLYS_RUN_DIR: it would use the user's own registry, shared with every other run (give it its environment's registry, or `common::run_dir()`, after any `env_clear`)",
         cmd.get_program()
     );
     let out_path = dir.join(format!("run-{}-{n}.stdout", std::process::id()));
@@ -232,6 +320,7 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
             bound.as_secs()
         );
     };
+    remove_solo_registry(cmd);
     Bounded {
         status,
         stdout,

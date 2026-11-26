@@ -27,7 +27,7 @@ fn complete() -> Value {
 struct Rig {
     dir: tempfile::TempDir,
     config: PathBuf,
-    registry: PathBuf,
+    registry: common::Registry,
     scope: PathBuf,
     url: String,
 }
@@ -40,7 +40,7 @@ impl Rig {
         std::fs::write(scope.join("a.txt"), "a\n").unwrap();
         let rig = Self {
             config: dir.path().join("config.toml"),
-            registry: common::run_dir(),
+            registry: common::Registry::new(),
             scope,
             url: server.url().to_owned(),
             dir,
@@ -88,7 +88,7 @@ auto_resume = true
             .arg(&self.config)
             .args(args)
             .env("MIMLYS_CONFIG", "")
-            .env("MIMLYS_RUN_DIR", &self.registry)
+            .env("MIMLYS_RUN_DIR", self.registry.path())
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
             .stdin(Stdio::null());
         cmd

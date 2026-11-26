@@ -27,6 +27,7 @@ fn outside() -> PathBuf {
 const BUILTIN: &str = r#""read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm""#;
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
@@ -113,6 +114,7 @@ network = true
         );
         std::fs::write(&config, text).unwrap();
         Self {
+            registry: common::Registry::new(),
             data,
             config,
             extra_env: vec![],
@@ -152,7 +154,7 @@ network = true
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -2255,10 +2257,11 @@ env = {{ RUSTUP_HOME = "~/.rustup", RUSTUP_TOOLCHAIN = "stable" }}
         ),
     )
     .unwrap();
+    let registry = common::Registry::new();
     let run = |args: &[&str]| -> (i32, Value, String) {
         let mut all = vec!["--config", config.to_str().unwrap(), "--json"];
         all.extend_from_slice(args);
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&registry);
         cmd.args(&all)
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
@@ -3304,8 +3307,7 @@ impl Drop for Restorer {
 /// its lock files: every attempt fails `permission denied`, and the registry is as it was.
 #[test]
 fn thr_38_a_host_tool_cannot_create_change_or_remove_a_registry_entry() {
-    let registry =
-        common::HeldRegistry::new(outside().join(format!("registry-{}", std::process::id())));
+    let registry = common::HeldRegistry::new(&outside());
     let [forged, entry, lock, mutex] = registry.paths();
     let path = |p: &Path| p.to_string_lossy().into_owned();
     let env = Env::new(

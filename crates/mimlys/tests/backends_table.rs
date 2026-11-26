@@ -10,6 +10,7 @@ mod common;
 use common::run_bounded;
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: std::path::PathBuf,
 }
@@ -27,11 +28,15 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { dir, config }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config").arg(&self.config).args(args);
         cmd.env("MIMLYS_CONFIG", "");
         cmd.env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));

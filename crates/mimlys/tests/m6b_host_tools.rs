@@ -59,6 +59,7 @@ fn account(obs: &[Value]) -> String {
 const BUILTIN: &str = r#""read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm""#;
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
@@ -146,6 +147,7 @@ network = true
         );
         std::fs::write(&config, text).unwrap();
         Self {
+            registry: common::Registry::new(),
             data,
             config,
             extra_env: vec![],
@@ -174,7 +176,7 @@ network = true
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -897,8 +899,9 @@ env = {{ RUSTUP_HOME = {rustup_home:?}, RUSTUP_TOOLCHAIN = "stable" }}
         ),
     )
     .unwrap();
+    let registry = common::Registry::new();
     let run = |args: &[&str]| {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&registry);
         cmd.arg("--config")
             .arg(&config)
             .arg("--json")
@@ -2253,8 +2256,7 @@ fn req_pers_005_a_host_tool_that_prints_exactly_its_bound_is_carried_whole() {
 /// lock files: every attempt fails, and the registry is as it was.
 #[test]
 fn thr_38_a_host_tool_cannot_create_change_or_remove_a_registry_entry() {
-    let registry =
-        common::HeldRegistry::new(outside().join(format!("registry-{}", std::process::id())));
+    let registry = common::HeldRegistry::new(&outside());
     let [forged, entry, lock, mutex] = registry.paths();
     let path = |p: &Path| p.to_string_lossy().into_owned();
     let env = Env::new(

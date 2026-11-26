@@ -28,8 +28,15 @@ struct Run {
     stderr: String,
 }
 
+/// One run alone: its registry is its own, made for it and removed with it.
 fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
-    let mut cmd = common::mimlys_testloop();
+    testloop_in(args, envs, &common::Registry::new())
+}
+
+/// One run of an environment: it names the environment's registry, which the environment's other
+/// runs name too.
+fn testloop_in(args: &[&str], envs: &[(&str, &str)], registry: &common::Registry) -> Run {
+    let mut cmd = common::mimlys_testloop_in(registry);
     cmd.args(args);
     // REQ-PRIV-003: an explicit allow-listed environment for the child.
     cmd.env_clear();
@@ -41,7 +48,7 @@ fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
     // The registry of the user's runtimes (RFC 013) is the run's own: `env_clear` dropped the one
     // that `mimlys_testloop()` set, and the user's real registry, which every run of this suite
     // shares (two slots), made an execution wait for the others' (handoff 015b-3, item 3).
-    cmd.env("MIMLYS_RUN_DIR", common::run_dir());
+    cmd.env("MIMLYS_RUN_DIR", registry.path());
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -452,13 +459,16 @@ fn m1_crash_injection_resumes() {
             let target = format!("{point}.{phase}");
             let scope = scope();
             let data = tempfile::tempdir().unwrap();
-            let first = testloop(
+            // The two runs are one user's, one after the other: one registry.
+            let registry = common::Registry::new();
+            let first = testloop_in(
                 &demo_args(
                     data.path().to_str().unwrap(),
                     scope.path().to_str().unwrap(),
                     &[],
                 ),
                 &[("MIMLYS_CRASH_AT", &target)],
+                &registry,
             );
             if ["blob", "promotion", "delete"].contains(&point) {
                 assert!(
@@ -469,13 +479,14 @@ fn m1_crash_injection_resumes() {
                 continue;
             }
             assert!(!first.status.success(), "{target} must abort the process");
-            let second = testloop(
+            let second = testloop_in(
                 &demo_args(
                     data.path().to_str().unwrap(),
                     scope.path().to_str().unwrap(),
                     &["--resume", "latest"],
                 ),
                 &[],
+                &registry,
             );
             assert!(second.status.success(), "{target}: {}", second.stderr);
             let report = second.report.unwrap();

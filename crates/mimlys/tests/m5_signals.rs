@@ -38,6 +38,7 @@ const BUILTIN: &str = r#""read_file", "write_file", "replace_in_file", "list_dir
 const WAITING: &str = "waiting for rypsok.slow to finish: it changes something outside this machine and cannot be undone; press Ctrl-C again to interrupt it anyway";
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
 }
@@ -100,11 +101,15 @@ timeout_ms = {deadline_ms}
             idempotent = effect == "external_read",
         );
         std::fs::write(&config, text).unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -625,7 +630,11 @@ idempotent = true
             server = testserver().to_string_lossy(),
         );
         std::fs::write(&config, text).unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     /// The listing requests the test server has read, from its log.
@@ -737,7 +746,11 @@ idempotent = {idempotent}
             server = testserver().to_string_lossy(),
         );
         std::fs::write(&config, text).unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     /// A command of this environment that follows, with the server's knobs set.

@@ -43,7 +43,8 @@ fn qjs() -> PathBuf {
                     ),
                 )
                 .unwrap();
-                let out = common::mimlys()
+                let registry = common::Registry::new();
+                let out = common::mimlys_in(&registry)
                     .args([
                         "--config",
                         config.to_str().unwrap(),
@@ -108,7 +109,9 @@ struct Run {
 
 fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run {
     let qjs = qjs();
-    let mut cmd = common::mimlys_testloop();
+    // One run alone: its registry is its own, and goes with it.
+    let registry = common::Registry::new();
+    let mut cmd = common::mimlys_testloop_in(&registry);
     cmd.args([
         "--script",
         script(script_name).to_str().unwrap(),
@@ -135,8 +138,8 @@ fn testloop(script_name: &str, scope: &Path, data: &Path, extra: &[&str]) -> Run
         }
     }
     cmd.env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
-    // The run's own registry: `env_clear` dropped the one `mimlys_testloop()` set (handoff 015b-3).
-    cmd.env("MIMLYS_RUN_DIR", common::run_dir());
+    // The run's own registry: `env_clear` dropped the one `mimlys_testloop_in()` set (handoff 015b-3).
+    cmd.env("MIMLYS_RUN_DIR", registry.path());
     let out = run_bounded(&mut cmd, data);
     assert!(out.status.success(), "{}", out.stderr);
     Run {
@@ -415,6 +418,8 @@ fn m2_read_write_stays_in_the_workspace() {
 #[test]
 fn m2_status_shows_tier_and_clauses() {
     let data = tempfile::tempdir().unwrap();
+    // Two commands of one environment: one registry, which both name.
+    let registry = common::Registry::new();
     let config = data.path().join("config.toml");
     std::fs::write(
         &config,
@@ -425,7 +430,7 @@ fn m2_status_shows_tier_and_clauses() {
     )
     .unwrap();
     let out = run_bounded(
-        common::mimlys()
+        common::mimlys_in(&registry)
             .args(["--config", config.to_str().unwrap(), "--json", "status"])
             .env("MIMLYS_CONFIG", ""),
         data.path(),
@@ -458,7 +463,7 @@ fn m2_status_shows_tier_and_clauses() {
     assert!(json["clauses"]["network"]["state"].is_string());
     assert_eq!(json["interpreters"][0]["language"], "javascript");
     let out = run_bounded(
-        common::mimlys()
+        common::mimlys_in(&registry)
             .args(["--config", config.to_str().unwrap(), "--json", "status"])
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_PROBE_FAIL", "K"),

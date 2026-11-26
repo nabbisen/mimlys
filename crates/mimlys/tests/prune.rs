@@ -11,6 +11,7 @@ mod common;
 use common::run_bounded;
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
     data: PathBuf,
@@ -31,11 +32,16 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { dir, config, data }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+            data,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

@@ -38,9 +38,8 @@ impl Env {
 
     /// `status` as the user's runtime would run it against `registry`, in the given form.
     fn status(&self, registry: &Path, json: bool) -> (String, Value) {
-        let mut cmd = common::mimlys();
-        cmd.env("MIMLYS_RUN_DIR", registry)
-            .env("MIMLYS_CONFIG", "")
+        let mut cmd = common::mimlys_at(registry);
+        cmd.env("MIMLYS_CONFIG", "")
             .arg("--config")
             .arg(&self.config);
         if json {

@@ -74,10 +74,10 @@ fn req_conf_011_the_read_sets_hold_the_worker_and_the_modules_as_files() {
     );
 }
 
-fn check(config: &str, dir: &Path) -> (i32, String, String) {
+fn check(config: &str, dir: &Path, registry: &common::Registry) -> (i32, String, String) {
     let file = dir.join("config.toml");
     std::fs::write(&file, config).unwrap();
-    let mut cmd = common::mimlys();
+    let mut cmd = common::mimlys_in(registry);
     cmd.arg("--config")
         .arg(&file)
         .arg("check")
@@ -94,6 +94,7 @@ fn check(config: &str, dir: &Path) -> (i32, String, String) {
 /// and such a command passed without a word.)
 #[test]
 fn req_conf_011_a_command_beside_the_worker_is_refused_until_its_directory_is_declared() {
+    let registry = common::Registry::new();
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let tool = PathBuf::from(env!("CARGO_BIN_EXE_mimlys-probe-tool"));
@@ -110,7 +111,7 @@ fn req_conf_011_a_command_beside_the_worker_is_refused_until_its_directory_is_de
         data.to_string_lossy(),
         tool.to_string_lossy(),
     );
-    let (code, stdout, stderr) = check(&base, dir.path());
+    let (code, stdout, stderr) = check(&base, dir.path(), &registry);
     assert_eq!(code, 1, "{stdout}\n{stderr}");
     let text = format!("{stdout}{stderr}");
     assert!(text.contains("host_tools.beside.command"), "{text}");
@@ -123,6 +124,6 @@ fn req_conf_011_a_command_beside_the_worker_is_refused_until_its_directory_is_de
         "it names the directory to declare: {text}"
     );
     let declared = format!("{base}read_paths = [{:?}]\n", tool_dir.to_string_lossy());
-    let (code, stdout, stderr) = check(&declared, dir.path());
+    let (code, stdout, stderr) = check(&declared, dir.path(), &registry);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
 }

@@ -40,7 +40,8 @@ fn qjs() -> PathBuf {
                     ),
                 )
                 .unwrap();
-                let out = common::mimlys()
+                let registry = common::Registry::new();
+                let out = common::mimlys_in(&registry)
                     .args([
                         "--config",
                         config.to_str().unwrap(),
@@ -91,6 +92,7 @@ fn completion_check() -> String {
 }
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
 }
@@ -108,7 +110,11 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     /// A `config_version = 2` file with `backends` written after `[runtime]`: the backends and
@@ -125,11 +131,15 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

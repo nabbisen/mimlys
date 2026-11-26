@@ -22,6 +22,7 @@ use common::run_bounded;
 const ENDS_WITHIN: Duration = Duration::from_secs(30);
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
 }
@@ -66,11 +67,15 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { dir, config }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+        }
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config").arg(&self.config).args(args);
         cmd.env("MIMLYS_CONFIG", "");
         cmd

@@ -20,6 +20,7 @@ fn probe_tool() -> PathBuf {
 }
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
 }
@@ -59,7 +60,11 @@ env_secrets = {{ TOKEN = "env:MIMLYS_TEST_TOKEN" }}
             tooldir = probe_tool().parent().unwrap().to_string_lossy(),
         );
         std::fs::write(&config, text).unwrap();
-        Self { data, config }
+        Self {
+            registry: common::Registry::new(),
+            data,
+            config,
+        }
     }
 
     fn data_dir(&self) -> PathBuf {
@@ -67,7 +72,7 @@ env_secrets = {{ TOKEN = "env:MIMLYS_TEST_TOKEN" }}
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

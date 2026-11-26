@@ -21,6 +21,7 @@ use common::run_bounded;
 const CRASHED: &str = "00000000-0000-7000-8000-00000000abcd";
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
     data: PathBuf,
@@ -43,6 +44,7 @@ impl Env {
         )
         .unwrap();
         Self {
+            registry: common::Registry::new(),
             dir,
             config,
             data,
@@ -51,7 +53,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

@@ -45,6 +45,7 @@ const BUILTIN: &str = r#""read_file", "write_file", "replace_in_file", "list_dir
 const SECRET: &str = "operator-secret-value-1234";
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
@@ -110,6 +111,7 @@ read_paths = [{tooldir:?}]
         );
         std::fs::write(&config, text).unwrap();
         Self {
+            registry: common::Registry::new(),
             data,
             config,
             extra_env: vec![],
@@ -159,7 +161,7 @@ read_paths = [{tooldir:?}]
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -1563,10 +1565,11 @@ env = {{ PATH = {path:?} }}
         ),
     )
     .unwrap();
+    let registry = common::Registry::new();
     let run = |args: &[&str]| -> (i32, Value, String) {
         let mut all = vec!["--config", config.to_str().unwrap(), "--json"];
         all.extend_from_slice(args);
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&registry);
         cmd.args(&all)
             .env("MIMLYS_CONFIG", "")
             .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
@@ -2202,8 +2205,7 @@ fn req_pers_005_a_host_tool_that_prints_exactly_its_bound_is_carried_whole() {
 #[test]
 fn thr_38_a_host_tool_cannot_create_change_or_remove_a_registry_entry() {
     let test = "thr_38_a_host_tool_cannot_create_change_or_remove_a_registry_entry";
-    let registry =
-        common::HeldRegistry::new(outside().join(format!("registry-{}", std::process::id())));
+    let registry = common::HeldRegistry::new(&outside());
     let [forged, entry, lock, mutex] = registry.paths();
     let path = |p: &Path| p.to_string_lossy().into_owned();
     let env = Env::new(

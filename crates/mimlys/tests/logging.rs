@@ -19,6 +19,7 @@ const MODEL: &str = "PRIVMODELMARK-the-summary";
 const SECRET: &str = "PRIVSECRETMARK-0123456789";
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
     scope: PathBuf,
@@ -43,12 +44,17 @@ impl Env {
         let scope = dir.path().join("project");
         std::fs::create_dir_all(&scope).unwrap();
         std::fs::write(scope.join("a.txt"), format!("{FILE}\n")).unwrap();
-        Self { dir, config, scope }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+            scope,
+        }
     }
 
     /// The stored events of a task, as JSON.
     fn events(&self, task: &str) -> Value {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(["--json", "events", task])
@@ -62,7 +68,7 @@ impl Env {
     /// The exit code, standard output and standard error of a run of the
     /// goal over the project.
     fn run(&self) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(["--json", "run", GOAL, "--scope"])
@@ -349,6 +355,7 @@ const SERVER_LINE: &str = "SERVERSTDERRMARK-a-line-during-the-call";
 /// A configuration for the fake backend (a script of decisions) with
 /// `level = "debug"`, `extra` appended, and a project with one file.
 struct Fake {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
     scope: PathBuf,
@@ -376,11 +383,16 @@ impl Fake {
         let scope = dir.path().join("project");
         std::fs::create_dir_all(&scope).unwrap();
         std::fs::write(scope.join("a.txt"), "x\n").unwrap();
-        Self { dir, config, scope }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+            scope,
+        }
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

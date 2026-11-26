@@ -19,6 +19,7 @@ const HELLO: &str = r#"(module (import "wasi_snapshot_preview1" "proc_exit" (fun
     (func (export "_start") (call $exit (i32.const 0))))"#;
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
 }
@@ -45,7 +46,11 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { dir, config }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+        }
     }
 
     /// A project holding a module that `run_wasm` can run.
@@ -57,7 +62,7 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .arg("--json")

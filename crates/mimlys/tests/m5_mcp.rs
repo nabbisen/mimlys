@@ -24,6 +24,7 @@ fn testserver() -> PathBuf {
 const BUILTIN: &str = r#""read_file", "write_file", "replace_in_file", "list_dir", "search_files", "delete_path", "run_script", "run_wasm""#;
 
 struct Env {
+    registry: common::Registry,
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
@@ -104,6 +105,7 @@ idempotent = true
         );
         std::fs::write(&config, text).unwrap();
         Self {
+            registry: common::Registry::new(),
             data,
             config,
             extra_env: vec![],
@@ -132,12 +134,12 @@ idempotent = true
             cmd.arg("-c")
                 .arg(format!("ulimit -s {kb} && exec \"$0\" \"$@\""))
                 .arg(env!("CARGO_BIN_EXE_mimlys"))
-                .env("MIMLYS_RUN_DIR", common::run_dir())
+                .env("MIMLYS_RUN_DIR", self.registry.path())
                 // As the harness sets it for `mimlys` itself (`common::run_bounded`).
                 .env("MIMLYS_DEBUG_STACK_DIVISOR", "4");
             return cmd;
         }
-        common::mimlys()
+        common::mimlys_in(&self.registry)
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
@@ -2004,7 +2006,8 @@ fn m5_configuration_and_check() {
             ),
         )
         .unwrap();
-        let out = common::mimlys()
+        let registry = common::Registry::new();
+        let out = common::mimlys_in(&registry)
             .arg("--config")
             .arg(&config)
             .arg("check")

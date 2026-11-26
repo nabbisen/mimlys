@@ -18,6 +18,7 @@ fn script(name: &str) -> PathBuf {
 }
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     scope: PathBuf,
 }
@@ -36,11 +37,15 @@ impl Env {
             script(script_name).to_string_lossy()
         );
         std::fs::write(dir.path().join("config.toml"), config).unwrap();
-        Self { dir, scope }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            scope,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(self.dir.path().join("config.toml"))
             .args(args)

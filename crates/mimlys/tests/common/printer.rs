@@ -79,8 +79,17 @@ pub struct Run {
     pub stderr: String,
 }
 
-pub fn testloop(args: &[&str], envs: &[(&str, &str)]) -> Run {
-    let mut cmd = super::mimlys_testloop();
+/// The registry of the environment whose data directory is `data`: beside it, in the temporary
+/// directory that the test made and removes, so that every command over that data directory
+/// names the one registry (handoff 014a-5, item 3).
+pub fn registry_of(data: &Path) -> std::path::PathBuf {
+    data.parent()
+        .expect("a data directory inside the test's directory")
+        .join("registry")
+}
+
+pub fn testloop(args: &[&str], envs: &[(&str, &str)], data: &Path) -> Run {
+    let mut cmd = super::mimlys_testloop_at(&registry_of(data));
     cmd.args(args);
     for (k, v) in envs {
         cmd.env(k, v);
@@ -112,7 +121,7 @@ pub fn run_printer(
         "TOKEN=sk-live-0123456789abcdef",
     ];
     args.extend_from_slice(extra);
-    testloop(&args, envs)
+    testloop(&args, envs, data)
 }
 
 pub fn blob_files(data: &Path) -> Vec<String> {
@@ -147,7 +156,7 @@ pub fn mimlys_command(data: &Path, args: &[&str]) -> Command {
         ),
     )
     .unwrap();
-    let mut cmd = super::mimlys();
+    let mut cmd = super::mimlys_at(&registry_of(data));
     cmd.arg("--config")
         .arg(&config)
         .args(args)

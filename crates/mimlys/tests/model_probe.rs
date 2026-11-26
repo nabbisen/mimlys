@@ -74,12 +74,17 @@ struct Rig {
     dir: tempfile::TempDir,
     config: PathBuf,
     registry: PathBuf,
+    /// The registry's holder, when the rig made its own: removed with the rig.
+    _own_registry: Option<common::Registry>,
     project: PathBuf,
 }
 
 impl Rig {
     fn new(entries: &[Entry], allow_remote: bool) -> Self {
-        Self::in_registry(entries, allow_remote, common::run_dir())
+        let own = common::Registry::new();
+        let mut rig = Self::in_registry(entries, allow_remote, own.path());
+        rig._own_registry = Some(own);
+        rig
     }
 
     /// A rig of its own that shares `registry` with others (the user's runtimes).
@@ -110,6 +115,7 @@ impl Rig {
             dir,
             config,
             registry,
+            _own_registry: None,
             project,
         }
     }
@@ -1041,7 +1047,8 @@ fn req_mdl_011_a_stop_signal_ends_the_probe_and_deletes_what_it_made() {
 #[test]
 fn req_mdl_011_a_stop_signal_ends_the_probes_wait_for_the_engines_gate() {
     let server = server(vec![Reply::Slow(HOLD_MS, Box::new(complete()))]);
-    let registry = common::run_dir();
+    let shared = common::Registry::new();
+    let registry = shared.path();
     let holding = Rig::in_registry(&[Entry::local("default", &server)], false, registry.clone());
     let _holder = Holder::start(&holding, &server);
     let probing = Rig::in_registry(&[Entry::local("default", &server)], false, registry.clone());

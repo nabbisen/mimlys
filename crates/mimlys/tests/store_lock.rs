@@ -10,6 +10,7 @@ mod common;
 use common::run_bounded;
 
 struct Rig {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
     scope: PathBuf,
@@ -30,7 +31,12 @@ impl Rig {
             ),
         )
         .unwrap();
-        Self { dir, config, scope }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+            scope,
+        }
     }
 
     fn data(&self) -> PathBuf {
@@ -38,7 +44,7 @@ impl Rig {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)

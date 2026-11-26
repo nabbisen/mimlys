@@ -10,6 +10,7 @@ mod common;
 use common::run_bounded;
 
 struct Env {
+    registry: common::Registry,
     dir: tempfile::TempDir,
     config: PathBuf,
     data: PathBuf,
@@ -30,11 +31,16 @@ impl Env {
             ),
         )
         .unwrap();
-        Self { dir, config, data }
+        Self {
+            registry: common::Registry::new(),
+            dir,
+            config,
+            data,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let mut cmd = common::mimlys();
+        let mut cmd = common::mimlys_in(&self.registry);
         cmd.arg("--config")
             .arg(&self.config)
             .args(args)
@@ -139,7 +145,7 @@ fn req_pers_010_nothing_is_deleted_by_age_only_by_command() {
     let mut text = std::fs::read_to_string(&env.config).unwrap();
     text.push_str("[workspace]\nretention_days = 30\n");
     std::fs::write(&with_timer, text).unwrap();
-    let mut cmd = common::mimlys();
+    let mut cmd = common::mimlys_in(&env.registry);
     cmd.arg("--config")
         .arg(&with_timer)
         .arg("check")
