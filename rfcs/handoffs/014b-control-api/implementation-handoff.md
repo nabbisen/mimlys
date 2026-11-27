@@ -1,5 +1,7 @@
 # Handoff 014b — The control API: requests and responses, one handler, the driver and the follower (release 0.14, phase 1)
 
+**Status (2026-11-27):** items 1 to 6 landed at `3a2efec` (`.git-exclude/reviewed/handoff-014b/README.md`); 014b-5 next.
+
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), decision 1, read with its **Amendment 1**, items 1, 2 and 9. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 1), after 014a.
 
 **Specification** (amended before this handoff):
@@ -85,3 +87,37 @@ Run each, and say which test kills it:
   - the 0.13.0 check;
   - what is still open, and why;
   - anything in external design §4 that the code showed to be wrong or unclear. Say it, and do not work around it.
+
+## After review: 014b-5
+
+The review of 2026-11-27 (`.git-exclude/reviewed/handoff-014b/README.md`) approved the stack #224 to #227 and landed it by fast-forward (`main` = `3a2efec`). External design §4 now holds your eight points, and its table has the stop requests and the asks. Five things remain.
+
+1. **A repeat never answers a change that took effect as an error** (your §7, points 3 and 4, and `client.rs:323`).
+   - **What is wrong:** a repeat of a verb that returns no task answers `conflict`, "applied already", where the first answer was a success. A user whose connection broke would read a failure for a grant that worked. And a promotion that failed after it wrote is answered `AlreadyApplied` at its first event, which calls a failure applied.
+   - **Change** (external design §4, "The recorded outcome"):
+     - **applied:** a success. The task now, for a verb that returns one; otherwise the recorded event of the change (the grant, the snapshot, the promotion), so that the command prints what it would have printed, or says "done earlier" with what was done;
+     - **failed after it wrote:** the recorded failure, with its reason;
+     - **refused:** answered afresh, as now;
+     - **a repeated deletion whose task is gone:** the client says that the task is gone, not `not_found`.
+   - **Tests:** each case, through the client.
+2. **The pinning test decides by state** (your §1).
+   - **What is wrong:** `m5_pinning_breaks_visibly` passes or fails by when the test server's `list_changed` is read, against when the next boundary asks. The driver's yield made the failure rarer; it did not remove it.
+   - **Change:** the test server sends `notifications/tools/list_changed` **before** its reply to `change_definition`, so that the boundary after that step has the notice whatever the timing.
+   - **The yield:** keep it only if it has a reason of its own, not the test's. A real server may notify after its reply, and reading a waiting notice before a boundary is right for it. If you keep it, its comment says that reason and not the test's.
+   - **Evidence:** the test run many times on CI (as 014a-5 did on Windows), and the yield removed for a run, to show that the test no longer needs it.
+3. **The core tests REQ-CLI-005's exception** (the lead's mutation: `apply_noted` cancelling a task the step halted survived every core test).
+   - **The test** (`in_flight.rs`): a stop noted during a step with an action that cannot be undone in flight leaves the task `halted` `unknown_outcome`, never `cancelled`. Only the integration test `m5_signals` held this rule; 014c's second client relies on it.
+4. **The CHANGELOG says what changed in the events:** besides `request_id`, a first stop signal during a step now writes one `task.pause_requested`, where it could write two. Under Changed, as a script that counts events would see it.
+5. **One comment:** `commands/events.rs` says `EVENTS_POLL_MS` is not in the register. It is LIM-O15, so the comment names it.
+
+**Accepted as you did them:**
+- **The four asks:** they depend on what the runtime was started with, which a client never sends.
+- **The runtime's own events as host methods:** no client can write `runtime.started`.
+- **`RuntimeError` itself serialized.**
+- **The creation's lookup,** bounded by the number of tasks, with the plan read in a test.
+- **A request that finds a step returning** waits for it. It is in §4 now.
+- **The 0.13.0 check.**
+
+**Mutations:** for items 1 and 3, one each, and say which test kills it. For item 2, the before and after on CI.
+
+**Return:** `.git-exclude/review-requests/014b-5-after-review/README.md`.

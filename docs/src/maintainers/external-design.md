@@ -118,6 +118,10 @@ ApprovalChannel request(rendered) -> decision        (v1: the CLI prompt)
 | `get_events` | any | Ordered events since a position | REQ-OBS-002 |
 | `get_metrics` | — | Derived metrics | REQ-OBS-003 |
 | `get_runtime_status` | — | Version, backend, tier, probe results, running tasks, pending items | REQ-OBS-006 |
+| `stop_at_boundary` (from 0.14) | `running` | The first stop signal: no new action in the step in flight, and a pause at its boundary. Noted, and taken by the step | REQ-CLI-005 |
+| `interrupt_step` (from 0.14) | `running` | The watchdog's: the step in flight is interrupted, except an action that cannot be undone | REQ-CLI-005 |
+| `stop_anyway` (from 0.14) | `running` | The second stop signal: the step is interrupted, an action that cannot be undone included (its task halts `unknown_outcome`), and a task the step leaves `running` is cancelled | REQ-CLI-005, REQ-TASK-006 |
+| `plan_effort`, `model_change`, `start_refusal`, `creation_forbidden` (from 0.14) | — | Asks that change nothing: the level a creation would get, a model changed under its backend's name, and REQ-SEC-010's judgement of the profile and backend in force. They are the runtime's because they depend on what it was started with, which a client never sends | REQ-TASK-013, REQ-MDL-010, REQ-SEC-010 |
 
 **Requests and responses (from 0.14; RFC 014, Amendment 1).**
 - **One handler.** The control API is a set of requests and responses, serializable and versioned with the runtime, handled in one place. Every client sends them: the CLI through an in-process transport in embedded mode, and through the daemon's socket in served mode (§19.5, from 0.14). No command calls the runtime's methods around it.
@@ -131,13 +135,18 @@ ApprovalChannel request(rendered) -> decision        (v1: the CLI prompt)
 - **Every other state-changing request on a task whose step is in flight** takes effect at the step's end, and is never written over by it (from 014b). No write is made to a task while its step holds it, except by the step itself.
   - **A pause** is noted at once and taken at the next boundary, as the stop signal's pause always was. Its reply comes at once and says so.
   - **A grant or a revocation** waits for the step to end, then applies from a fresh read of the task. Its client says, while it waits, that it waits for the step in flight.
-  - Approvals, rejections and answers need `waiting_user`, which has no step in flight.
+  - Approvals, rejections and answers need `waiting_user`, which has no step in flight. A step that has just put the task in `waiting_user` (or another state that is not `running`) still holds it while it returns: a request that finds the task out of `running` and a step still holding it waits for that step to end, then applies from a fresh read (review of 014b). A request that finds the task `running` is refused as the state `running`.
+  - **A request noted for a step** (a pause, a stop) has its outcome recorded when the step takes it, under its own id. A repeat before then is noted again, which changes nothing.
 
 **The session and the request id.**
 - **The session.** Every request carries it: the client process and its operating-system user. Under a daemon the session is verified, not claimed (§19.5).
 - **The request id.** Every state-changing request carries a request id, made by the client. The id is recorded with the change it caused, in the same write. A request whose id is already recorded returns the recorded outcome and applies nothing again.
   - **Where it is recorded:** in the events the change writes, as the optional envelope field `request_id` (§17.1). It is not a table, because the store's schema does not change: 0.13.0 refuses a newer schema, and a new one would close the way back.
-  - **The recorded outcome** is that the request was applied, at which event, and the task as it is now. A request that was refused wrote nothing, so a repeat of it is answered afresh.
+  - **The recorded outcome** is what the request did, as its events say. A repeat is answered with it, and never as a new error for a change that took effect (review of 014b):
+    - **applied:** a success, as the first answer was: the task as it is now for a verb that returns one; otherwise the recorded event of the change (a grant's `grant.issued`, a snapshot, a promotion), so that the client says what was done;
+    - **failed after it wrote** (a promotion that failed while applying, `workspace.promotion_failed`): the recorded failure, never "applied";
+    - **refused:** nothing was written, so a repeat is answered afresh;
+    - **a deletion whose task is gone:** "the task is gone", not `not_found`, when the request's id is known to the client as the one it sent. A repeated creation whose task was deleted since makes a new task. It takes a creation, an end and a deletion between a request and its repeat, which follows a reconnection at once, and the book says so.
 - **A repeated request** is the client's own, with its own id, after a broken connection. A client never tells the user that it does not know whether a request took effect.
 
 ---
