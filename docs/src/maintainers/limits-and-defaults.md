@@ -136,12 +136,14 @@
 | LIM-O10 | Retries of a transient download failure (no connection, timeout, HTTP 429 or 5xx), and the waits before them | 3, after 1 s, 2 s and 4 s | fixed | GitHub's release downloads answered 504 intermittently for an hour on 2026-11-08 (011g's CI) |
 | LIM-O11 | Bound of one admission-registry operation (take, return, reap) | 2000 ms | fixed | Provisional (RFC 013); past it the runtime runs unadmitted and says so |
 | LIM-O12 | Engine requests in flight per backend endpoint per user (`max_in_flight`) | 1 | 1–16 | One consumer GPU serves one request at a time; nothing in the M7b report argues otherwise (§6) |
-| LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
-| LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
+| LIM-O13 | Idle time after which a daemon exits (no client connected, and no task running, queued or waiting for the user) | 30 min | 1 min – never (`[runtime] daemon_idle`) | Design choice (RFC 014, Amendment 1, item 10): a daemon with nothing to do costs only memory; a waiting task keeps it |
+| LIM-O14 | Wait for a connection to the daemon, and for its hello | 2000 ms | fixed | Design choice (RFC 014, Amendment 1, item 10): a local connect takes microseconds; this fences a daemon that does not answer |
 | LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
 | LIM-O17 | Wait of `events --follow` for a runtime to take the store of a `running` task no runtime holds, before it says `recovery pending` and ends | 5000 ms | fixed | A runtime takes the lock within a process start; ten polls of LIM-O15 (handoff 002d) |
 | LIM-O18 | Window of the rate bound on a server's standard error (LIM-I18) | 1000 ms | fixed | One count line per second at most (handoff 009h) |
 | LIM-O19 | Wait of a cancel for the step in flight to end (external design §4) | 5000 ms: LIM-O2 + 3000 ms | fixed (follows LIM-O2) | Design choice (reviews of 014a and 014a-5): the step's execution is terminated within LIM-O2, then the step writes its end in the 3000 ms after it |
+| LIM-O20 | Size of the daemon's log file before it is rotated | 10 MiB | fixed | Design choice (014c): a bound, so that a long-lived daemon's log cannot fill the disk |
+| LIM-O21 | Rotated copies of the daemon's log that are kept | 5 | fixed | Design choice (014c): about 50 MiB in all, the oldest dropped |
 | LIM-O16 | Grace for an MCP server to end after its standard input closes, before its group is killed | 5000 ms | 500 – 30000; per server `shutdown_ms` | rypsok's graceful shutdown takes up to 3 s by default (its letter of 2026-11-11); LIM-O2's 2 s cut it short |
 
 ## Model backend

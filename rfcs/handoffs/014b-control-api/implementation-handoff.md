@@ -1,6 +1,6 @@
 # Handoff 014b — The control API: requests and responses, one handler, the driver and the follower (release 0.14, phase 1)
 
-**Status (2026-11-27):** items 1 to 6 landed at `3a2efec`, 014b-5 at `0297d3a` and 014b-6 at `7756a8c` (`.git-exclude/reviewed/handoff-014b/README.md`, `.git-exclude/reviewed/handoff-014b-5/README.md`, `.git-exclude/reviewed/handoff-014b-6/README.md`); 014b-7 next.
+**Status (2026-11-28): done.** Items 1 to 6 landed at `3a2efec`, 014b-5 at `0297d3a`, 014b-6 at `7756a8c` and 014b-7 at `9244d7b` (`.git-exclude/reviewed/handoff-014b/README.md` and its `-5`, `-6` and `-7`).
 
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), decision 1, read with its **Amendment 1**, items 1, 2 and 9. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 1), after 014a.
 

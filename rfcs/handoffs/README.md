@@ -87,6 +87,7 @@ The local daemon (ROADMAP, "Release 0.14"; RFC 014 with its Amendment 1). Each l
 |---|---|---|---|
 | 1 | [014a What a long-lived process needs](./014a-long-lived-process/implementation-handoff.md) | RFC 014 | — |
 | 2 | [014b The control API: requests and responses, one handler, the driver and the follower](./014b-control-api/implementation-handoff.md) | RFC 014 | 014a |
+| 3 | [014c The daemon on Linux and macOS](./014c-daemon-unix/implementation-handoff.md) | RFC 014 | 014a, 014b |
 
 ## Release 0.13
 
@@ -154,6 +155,10 @@ Common rules for every handoff:
 - Every number comes from the limits register as a named constant with the `LIM-` id in its doc comment; nothing is hard-coded twice.
 - Fixed vocabularies are Rust enums with `serde` renames in snake_case (CLR-6). An unknown value is an error on input from outside the store (the configuration, the model's reply, a tool's result); a record that a newer release of mimlys wrote is read with the unknown value kept by name and marked, never failing the read (REQ-MAIN-006, external design §22; from 0.13).
 - A design defect found while implementing goes back as a question in the review request, not as a local redesign (project rules).
+- **The owner's limit for the development machine** (the reviews of 015-0 to 014b-7). Every build and test runs at nice 19 on the cores you are given, under the thermal guard:
+  - **read the temperature in a command of its own** before each chunk; above 85 °C, wait until 80 °C or lower;
+  - **`nice -n` is relative:** a shell that already runs at −4 gives 15 for `nice -n 19`. Use `nice -n 40`, which the system clamps to 19, whatever the shell's own niceness;
+  - **never pause a test's process:** a test with a wall-clock bound would fail for the pause, not for the product.
 - **No open useless PRs, and no useless branches** (the owner's rule of 2026-11-26). A PR is closed, and its branch deleted, as soon as its role is finished, by the architect or by the dev team. They are never left for the owner.
   - **Finished means:** its work is on `main`, a fast-forward, a squash or a cherry-pick; or it was a throwaway (a mutation, a diagnosis, a stress run) whose result is recorded; or it was superseded.
   - **The architect** closes the PRs it lands, and deletes their branches, at the landing. It checks first that the work is on `main`, and archives the heads in `.git-exclude/archive/`.

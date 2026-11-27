@@ -780,6 +780,7 @@ config_version = 2                     # 2 from 0.13; a version-1 file (one `[ba
 
 [runtime]
 data_dir = "…"                         # platform default when absent
+# daemon_idle = "30m"                  # LIM-O13: an idle daemon exits after this; "never" allowed (§19.5, from 0.14)
 
 [backends.default]                     # a level that names no backend runs on `default` (RFC 015)
 kind = "openai_compatible"             # or "fake" with `script = "decisions.json"` (the scripted decisions)
@@ -991,6 +992,51 @@ A task is created at one of three levels, `quick`, `standard` or `deep`: fixed i
   - The fitness probe tells whether a model acts, never whether it finishes a task, and the engine matters as much as the model.
   - On one consumer GPU, a level on another model pays one swap at the task's first request; two `llama-server` processes pay none.
 
+### 19.5 The daemon (RFC 014 with Amendment 1, from 0.14)
+
+One daemon per operating-system user and data directory serves the control API (§4) to that user's clients. A client that finds no daemon for its store runs embedded, as before. The two modes send the same requests through the same handler (REQ-ARCH-009).
+
+**Where it is, and who may reach it** (REQ-SEC-016; THR-39).
+- **Unix (Linux, macOS):** a Unix domain socket of mode 0600, named `d-<hash>.sock` from a short hash of the data directory's canonical path, in the registry's directory of RFC 013 (`$XDG_RUNTIME_DIR/mimlys`, or its fallbacks).
+  - **The directory is checked by both ends** before use: owned by the user, mode 0700, not a symbolic link. A path that does not fit the platform's limit for a socket (about 104 bytes on macOS) is refused, saying why, never truncated.
+  - **The check is mutual.** The daemon reads the client's peer credentials and refuses every uid but its own. The client reads the daemon's and refuses to send anything to a process of another user.
+- **Windows** (from 014d): a named pipe, created as its first instance, with a DACL for the user's SID alone; the client checks the server's process owner before it sends.
+- **The daemon's own tree is refused** (Amendment 1, item 5). A request from a process in a session that the daemon made (the worker's, an MCP server's) is refused, the reason said and the refusal recorded. On Unix this is the peer's session id (`getsid`), against the sessions of the daemon's children; on Windows, Job Object membership. A descendant that leaves its session (a new `setsid`) is not caught: THR-39 says so.
+- **The session is verified:** the client's pid from the peer credentials where the system gives one, never the client's claim, and the daemon's own user as `os_user`.
+
+**The hello** (fixed for every version, never changing shape). A connection opens with one frame each way, length-prefixed JSON, as the worker's protocol frames are.
+- **The daemon's hello:** the protocol's name, the hello's version, the runtime's version, the configuration's hash, and a random salt.
+- **The client's hello:** the runtime's version, the hash of its own configuration file, and, for each `env:` reference, a keyed hash of its own value under the salt.
+- **What the daemon answers:**
+  - **another runtime version:** refused, naming both versions and `mimlys daemon restart`;
+  - **another configuration, or another value of a secret:** state-changing requests are refused, naming the remedy `mimlys daemon restart` (and the reference, never the value). Readers are not affected.
+- **`stop` is also fixed for every version,** so that a client of any release can stop a daemon of any release.
+
+**Lifecycle** (REQ-CLI-008).
+- **`mimlys daemon start`** detaches (a new session, its standard streams closed) and returns once the daemon answers a hello, or fails with the reason. `--foreground` keeps it attached, for a service manager or a test.
+- **`mimlys daemon stop`:** running tasks pause at their next boundary (REQ-CLI-005's rule, within LIM-O2 for an execution). It lists every task it paused and how to resume it, then exits. Nothing resumes by itself.
+- **`mimlys daemon restart`:** a stop, then a start, then the resumption of exactly the tasks the stop paused, said by name.
+- **`mimlys daemon status`:** the daemon's pid, uptime, socket, clients and configuration hash, the tasks it holds, and, on request, the tail of its log.
+- **Idle:** no client connected, and no task running, queued or waiting for the user. A daemon idle for LIM-O13 exits and says so in its log. `[runtime] daemon_idle` sets it, `never` included.
+- **A dead daemon:** a client whose connect is refused, or not answered within LIM-O14, with the store's lock free, removes the stale socket, says `daemon not running` once, and runs embedded.
+- **On-demand start** (`[runtime] serve = on_demand`) is 014d's.
+
+**One owner, one scheduler** (REQ-PERS-014, REQ-SCHED-008).
+- **The daemon holds the store's lock for its life.** An embedded runtime that meets it names the daemon's pid.
+- **The daemon's driver owns every client's tasks:** LIM-X1 and LIM-X2 are counted across them, and the engine gate is the daemon's. Its clients take no registry slots, and the daemon is recorded in the registry, so that the machine view of `status` shows it.
+- **A task that waits in line says so:** `queued behind task <id>, running since <time>`.
+
+**Following and requests over the socket.**
+- **Readers stay direct** (REQ-PERS-013): a follower reads the task and its events from the store. The daemon tells it of a change (a frame), with LIM-O15's poll as a safety.
+- **The commands that follow a task** (`run`, `approve`, `answer`, `task resume`) follow in both modes unless `--detach` is given. `--detach` needs a daemon, and in embedded mode it is refused, saying so.
+  - **Ctrl-C** in a following client sends the stop requests of §4, as in embedded mode.
+  - **A client that goes away** leaves the task running, and the daemon goes on.
+- **A broken connection:** the client reconnects within LIM-O14 and sends the same request once more, with the same id (§4), and answers with what the store recorded. It never says that it does not know whether a request took effect.
+
+**The daemon's log** is a file under the data directory (`logs/daemon.log`). The file is bounded by LIM-O20 and its rotated copies by LIM-O21, the oldest dropped. It holds the connections, which are not events.
+
+**`status` in both modes** says which mode is in force, and, when served, what `mimlys daemon status` says first.
+
 ## 20. Failure and degradation
 
 | Condition | Visible behaviour | Requirement |
@@ -1000,6 +1046,11 @@ A task is created at one of three levels, `quick`, `standard` or `deep`: fixed i
 | A level chosen that has no key, shipped or configured (from 0.13; `deep` until it is configured) | `run --effort <level>` and `task new --effort <level>` refused, naming `[effort.<level>]` and what to set in it (a backend, or a budget); no task is created | REQ-TASK-013 |
 | A level above the profile's or the ceiling's `effort_max` (from 0.13) | `run --effort <level>` and `task new --effort <level>` refused, naming the bound and where it is set; no task is created | REQ-TASK-013 |
 | A task's backend unreachable at a creation that starts it (from 0.13; `run`, and `task new` without `--hold`, at every level and with or without `--effort`) | refused with the backend's name and the reason; no task is created. The line names `[backends.<name>]` to fix, and names `[effort.<level>]` only when that level is what chose the backend. `task new --hold` contacts no backend | REQ-MDL-010 |
+| A daemon's socket refused, or not answered within LIM-O14, with the store's lock free (from 0.14) | the stale socket removed, `daemon not running` said once, the command runs embedded | REQ-CLI-008 |
+| A client and a daemon of different runtime versions (from 0.14) | refused at the hello, naming both versions and `mimlys daemon restart` | REQ-SEC-016 |
+| A client whose configuration or a secret's value differs from the daemon's (from 0.14) | state-changing requests refused, naming `mimlys daemon restart` (and the reference, never the value); readers unaffected | REQ-SEC-016 |
+| A request from a process of the daemon's own tree (from 0.14) | refused, with the reason, and the refusal recorded | REQ-SEC-016, INV-13 |
+| A peer of another user, or a socket directory that is not the user's own, mode 0700 (from 0.14) | refused before anything is sent or read | REQ-SEC-016 |
 | A task's backend no longer configured at a start (from 0.13) | the start refused, naming the backend and the configured ones; the task stays as it was; nothing moves it to another backend | REQ-MDL-010 |
 | A task's backend now `remote` under a profile without `external`, at a start | the task halts `policy`, naming the backend and the profile, before any request is sent | REQ-SEC-010 |
 | A task's backend serves another model under the same name, at a start (from 0.13) | the task goes on; a notice at the start names both models; each step records its model, and `task show` says the task used more than one | REQ-MDL-010, REQ-PERS-015 |
