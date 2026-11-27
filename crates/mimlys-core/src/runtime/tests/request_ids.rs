@@ -780,3 +780,56 @@ fn req_arch_004_a_request_whose_task_was_deleted_since_is_answered_as_applied_wh
     };
     assert_eq!(error.kind(), "not_found", "{error}");
 }
+
+/// External design §4, "a repeated creation": it finds its task while the task's record stays,
+/// deleted or not (a default deletion keeps it), and is answered with that task, and makes none.
+/// After `delete --audit` the record is gone, and the repeat makes a new task.
+#[test]
+fn req_arch_004_a_creation_repeated_after_a_deletion_finds_its_task_unless_the_audit_went() {
+    let h = Harness::new(vec![]);
+    let id = RequestId::new(&SystemIds);
+    let Outcome::Done(Reply::Task(made)) = h
+        .runtime
+        .handle(envelope(&h, id, create_request(true)))
+        .outcome
+    else {
+        panic!("a task")
+    };
+    deleted(&h, made.task_id, false);
+    let tasks = h.runtime.list_tasks().unwrap().len();
+    let Outcome::AlreadyApplied(already) = h
+        .runtime
+        .handle(envelope(&h, id, create_request(true)))
+        .outcome
+    else {
+        panic!("the repeat of a creation whose task was deleted: its task")
+    };
+    assert_eq!(already.event, "task.created");
+    assert_eq!(already.task.unwrap().task_id, made.task_id);
+    assert!(already.task_deleted);
+    assert_eq!(
+        h.runtime.list_tasks().unwrap().len(),
+        tasks,
+        "none was made"
+    );
+
+    // With the audit gone too, the request is not recorded any more: a new task.
+    let id = RequestId::new(&SystemIds);
+    let Outcome::Done(Reply::Task(first)) = h
+        .runtime
+        .handle(envelope(&h, id, create_request(true)))
+        .outcome
+    else {
+        panic!("a task")
+    };
+    deleted(&h, first.task_id, true);
+    let Outcome::Done(Reply::Task(second)) = h
+        .runtime
+        .handle(envelope(&h, id, create_request(true)))
+        .outcome
+    else {
+        panic!("after `--audit` the repeat makes a task")
+    };
+    assert_ne!(second.task_id, first.task_id);
+    assert!(h.runtime.get_task(second.task_id).is_ok());
+}
