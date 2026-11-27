@@ -11,6 +11,7 @@ mod control;
 mod handler;
 mod loop_;
 mod read;
+mod recorded;
 mod requests;
 mod steps;
 mod storage;
@@ -146,6 +147,17 @@ pub enum RuntimeError {
         /// `Promotion::restore_hint`).
         restore_hint: String,
     },
+    /// A change that a request wrote and then failed, answered when the request is sent again
+    /// (external design §4, "The recorded outcome"): the reason as the change's event recorded
+    /// it. The first answer was the verb's own error, whose kind and details the event does not
+    /// keep, so this one is `internal`.
+    #[error("{reason}")]
+    Recorded {
+        /// The event that recorded the failure.
+        event: String,
+        /// Why, as it was recorded.
+        reason: String,
+    },
     /// The backend failed.
     #[error("{0}")]
     Backend(#[from] BackendError),
@@ -196,7 +208,7 @@ impl RuntimeError {
                 cause: WorkspaceError::Conflict { .. } | WorkspaceError::Unlisted { .. },
                 ..
             } => "conflict",
-            RuntimeError::PromotionFailed { .. } => "internal",
+            RuntimeError::PromotionFailed { .. } | RuntimeError::Recorded { .. } => "internal",
             RuntimeError::Workspace(WorkspaceError::NotFound { .. }) => "not_found",
             RuntimeError::Workspace(
                 WorkspaceError::Refused { .. }

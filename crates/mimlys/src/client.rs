@@ -8,7 +8,7 @@
 //! process (embedded mode); 014c adds the daemon's socket behind the same [`Transport`], so
 //! that REQ-ARCH-009 holds by construction: a command is written once.
 
-use mimlys_core::api::{Envelope, Notice, Reply, Request, Response};
+use mimlys_core::api::{AlreadyApplied, Did, Envelope, Notice, Reply, Request, Response};
 use mimlys_core::grant::{Grant, GrantKind};
 use mimlys_core::ids::{GrantId, PromotionId, RequestId, SnapshotId, SystemIds, TaskId};
 use mimlys_core::runtime::{
@@ -17,7 +17,8 @@ use mimlys_core::runtime::{
 use mimlys_core::snapshot::{Footprint, Promotion, PromotionPlan, SnapshotRecord};
 use mimlys_core::spi::PersistenceError;
 use mimlys_core::task::{Extension, Task};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::Notify;
 
 /// What carries an envelope to the runtime that handles it and brings the response back. It
@@ -56,6 +57,28 @@ pub trait Transport: Send + Sync {
 pub struct Client {
     transport: Arc<dyn Transport>,
     session: Session,
+    /// The ids of the deletions this client has sent and whose answer was not a refusal: a
+    /// deletion sent once more under one of them, and answered that the task is not found, is
+    /// answered "the task is gone" (external design §4, "The recorded outcome"). Shared by the
+    /// clones of the client.
+    deletions: Arc<Mutex<HashSet<RequestId>>>,
+}
+
+/// What a deletion came to, as the client says it (external design §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Deleted {
+    /// The task was deleted, and this is what it held.
+    Footprint(Footprint),
+    /// The task is gone: the request was sent before, under the same id, and the deletion took
+    /// effect then. What it held was in the first answer, which is not kept.
+    Gone,
+}
+
+/// What a request came to, before it is given its type: the reply, or that the task the request
+/// names is gone (it was deleted, by this request or since it was applied).
+enum Answered {
+    Reply(Reply),
+    Gone,
 }
 
 impl Client {
@@ -67,7 +90,11 @@ impl Client {
 
     /// A client over any transport.
     pub fn over(transport: Arc<dyn Transport>, session: Session) -> Self {
-        Self { transport, session }
+        Self {
+            transport,
+            session,
+            deletions: Arc::default(),
+        }
     }
 
     /// The session every request carries.
@@ -81,12 +108,34 @@ impl Client {
     }
 
     /// Sends `request` under `request_id`: a request sent once more, after a connection broke,
-    /// goes under the id it first had (014c), so that it is applied once. The answer to a request
-    /// that was applied before is the task as it is now, for the verbs that return one; for the
-    /// others it is an error that says where the request was applied (what 014c's reconnection
-    /// reads for itself).
+    /// goes under the id it first had (014c), so that it is applied once. A repeat is answered
+    /// with what the request did (external design §4, "The recorded outcome"), and never with an
+    /// error for a change that took effect:
+    ///
+    /// - **applied:** the success it was: the task as it is now for a verb that returns one, the
+    ///   grant, the snapshot or the promotion read back from the store for the others; the user
+    ///   is told, on standard error, that it was done earlier;
+    /// - **failed after it wrote:** the recorded failure, with its reason;
+    /// - **refused:** answered afresh, as the runtime does;
+    /// - **the task is gone** (deleted since): `not_found`, as the task is.
     pub fn send_as(&self, request_id: RequestId, request: Request) -> Result<Reply, RuntimeError> {
+        match self.exchange(request_id, request)? {
+            Answered::Reply(reply) => Ok(reply),
+            Answered::Gone => Err(RuntimeError::NotFound {
+                what: "task".into(),
+            }),
+        }
+    }
+
+    fn exchange(&self, request_id: RequestId, request: Request) -> Result<Answered, RuntimeError> {
         let asked = (request.name(), returns_task(&request));
+        let task_id = request.task_id();
+        let deletion = matches!(request, Request::DeleteTask { .. });
+        // A deletion sent under this id before: its task may be gone because it worked.
+        let sent_before = deletion && self.deletions().contains(&request_id);
+        if deletion {
+            self.deletions().insert(request_id);
+        }
         let response = self.transport.send(
             Envelope {
                 request_id,
@@ -100,10 +149,32 @@ impl Client {
                 "an answer to another request than the one that was sent",
             ));
         }
-        match response.into_outcome()? {
-            Ok(reply) => Ok(reply),
-            Err(already) => applied_before(asked, already),
+        match response.into_outcome() {
+            Ok(Ok(reply)) => Ok(Answered::Reply(reply)),
+            Ok(Err(already)) => applied_before(asked, task_id, already),
+            Err(RuntimeError::NotFound { what }) if sent_before && what == "task" => {
+                // The deletion was sent under this id before, and the task is not there now: it
+                // took effect then. The id stays known, for the next repeat.
+                if let Some(task_id) = task_id {
+                    crate::output::diag(crate::messages::task_gone(&task_id.to_string()));
+                }
+                Ok(Answered::Gone)
+            }
+            Err(error) => {
+                if deletion {
+                    // Refused, so nothing was written: the id is not one a deletion took effect
+                    // under, and a repeat of it is answered afresh.
+                    self.deletions().remove(&request_id);
+                }
+                Err(error)
+            }
         }
+    }
+
+    fn deletions(&self) -> std::sync::MutexGuard<'_, HashSet<RequestId>> {
+        self.deletions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// A follower of the task begins: the driver takes it if it is running.
@@ -259,11 +330,23 @@ impl Client {
         }
     }
 
-    /// `delete_task`.
-    pub fn delete_task(&self, task_id: TaskId, audit: bool) -> Result<Footprint, RuntimeError> {
-        match self.send(Request::DeleteTask { task_id, audit })? {
-            Reply::Footprint(footprint) => Ok(footprint),
-            other => Err(unexpected_reply("delete_task", &other)),
+    /// `delete_task`. A deletion sent once more, after it took effect, is answered that the
+    /// task is gone ([`Deleted::Gone`]), never as an error (external design §4).
+    pub fn delete_task(&self, task_id: TaskId, audit: bool) -> Result<Deleted, RuntimeError> {
+        self.delete_task_as(RequestId::new(&SystemIds), task_id, audit)
+    }
+
+    /// `delete_task` under `request_id`: the id of a deletion sent before (014c's repeat).
+    pub fn delete_task_as(
+        &self,
+        request_id: RequestId,
+        task_id: TaskId,
+        audit: bool,
+    ) -> Result<Deleted, RuntimeError> {
+        match self.exchange(request_id, Request::DeleteTask { task_id, audit })? {
+            Answered::Reply(Reply::Footprint(footprint)) => Ok(Deleted::Footprint(footprint)),
+            Answered::Reply(other) => Err(unexpected_reply("delete_task", &other)),
+            Answered::Gone => Ok(Deleted::Gone),
         }
     }
 
@@ -317,21 +400,45 @@ impl Client {
     }
 }
 
-/// The answer to a request that was applied before (external design §4, "The recorded outcome"):
-/// the task as it is now, for a verb that returns a task; any other verb's result was not kept,
-/// and the error says where it was applied.
+/// The answer to a request whose id is recorded (external design §4, "The recorded outcome"):
+/// what it did, as its events say. `name` is the request's, and `returns_task` whether its reply
+/// is the task.
 fn applied_before(
     (name, returns_task): (&str, bool),
-    already: mimlys_core::api::AlreadyApplied,
-) -> Result<Reply, RuntimeError> {
-    match already.task {
-        Some(task) if returns_task => Ok(Reply::Task(task)),
-        _ => Err(RuntimeError::Conflict {
-            detail: format!(
-                "the request {name} was applied already, at event {} (`{}`)",
-                already.position, already.event
-            ),
-        }),
+    task_id: Option<TaskId>,
+    already: AlreadyApplied,
+) -> Result<Answered, RuntimeError> {
+    let AlreadyApplied {
+        position,
+        event,
+        task,
+        did,
+    } = already;
+    match did {
+        // It wrote, and failed: the failure, never "applied".
+        Did::Failed { event, reason } => Err(RuntimeError::Recorded { event, reason }),
+        Did::Applied { reply } => {
+            let reply = match (reply, task) {
+                (Some(reply), _) => Some(reply),
+                (None, Some(task)) if returns_task => Some(Reply::Task(task)),
+                (None, _) => None,
+            };
+            match reply {
+                Some(reply) => {
+                    crate::output::diag(crate::messages::done_earlier(name, position, &event));
+                    Ok(Answered::Reply(reply))
+                }
+                // Nothing to answer with: a deletion's footprint is not kept, and what a reply is
+                // made of (a snapshot, a promotion, the task) went with the task's data when it
+                // was deleted since. The task is gone.
+                None => {
+                    if let Some(task_id) = task_id {
+                        crate::output::diag(crate::messages::task_gone(&task_id.to_string()));
+                    }
+                    Ok(Answered::Gone)
+                }
+            }
+        }
     }
 }
 

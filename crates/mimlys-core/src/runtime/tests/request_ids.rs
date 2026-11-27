@@ -7,8 +7,8 @@
 use super::handler::{by_the_verb, create_request, scenario, scenario_harness};
 use super::long_lived::{Release, block_on_waiting, rig, until};
 use super::*;
-use crate::api::{AlreadyApplied, Envelope, Outcome, Reply, Request, Response};
-use crate::event::EventRecord;
+use crate::api::{AlreadyApplied, Did, Envelope, Outcome, Reply, Request, Response};
+use crate::event::{Event, EventRecord};
 use crate::ids::{RequestId, SystemIds};
 use std::sync::atomic::Ordering;
 
@@ -174,6 +174,7 @@ fn req_arch_004_a_creation_repeated_makes_no_second_task() {
         position,
         event,
         task: now,
+        ..
     }) = second.outcome
     else {
         panic!("{second:?}")
@@ -311,4 +312,201 @@ fn req_arch_004_a_pause_taken_at_the_steps_end_records_the_id_of_its_request() {
         matches!(again.outcome, Outcome::AlreadyApplied(_)),
         "{again:?}"
     );
+}
+
+/// The same request twice under one id: the first answer, and the second, with the store as the
+/// first left it.
+fn sent_twice(h: &Harness, request: Request) -> (Outcome, AlreadyApplied) {
+    let id = RequestId::new(&SystemIds);
+    let first = h.runtime.handle(envelope(h, id, request.clone()));
+    let events = h.persistence.events();
+    let second = h.runtime.handle(envelope(h, id, request));
+    assert_eq!(h.persistence.events(), events, "the repeat wrote an event");
+    let Outcome::AlreadyApplied(already) = second.outcome else {
+        panic!("a repeat of a request that wrote: {second:?}")
+    };
+    (first.outcome, already)
+}
+
+/// REQ-ARCH-004 (external design §4, "The recorded outcome"): a repeat of an applied request that
+/// returns no task is a success, with what the first answer held, read back from the store: the
+/// grant, the snapshot, the promotion, as they are now; nothing is applied again.
+#[test]
+fn req_arch_004_a_repeat_of_an_applied_request_is_answered_with_what_it_did() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    let each = |request: Request, expected: &str| {
+        let (first, again) = sent_twice(&h, request);
+        let Outcome::Done(reply) = first else {
+            panic!("{expected}: {first:?}")
+        };
+        assert_eq!(
+            again.did,
+            Did::Applied {
+                reply: Some(reply.clone())
+            },
+            "{expected}"
+        );
+        assert_eq!(again.event, expected);
+        reply
+    };
+    let Reply::Grant(grant) = each(
+        Request::GrantCapability {
+            task_id: id,
+            kind: GrantKind::Tool {
+                name: "write_file".into(),
+            },
+        },
+        "grant.issued",
+    ) else {
+        panic!("a grant")
+    };
+    each(
+        Request::RevokeCapability {
+            task_id: id,
+            grant_id: grant.grant_id,
+        },
+        "grant.revoked",
+    );
+    each(
+        Request::RollbackWorkspace {
+            task_id: id,
+            snapshot_id: None,
+        },
+        "workspace.rollback",
+    );
+    let snapshots = h.persistence.load_snapshots(id).unwrap().len();
+    let Reply::Promotion(promotion) = each(
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+        "workspace.snapshot",
+    ) else {
+        panic!("a promotion")
+    };
+    assert_eq!(
+        h.persistence.load_snapshots(id).unwrap().len(),
+        snapshots + 1,
+        "one backup, not two"
+    );
+    each(
+        Request::RevertPromotion {
+            task_id: id,
+            promotion_id: promotion.promotion_id,
+            overwrite_edited: false,
+        },
+        "workspace.rollback",
+    );
+}
+
+/// External design §4: a promotion that failed after it wrote (`workspace.promotion_failed`) is
+/// answered, when sent again, with the recorded failure and its reason, never as applied; the
+/// first answer was the same failure.
+#[test]
+fn req_arch_004_a_repeat_of_a_promotion_that_failed_after_it_wrote_is_answered_with_the_failure() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    h.workspaces.on_promote_apply(Box::new(|_| {
+        Err(crate::spi::WorkspaceError::Storage {
+            detail: "injected".into(),
+        })
+    }));
+    let (first, again) = sent_twice(
+        &h,
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    );
+    let Outcome::Failed(error) = first else {
+        panic!("{first:?}")
+    };
+    assert!(matches!(error, RuntimeError::PromotionFailed { .. }));
+    // The first event it wrote is the backup, which is not the failure: the answer is.
+    assert_eq!(again.event, "workspace.snapshot");
+    assert_eq!(
+        again.did,
+        Did::Failed {
+            event: "workspace.promotion_failed".into(),
+            reason: error.to_string()
+        }
+    );
+}
+
+/// A promotion whose request wrote the backup and stopped (a crash, a failed write) before
+/// recording anything of the apply is not applied either: the answer says where it stopped.
+#[test]
+fn req_arch_004_a_repeat_of_a_promotion_that_stopped_before_it_was_recorded_is_not_applied() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    let request = RequestId::new(&SystemIds);
+    let backup = h.persistence.load_snapshots(id).unwrap()[0].snapshot_id;
+    let mut written = h.runtime.event(
+        Actor::Runtime,
+        Some(id),
+        None,
+        None,
+        Event::WorkspaceSnapshot {
+            snapshot_id: backup,
+            reason: "backup".into(),
+        },
+    );
+    written.request_id = Some(request);
+    h.persistence.append_event(&written).unwrap();
+    let again = h.runtime.handle(envelope(
+        &h,
+        request,
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    ));
+    let Outcome::AlreadyApplied(already) = again.outcome else {
+        panic!("{again:?}")
+    };
+    let Did::Failed { event, reason } = already.did else {
+        panic!("not applied: {:?}", already.did)
+    };
+    assert_eq!(event, "workspace.snapshot");
+    assert!(reason.contains("did not complete"), "{reason}");
+    assert_eq!(h.persistence.load_promotions(id).unwrap().len(), 0);
+}
+
+/// External design §4: a deletion repeated after it took effect has no footprint to answer with
+/// (it was not kept): the answer is that it was applied, and nothing more. The audit stays unless
+/// asked, so the request is found by its event, and the task's record with it.
+#[test]
+fn req_arch_004_a_repeat_of_a_deletion_finds_the_task_gone() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    h.runtime.cancel_task(&h.session, id).unwrap();
+    let (first, again) = sent_twice(
+        &h,
+        Request::DeleteTask {
+            task_id: id,
+            audit: false,
+        },
+    );
+    assert!(matches!(first, Outcome::Done(Reply::Footprint(_))));
+    assert_eq!(again.event, "task.deleted");
+    assert_eq!(again.did, Did::Applied { reply: None });
+    // With the audit gone too, nothing is found: the id is not recorded any more.
+    let other = h.create_with(|c| {
+        c.hold = true;
+        c.scope.root = "/home/u/other".into();
+    });
+    h.runtime.cancel_task(&h.session, other).unwrap();
+    let request = RequestId::new(&SystemIds);
+    let delete = Request::DeleteTask {
+        task_id: other,
+        audit: true,
+    };
+    let first = h.runtime.handle(envelope(&h, request, delete.clone()));
+    assert!(matches!(first.outcome, Outcome::Done(Reply::Footprint(_))));
+    let second = h.runtime.handle(envelope(&h, request, delete));
+    let Outcome::Failed(error) = second.outcome else {
+        panic!("{second:?}")
+    };
+    assert_eq!(error.kind(), "not_found", "{error}");
 }

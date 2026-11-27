@@ -440,8 +440,8 @@ pub enum Notice {
 }
 
 /// What a request whose id is already recorded returns (external design §4, "The recorded
-/// outcome"): that it was applied, at which event, and the task as it is now. Nothing is applied
-/// again.
+/// outcome"): what the request did, as its events say, and the task as it is now. Nothing is
+/// applied again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlreadyApplied {
     /// The position of the first event the request's change wrote.
@@ -450,6 +450,33 @@ pub struct AlreadyApplied {
     pub event: String,
     /// The task, as it is now; none when it was deleted since, or the request names none.
     pub task: Option<Box<Task>>,
+    /// What the change came to.
+    pub did: Did,
+}
+
+/// What a request that was recorded did (external design §4, "The recorded outcome"). A request
+/// that was refused wrote nothing and is neither: it is answered afresh.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "did", rename_all = "snake_case")]
+pub enum Did {
+    /// The change took effect: the first answer was a success. `reply` is the verb's result for a
+    /// verb whose result is not the task (a grant, a snapshot, a promotion), read from the store
+    /// as it is now, so that a client prints what the first answer would have said. It is none
+    /// for a verb whose result is the task (the task is [`AlreadyApplied::task`]), for one whose
+    /// result is not kept (a deletion's footprint), and when the store no longer holds what the
+    /// reply is made of (the task was deleted since).
+    Applied {
+        /// The verb's result, rebuilt.
+        reply: Option<Reply>,
+    },
+    /// The change wrote, and then failed: what its events recorded, never "applied".
+    Failed {
+        /// The event that recorded the failure (`workspace.promotion_failed`), or the last event
+        /// the request wrote when the change stopped before it could record one.
+        event: String,
+        /// Why, as it was recorded.
+        reason: String,
+    },
 }
 
 /// How a request ended.
@@ -475,17 +502,24 @@ pub struct Response {
 }
 
 impl Response {
-    /// The result a caller works with: the reply, or the error. A request that was applied before
-    /// is neither: [`Response::into_outcome`] keeps it apart.
+    /// The result a caller works with: the reply, or the error. A request that was recorded
+    /// before is neither: [`Response::into_outcome`] keeps it apart. Here it gives its rebuilt
+    /// reply when it has one, the recorded failure when it failed, and otherwise a `conflict`
+    /// that says where it was applied (a caller that needs the task reads
+    /// [`AlreadyApplied::task`] itself; the client does).
     pub fn into_result(self) -> Result<Reply, RuntimeError> {
         match self.into_outcome()? {
             Ok(reply) => Ok(reply),
-            Err(already) => Err(RuntimeError::Conflict {
-                detail: format!(
-                    "the request was applied already, at event {} (`{}`)",
-                    already.position, already.event
-                ),
-            }),
+            Err(already) => match already.did {
+                Did::Applied { reply: Some(reply) } => Ok(reply),
+                Did::Failed { event, reason } => Err(RuntimeError::Recorded { event, reason }),
+                Did::Applied { reply: None } => Err(RuntimeError::Conflict {
+                    detail: format!(
+                        "the request was applied already, at event {} (`{}`)",
+                        already.position, already.event
+                    ),
+                }),
+            },
         }
     }
 

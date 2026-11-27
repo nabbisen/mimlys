@@ -11,7 +11,7 @@
 use super::requests::Scope;
 use super::steps::{Held, Note, Noted, OnStep, WriteGuard};
 use super::{Runtime, RuntimeError, Session};
-use crate::api::{AlreadyApplied, Envelope, Notice, Outcome, Reply, Request, Response};
+use crate::api::{Envelope, Notice, Outcome, Reply, Request, Response};
 use crate::ids::{RequestId, TaskId};
 use crate::task::{Task, TaskState};
 
@@ -65,19 +65,9 @@ impl Runtime {
         let task_id = request.task_id();
         match self.deps.persistence.event_of_request(task_id, request_id) {
             Ok(Some(found)) => {
-                let task = found
-                    .record
-                    .task_id
-                    .or(task_id)
-                    .map(|id| self.deps.persistence.load_task(id))
-                    .transpose();
-                return match task {
-                    Ok(task) => Outcome::AlreadyApplied(AlreadyApplied {
-                        position: found.position,
-                        event: found.record.event.name().to_owned(),
-                        task: task.flatten().map(Box::new),
-                    }),
-                    Err(error) => Outcome::Failed(error.into()),
+                return match self.recorded_outcome(request_id, &request, found) {
+                    Ok(already) => Outcome::AlreadyApplied(already),
+                    Err(error) => Outcome::Failed(error),
                 };
             }
             Ok(None) => {}

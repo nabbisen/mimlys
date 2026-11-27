@@ -217,7 +217,8 @@ fn runtime_component(e: &RuntimeError) -> Option<String> {
         | RuntimeError::Denied { .. }
         | RuntimeError::Conflict { .. }
         | RuntimeError::Persistence(_)
-        | RuntimeError::PromotionFailed { .. } => None,
+        | RuntimeError::PromotionFailed { .. }
+        | RuntimeError::Recorded { .. } => None,
     }
 }
 

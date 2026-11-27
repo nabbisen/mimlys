@@ -278,6 +278,16 @@ pub fn waiting_for_step(task: &str) -> String {
 pub fn request_noted(task: &str) -> String {
     format!("task {task} has a step in flight: the request is taken when it has ended")
 }
+/// A request that was sent before took effect then, and is not applied again (external design §4,
+/// "The recorded outcome"): what it did, as the event says.
+pub fn done_earlier(request: &str, position: u64, event: &str) -> String {
+    format!("{request}: done earlier (event {position}, `{event}`)")
+}
+/// The task is gone: a deletion that took effect before, or a task deleted since a request took
+/// effect on it (external design §4).
+pub fn task_gone(task: &str) -> String {
+    format!("task {task} is gone")
+}
 /// A grant was revoked.
 pub fn grant_revoked(id: &str) -> String {
     format!("grant {id} revoked")

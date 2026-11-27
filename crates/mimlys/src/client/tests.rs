@@ -10,6 +10,7 @@ use mimlys_core::ids::ScriptedIds;
 use mimlys_core::path::PlatformRules;
 use mimlys_core::policy::Policy;
 use mimlys_core::runtime::RuntimeDeps;
+use mimlys_core::spi::PersistenceRead;
 use mimlys_core::spi::fake::{FakePersistence, FakeToolProvider, FakeWorkspaces, ScriptedBackend};
 use mimlys_core::task::{ScopeSpec, TaskState};
 use mimlys_core::tool::{Param, ParamSchema, ParamType, Provider, ResourceProfile, ToolDefinition};
@@ -314,19 +315,25 @@ fn noted_task(task_id: mimlys_core::ids::TaskId) -> Task {
     task
 }
 
-/// External design §4: a request that was applied before is answered with the task as it is
-/// now, for a verb that returns one; for any other the error says where it was applied.
-#[test]
-fn req_arch_004_a_request_applied_before_is_answered_with_the_task_or_with_where_it_was_applied() {
+/// A runtime over the fakes, and a client of it, in-process: what the commands have, with the
+/// store and the workspaces in the test's hands.
+struct World {
+    client: Client,
+    persistence: Arc<FakePersistence>,
+    workspaces: Arc<FakeWorkspaces>,
+}
+
+fn world() -> World {
     let persistence = Arc::new(FakePersistence::default());
+    let workspaces = Arc::new(FakeWorkspaces::new(Arc::new(FakeToolProvider::new(vec![
+        read_file(),
+    ]))));
     let runtime = Arc::new(
         Runtime::new(RuntimeDeps {
-            persistence,
+            persistence: persistence.clone(),
             backend: Arc::new(ScriptedBackend::with_decisions(vec![])),
             backend_name: "default".to_owned(),
-            workspaces: Arc::new(FakeWorkspaces::new(Arc::new(FakeToolProvider::new(vec![
-                read_file(),
-            ])))),
+            workspaces: workspaces.clone(),
             policy: Policy::shipped(),
             ids: Arc::new(ScriptedIds::default()),
             clock: Arc::new(FakeClock::default()),
@@ -339,47 +346,276 @@ fn req_arch_004_a_request_applied_before_is_answered_with_the_task_or_with_where
         })
         .unwrap(),
     );
-    let task = Client::in_process(runtime, session())
-        .create_task(CreateTask {
-            goal: "g".into(),
-            scope: ScopeSpec {
-                root: "/home/u/project".into(),
-                include: vec![],
-            },
-            profile: None,
-            grants: vec![],
-            budgets: None,
-            deadline_ms: None,
-            completion_check: None,
-            hold: true,
-            from_task: None,
-            from_snapshot: None,
-            plan_first: false,
-            effort: None,
+    World {
+        client: Client::in_process(runtime, session()),
+        persistence,
+        workspaces,
+    }
+}
+
+impl World {
+    /// A task held in `created`.
+    fn task(&self) -> Task {
+        self.client
+            .create_task(CreateTask {
+                goal: "g".into(),
+                scope: ScopeSpec {
+                    root: "/home/u/project".into(),
+                    include: vec![],
+                },
+                profile: None,
+                grants: vec![],
+                budgets: None,
+                deadline_ms: None,
+                completion_check: None,
+                hold: true,
+                from_task: None,
+                from_snapshot: None,
+                plan_first: false,
+                effort: None,
+            })
+            .unwrap()
+    }
+
+    /// A plan of one added file against the task's base snapshot.
+    fn plan(&self, task_id: mimlys_core::ids::TaskId) -> PromotionPlan {
+        let base = self.persistence.load_snapshots(task_id).unwrap()[0].clone();
+        PromotionPlan {
+            task_id,
+            base_snapshot: base.snapshot_id,
+            current_hash: mimlys_core::hash::hash_bytes(b""),
+            changes: vec![mimlys_core::snapshot::Change {
+                path: "a.txt".into(),
+                kind: mimlys_core::snapshot::ChangeKind::Added,
+                bytes: 1,
+            }],
+            excluded: vec![],
+            text_diffs: vec![],
+        }
+    }
+
+    /// A request sent twice under one id: both answers, and the events as the first left them
+    /// (the repeat wrote none).
+    fn twice(
+        &self,
+        request: Request,
+    ) -> (Result<Reply, RuntimeError>, Result<Reply, RuntimeError>) {
+        let id = RequestId::new(&SystemIds);
+        let first = self.client.send_as(id, request.clone());
+        let events = self.persistence.events();
+        let second = self.client.send_as(id, request);
+        assert_eq!(self.persistence.events(), events, "the repeat wrote");
+        (first, second)
+    }
+}
+
+/// External design §4, "The recorded outcome": a repeat of a request that **took effect** is a
+/// success, as the first answer was, through the client: the task as it is now for a verb that
+/// returns one, and for the others what the first answer held, read back (the grant, the snapshot,
+/// the promotion), so that a command prints what it would have printed. It is never an error.
+#[test]
+fn req_arch_004_a_repeat_of_a_request_that_took_effect_is_a_success_through_the_client() {
+    let w = world();
+    let task = w.task();
+    let id = task.task_id;
+    // The others: what the first answer held, whichever the verb.
+    let held = |request: Request| {
+        let (first, second) = w.twice(request);
+        let first = first.unwrap();
+        assert_eq!(second.unwrap(), first);
+        first
+    };
+    let Reply::Grant(grant) = held(Request::GrantCapability {
+        task_id: id,
+        kind: mimlys_core::grant::GrantKind::Tool {
+            name: "write_file".into(),
+        },
+    }) else {
+        panic!("a grant")
+    };
+    let Reply::Grant(revoked) = held(Request::RevokeCapability {
+        task_id: id,
+        grant_id: grant.grant_id,
+    }) else {
+        panic!("a grant")
+    };
+    assert_eq!(revoked.grant_id, grant.grant_id);
+    assert!(matches!(
+        held(Request::RollbackWorkspace {
+            task_id: id,
+            snapshot_id: None
+        }),
+        Reply::Snapshot(_)
+    ));
+    let Reply::Promotion(promotion) = held(Request::PromoteWorkspace {
+        task_id: id,
+        plan: w.plan(id),
+    }) else {
+        panic!("a promotion")
+    };
+    assert!(matches!(
+        held(Request::RevertPromotion {
+            task_id: id,
+            promotion_id: promotion.promotion_id,
+            overwrite_edited: false,
+        }),
+        Reply::Promotion(_)
+    ));
+    // A verb that returns the task.
+    let (first, second) = w.twice(Request::CancelTask { task_id: id });
+    let (Ok(Reply::Task(first)), Ok(Reply::Task(second))) = (first, second) else {
+        panic!("the task, twice")
+    };
+    assert_eq!(first.state, TaskState::Cancelled);
+    assert_eq!(second, first);
+}
+
+/// External design §4: a promotion that **failed after it wrote** is answered, when sent again,
+/// with the recorded failure and its reason (never as applied); the first answer was the same
+/// words.
+#[test]
+fn req_arch_004_a_repeat_of_a_promotion_that_failed_after_it_wrote_is_the_recorded_failure() {
+    let w = world();
+    let id = w.task().task_id;
+    w.workspaces.on_promote_apply(Box::new(|_| {
+        Err(mimlys_core::spi::WorkspaceError::Storage {
+            detail: "injected".into(),
         })
-        .unwrap();
-    let kept = task.clone();
+    }));
+    let (first, second) = w.twice(Request::PromoteWorkspace {
+        task_id: id,
+        plan: w.plan(id),
+    });
+    let first = first.unwrap_err();
+    assert!(matches!(first, RuntimeError::PromotionFailed { .. }));
+    let second = second.unwrap_err();
+    assert!(
+        matches!(second, RuntimeError::Recorded { .. }),
+        "{second:?}"
+    );
+    assert_eq!(second.to_string(), first.to_string(), "the reason");
+    assert!(second.to_string().contains("injected"), "{second}");
+    // A failure, not a success: nothing says that it was done.
+    assert!(
+        !w.persistence
+            .events()
+            .iter()
+            .any(|e| e.event.name() == "workspace.promoted")
+    );
+}
+
+/// External design §4: a request that was **refused** wrote nothing, so a repeat of it is answered
+/// afresh: refused again, with the same words, and applied once what refused it has changed.
+#[test]
+fn req_arch_004_a_repeat_of_a_refused_request_is_answered_afresh_through_the_client() {
+    let w = world();
+    let id = w.task().task_id;
+    let request = Request::ApproveAction {
+        task_id: id,
+        note: None,
+    };
+    let (first, second) = w.twice(request.clone());
+    let first = first.unwrap_err();
+    assert_eq!(first.kind(), "state", "{first}");
+    assert_eq!(second.unwrap_err(), first);
+    // Refused afresh each time: the id is not recorded, so a revocation of an unknown grant is
+    // answered `not_found` each time, and so is the same request after the world changed.
+    let unknown = mimlys_core::ids::GrantId::new(&ScriptedIds::default());
+    let (first, second) = w.twice(Request::RevokeCapability {
+        task_id: id,
+        grant_id: unknown,
+    });
+    assert_eq!(first.unwrap_err().kind(), "not_found");
+    assert_eq!(second.unwrap_err().kind(), "not_found");
+}
+
+/// External design §4: a **deletion repeated after it took effect** is answered that the task is
+/// gone, never `not_found`, when the id is the one the client sent: whether the audit stayed (the
+/// request is found by its event) or went with the task (nothing is found, and the client knows
+/// the id). A deletion that was refused is refused again, and a first deletion of a task that
+/// never existed is `not_found`.
+#[test]
+fn req_arch_004_a_deletion_repeated_after_it_took_effect_is_answered_that_the_task_is_gone() {
+    let w = world();
+    for audit in [false, true] {
+        let id = w.task().task_id;
+        // Not terminal: refused, and refused again, as the state.
+        let again = RequestId::new(&SystemIds);
+        assert_eq!(
+            w.client
+                .delete_task_as(again, id, audit)
+                .unwrap_err()
+                .kind(),
+            "state"
+        );
+        assert_eq!(
+            w.client
+                .delete_task_as(again, id, audit)
+                .unwrap_err()
+                .kind(),
+            "state"
+        );
+        w.client.cancel_task(id).unwrap();
+        let sent = RequestId::new(&SystemIds);
+        let first = w.client.delete_task_as(sent, id, audit).unwrap();
+        assert!(matches!(first, Deleted::Footprint(_)), "{first:?}");
+        let events = w.persistence.events().len();
+        assert_eq!(
+            w.client.delete_task_as(sent, id, audit).unwrap(),
+            Deleted::Gone,
+            "audit {audit}"
+        );
+        assert!(
+            w.persistence.events().len() <= events,
+            "nothing was written"
+        );
+    }
+    // An id that was not sent before, for a task that is not there: `not_found`, as it is.
+    let ids = ScriptedIds::starting_at(900);
+    let nobody = mimlys_core::ids::TaskId::new(&ids);
+    let error = w.client.delete_task(nobody, false).unwrap_err();
+    assert_eq!(error.kind(), "not_found", "{error}");
+    // ...and the same request sent again is answered the same: it was refused, so it is not an id
+    // under which a deletion took effect.
+    let sent = RequestId::new(&SystemIds);
+    for _ in 0..2 {
+        let error = w.client.delete_task_as(sent, nobody, false).unwrap_err();
+        assert_eq!(error.kind(), "not_found", "{error}");
+    }
+}
+
+/// A transport that answers every request with the same recorded answer, as a runtime does for an
+/// id it recorded.
+fn answering_with(did: mimlys_core::api::Did, task: Option<Task>) -> Client {
     let transport = Recording::answering(move |e| Response {
         request_id: e.request_id,
         outcome: Outcome::AlreadyApplied(mimlys_core::api::AlreadyApplied {
             position: 12,
             event: "task.state_changed".into(),
-            task: Some(Box::new(kept.clone())),
+            task: task.clone().map(Box::new),
+            did: did.clone(),
         }),
     });
-    let client = Client::over(transport, session());
-    // A verb that returns a task: the task as it is now.
-    assert_eq!(client.cancel_task(task.task_id).unwrap(), task);
-    // Any other: its result was not kept, and the error says where it was applied.
+    Client::over(transport, session())
+}
+
+/// A task deleted since the request took effect has nothing to answer with: the task is gone,
+/// whichever the verb, and never an error that says "applied already".
+#[test]
+fn req_arch_004_a_request_that_took_effect_on_a_task_deleted_since_finds_it_gone() {
+    let ids = ScriptedIds::default();
+    let task = mimlys_core::ids::TaskId::new(&ids);
+    let client = answering_with(mimlys_core::api::Did::Applied { reply: None }, None);
+    assert_eq!(client.delete_task(task, false).unwrap(), Deleted::Gone);
+    let error = client.cancel_task(task).unwrap_err();
+    assert_eq!(error.kind(), "not_found", "{error}");
     let error = client
-        .revoke_capability(
-            task.task_id,
-            mimlys_core::ids::GrantId::new(&ScriptedIds::default()),
+        .grant_capability(
+            task,
+            mimlys_core::grant::GrantKind::Tool {
+                name: "write_file".into(),
+            },
         )
         .unwrap_err();
-    assert_eq!(error.kind(), "conflict", "{error}");
-    assert!(
-        error.to_string().contains("event 12") && error.to_string().contains("revoke_capability"),
-        "{error}"
-    );
+    assert_eq!(error.kind(), "not_found", "{error}");
 }

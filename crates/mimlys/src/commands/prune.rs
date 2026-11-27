@@ -20,6 +20,7 @@
 //! the rules are tested without a store; `run` joins them to the runtime.
 
 use crate::app::{App, AppError};
+use crate::client::Deleted;
 use crate::commands::parse_duration_ms;
 use crate::messages;
 use crate::output::Output;
@@ -403,7 +404,11 @@ pub fn run(
             let id = TaskId::from_uuid(c.task_id.parse().map_err(|_| AppError::Io {
                 detail: format!("`{}` is not a task id", c.task_id),
             })?);
-            Ok(app.client.delete_task(id, audit)?)
+            Ok(match app.client.delete_task(id, audit)? {
+                Deleted::Footprint(footprint) => footprint,
+                // Gone: it was deleted before, and what it held is what the plan showed.
+                Deleted::Gone => c.footprint.clone(),
+            })
         },
         |c, result| match result {
             Ok(f) => out.line(messages::prune_deleted(&c.task_id, f)),

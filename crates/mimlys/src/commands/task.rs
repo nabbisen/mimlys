@@ -1,6 +1,7 @@
 //! `mimlys task show|list|resume|pause|cancel` (REQ-TASK-005, REQ-TASK-006).
 
 use crate::app::{App, AppError, ReadApp};
+use crate::client::Deleted;
 use crate::commands::{finish, parse_duration_ms, print_view};
 use crate::messages;
 use crate::output::Output;
@@ -231,7 +232,12 @@ pub fn delete(
         out.value(&serde_json::json!({ "footprint": view.footprint, "deleted": false }));
         return Ok(());
     }
-    let footprint = app.client.delete_task(id, audit)?;
+    // A deletion sent once more that took effect before: the task is gone, and what it held is
+    // what was shown above (the first answer is not kept).
+    let footprint = match app.client.delete_task(id, audit)? {
+        Deleted::Footprint(footprint) => footprint,
+        Deleted::Gone => view.footprint.clone(),
+    };
     out.line(messages::deleted(&id.to_string()));
     out.value(&serde_json::json!({ "footprint": footprint, "deleted": true, "audit": audit }));
     Ok(())
