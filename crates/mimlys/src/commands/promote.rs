@@ -3,6 +3,7 @@
 //! the writes. `--patch` prints a unified patch and writes nothing.
 
 use crate::app::{App, AppError, ReadApp};
+use crate::client::Applied;
 use crate::messages;
 use crate::output::Output;
 use crate::prompt::Interaction;
@@ -73,7 +74,11 @@ pub fn run(
         out.value(&serde_json::json!({ "plan": plan, "applied": false }));
         return Ok(());
     }
-    let promotion = app.client.promote_workspace(id, &plan)?;
+    // Sent once, so never answered that it took effect before and its task is gone; if it were,
+    // the client has said so.
+    let Applied::Done(promotion) = app.client.promote_workspace(id, &plan)? else {
+        return Ok(());
+    };
     out.line(messages::promoted(
         &promotion.promotion_id.to_string(),
         promotion.files.len(),

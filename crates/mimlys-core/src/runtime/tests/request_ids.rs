@@ -664,3 +664,119 @@ fn req_arch_004_a_promotion_stopped_before_its_apply_keeps_the_kind_of_what_stop
     );
     assert!(h.persistence.load_promotions(id).unwrap().is_empty());
 }
+
+/// The task cancelled, then deleted by a request of its own: with the audit or without.
+fn deleted(h: &Harness, id: crate::ids::TaskId, audit: bool) {
+    h.runtime.cancel_task(&h.session, id).unwrap();
+    let response = h.runtime.handle(envelope(
+        h,
+        RequestId::new(&SystemIds),
+        Request::DeleteTask { task_id: id, audit },
+    ));
+    assert!(matches!(response.outcome, Outcome::Done(_)), "{response:?}");
+}
+
+/// External design §4, "a request whose task was deleted since": while the task's events are kept
+/// (a deletion without `--audit`), the repeat is answered as applied earlier and says that the
+/// task is gone since: the grant, which is kept with the task's record, is read back, and what
+/// went with the task's data (a snapshot, a promotion) is not there to read back. After
+/// `--audit` nothing of the request is known and the answer is `not_found`.
+#[test]
+fn req_arch_004_a_request_whose_task_was_deleted_since_is_answered_as_applied_while_its_events_stay()
+ {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    let requests = [
+        Request::GrantCapability {
+            task_id: id,
+            kind: GrantKind::Tool {
+                name: "write_file".into(),
+            },
+        },
+        Request::RollbackWorkspace {
+            task_id: id,
+            snapshot_id: None,
+        },
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    ];
+    let ids = [0; 3].map(|_| RequestId::new(&SystemIds));
+    let first: Vec<Outcome> = requests
+        .iter()
+        .zip(ids)
+        .map(|(r, i)| h.runtime.handle(envelope(&h, i, r.clone())).outcome)
+        .collect();
+    assert!(
+        first.iter().all(|o| matches!(o, Outcome::Done(_))),
+        "{first:?}"
+    );
+    // Before the deletion the task is there.
+    let Outcome::AlreadyApplied(before) = h
+        .runtime
+        .handle(envelope(&h, ids[0], requests[0].clone()))
+        .outcome
+    else {
+        panic!("applied")
+    };
+    assert!(!before.task_deleted);
+    deleted(&h, id, false);
+    let events = h.persistence.events().len();
+    let answers: Vec<AlreadyApplied> = requests
+        .iter()
+        .zip(ids)
+        .map(|(r, i)| {
+            let Outcome::AlreadyApplied(already) =
+                h.runtime.handle(envelope(&h, i, r.clone())).outcome
+            else {
+                panic!("a request whose task was deleted since: not `not_found`")
+            };
+            already
+        })
+        .collect();
+    assert_eq!(h.persistence.events().len(), events, "nothing was written");
+    for (answer, name) in
+        answers
+            .iter()
+            .zip(["grant.issued", "workspace.rollback", "workspace.snapshot"])
+    {
+        assert!(answer.task_deleted, "{name}");
+        assert_eq!(answer.event, name);
+        assert!(answer.task.is_some(), "the task's record stays");
+    }
+    // The grant is kept with the record; the snapshot and the promotion went with the data.
+    let Outcome::Done(grant) = &first[0] else {
+        panic!()
+    };
+    assert_eq!(
+        answers[0].did,
+        Did::Applied {
+            reply: Some(grant.clone())
+        }
+    );
+    assert_eq!(answers[1].did, Did::Applied { reply: None });
+    assert_eq!(answers[2].did, Did::Applied { reply: None });
+
+    // With `--audit` nothing of the task is known: `not_found`, as the task is.
+    let other = h.create_with(|c| {
+        c.hold = true;
+        c.scope.root = "/home/u/other".into();
+    });
+    let grant = Request::GrantCapability {
+        task_id: other,
+        kind: GrantKind::Tool {
+            name: "write_file".into(),
+        },
+    };
+    let sent = RequestId::new(&SystemIds);
+    assert!(matches!(
+        h.runtime.handle(envelope(&h, sent, grant.clone())).outcome,
+        Outcome::Done(_)
+    ));
+    deleted(&h, other, true);
+    let Outcome::Failed(error) = h.runtime.handle(envelope(&h, sent, grant)).outcome else {
+        panic!("after `--audit` nothing of the request is known")
+    };
+    assert_eq!(error.kind(), "not_found", "{error}");
+}

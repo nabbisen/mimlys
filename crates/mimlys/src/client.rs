@@ -74,6 +74,18 @@ pub enum Deleted {
     Gone,
 }
 
+/// What a request whose reply is not the task came to, as the client says it (external design
+/// §4, "The recorded outcome"): the reply, or that it took effect and its task has been deleted
+/// since, so that what the reply is made of (a snapshot, a promotion) went with the task's data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Applied<T> {
+    /// The reply: the first answer's, or, for a request sent again, read back from the store.
+    Done(T),
+    /// The request took effect before, and the task is gone since: its events say what was done,
+    /// and the reply is not kept. The user was told, on standard error.
+    Gone,
+}
+
 /// What a request came to, before it is given its type: the reply, or that the task the request
 /// names is gone (it was deleted, by this request or since it was applied).
 enum Answered {
@@ -117,13 +129,47 @@ impl Client {
     ///   is told, on standard error, that it was done earlier;
     /// - **failed after it wrote:** the recorded failure, with its reason;
     /// - **refused:** answered afresh, as the runtime does;
-    /// - **the task is gone** (deleted since): `not_found`, as the task is.
+    /// - **the task was deleted since,** and its events were kept: as applied, and the user is
+    ///   told that the task is gone. After `delete --audit` nothing of the request is known, and
+    ///   the answer is `not_found`, as the task is.
+    ///
+    /// For the requests whose reply is kept with the task's record or is the task itself. The
+    /// others (a snapshot, a promotion) have no reply to give once their task's data is gone:
+    /// [`Client::applied_as`] says so, and this is a defect (`internal`) for them.
     pub fn send_as(&self, request_id: RequestId, request: Request) -> Result<Reply, RuntimeError> {
-        match self.exchange(request_id, request)? {
-            Answered::Reply(reply) => Ok(reply),
-            Answered::Gone => Err(RuntimeError::NotFound {
-                what: "task".into(),
-            }),
+        match self.applied_as(request_id, request)? {
+            Applied::Done(reply) => Ok(reply),
+            Applied::Gone => Err(unexpected(
+                "the request took effect and its task is gone, which the reply of this verb cannot say",
+            )),
+        }
+    }
+
+    /// As [`Client::send_as`], and a request that took effect on a task that was deleted since,
+    /// with nothing left to reply with, is [`Applied::Gone`], not an error.
+    pub fn applied_as(
+        &self,
+        request_id: RequestId,
+        request: Request,
+    ) -> Result<Applied<Reply>, RuntimeError> {
+        Ok(match self.exchange(request_id, request)? {
+            Answered::Reply(reply) => Applied::Done(reply),
+            Answered::Gone => Applied::Gone,
+        })
+    }
+
+    /// A request under a new id, answered with the reply `pick` takes from it.
+    fn applied<T>(
+        &self,
+        what: &str,
+        request: Request,
+        pick: impl FnOnce(Reply) -> Result<T, Box<Reply>>,
+    ) -> Result<Applied<T>, RuntimeError> {
+        match self.applied_as(RequestId::new(&SystemIds), request)? {
+            Applied::Done(reply) => pick(reply)
+                .map(Applied::Done)
+                .map_err(|other| unexpected_reply(what, &other)),
+            Applied::Gone => Ok(Applied::Gone),
         }
     }
 
@@ -151,7 +197,13 @@ impl Client {
         }
         match response.into_outcome() {
             Ok(Ok(reply)) => Ok(Answered::Reply(reply)),
-            Ok(Err(already)) => applied_before(asked, task_id, already),
+            Ok(Err(already)) => {
+                let (answer, said) = applied_before(asked, task_id, already)?;
+                for line in said {
+                    crate::output::diag(line);
+                }
+                Ok(answer)
+            }
             Err(RuntimeError::NotFound { what }) if sent_before && what == "task" => {
                 // The deletion was sent under this id before, and the task is not there now: it
                 // took effect then. The id stays known, for the next repeat.
@@ -264,11 +316,15 @@ impl Client {
         &self,
         task_id: TaskId,
         kind: GrantKind,
-    ) -> Result<Grant, RuntimeError> {
-        match self.send(Request::GrantCapability { task_id, kind })? {
-            Reply::Grant(grant) => Ok(grant),
-            other => Err(unexpected_reply("grant_capability", &other)),
-        }
+    ) -> Result<Applied<Grant>, RuntimeError> {
+        self.applied(
+            "grant_capability",
+            Request::GrantCapability { task_id, kind },
+            |reply| match reply {
+                Reply::Grant(grant) => Ok(grant),
+                other => Err(Box::new(other)),
+            },
+        )
     }
 
     /// `revoke_capability`.
@@ -276,11 +332,15 @@ impl Client {
         &self,
         task_id: TaskId,
         grant_id: GrantId,
-    ) -> Result<Grant, RuntimeError> {
-        match self.send(Request::RevokeCapability { task_id, grant_id })? {
-            Reply::Grant(grant) => Ok(grant),
-            other => Err(unexpected_reply("revoke_capability", &other)),
-        }
+    ) -> Result<Applied<Grant>, RuntimeError> {
+        self.applied(
+            "revoke_capability",
+            Request::RevokeCapability { task_id, grant_id },
+            |reply| match reply {
+                Reply::Grant(grant) => Ok(grant),
+                other => Err(Box::new(other)),
+            },
+        )
     }
 
     /// `rollback_workspace`.
@@ -288,14 +348,18 @@ impl Client {
         &self,
         task_id: TaskId,
         snapshot_id: Option<SnapshotId>,
-    ) -> Result<SnapshotRecord, RuntimeError> {
-        match self.send(Request::RollbackWorkspace {
-            task_id,
-            snapshot_id,
-        })? {
-            Reply::Snapshot(record) => Ok(record),
-            other => Err(unexpected_reply("rollback_workspace", &other)),
-        }
+    ) -> Result<Applied<SnapshotRecord>, RuntimeError> {
+        self.applied(
+            "rollback_workspace",
+            Request::RollbackWorkspace {
+                task_id,
+                snapshot_id,
+            },
+            |reply| match reply {
+                Reply::Snapshot(record) => Ok(record),
+                other => Err(Box::new(other)),
+            },
+        )
     }
 
     /// `promote_workspace`, after the user confirmed `plan`.
@@ -303,14 +367,18 @@ impl Client {
         &self,
         task_id: TaskId,
         plan: &PromotionPlan,
-    ) -> Result<Promotion, RuntimeError> {
-        match self.send(Request::PromoteWorkspace {
-            task_id,
-            plan: plan.clone(),
-        })? {
-            Reply::Promotion(promotion) => Ok(promotion),
-            other => Err(unexpected_reply("promote_workspace", &other)),
-        }
+    ) -> Result<Applied<Promotion>, RuntimeError> {
+        self.applied(
+            "promote_workspace",
+            Request::PromoteWorkspace {
+                task_id,
+                plan: plan.clone(),
+            },
+            |reply| match reply {
+                Reply::Promotion(promotion) => Ok(promotion),
+                other => Err(Box::new(other)),
+            },
+        )
     }
 
     /// `revert_promotion`.
@@ -319,15 +387,19 @@ impl Client {
         task_id: TaskId,
         promotion_id: PromotionId,
         overwrite_edited: bool,
-    ) -> Result<Promotion, RuntimeError> {
-        match self.send(Request::RevertPromotion {
-            task_id,
-            promotion_id,
-            overwrite_edited,
-        })? {
-            Reply::Promotion(promotion) => Ok(promotion),
-            other => Err(unexpected_reply("revert_promotion", &other)),
-        }
+    ) -> Result<Applied<Promotion>, RuntimeError> {
+        self.applied(
+            "revert_promotion",
+            Request::RevertPromotion {
+                task_id,
+                promotion_id,
+                overwrite_edited,
+            },
+            |reply| match reply {
+                Reply::Promotion(promotion) => Ok(promotion),
+                other => Err(Box::new(other)),
+            },
+        )
     }
 
     /// `delete_task`. A deletion sent once more, after it took effect, is answered that the
@@ -401,17 +473,18 @@ impl Client {
 }
 
 /// The answer to a request whose id is recorded (external design §4, "The recorded outcome"):
-/// what it did, as its events say. `name` is the request's, and `returns_task` whether its reply
-/// is the task.
+/// what it did, as its events say, and what the user is told of it, line by line, on standard
+/// error. `name` is the request's, and `returns_task` whether its reply is the task.
 fn applied_before(
     (name, returns_task): (&str, bool),
     task_id: Option<TaskId>,
     already: AlreadyApplied,
-) -> Result<Answered, RuntimeError> {
+) -> Result<(Answered, Vec<String>), RuntimeError> {
     let AlreadyApplied {
         position,
         event,
         task,
+        task_deleted,
         did,
     } = already;
     match did {
@@ -431,21 +504,21 @@ fn applied_before(
                 (None, Some(task)) if returns_task => Some(Reply::Task(task)),
                 (None, _) => None,
             };
-            match reply {
-                Some(reply) => {
-                    crate::output::diag(crate::messages::done_earlier(name, position, &event));
-                    Ok(Answered::Reply(reply))
-                }
-                // Nothing to answer with: a deletion's footprint is not kept, and what a reply is
-                // made of (a snapshot, a promotion, the task) went with the task's data when it
-                // was deleted since. The task is gone.
-                None => {
-                    if let Some(task_id) = task_id {
-                        crate::output::diag(crate::messages::task_gone(&task_id.to_string()));
-                    }
-                    Ok(Answered::Gone)
-                }
+            // It took effect before. If the task was deleted since (its events were kept), what
+            // was done is the answer and the task is gone; a reply that is not there to give (a
+            // deletion's footprint is not kept, and a snapshot or a promotion went with the
+            // task's data) says the same: the task is gone.
+            let mut said = vec![crate::messages::done_earlier(name, position, &event)];
+            if (task_deleted || reply.is_none())
+                && let Some(task_id) = task_id
+            {
+                said.push(crate::messages::task_gone(&task_id.to_string()));
             }
+            let answer = match reply {
+                Some(reply) => Answered::Reply(reply),
+                None => Answered::Gone,
+            };
+            Ok((answer, said))
         }
     }
 }

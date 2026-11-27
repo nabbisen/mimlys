@@ -6,7 +6,7 @@
 //! still waiting.
 
 use crate::app::{App, AppError};
-use crate::client::Client;
+use crate::client::{Applied, Client};
 use crate::messages;
 use crate::output::Output;
 use crate::prompt::{Decision, Interaction, PlanDecision, StopHandle};
@@ -568,11 +568,16 @@ pub async fn drive(
                                 client.reject_action(task_id, note, Some(halt))?;
                             }
                             Decision::Grant(kind) => {
-                                let grant = client.grant_capability(task_id, kind)?;
-                                out.line(messages::grant_issued(
-                                    &grant.grant_id.to_string(),
-                                    &serde_json::to_string(grant.kind()).unwrap_or_default(),
-                                ));
+                                // Sent once: it never took effect before. The task is read
+                                // again either way.
+                                if let Applied::Done(grant) =
+                                    client.grant_capability(task_id, kind)?
+                                {
+                                    out.line(messages::grant_issued(
+                                        &grant.grant_id.to_string(),
+                                        &serde_json::to_string(grant.kind()).unwrap_or_default(),
+                                    ));
+                                }
                             }
                             Decision::Leave => return Ok(view),
                         }

@@ -593,30 +593,128 @@ fn answering_with(did: mimlys_core::api::Did, task: Option<Task>) -> Client {
             position: 12,
             event: "task.state_changed".into(),
             task: task.clone().map(Box::new),
+            task_deleted: true,
             did: did.clone(),
         }),
     });
     Client::over(transport, session())
 }
 
-/// A task deleted since the request took effect has nothing to answer with: the task is gone,
-/// whichever the verb, and never an error that says "applied already".
+/// A request that took effect on a task deleted since, with nothing left to answer with, is
+/// answered that it was applied and the task is gone, whichever the verb (the typed answer says
+/// so), and never as an error: not `not_found`, not "applied already" (014b-6, item 2).
 #[test]
 fn req_arch_004_a_request_that_took_effect_on_a_task_deleted_since_finds_it_gone() {
     let ids = ScriptedIds::default();
     let task = mimlys_core::ids::TaskId::new(&ids);
     let client = answering_with(mimlys_core::api::Did::Applied { reply: None }, None);
     assert_eq!(client.delete_task(task, false).unwrap(), Deleted::Gone);
-    let error = client.cancel_task(task).unwrap_err();
-    assert_eq!(error.kind(), "not_found", "{error}");
-    let error = client
-        .grant_capability(
-            task,
-            mimlys_core::grant::GrantKind::Tool {
-                name: "write_file".into(),
+    assert_eq!(
+        client.rollback_workspace(task, None).unwrap(),
+        Applied::Gone
+    );
+    let grant = mimlys_core::grant::GrantKind::Tool {
+        name: "write_file".into(),
+    };
+    assert_eq!(client.grant_capability(task, grant).unwrap(), Applied::Gone);
+    let grant_id = mimlys_core::ids::GrantId::new(&ids);
+    assert_eq!(
+        client.revoke_capability(task, grant_id).unwrap(),
+        Applied::Gone
+    );
+}
+
+/// What the user is told of a request that took effect before: that it was done earlier, and,
+/// when its task was deleted since or there is no reply left to give, that the task is gone.
+#[test]
+fn req_arch_004_the_client_says_that_the_task_is_gone_since() {
+    let ids = ScriptedIds::default();
+    let task = mimlys_core::ids::TaskId::new(&ids);
+    let answered = |task_deleted: bool, reply: Option<Reply>| {
+        applied_before(
+            ("grant_capability", false),
+            Some(task),
+            AlreadyApplied {
+                position: 7,
+                event: "grant.issued".into(),
+                task: None,
+                task_deleted,
+                did: Did::Applied { reply },
             },
         )
-        .unwrap_err();
+        .unwrap()
+    };
+    let done = crate::messages::done_earlier("grant_capability", 7, "grant.issued");
+    let gone = crate::messages::task_gone(&task.to_string());
+    let reply = Reply::CreationForbidden(false);
+    // Applied earlier, the task still there: done earlier, and nothing more.
+    let (answer, said) = answered(false, Some(reply.clone()));
+    assert!(matches!(answer, Answered::Reply(_)));
+    assert_eq!(said, vec![done.clone()]);
+    // Applied earlier, the task deleted since and the reply kept: the reply, and the task is gone.
+    let (answer, said) = answered(true, Some(reply));
+    assert!(matches!(answer, Answered::Reply(_)));
+    assert_eq!(said, vec![done.clone(), gone.clone()]);
+    // No reply left: the task is gone.
+    let (answer, said) = answered(true, None);
+    assert!(matches!(answer, Answered::Gone));
+    assert_eq!(said, vec![done, gone]);
+}
+
+/// External design §4, "a request whose task was deleted since", through the client and a real
+/// runtime: while the task's events are kept, the repeat is a success; the grant is read back and
+/// what went with the task's data is `Gone`; after `--audit` it is `not_found`.
+#[test]
+fn req_arch_004_a_repeat_after_the_task_was_deleted_is_applied_unless_the_audit_went() {
+    let w = world();
+    let id = w.task().task_id;
+    let grant = Request::GrantCapability {
+        task_id: id,
+        kind: mimlys_core::grant::GrantKind::Tool {
+            name: "write_file".into(),
+        },
+    };
+    let rollback = Request::RollbackWorkspace {
+        task_id: id,
+        snapshot_id: None,
+    };
+    let promote = Request::PromoteWorkspace {
+        task_id: id,
+        plan: w.plan(id),
+    };
+    let sent: Vec<(RequestId, &Request)> = [&grant, &rollback, &promote]
+        .into_iter()
+        .map(|r| (RequestId::new(&SystemIds), r))
+        .collect();
+    let first: Vec<Applied<Reply>> = sent
+        .iter()
+        .map(|(i, r)| w.client.applied_as(*i, (*r).clone()).unwrap())
+        .collect();
+    w.client.cancel_task(id).unwrap();
+    w.client.delete_task(id, false).unwrap();
+    let events = w.persistence.events();
+    let again: Vec<Applied<Reply>> = sent
+        .iter()
+        .map(|(i, r)| w.client.applied_as(*i, (*r).clone()).unwrap())
+        .collect();
+    assert_eq!(w.persistence.events(), events, "the repeats wrote");
+    assert_eq!(again[0], first[0], "the grant, read back");
+    assert_eq!(again[1], Applied::Gone, "the snapshot went with the data");
+    assert_eq!(again[2], Applied::Gone, "the promotion went with the data");
+
+    // With the audit, nothing of the request is known: `not_found`, as the task is.
+    let other = w.task().task_id;
+    let grant = Request::GrantCapability {
+        task_id: other,
+        kind: mimlys_core::grant::GrantKind::Tool {
+            name: "write_file".into(),
+        },
+    };
+    let sent = RequestId::new(&SystemIds);
+    w.client.applied_as(sent, grant.clone()).unwrap();
+    w.client.cancel_task(other).unwrap();
+    w.client.delete_task(other, true).unwrap();
+    let error = w.client.applied_as(sent, grant).unwrap_err();
     assert_eq!(error.kind(), "not_found", "{error}");
 }
 

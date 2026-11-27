@@ -1,6 +1,7 @@
 //! `mimlys grant <task> <kind> <scope>` (REQ-CAP-004).
 
 use crate::app::{App, AppError};
+use crate::client::Applied;
 use crate::commands::finish;
 use crate::messages;
 use crate::output::Output;
@@ -20,7 +21,11 @@ pub async fn run(
         detail: e.to_owned(),
     })?;
     app.check_host_tool_grant(&kind)?;
-    let grant = app.client.grant_capability(id, kind)?;
+    // Sent once, so never answered that it took effect before and its task is gone; if it were,
+    // the client has said so.
+    let Applied::Done(grant) = app.client.grant_capability(id, kind)? else {
+        return Ok(());
+    };
     out.line(messages::grant_issued(
         &grant.grant_id.to_string(),
         &serde_json::to_string(grant.kind()).unwrap_or_default(),

@@ -1,6 +1,7 @@
 //! `mimlys revoke <task> <grant>` (REQ-CAP-005).
 
 use crate::app::{App, AppError};
+use crate::client::Applied;
 use crate::commands::finish;
 use crate::messages;
 use crate::output::Output;
@@ -17,7 +18,10 @@ pub async fn run(
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     let grant_id = resolve_grant(app, id, grant)?;
-    let grant = app.client.revoke_capability(id, grant_id)?;
+    // Sent once: see `grant`.
+    let Applied::Done(grant) = app.client.revoke_capability(id, grant_id)? else {
+        return Ok(());
+    };
     out.line(messages::grant_revoked(&grant.grant_id.to_string()));
     out.value(&grant);
     if out.json() {

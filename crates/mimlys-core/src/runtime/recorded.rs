@@ -33,13 +33,23 @@ impl Runtime {
         let events = self.events_of_request(task_id, request_id, &found)?;
         let did = match (&task, task_id) {
             (Some(_), Some(task_id)) => self.did(task_id, request, &events)?,
-            // The task was deleted since: what its change made went with it.
+            // The task's record is gone: what its change made went with it.
             _ => Did::Applied { reply: None },
+        };
+        // Deleted since, its events kept (a deletion without `--audit` keeps them, and the
+        // task's record): the request is known, and its task's data is gone.
+        let task_deleted = match task_id {
+            Some(task_id) => {
+                self.deps.persistence.load_workspace_state(task_id)?
+                    == Some(crate::snapshot::WorkspaceState::Deleted)
+            }
+            None => false,
         };
         Ok(AlreadyApplied {
             position: found.position,
             event: found.record.event.name().to_owned(),
             task: task.map(Box::new),
+            task_deleted,
             did,
         })
     }

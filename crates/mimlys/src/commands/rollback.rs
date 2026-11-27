@@ -1,6 +1,7 @@
 //! `mimlys rollback <task> [--snapshot ID] [--promotion ID]` (REQ-WS-006, REQ-WS-007).
 
 use crate::app::{App, AppError};
+use crate::client::Applied;
 use crate::messages;
 use crate::output::Output;
 use crate::prompt::Interaction;
@@ -60,7 +61,11 @@ pub fn run(
         let overwrite = !plan.conflicts.is_empty()
             && (overwrite_edited
                 || (interactive && interaction.confirm(messages::REVERT_OVERWRITE_CONFIRM)));
-        let reversed = app.client.revert_promotion(id, promotion_id, overwrite)?;
+        // Sent once: see `promote`.
+        let Applied::Done(reversed) = app.client.revert_promotion(id, promotion_id, overwrite)?
+        else {
+            return Ok(());
+        };
         out.line(messages::promotion_reversed(
             &reversed.promotion_id.to_string(),
             reversed.files.len(),
@@ -79,7 +84,9 @@ pub fn run(
         }
         None => None,
     };
-    let record = app.client.rollback_workspace(id, snapshot_id)?;
+    let Applied::Done(record) = app.client.rollback_workspace(id, snapshot_id)? else {
+        return Ok(());
+    };
     out.line(messages::rolled_back(
         &record.snapshot_id.to_string(),
         record.reason.name(),

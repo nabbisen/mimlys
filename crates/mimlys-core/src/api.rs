@@ -448,8 +448,14 @@ pub struct AlreadyApplied {
     pub position: u64,
     /// That event's name, which says what the change was (`grant.issued`, `task.created`, …).
     pub event: String,
-    /// The task, as it is now; none when it was deleted since, or the request names none.
+    /// The task, as it is now; none when the request names none, or when its record is gone
+    /// (`delete --audit`, after which a request of it is not found at all).
     pub task: Option<Box<Task>>,
+    /// The task was deleted since the request took effect, and its events were kept (a deletion
+    /// without `--audit`): what the request did is known from them, the task's data is gone, and
+    /// the client says so. A deletion with `--audit` leaves nothing to find the request by.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub task_deleted: bool,
     /// What the change came to.
     pub did: Did,
 }
@@ -464,7 +470,8 @@ pub enum Did {
     /// as it is now, so that a client prints what the first answer would have said. It is none
     /// for a verb whose result is the task (the task is [`AlreadyApplied::task`]), for one whose
     /// result is not kept (a deletion's footprint), and when the store no longer holds what the
-    /// reply is made of (the task was deleted since).
+    /// reply is made of (the task was deleted since, [`AlreadyApplied::task_deleted`]: its
+    /// snapshots and promotions went with its data).
     Applied {
         /// The verb's result, rebuilt.
         reply: Option<Reply>,
