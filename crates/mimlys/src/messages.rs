@@ -273,6 +273,11 @@ pub fn grant_issued(id: &str, kind: &str) -> String {
 pub fn waiting_for_step(task: &str) -> String {
     format!("task {task} has a step in flight: the request is applied when it has ended")
 }
+/// A pause or a stop was noted while the task's step was in flight, and is taken in the step's own
+/// turn, at its end (external design §4): the reply comes at once and says so.
+pub fn request_noted(task: &str) -> String {
+    format!("task {task} has a step in flight: the request is taken when it has ended")
+}
 /// A grant was revoked.
 pub fn grant_revoked(id: &str) -> String {
     format!("grant {id} revoked")

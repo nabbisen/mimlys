@@ -5,7 +5,7 @@
 use super::*;
 use mimlys_core::action::{EffectKind, EffectView};
 use mimlys_core::api::{Notice, Outcome};
-use mimlys_core::clock::FakeClock;
+use mimlys_core::clock::{Clock, FakeClock};
 use mimlys_core::ids::ScriptedIds;
 use mimlys_core::path::PlatformRules;
 use mimlys_core::policy::Policy;
@@ -267,4 +267,49 @@ fn req_arch_009_the_in_process_transport_reaches_the_runtime_of_the_process() {
     // A refused request is the verb's own error.
     let refused = client.resume_task(task.task_id, None).unwrap_err();
     assert_eq!(refused.kind(), "state");
+}
+
+/// External design §4: a pause met while a step is in flight is noted, and its reply comes at once
+/// and says so: the client returns the task as it is, and the request is not an error.
+#[test]
+fn req_task_005_a_pause_that_was_noted_returns_the_task_as_it_is() {
+    let ids = ScriptedIds::default();
+    let task_id = mimlys_core::ids::TaskId::new(&ids);
+    let transport =
+        Recording::answering(move |e| done(e, Reply::Noted(Box::new(noted_task(task_id)))));
+    let client = Client::over(transport, session());
+    let task = client.pause_task(task_id).unwrap();
+    assert_eq!(task.task_id, task_id);
+    assert!(!task.pause_requested, "not written yet");
+}
+
+fn noted_task(task_id: mimlys_core::ids::TaskId) -> Task {
+    let mut task = Task::create(
+        mimlys_core::task::TaskSpec {
+            task_id,
+            goal: "g".into(),
+            deadline_ms: mimlys_core::limits::LIM_T5_DEADLINE_MS,
+            budgets: mimlys_core::step::Budgets::default(),
+            profile: "workspace".into(),
+            versions: mimlys_core::task::TaskVersions {
+                policy_hash: mimlys_core::hash::hash_bytes(b"policy"),
+                decision_schema_version: 1,
+                event_schema_version: mimlys_core::event::EVENT_SCHEMA_VERSION,
+                action_schema_version: mimlys_core::action::ACTION_SCHEMA_VERSION,
+                tool_definition_hashes: Default::default(),
+                runtime_version: "0.0.0-test".into(),
+                backend: None,
+                tool_imports: Default::default(),
+            },
+            scope: ScopeSpec {
+                root: "/project".into(),
+                include: vec![],
+            },
+            plan_first: false,
+        },
+        FakeClock::default().now(),
+    )
+    .unwrap();
+    task.state = TaskState::Running;
+    task
 }

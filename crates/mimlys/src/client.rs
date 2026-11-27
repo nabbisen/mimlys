@@ -320,10 +320,16 @@ fn say(notice: Notice) {
     }
 }
 
-/// The task a verb returns.
+/// The task a verb returns. A request that was noted for the end of the step in flight
+/// (`Reply::Noted`: a pause, a stop) returns the task as it is, and the user is told that the
+/// request is taken when the step has ended.
 fn task(reply: Reply) -> Result<Task, RuntimeError> {
     match reply {
         Reply::Task(task) => Ok(*task),
+        Reply::Noted(task) => {
+            crate::output::diag(crate::messages::request_noted(&task.task_id.to_string()));
+            Ok(*task)
+        }
         other => Err(unexpected_reply("a verb that returns a task", &other)),
     }
 }
