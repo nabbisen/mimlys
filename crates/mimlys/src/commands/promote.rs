@@ -73,7 +73,7 @@ pub fn run(
         out.value(&serde_json::json!({ "plan": plan, "applied": false }));
         return Ok(());
     }
-    let promotion = app.runtime.promote_workspace(&app.session, id, &plan)?;
+    let promotion = app.client.promote_workspace(id, &plan)?;
     out.line(messages::promoted(
         &promotion.promotion_id.to_string(),
         promotion.files.len(),

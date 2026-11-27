@@ -42,10 +42,8 @@ impl Target {
         effort: Option<EffortLevel>,
         from_task: Option<&str>,
     ) -> Option<Self> {
-        let policy = app.runtime.policy();
-        let profile = policy.profile(profile.unwrap_or(&policy.default_profile))?;
         let from = from_task.and_then(|t| app.resolve_task(t).ok());
-        let plan = app.runtime.plan_effort(profile, effort, from).ok()?;
+        let plan = app.client.plan_effort(profile, effort, from).ok()?;
         Some(Self {
             backend: plan.backend,
             task: None,

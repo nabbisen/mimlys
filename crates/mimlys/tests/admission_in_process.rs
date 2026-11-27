@@ -104,29 +104,29 @@ fn rig(dir: &Path, pid: u32) -> Rig {
         id: "s1".into(),
         os_user: "tester".into(),
     };
-    let task = runtime
-        .create_task(
-            &session,
-            CreateTask {
-                goal: "g".into(),
-                scope: ScopeSpec {
-                    root: "/home/u/project".into(),
-                    include: vec![],
-                },
-                profile: None,
-                grants: vec![],
-                budgets: None,
-                deadline_ms: None,
-                completion_check: None,
-                hold: false,
-                from_task: None,
-                from_snapshot: None,
-                plan_first: false,
-                effort: None,
+    let task = mimlys_core::api::testing::create_task(
+        &runtime,
+        &session,
+        CreateTask {
+            goal: "g".into(),
+            scope: ScopeSpec {
+                root: "/home/u/project".into(),
+                include: vec![],
             },
-        )
-        .unwrap()
-        .task_id;
+            profile: None,
+            grants: vec![],
+            budgets: None,
+            deadline_ms: None,
+            completion_check: None,
+            hold: false,
+            from_task: None,
+            from_snapshot: None,
+            plan_first: false,
+            effort: None,
+        },
+    )
+    .unwrap()
+    .task_id;
     Rig {
         runtime,
         persistence,

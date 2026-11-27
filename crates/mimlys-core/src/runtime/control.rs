@@ -314,7 +314,7 @@ impl Runtime {
     }
 
     /// Creates a task (REQ-TASK-001, REQ-TASK-012, REQ-CAP-003).
-    pub fn create_task(
+    pub(crate) fn create_task(
         &self,
         session: &Session,
         request: CreateTask,
@@ -637,7 +637,7 @@ impl Runtime {
     /// The user's rollback (REQ-WS-006): valid when the task is not `running`
     /// or `recovering`; the latest snapshot when none is named. The task's
     /// state is unchanged.
-    pub fn rollback_workspace(
+    pub(crate) fn rollback_workspace(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -690,7 +690,7 @@ impl Runtime {
     /// the backup is written, its row committed and sealed, the promotion recorded `applying`;
     /// only then is the project written; then the promotion is recorded `applied`. An error
     /// while applying restores what was applied from the backup and records `failed`.
-    pub fn promote_workspace(
+    pub(crate) fn promote_workspace(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -871,7 +871,7 @@ impl Runtime {
     /// Reverses a promotion from its backup (REQ-WS-007). Paths edited since the promotion are
     /// not overwritten: the reversal is refused, naming them, unless `overwrite_edited` says the
     /// user confirmed.
-    pub fn revert_promotion(
+    pub(crate) fn revert_promotion(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -922,7 +922,7 @@ impl Runtime {
 
     /// Deletes a terminal task's workspace, snapshots, blobs and backups
     /// (RFC 006 §6): the files are journaled, the rows go, then every file is removed; the audit stays unless `audit`.
-    pub fn delete_task(
+    pub(crate) fn delete_task(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -991,7 +991,7 @@ impl Runtime {
     /// above `effort_max` (naming what sets it) or has no key, shipped or configured (naming the
     /// section that configures it). `create_task` asks this itself, so what a command is told
     /// before it contacts a backend is what the creation will say.
-    pub fn plan_effort(
+    pub(crate) fn plan_effort(
         &self,
         profile: &crate::policy::Profile,
         requested: Option<crate::effort::EffortLevel>,
@@ -1027,7 +1027,7 @@ impl Runtime {
     /// (REQ-SEC-010): `false` for a profile the policy does not have, which the creation reports
     /// by itself. Lets a command that creates a task know, before it contacts the backend for
     /// anything, that the creation will be refused.
-    pub fn creation_forbidden(
+    pub(crate) fn creation_forbidden(
         &self,
         profile: Option<&str>,
         backend: &str,
@@ -1046,7 +1046,7 @@ impl Runtime {
     /// since, and a task never sends where its profile forbids. The backend is the task's own,
     /// found by its name: a name that is no longer configured is an error naming the configured
     /// ones, and nothing moves the task to another backend (external design §20).
-    pub fn start_refusal(&self, task: &Task) -> Result<Option<StartRefusal>, RuntimeError> {
+    pub(crate) fn start_refusal(&self, task: &Task) -> Result<Option<StartRefusal>, RuntimeError> {
         let profile = self.profile_of(task)?;
         let backend = self.backend_of(task)?;
         Ok(self
@@ -1062,7 +1062,7 @@ impl Runtime {
     /// goes on, and the command that starts it says both models (a notice at the start); each
     /// step records its model, so the notice is made once per change. `None` when the model is
     /// the same, or the backend names none.
-    pub fn model_change(&self, task: &Task) -> Result<Option<ModelChange>, RuntimeError> {
+    pub(crate) fn model_change(&self, task: &Task) -> Result<Option<ModelChange>, RuntimeError> {
         let backend = self.backend_of(task)?;
         let now = self
             .guard(MODEL_BACKEND, || backend.backend.describe())?
@@ -1092,7 +1092,7 @@ impl Runtime {
     }
 
     /// Resumes from `created`, `paused` or `halted` (REQ-TASK-005).
-    pub fn resume_task(
+    pub(crate) fn resume_task(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -1135,7 +1135,11 @@ impl Runtime {
     }
 
     /// Requests a pause; it takes effect at the next step boundary (REQ-TASK-005).
-    pub fn pause_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
+    pub(crate) fn pause_task(
+        &self,
+        session: &Session,
+        task_id: TaskId,
+    ) -> Result<Task, RuntimeError> {
         let task = self.writable(task_id)?;
         let now = self.deps.clock.now();
         let next = task.transition(TaskInput::PauseRequest, now)?;
@@ -1177,7 +1181,11 @@ impl Runtime {
     /// it waits for. A step that has not ended LIM-O19 after the request is not waited for any
     /// longer: the cancel is refused as `conflict`, nothing of the task is changed, the request
     /// stays, and the step ends `cancelled` when it does.
-    pub fn cancel_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
+    pub(crate) fn cancel_task(
+        &self,
+        session: &Session,
+        task_id: TaskId,
+    ) -> Result<Task, RuntimeError> {
         let (_cancelling, step_in_flight) = self.steps.begin_cancel(task_id)?;
         if !step_in_flight {
             return self.cancel_idle_task(session, task_id);
@@ -1287,7 +1295,7 @@ impl Runtime {
     /// for (REQ-TASK-015). The action runs at the task's next step, under the grants in force
     /// then; an approved plan ends the gate, and the task runs. The optional `note` is the
     /// user's own words for the model (`approval_note`), bounded as a rejection's note is.
-    pub fn approve_action(
+    pub(crate) fn approve_action(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -1342,7 +1350,7 @@ impl Runtime {
     /// (REQ-APR-007, REQ-TASK-015). The profile's `on_reject` applies unless `halt` says
     /// otherwise; the rejection ends the step and counts toward LIM-T2. A rejected plan leaves
     /// the task gated: the next `plan` waits again.
-    pub fn reject_action(
+    pub(crate) fn reject_action(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -1417,7 +1425,7 @@ impl Runtime {
     }
 
     /// Answers the pending question (REQ-APR-010).
-    pub fn answer_question(
+    pub(crate) fn answer_question(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -1477,7 +1485,7 @@ impl Runtime {
     }
 
     /// Issues a grant within the ceiling (REQ-CAP-003, REQ-CAP-004).
-    pub fn grant_capability(
+    pub(crate) fn grant_capability(
         &self,
         session: &Session,
         task_id: TaskId,
@@ -1592,7 +1600,7 @@ impl Runtime {
     /// Revokes a grant at once (REQ-CAP-005). An approval requested under
     /// the old grant set is invalidated and its action rejected, whether the
     /// user has decided yet or not (REQ-APR-009).
-    pub fn revoke_capability(
+    pub(crate) fn revoke_capability(
         &self,
         session: &Session,
         task_id: TaskId,

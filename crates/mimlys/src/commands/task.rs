@@ -187,7 +187,7 @@ pub async fn resume(
     } else {
         None
     };
-    app.runtime.resume_task(&app.session, id, extend)?;
+    app.client.resume_task(id, extend)?;
     finish(app, id, interaction, out).await
 }
 
@@ -195,7 +195,7 @@ pub async fn resume(
 /// another process the task is never `running` (the data directory is locked).
 pub fn pause(app: &App, task: &str, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    app.runtime.pause_task(&app.session, id)?;
+    app.client.pause_task(id)?;
     print_view(&app.runtime.get_task(id)?, out);
     Ok(())
 }
@@ -231,7 +231,7 @@ pub fn delete(
         out.value(&serde_json::json!({ "footprint": view.footprint, "deleted": false }));
         return Ok(());
     }
-    let footprint = app.runtime.delete_task(&app.session, id, audit)?;
+    let footprint = app.client.delete_task(id, audit)?;
     out.line(messages::deleted(&id.to_string()));
     out.value(&serde_json::json!({ "footprint": footprint, "deleted": true, "audit": audit }));
     Ok(())
@@ -240,7 +240,7 @@ pub fn delete(
 /// `task cancel`.
 pub fn cancel(app: &App, task: &str, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    app.runtime.cancel_task(&app.session, id)?;
+    app.client.cancel_task(id)?;
     print_view(&app.runtime.get_task(id)?, out);
     Ok(())
 }

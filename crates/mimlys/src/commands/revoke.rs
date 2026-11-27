@@ -17,7 +17,7 @@ pub async fn run(
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     let grant_id = resolve_grant(app, id, grant)?;
-    let grant = app.runtime.revoke_capability(&app.session, id, grant_id)?;
+    let grant = app.client.revoke_capability(id, grant_id)?;
     out.line(messages::grant_revoked(&grant.grant_id.to_string()));
     out.value(&grant);
     if out.json() {

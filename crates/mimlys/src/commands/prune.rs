@@ -403,7 +403,7 @@ pub fn run(
             let id = TaskId::from_uuid(c.task_id.parse().map_err(|_| AppError::Io {
                 detail: format!("`{}` is not a task id", c.task_id),
             })?);
-            Ok(app.runtime.delete_task(&app.session, id, audit)?)
+            Ok(app.client.delete_task(id, audit)?)
         },
         |c, result| match result {
             Ok(f) => out.line(messages::prune_deleted(&c.task_id, f)),

@@ -439,12 +439,12 @@ pub async fn drive(
             TaskState::Running => {
                 match signals.stage() {
                     CANCEL => {
-                        runtime.cancel_task(&app.session, task_id)?;
+                        app.client.cancel_task(task_id)?;
                         print_new(&runtime, task_id, &mut position, out)?;
                         continue;
                     }
                     PAUSE => {
-                        runtime.pause_task(&app.session, task_id)?;
+                        app.client.pause_task(task_id)?;
                         signals.applied();
                     }
                     _ => {}
@@ -455,7 +455,7 @@ pub async fn drive(
                 let printed = print_new(&runtime, task_id, &mut position, out)?;
                 if result.outcome == StepOutcome::Cancelled && result.state == TaskState::Running {
                     if signals.stage() == CANCEL {
-                        runtime.cancel_task(&app.session, task_id)?;
+                        app.client.cancel_task(task_id)?;
                     } else {
                         // The step was cancelled (the watchdog's request, or
                         // one that came as the pause was being applied) and
@@ -465,7 +465,7 @@ pub async fn drive(
                         // calls no model and no tool, and the step that was
                         // cancelled took the request with it (`run_step`), so
                         // this step finds the pause and not the request.
-                        runtime.pause_task(&app.session, task_id)?;
+                        app.client.pause_task(task_id)?;
                         signals.applied();
                         runtime.run_step(task_id).await?;
                         print_new(&runtime, task_id, &mut position, out)?;
@@ -521,14 +521,13 @@ pub async fn drive(
                         }
                         match decision {
                             Decision::Approve => {
-                                runtime.approve_action(&app.session, task_id, None)?;
+                                app.client.approve_action(task_id, None)?;
                             }
                             Decision::Reject { note, halt } => {
-                                runtime.reject_action(&app.session, task_id, note, Some(halt))?;
+                                app.client.reject_action(task_id, note, Some(halt))?;
                             }
                             Decision::Grant(kind) => {
-                                let grant =
-                                    runtime.grant_capability(&app.session, task_id, kind)?;
+                                let grant = app.client.grant_capability(task_id, kind)?;
                                 out.line(messages::grant_issued(
                                     &grant.grant_id.to_string(),
                                     &serde_json::to_string(grant.kind()).unwrap_or_default(),
@@ -550,13 +549,13 @@ pub async fn drive(
                         }
                         match decision {
                             PlanDecision::Approve { note } => {
-                                runtime.approve_action(&app.session, task_id, note)?;
+                                app.client.approve_action(task_id, note)?;
                             }
                             PlanDecision::Reject { note, halt } => {
-                                runtime.reject_action(&app.session, task_id, note, Some(halt))?;
+                                app.client.reject_action(task_id, note, Some(halt))?;
                             }
                             PlanDecision::Cancel => {
-                                runtime.cancel_task(&app.session, task_id)?;
+                                app.client.cancel_task(task_id)?;
                             }
                             PlanDecision::Leave => return Ok(view),
                         }
@@ -574,7 +573,7 @@ pub async fn drive(
                         }
                         match answer {
                             Some(text) => {
-                                runtime.answer_question(&app.session, task_id, &text)?;
+                                app.client.answer_question(task_id, &text)?;
                             }
                             None => return Ok(view),
                         }

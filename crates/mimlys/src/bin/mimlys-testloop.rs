@@ -217,7 +217,7 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
                 state,
                 TaskState::Created | TaskState::Paused | TaskState::Halted { .. }
             ) {
-                app.runtime.resume_task(&app.session, id, None)?;
+                app.client.resume_task(id, None)?;
             }
             id
         }

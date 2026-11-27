@@ -16,6 +16,6 @@ pub async fn run(
     out: &Output,
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    app.runtime.approve_action(&app.session, id, note)?;
+    app.client.approve_action(id, note)?;
     finish(app, id, interaction, out).await
 }

@@ -610,7 +610,7 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     // A backend that serves another model than the task last ran with: the task goes on, and
     // the start says both models (external design §20).
     if let Some(task) = target.as_ref().and_then(|t| t.task.as_ref())
-        && let Ok(Some(change)) = app.runtime.model_change(task)
+        && let Ok(Some(change)) = app.client.model_change(task.task_id)
     {
         mimlys::output::diag(mimlys::messages::model_changed_notice(
             &change.backend,
@@ -757,8 +757,7 @@ fn start_is_forbidden(app: &App, command: &Command, backend: &str) -> bool {
     let forbidden = match named {
         Some(task) => app
             .resolve_task(task)
-            .and_then(|id| Ok(app.runtime.get_task(id)?))
-            .and_then(|view| Ok(app.runtime.start_refusal(&view.task)?.is_some())),
+            .and_then(|id| Ok(app.client.start_refusal(id)?.is_some())),
         None => {
             let profile = match command {
                 Command::Run(args) => args.profile.as_deref(),
@@ -766,7 +765,7 @@ fn start_is_forbidden(app: &App, command: &Command, backend: &str) -> bool {
                 _ => return false,
             };
             Ok(app
-                .runtime
+                .client
                 .creation_forbidden(profile, backend)
                 .unwrap_or(false))
         }

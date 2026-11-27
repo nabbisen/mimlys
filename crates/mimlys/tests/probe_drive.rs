@@ -124,29 +124,28 @@ impl Rig {
 
     /// The probe's task, as the command makes it.
     fn create(&self) -> Result<TaskId, RuntimeError> {
-        Ok(self
-            .runtime
-            .create_task(
-                &session(),
-                CreateTask {
-                    goal: probe::GOAL.into(),
-                    scope: ScopeSpec {
-                        root: "/data/tmp/probe-x".into(),
-                        include: vec![],
-                    },
-                    profile: Some(probe::PROFILE.into()),
-                    grants: vec![],
-                    budgets: None,
-                    deadline_ms: Some(probe::WALL_MS),
-                    completion_check: None,
-                    hold: false,
-                    from_task: None,
-                    from_snapshot: None,
-                    plan_first: false,
-                    effort: None,
+        Ok(mimlys_core::api::testing::create_task(
+            &self.runtime,
+            &session(),
+            CreateTask {
+                goal: probe::GOAL.into(),
+                scope: ScopeSpec {
+                    root: "/data/tmp/probe-x".into(),
+                    include: vec![],
                 },
-            )?
-            .task_id)
+                profile: Some(probe::PROFILE.into()),
+                grants: vec![],
+                budgets: None,
+                deadline_ms: Some(probe::WALL_MS),
+                completion_check: None,
+                hold: false,
+                from_task: None,
+                from_snapshot: None,
+                plan_first: false,
+                effort: None,
+            },
+        )?
+        .task_id)
     }
 
     /// Drives the task and judges it, the file being as asked or not as `as_asked` says.

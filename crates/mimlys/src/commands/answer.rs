@@ -14,6 +14,6 @@ pub async fn run(
     out: &Output,
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    app.runtime.answer_question(&app.session, id, text)?;
+    app.client.answer_question(id, text)?;
     finish(app, id, interaction, out).await
 }

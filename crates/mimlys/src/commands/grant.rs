@@ -20,7 +20,7 @@ pub async fn run(
         detail: e.to_owned(),
     })?;
     app.check_host_tool_grant(&kind)?;
-    let grant = app.runtime.grant_capability(&app.session, id, kind)?;
+    let grant = app.client.grant_capability(id, kind)?;
     out.line(messages::grant_issued(
         &grant.grant_id.to_string(),
         &serde_json::to_string(grant.kind()).unwrap_or_default(),

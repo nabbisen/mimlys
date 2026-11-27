@@ -60,9 +60,7 @@ pub fn run(
         let overwrite = !plan.conflicts.is_empty()
             && (overwrite_edited
                 || (interactive && interaction.confirm(messages::REVERT_OVERWRITE_CONFIRM)));
-        let reversed = app
-            .runtime
-            .revert_promotion(&app.session, id, promotion_id, overwrite)?;
+        let reversed = app.client.revert_promotion(id, promotion_id, overwrite)?;
         out.line(messages::promotion_reversed(
             &reversed.promotion_id.to_string(),
             reversed.files.len(),
@@ -81,9 +79,7 @@ pub fn run(
         }
         None => None,
     };
-    let record = app
-        .runtime
-        .rollback_workspace(&app.session, id, snapshot_id)?;
+    let record = app.client.rollback_workspace(id, snapshot_id)?;
     out.line(messages::rolled_back(
         &record.snapshot_id.to_string(),
         record.reason.name(),

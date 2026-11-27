@@ -396,8 +396,7 @@ impl Loop {
             plan_first: false,
             effort: None,
         };
-        self.runtime
-            .create_task(&self.session, request)
+        mimlys_core::api::testing::create_task(&self.runtime, &self.session, request)
             .unwrap()
             .task_id
     }

@@ -159,30 +159,29 @@ fn req_task_015_the_gate_and_the_approved_version_hold_across_restarts() {
     // Process 1: the plan waits.
     let id = {
         let p = Process::start(&data, vec![plan(&["read a"])]);
-        let id = p
-            .runtime
-            .create_task(
-                &session(),
-                CreateTask {
-                    goal: "g".into(),
-                    scope: ScopeSpec {
-                        root: "/home/u/project".into(),
-                        include: vec![],
-                    },
-                    profile: Some("read_only".into()),
-                    grants: vec![],
-                    budgets: None,
-                    deadline_ms: None,
-                    completion_check: None,
-                    hold: false,
-                    from_task: None,
-                    from_snapshot: None,
-                    plan_first: true,
-                    effort: None,
+        let id = mimlys_core::api::testing::create_task(
+            &p.runtime,
+            &session(),
+            CreateTask {
+                goal: "g".into(),
+                scope: ScopeSpec {
+                    root: "/home/u/project".into(),
+                    include: vec![],
                 },
-            )
-            .unwrap()
-            .task_id;
+                profile: Some("read_only".into()),
+                grants: vec![],
+                budgets: None,
+                deadline_ms: None,
+                completion_check: None,
+                hold: false,
+                from_task: None,
+                from_snapshot: None,
+                plan_first: true,
+                effort: None,
+            },
+        )
+        .unwrap()
+        .task_id;
         assert_eq!(p.step(id).state, waiting_plan());
         id
     };
@@ -194,9 +193,14 @@ fn req_task_015_the_gate_and_the_approved_version_hold_across_restarts() {
         let task = p.task(id);
         assert_eq!(task.state, waiting_plan());
         assert_eq!(task.pending, Some(PendingItem::Plan { version: 1 }));
-        p.runtime
-            .reject_action(&session(), id, Some("again".into()), Some(false))
-            .unwrap();
+        mimlys_core::api::testing::reject_action(
+            &p.runtime,
+            &session(),
+            id,
+            Some("again".into()),
+            Some(false),
+        )
+        .unwrap();
         assert!(p.task(id).plan_required(), "the rejection kept the gate");
     }
     // Process 3: the process that rejected ended with the task running, so the start halts it
@@ -212,7 +216,7 @@ fn req_task_015_the_gate_and_the_approved_version_hold_across_restarts() {
                 ..
             }
         ));
-        p.runtime.resume_task(&session(), id, None).unwrap();
+        mimlys_core::api::testing::resume_task(&p.runtime, &session(), id, None).unwrap();
         let result = p.step(id);
         assert_eq!(result.outcome, StepOutcome::Rejected);
         let steps = p.store.load_steps(id).unwrap();
@@ -230,8 +234,7 @@ fn req_task_015_the_gate_and_the_approved_version_hold_across_restarts() {
     // Process 4: the user approves with a note.
     {
         let p = Process::start(&data, vec![]);
-        p.runtime
-            .approve_action(&session(), id, Some("go".into()))
+        mimlys_core::api::testing::approve_action(&p.runtime, &session(), id, Some("go".into()))
             .unwrap();
         assert_eq!(p.task(id).plan_approved, Some(2));
     }
@@ -241,7 +244,7 @@ fn req_task_015_the_gate_and_the_approved_version_hold_across_restarts() {
         p.recover(mimlys_core::clock::FakeClock::default().now());
         let task = p.task(id);
         assert_eq!((task.plan_approved, task.plan_required()), (Some(2), false));
-        p.runtime.resume_task(&session(), id, None).unwrap();
+        mimlys_core::api::testing::resume_task(&p.runtime, &session(), id, None).unwrap();
         assert_eq!(p.step(id).outcome, StepOutcome::Continued);
         assert_eq!(p.store.load_actions(id).unwrap().len(), 1);
         // And a later plan does not wait.
@@ -259,30 +262,29 @@ fn req_task_015_an_expired_plan_wait_halts_approval_expired() {
     let data = dir.path().join("data");
     let id = {
         let p = Process::start(&data, vec![plan(&["read a"])]);
-        let id = p
-            .runtime
-            .create_task(
-                &session(),
-                CreateTask {
-                    goal: "g".into(),
-                    scope: ScopeSpec {
-                        root: "/home/u/project".into(),
-                        include: vec![],
-                    },
-                    profile: Some("read_only".into()),
-                    grants: vec![],
-                    budgets: None,
-                    deadline_ms: None,
-                    completion_check: None,
-                    hold: false,
-                    from_task: None,
-                    from_snapshot: None,
-                    plan_first: true,
-                    effort: None,
+        let id = mimlys_core::api::testing::create_task(
+            &p.runtime,
+            &session(),
+            CreateTask {
+                goal: "g".into(),
+                scope: ScopeSpec {
+                    root: "/home/u/project".into(),
+                    include: vec![],
                 },
-            )
-            .unwrap()
-            .task_id;
+                profile: Some("read_only".into()),
+                grants: vec![],
+                budgets: None,
+                deadline_ms: None,
+                completion_check: None,
+                hold: false,
+                from_task: None,
+                from_snapshot: None,
+                plan_first: true,
+                effort: None,
+            },
+        )
+        .unwrap()
+        .task_id;
         p.step(id);
         // The default is no expiry (LIM-A1); a wait that was given one is made so here.
         let now = mimlys_core::clock::FakeClock::default().now();

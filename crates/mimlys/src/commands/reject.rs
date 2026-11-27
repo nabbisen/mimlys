@@ -15,7 +15,7 @@ pub async fn run(
     out: &Output,
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    app.runtime
-        .reject_action(&app.session, id, note, if halt { Some(true) } else { None })?;
+    app.client
+        .reject_action(id, note, if halt { Some(true) } else { None })?;
     finish(app, id, interaction, out).await
 }

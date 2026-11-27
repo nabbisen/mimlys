@@ -3,6 +3,7 @@
 //! command invocation; the store's lock keeps a second process out.
 
 use crate::backends::{Backend, ConfiguredBackends};
+use crate::client::Client;
 use crate::config::{Config, ConfigError, Loaded};
 use crate::workspace::LocalWorkspaces;
 use mimlys_core::clock::SystemClock;
@@ -236,10 +237,14 @@ pub struct App {
     pub loaded: Loaded,
     /// The data directory.
     pub data_dir: PathBuf,
-    /// The runtime.
+    /// The runtime: what a reader asks directly (REQ-PERS-013). A command that changes anything
+    /// sends its requests through [`App::client`], never to a method of this.
     pub runtime: Arc<Runtime>,
     /// This process as a session.
     pub session: Session,
+    /// The one client of the control API, over this process's own runtime: every command sends
+    /// its requests through it (external design §4; handoff 014b).
+    pub client: Client,
     /// The backend named `default` (REQ-CFG-007): the one a task runs on unless its level's
     /// envelope names another (RFC 015, REQ-TASK-013), and the one the runtime's status shows.
     pub backend: Backend,
@@ -834,14 +839,17 @@ impl App {
                 count: orphans,
             }])?;
         }
+        let runtime = Arc::new(runtime);
+        let session = Session {
+            id: format!("pid:{}", std::process::id()),
+            os_user: os_user(),
+        };
         Ok(Self {
             loaded,
             data_dir,
-            runtime: Arc::new(runtime),
-            session: Session {
-                id: format!("pid:{}", std::process::id()),
-                os_user: os_user(),
-            },
+            client: Client::in_process(Arc::clone(&runtime), session.clone()),
+            runtime,
+            session,
             backend,
             backends,
             backend_probe: std::sync::Mutex::new(std::collections::BTreeMap::new()),

@@ -5,6 +5,7 @@ use super::drive::{Driven, Measures, Stop, drive, file_is_as_asked, observe};
 use super::{FILE, FILE_START, GOAL, PROFILE, SCOPE_PREFIX, WALL_MS};
 use crate::app::{App, AppError};
 use crate::backends::Backend;
+use crate::client::Client;
 use crate::probe_results::LastProbe;
 use crate::workspace::LocalWorkspaces;
 use mimlys_core::clock::Clock;
@@ -222,9 +223,8 @@ async fn measure(
     if stop.requested() {
         return Ok(Measuring::Stopped);
     }
-    let task = runtime.create_task(
-        &app.session,
-        CreateTask {
+    let task =
+        Client::in_process(Arc::clone(runtime), app.session.clone()).create_task(CreateTask {
             goal: GOAL.to_owned(),
             scope: ScopeSpec {
                 root: scope.root()?,
@@ -240,8 +240,7 @@ async fn measure(
             from_snapshot: None,
             plan_first: false,
             effort: None,
-        },
-    )?;
+        })?;
     *task_id = Some(task.task_id);
     if drive(runtime, task.task_id, stop).await? == Driven::Stopped {
         return Ok(Measuring::Stopped);

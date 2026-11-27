@@ -109,26 +109,23 @@ pub fn create(app: &App, args: &NewTask) -> Result<mimlys_core::task::Task, AppE
         })?),
         None => None,
     };
-    let task = app.runtime.create_task(
-        &app.session,
-        CreateTask {
-            goal: args.goal.clone(),
-            scope: ScopeSpec {
-                root: path_text(&root),
-                include: vec![],
-            },
-            profile: Some(profile_name),
-            grants,
-            budgets,
-            deadline_ms,
-            completion_check,
-            hold: args.hold,
-            from_task,
-            from_snapshot,
-            plan_first: args.plan_first,
-            effort: args.effort,
+    let task = app.client.create_task(CreateTask {
+        goal: args.goal.clone(),
+        scope: ScopeSpec {
+            root: path_text(&root),
+            include: vec![],
         },
-    )?;
+        profile: Some(profile_name),
+        grants,
+        budgets,
+        deadline_ms,
+        completion_check,
+        hold: args.hold,
+        from_task,
+        from_snapshot,
+        plan_first: args.plan_first,
+        effort: args.effort,
+    })?;
     Ok(task)
 }
 

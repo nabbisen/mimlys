@@ -6,7 +6,7 @@
 //! plain data, serializable with `serde` and versioned with the runtime: the socket's hello
 //! carries the version, so a client and a runtime of different releases never exchange them.
 //!
-//! One handler turns a request into the runtime's work ([`crate::runtime::Runtime::handle`]).
+//! One handler turns a request into the runtime's work (`Runtime::handle`).
 //! A request is one of:
 //!
 //! - **a verb**: it changes a task, its grants, its workspace or its record, and is answered
@@ -19,6 +19,144 @@
 //!
 //! Readers are not requests: they open the store read-only and never need a runtime
 //! (REQ-PERS-013).
+//!
+//! # No way around the handler
+//!
+//! The verbs are methods of the runtime that no other crate can call: each of these blocks fails to
+//! compile, because the method is private (E0624), so that a command that calls a verb directly is
+//! not a program (handoff 014b, item 2). The one way in is `Runtime::handle`.
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn create_task(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.create_task(s, todo!());
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn resume_task(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.resume_task(s, t, None);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn pause_task(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.pause_task(s, t);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn cancel_task(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.cancel_task(s, t);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn approve_action(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.approve_action(s, t, None);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn reject_action(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.reject_action(s, t, None, None);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn answer_question(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.answer_question(s, t, "a");
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn grant_capability(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.grant_capability(s, t, todo!());
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn revoke_capability(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.revoke_capability(s, t, todo!());
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn rollback_workspace(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.rollback_workspace(s, t, None);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn promote_workspace(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.promote_workspace(s, t, todo!());
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn revert_promotion(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.revert_promotion(s, t, todo!(), false);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn delete_task(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.delete_task(s, t, false);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn plan_effort(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.plan_effort(todo!(), None, None);
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn model_change(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.model_change(todo!());
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn start_refusal(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.start_refusal(todo!());
+//! # }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use mimlys_core::{ids::TaskId, runtime::{Runtime, Session}};
+//! # fn creation_forbidden(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.creation_forbidden(None, "default");
+//! # }
+//! ```
+//!
+//! And the way in does compile:
+//!
+//! ```
+//! # use mimlys_core::{api::{Envelope, Request}, ids::{RequestId, SystemIds, TaskId}, runtime::{Runtime, Session}};
+//! # fn handled(r: &Runtime, s: &Session, t: TaskId) {
+//! let _ = r.handle(Envelope {
+//!     request_id: RequestId::new(&SystemIds),
+//!     session: s.clone(),
+//!     request: Request::CancelTask { task_id: t },
+//! });
+//! # }
+//! ```
 
 use crate::grant::{Grant, GrantKind};
 use crate::ids::{GrantId, PromotionId, RequestId, SnapshotId, TaskId};
@@ -131,7 +269,7 @@ pub enum Request {
         audit: bool,
     },
     /// Ask: the level a task would be given and the backend its envelope names, before anything
-    /// is created ([`crate::runtime::Runtime::plan_effort`]).
+    /// is created (`Runtime::plan_effort`).
     PlanEffort {
         /// The profile; the policy's default when absent.
         profile: Option<String>,
@@ -141,19 +279,19 @@ pub enum Request {
         from_task: Option<TaskId>,
     },
     /// Ask: the model the task's backend names now, when it is not the one the task last ran
-    /// with ([`crate::runtime::Runtime::model_change`]).
+    /// with (`Runtime::model_change`).
     ModelChange {
         /// The task.
         task_id: TaskId,
     },
     /// Ask: whether the task may not start, its backend being remote under a profile without
-    /// `external` ([`crate::runtime::Runtime::start_refusal`]).
+    /// `external` (`Runtime::start_refusal`).
     StartRefusal {
         /// The task.
         task_id: TaskId,
     },
     /// Ask: whether a task created under `profile` on `backend` would be refused
-    /// ([`crate::runtime::Runtime::creation_forbidden`]).
+    /// (`Runtime::creation_forbidden`).
     CreationForbidden {
         /// The profile; the policy's default when absent.
         profile: Option<String>,
@@ -277,6 +415,9 @@ impl Response {
         }
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 #[cfg(test)]
 mod tests;
