@@ -101,6 +101,7 @@
 | LIM-X3 | Worker or MCP server restarts per task, in one runtime process (external design §11.1): counted for that task alone, never for a start made for no task (a listing), and cleared when the task ends, so that a long-lived process (the daemon, from 0.14) keeps one count per task | 3 | 0–10 | Fault containment |
 | LIM-X4 | Worker start, including interpreter compilation | 60000 ms | 5000 – 600000 | Cranelift compiles a multi-megabyte interpreter once per worker |
 | LIM-X5 | Executions of one user at once across runtimes (RFC 013 admission) | 2 | 1–16 | Measured (M7b report §3, 2026-11-19): with LIM-H7 at one half, two bounded trees cost each other ×1.02 to ×1.15 and a third ×1.5 to ×1.7 (rule `floor(1 / share)`); where the CPU part is not a bound, the second slot costs ×1.2 to ×2.0, and the default stays 2 for one rule everywhere |
+| LIM-X6 | Ended tasks a provider of workspaces remembers by id, so that a late request for an ended task's tools is refused and builds nothing | 1024 | fixed | Design choice (handoff 014a-5, item 2): bounded, so that a runtime that lives for many tasks keeps nothing per task; every caller refuses an ended task before it asks, so the memory catches only a late one |
 
 ## Approvals and questions
 
@@ -124,7 +125,7 @@
 | ID | Parameter | Default | Range | Basis |
 |---|---|---:|---|---|
 | LIM-O1 | Time to exit after a stop signal (except while an action that cannot be undone is in flight: then its own deadline bounds the wait, REQ-CLI-005) | 5000 ms | 1000 – 30000 | Persist, then kill the worker |
-| LIM-O2 | Time until a cancelled execution's tree is terminated | 2000 ms | 500 – 10000 | FR-007 of the draft |
+| LIM-O2 | Time until a cancelled execution's tree is terminated | 2000 ms | fixed | FR-007 of the draft. No configuration key exists; the range 500 – 10000 the register gave was never true (corrected at the review of 014a-5) |
 | LIM-O3 | Wait for the runtime lock before refusing to start | 1000 ms | fixed | Single writer |
 | LIM-O4 | Deadline of a built-in tool invocation | 30000 ms | 1000 – 300000 | File operations |
 | LIM-O5 | Deadline of an external (MCP) tool invocation | 60000 ms | 1000 – 600000; never below the server's declared maximum | rypsok expectation 5 |
@@ -137,10 +138,10 @@
 | LIM-O12 | Engine requests in flight per backend endpoint per user (`max_in_flight`) | 1 | 1–16 | One consumer GPU serves one request at a time; nothing in the M7b report argues otherwise (§6) |
 | LIM-O13 | Idle time after which a daemon exits | 30 min | 1 min – never | Provisional (RFC 014) |
 | LIM-O14 | Wait for a connection to the daemon | 2000 ms | fixed | Provisional (RFC 014) |
-| LIM-O15 | Wait of a cancel for the step in flight to end (external design §4) | LIM-O2 as configured + 3000 ms | follows LIM-O2 | Design choice (review of 014a): the step's execution is terminated within LIM-O2, then the step writes its end; a fixed wait shorter than a configured LIM-O2 would refuse a cancel that was about to succeed |
 | LIM-O15 | Poll interval of `events --follow` | 500 ms | fixed | Interface latency; a named constant since handoff 013 |
 | LIM-O17 | Wait of `events --follow` for a runtime to take the store of a `running` task no runtime holds, before it says `recovery pending` and ends | 5000 ms | fixed | A runtime takes the lock within a process start; ten polls of LIM-O15 (handoff 002d) |
 | LIM-O18 | Window of the rate bound on a server's standard error (LIM-I18) | 1000 ms | fixed | One count line per second at most (handoff 009h) |
+| LIM-O19 | Wait of a cancel for the step in flight to end (external design §4) | 5000 ms: LIM-O2 + 3000 ms | fixed (follows LIM-O2) | Design choice (reviews of 014a and 014a-5): the step's execution is terminated within LIM-O2, then the step writes its end in the 3000 ms after it |
 | LIM-O16 | Grace for an MCP server to end after its standard input closes, before its group is killed | 5000 ms | 500 – 30000; per server `shutdown_ms` | rypsok's graceful shutdown takes up to 3 s by default (its letter of 2026-11-11); LIM-O2's 2 s cut it short |
 
 ## Model backend

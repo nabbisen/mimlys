@@ -1,6 +1,6 @@
 # Handoff 014a — What a long-lived process needs (release 0.14, phase 1)
 
-**Status (2026-11-27):** items 1 to 4 landed at `388cbc1` (`.git-exclude/reviewed/handoff-014a/README.md`); 014a-5 next.
+**Status (2026-11-27): done.** Items 1 to 4 landed at `388cbc1`, and 014a-5 after it, with the review's correction of the limits' ids (`.git-exclude/reviewed/handoff-014a/README.md`, `.git-exclude/reviewed/handoff-014a-5/README.md`).
 
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), decision 6's notes, read with its **Amendment 1**, item 3. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 1).
 

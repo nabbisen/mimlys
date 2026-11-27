@@ -127,7 +127,7 @@ ApprovalChannel request(rendered) -> decision        (v1: the CLI prompt)
 
   In embedded mode the driver lives as long as the command.
 - **Steps of one task never overlap** (REQ-DEC-001). The runtime refuses a second step of a task whose step is in flight, as `conflict`, and refuses a step while a cancel of its task is in progress. An interruption request for a task that is unknown or ended is refused, and creates nothing.
-- **A cancel waits for the step in flight** (REQ-TASK-006). It claims the task, so that no step begins, asks the step to stop, and waits for it to end, at most LIM-O15. Only then does it write. If the step has not ended by then, the cancel is refused `conflict`, the task is untouched, and the request stays so that the step ends `cancelled` when it can. The wait blocks its thread, and a cancel is never made from inside the step it waits for.
+- **A cancel waits for the step in flight** (REQ-TASK-006). It claims the task, so that no step begins, asks the step to stop, and waits for it to end, at most LIM-O19. Only then does it write. If the step has not ended by then, the cancel is refused `conflict`, the task is untouched, and the request stays so that the step ends `cancelled` when it can. The wait blocks its thread, and a cancel is never made from inside the step it waits for.
 - **Every other state-changing request on a task whose step is in flight** (a pause, a grant, an approval) takes effect at the step's end and is never written over by it (from 014b, which gives the driver the requests).
 
 **The session and the request id.**

@@ -398,13 +398,13 @@ fn req_task_006_a_step_that_finishes_the_task_while_the_cancel_waits_is_not_writ
     assert_eq!(r.h.runtime.steps.held(), 0);
 }
 
-/// REQ-TASK-006, LIM-O15: a step that does not end after the request is not waited for for
+/// REQ-TASK-006, LIM-O19: a step that does not end after the request is not waited for for
 /// ever. The cancel is refused as `conflict`, its message names the wait (LIM-O2 at its default
 /// and 3000 ms: 5000 ms), the task is as the step leaves it, the request stays, and the step
 /// ends `cancelled` as soon as it can: a second cancel then cancels the task. (This test takes
-/// LIM-O15.)
+/// LIM-O19.)
 #[test]
-fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o15() {
+fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o19() {
     let r = rig(vec![act("read_file", "a")], false);
     let id = r.h.create();
     std::thread::scope(|scope| {
@@ -417,7 +417,7 @@ fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o15() {
         assert_eq!(refused.kind(), "conflict", "{refused}");
         assert!(
             refused.to_string().contains("within 5000 ms"),
-            "the message names LIM-O15's value: {refused}"
+            "the message names LIM-O19's value: {refused}"
         );
         assert_eq!(r.h.state(id), TaskState::Running, "the task is untouched");
         assert!(!r.h.runtime.steps.cancel_in_progress(id));
@@ -431,18 +431,19 @@ fn req_task_006_a_step_that_does_not_end_is_waited_for_at_most_lim_o15() {
     assert_eq!(task.state, TaskState::Cancelled);
 }
 
-/// REQ-TASK-006, LIM-O15: the wait is LIM-O2 as configured plus 3000 ms, never a fixed time.
+/// REQ-TASK-006, LIM-O19: the wait is LIM-O2 plus 3000 ms, never a fixed time.
 #[test]
-fn req_task_006_the_wait_of_a_cancel_is_lim_o2_as_configured_plus_three_seconds() {
+fn req_task_006_the_wait_of_a_cancel_is_lim_o2_plus_three_seconds() {
     assert_eq!(crate::limits::cancel_wait_ms(2_000), 5_000);
     assert_eq!(crate::limits::cancel_wait_ms(10_000), 13_000);
     assert_eq!(crate::limits::cancel_wait_ms(500), 3_500);
     assert_eq!(crate::limits::cancel_wait_ms(u64::MAX), u64::MAX);
 }
 
-/// REQ-TASK-006, LIM-O15: with LIM-O2 raised (6000 ms: a wait of 9000 ms), a step that ends
+/// REQ-TASK-006, LIM-O19: the wait follows LIM-O2 (which has no configuration key; the test
+/// raises it through its seam). With LIM-O2 at 6000 ms (a wait of 9000 ms), a step that ends
 /// after a time that the default wait would not have given it (here, past 5000 ms: LIM-O1's
-/// old value, and the default LIM-O15) is waited for: the cancel ends the task `cancelled`, not
+/// old value, and the default LIM-O19) is waited for: the cancel ends the task `cancelled`, not
 /// refused. The step is held without seeing the request, as an execution still within its
 /// bound would be. (This test takes a little over 5 s.)
 #[test]

@@ -304,8 +304,8 @@ pub struct Runtime {
     /// The keys of the three effort levels (REQ-TASK-013): what ships, and what the configuration
     /// replaces it with.
     levels: crate::effort::Levels,
-    /// LIM-O2 as configured, in milliseconds: the time an execution's tree has to end after a
-    /// cancel. A cancel's wait for the step in flight follows it (LIM-O15).
+    /// LIM-O2, in milliseconds (a test may lower or raise it): the time an execution's tree
+    /// has to end after a cancel. A cancel's wait for the step in flight follows it (LIM-O19).
     cancel_grace_ms: u64,
 }
 
@@ -427,12 +427,13 @@ impl Runtime {
         }
     }
 
-    /// Sets LIM-O2 as configured: the time an execution's tree has to end after a cancel. The
-    /// wait of a cancel for the step in flight is this plus 3000 ms (LIM-O15), so that a cancel
-    /// is not refused while the execution it waits for is still within its own bound. A runtime
-    /// built without it has LIM-O2's default.
+    /// Sets the time an execution's tree has to end after a cancel, LIM-O2, for a test. The
+    /// wait of a cancel for the step in flight is this plus 3000 ms (LIM-O19), so that a cancel
+    /// is not refused while the execution it waits for is still within its own bound. LIM-O2
+    /// has no configuration key, so a runtime outside the tests always has it at its value.
+    #[cfg(test)]
     #[must_use]
-    pub fn with_cancel_grace(mut self, grace: std::time::Duration) -> Self {
+    pub(crate) fn with_cancel_grace(mut self, grace: std::time::Duration) -> Self {
         self.cancel_grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
         self
     }

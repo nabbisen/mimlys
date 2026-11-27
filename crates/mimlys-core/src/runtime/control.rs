@@ -1160,7 +1160,7 @@ impl Runtime {
     /// ([`Runtime::interrupt_step_anyway`]), so that a model request is aborted, an execution is
     /// terminated within LIM-O2, and an action that cannot be undone is recorded with its
     /// outcome unknown and listed by the task's view. The cancel then waits for the step to end,
-    /// at most LIM-O15 (LIM-O2 as configured plus 3000 ms), and only then reads the task and
+    /// at most LIM-O19 (LIM-O2 plus 3000 ms), and only then reads the task and
     /// writes. A task with no step in flight is cancelled as before.
     ///
     /// **Made safe against the step finishing while the cancel runs** (the slot of
@@ -1174,7 +1174,7 @@ impl Runtime {
     /// the task `cancelled`, and a step that begins after it is refused by the state.
     ///
     /// It blocks the calling thread while it waits: it must not be called from inside the step
-    /// it waits for. A step that has not ended LIM-O15 after the request is not waited for any
+    /// it waits for. A step that has not ended LIM-O19 after the request is not waited for any
     /// longer: the cancel is refused as `conflict`, nothing of the task is changed, the request
     /// stays, and the step ends `cancelled` when it does.
     pub fn cancel_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
