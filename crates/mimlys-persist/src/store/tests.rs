@@ -62,6 +62,7 @@ impl Fx {
             step_id: None,
             action_id: None,
             policy_hash: hash_bytes(b"policy"),
+            request_id: None,
             event,
         }
     }

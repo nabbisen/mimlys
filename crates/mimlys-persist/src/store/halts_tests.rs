@@ -309,6 +309,7 @@ fn req_cli_005_an_action_closed_before_it_began_is_one_consistent_write() {
             step_id: None,
             action_id: Some(actions[0].action_id),
             policy_hash: mimlys_core::hash::hash_bytes(b"p"),
+            request_id: None,
             event: mimlys_core::event::Event::ActionFinished {
                 status: "cancelled".into(),
                 cause: None,

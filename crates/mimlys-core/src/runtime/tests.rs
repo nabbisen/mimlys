@@ -35,6 +35,7 @@ mod newer_records;
 mod plan_first;
 mod refused_creation;
 mod rejection_feedback;
+mod request_ids;
 mod result_bound;
 mod script_mode;
 mod start_check;

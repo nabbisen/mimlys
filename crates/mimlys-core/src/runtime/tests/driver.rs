@@ -33,7 +33,7 @@ fn driven(decisions: Vec<Value>, policy: Policy) -> (Driver, Harness) {
 
 fn request(h: &Harness, request: Request) -> Envelope {
     Envelope {
-        request_id: RequestId::new(&ScriptedIds::starting_at(9_000)),
+        request_id: RequestId::new(&crate::ids::SystemIds),
         session: h.session.clone(),
         request,
     }

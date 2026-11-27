@@ -215,6 +215,7 @@ fn req_obs_001_event_record_envelope_is_flat() {
         step_id: None,
         action_id: None,
         policy_hash: hash_bytes(b"policy"),
+        request_id: None,
         event: Event::TaskStateChanged {
             from: "created".into(),
             to: "running".into(),

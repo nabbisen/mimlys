@@ -439,12 +439,28 @@ pub enum Notice {
     },
 }
 
+/// What a request whose id is already recorded returns (external design §4, "The recorded
+/// outcome"): that it was applied, at which event, and the task as it is now. Nothing is applied
+/// again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlreadyApplied {
+    /// The position of the first event the request's change wrote.
+    pub position: u64,
+    /// That event's name, which says what the change was (`grant.issued`, `task.created`, …).
+    pub event: String,
+    /// The task, as it is now; none when it was deleted since, or the request names none.
+    pub task: Option<Box<Task>>,
+}
+
 /// How a request ended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", content = "value", rename_all = "snake_case")]
 pub enum Outcome {
     /// It was handled.
     Done(Reply),
+    /// Its id was recorded already: it was applied before, and is not applied again. A request
+    /// that was refused wrote nothing, so it is never answered so.
+    AlreadyApplied(AlreadyApplied),
     /// It was refused or failed, with the error of external design §18.
     Failed(RuntimeError),
 }
@@ -459,10 +475,25 @@ pub struct Response {
 }
 
 impl Response {
-    /// The result a caller works with: the reply, or the error.
+    /// The result a caller works with: the reply, or the error. A request that was applied before
+    /// is neither: [`Response::into_outcome`] keeps it apart.
     pub fn into_result(self) -> Result<Reply, RuntimeError> {
+        match self.into_outcome()? {
+            Ok(reply) => Ok(reply),
+            Err(already) => Err(RuntimeError::Conflict {
+                detail: format!(
+                    "the request was applied already, at event {} (`{}`)",
+                    already.position, already.event
+                ),
+            }),
+        }
+    }
+
+    /// The reply, or what was recorded of a request that was applied before, or the error.
+    pub fn into_outcome(self) -> Result<Result<Reply, AlreadyApplied>, RuntimeError> {
         match self.outcome {
-            Outcome::Done(reply) => Ok(reply),
+            Outcome::Done(reply) => Ok(Ok(reply)),
+            Outcome::AlreadyApplied(already) => Ok(Err(already)),
             Outcome::Failed(error) => Err(error),
         }
     }

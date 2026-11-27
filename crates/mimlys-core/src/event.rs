@@ -436,7 +436,7 @@ impl Event {
 /// The keys of an [`EventRecord`] that are the envelope's, not the event's: what a reader that
 /// shows an event it does not know leaves out of the payload it prints (REQ-MAIN-006). A test
 /// keeps the list in step with the type.
-pub const ENVELOPE_FIELDS: [&str; 9] = [
+pub const ENVELOPE_FIELDS: [&str; 10] = [
     "event_id",
     "at",
     "actor",
@@ -446,6 +446,7 @@ pub const ENVELOPE_FIELDS: [&str; 9] = [
     "step_id",
     "action_id",
     "policy_hash",
+    "request_id",
 ];
 
 /// The envelope of a persisted event (external design §17.1).
@@ -466,6 +467,12 @@ pub struct EventRecord {
     pub action_id: Option<ActionId>,
     /// The policy in force.
     pub policy_hash: Hash,
+    /// The id of the control-API request whose change wrote the event (from 0.14; external design
+    /// §4, §17.1): absent for an event the runtime writes of itself (a step's, the recovery's) and
+    /// in records written before. It is how a request that was applied is found again, and not
+    /// applied twice: the store's schema does not change for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<crate::ids::RequestId>,
     /// The event.
     #[serde(flatten)]
     pub event: Event,

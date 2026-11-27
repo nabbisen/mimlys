@@ -9,7 +9,7 @@ use crate::ids::{GrantId, PromotionId, RequestId, SnapshotId};
 use crate::task::StateError;
 
 /// One request, made by calling the verb the way the command line did.
-fn by_the_verb(h: &Harness, request: Request) -> Result<Reply, RuntimeError> {
+pub(super) fn by_the_verb(h: &Harness, request: Request) -> Result<Reply, RuntimeError> {
     let s = &h.session;
     let r = &h.runtime;
     Ok(match request {
@@ -63,7 +63,7 @@ fn by_the_verb(h: &Harness, request: Request) -> Result<Reply, RuntimeError> {
 
 /// One request, sent to the handler.
 fn by_the_handler(h: &Harness, request: Request) -> Result<Reply, RuntimeError> {
-    let request_id = RequestId::new(&ScriptedIds::starting_at(9_000));
+    let request_id = RequestId::new(&crate::ids::SystemIds);
     let response = h.runtime.handle(Envelope {
         request_id,
         session: h.session.clone(),
@@ -73,7 +73,7 @@ fn by_the_handler(h: &Harness, request: Request) -> Result<Reply, RuntimeError> 
     response.into_result()
 }
 
-fn create_request(hold: bool) -> Request {
+pub(super) fn create_request(hold: bool) -> Request {
     Request::CreateTask(CreateTask {
         goal: "fix the failing test".into(),
         scope: ScopeSpec {
@@ -103,7 +103,7 @@ fn task_of(reply: &Result<Reply, RuntimeError>) -> TaskId {
 /// Every verb of external design §4, in one life of two tasks: the answers, the errors and the
 /// events are the same through the verbs and through the handler, id for id and instant for
 /// instant (the ids and the clock are scripted).
-fn scenario(
+pub(super) fn scenario(
     h: &Harness,
     call: &dyn Fn(&Harness, Request) -> Result<Reply, RuntimeError>,
 ) -> Vec<String> {
@@ -314,7 +314,7 @@ fn scenario(
     seen
 }
 
-fn scenario_harness() -> Harness {
+pub(super) fn scenario_harness() -> Harness {
     let h = Harness::with_policy(
         vec![
             act("write_file", "src/lib.rs"),
@@ -339,7 +339,19 @@ fn req_arch_004_the_handler_does_what_the_verb_does_and_leaves_the_store_as_it_l
     let said_direct = scenario(&direct, &by_the_verb);
     let said_handled = scenario(&handled, &by_the_handler);
     assert_eq!(said_handled, said_direct);
-    assert_eq!(handled.persistence.events(), direct.persistence.events());
+    // The same events, but for the id of the request that wrote each (a verb called directly has
+    // none; the ids themselves are judged by `request_ids`).
+    let bare = |h: &Harness| -> Vec<crate::event::EventRecord> {
+        h.persistence
+            .events()
+            .into_iter()
+            .map(|mut e| {
+                e.request_id = None;
+                e
+            })
+            .collect()
+    };
+    assert_eq!(bare(&handled), bare(&direct));
     // The scenario is not empty: it reached the states it names.
     let all = said_handled.join("\n");
     for needle in [
@@ -369,7 +381,7 @@ fn req_arch_004_a_refused_request_fails_with_the_verbs_own_error() {
     let id = h.create();
     h.runtime.cancel_task(&h.session, id).unwrap();
     let response = h.runtime.handle(Envelope {
-        request_id: RequestId::new(&ScriptedIds::starting_at(9_000)),
+        request_id: RequestId::new(&crate::ids::SystemIds),
         session: h.session.clone(),
         request: Request::ResumeTask {
             task_id: id,

@@ -128,7 +128,7 @@ fn req_cap_004_a_grant_during_a_step_waits_for_it_and_applies_from_a_fresh_read(
         let granting = scope.spawn(|| {
             h.runtime.handle_noticing(
                 Envelope {
-                    request_id: RequestId::new(&ScriptedIds::starting_at(9_000)),
+                    request_id: RequestId::new(&crate::ids::SystemIds),
                     session: h.session.clone(),
                     request: Request::GrantCapability {
                         task_id: id,

@@ -41,6 +41,7 @@ fn event(event: Event) -> EventRecord {
         step_id: None,
         action_id: None,
         policy_hash: crate::hash::hash_bytes(b"policy"),
+        request_id: None,
         event,
     }
 }
@@ -430,6 +431,8 @@ fn req_main_006_the_envelope_fields_are_the_event_records() {
         session: "pid:1".into(),
         os_user: "someone".into(),
     };
+    // The optional field of 0.14 is in the record only when a request wrote it.
+    record.request_id = Some(crate::ids::RequestId::new(&ScriptedIds::default()));
     let value = json_of(&record);
     let mut keys: Vec<&str> = value
         .as_object()

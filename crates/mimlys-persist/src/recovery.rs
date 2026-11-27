@@ -88,6 +88,7 @@ impl RecoveryContext<'_> {
             step_id: None,
             action_id: None,
             policy_hash: self.policy_hash.clone(),
+            request_id: None,
             event,
         }
     }
@@ -423,6 +424,7 @@ pub fn recover_promotions(
                 step_id: None,
                 action_id: None,
                 policy_hash: ctx.policy_hash.clone(),
+                request_id: None,
                 event: Event::WorkspacePromotionFailed { reason },
             },
         )?;
@@ -456,6 +458,7 @@ pub fn recover_snapshot_journals(
             step_id: None,
             action_id: None,
             policy_hash: ctx.policy_hash.clone(),
+            request_id: None,
             event: Event::SnapshotJournalsRecovered {
                 finished: u32::try_from(report.finished).unwrap_or(u32::MAX),
                 undone: u32::try_from(report.undone).unwrap_or(u32::MAX),

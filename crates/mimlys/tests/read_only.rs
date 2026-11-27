@@ -117,6 +117,7 @@ fn apply(store: &dyn Persistence, task: &Task, input: TaskInput) -> Task {
                 step_id: None,
                 action_id: None,
                 policy_hash: task.versions.policy_hash.clone(),
+                request_id: None,
                 event: Event::TaskStateChanged {
                     from: task.state.name().to_owned(),
                     to: next.state.name().to_owned(),

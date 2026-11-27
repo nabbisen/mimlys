@@ -172,6 +172,7 @@ pub fn run_an_action(data: &std::path::Path, task: &str, index: u32) -> ActionId
         step_id: None,
         action_id: None,
         policy_hash: task.versions.policy_hash.clone(),
+        request_id: None,
         event,
     };
     let mut step = Step::start(StepId::new(&ids), task.task_id, index, now);

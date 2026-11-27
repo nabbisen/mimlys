@@ -10,7 +10,7 @@ use mimlys_core::action::{Action, ActionStatus, Execution};
 use mimlys_core::approval::ApprovalRequest;
 use mimlys_core::event::EventRecord;
 use mimlys_core::grant::Grant;
-use mimlys_core::ids::{ActionId, BlobId, SnapshotId, TaskId};
+use mimlys_core::ids::{ActionId, BlobId, RequestId, SnapshotId, TaskId};
 use mimlys_core::newer::{RawRecord, Read, RecordKind, Stored};
 use mimlys_core::observation::Observation;
 use mimlys_core::question::Question;
@@ -137,6 +137,23 @@ impl Store {
         .map_err(storage("query"))
     }
 }
+
+/// The first event of a task that a request's change wrote: the task's events through `events_task`
+/// (task, position), then the request's id in the record. No new index (external design §4).
+pub(crate) const EVENT_OF_REQUEST_IN_TASK: &str = "SELECT position, record FROM events \
+     WHERE task_id = ?1 AND json_extract(record, '$.request_id') = ?2 \
+     ORDER BY position LIMIT 1";
+
+/// The creation a request made: for each task, its first event (the minimum position, through
+/// `events_task`) is its `task.created`, and carries the request's id. Bounded by the tasks the
+/// store holds, which `create_task`'s own scan of them costs already; no new index. `CROSS JOIN`
+/// fixes the order (the tasks outside, their events inside): left to itself the planner scans
+/// every event.
+pub(crate) const EVENT_OF_REQUEST_CREATING: &str = "SELECT e.position, e.record \
+     FROM tasks t CROSS JOIN events e ON e.task_id = t.task_id \
+      AND e.position = (SELECT MIN(position) FROM events WHERE task_id = t.task_id) \
+     WHERE e.name = 'task.created' AND json_extract(e.record, '$.request_id') = ?1 \
+     LIMIT 1";
 
 fn append_event(tx: &Transaction<'_>, event: &EventRecord) -> Result<(), PersistenceError> {
     tx.execute(
@@ -511,6 +528,35 @@ macro_rules! persistence_read {
                 });
             }
             Ok(out)
+        }
+
+        fn event_of_request(
+            &self,
+            task_id: Option<TaskId>,
+            request_id: RequestId,
+        ) -> Result<Option<PositionedEvent>, PersistenceError> {
+            let conn = self.conn.lock().map_err(|_| poisoned())?;
+            let (sql, task) = match task_id {
+                Some(task) => (EVENT_OF_REQUEST_IN_TASK, Some(task.to_string())),
+                None => (EVENT_OF_REQUEST_CREATING, None),
+            };
+            let mut stmt = conn.prepare(sql).map_err(storage("prepare"))?;
+            let found = match &task {
+                Some(task) => stmt.query_row(params![task, request_id.to_string()], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                }),
+                None => stmt.query_row(params![request_id.to_string()], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                }),
+            };
+            match found {
+                Ok((position, record)) => Ok(Some(PositionedEvent {
+                    position: position as u64,
+                    record: parse(record)?,
+                })),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(storage("query")(e)),
+            }
         }
 
         fn read_events_since(
@@ -1371,3 +1417,6 @@ mod newer_tests;
 
 #[cfg(test)]
 mod plan_first_tests;
+
+#[cfg(test)]
+mod request_tests;

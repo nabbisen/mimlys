@@ -11,6 +11,7 @@ mod control;
 mod handler;
 mod loop_;
 mod read;
+mod requests;
 mod steps;
 mod storage;
 
@@ -283,6 +284,8 @@ pub struct Runtime {
     interruptions: std::sync::Mutex<std::collections::HashMap<TaskId, Interruption>>,
     /// The tasks with a step in flight or a cancel in progress (REQ-DEC-001, REQ-TASK-006).
     steps: steps::Steps,
+    /// The ids of the requests being handled now (external design §4).
+    requests: requests::InFlight,
     /// The redactor built from the configured secrets.
     redactor: crate::context::Redactor,
     /// Each task's previous request in this process, for the prefix measure (REQ-CTX-010).
@@ -487,6 +490,7 @@ impl Runtime {
             unpinned: std::sync::Mutex::new(std::collections::HashMap::new()),
             interruptions: std::sync::Mutex::new(std::collections::HashMap::new()),
             steps: steps::Steps::default(),
+            requests: requests::InFlight::default(),
             admission: None,
             engine_gate: None,
             unadmitted: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -768,6 +772,7 @@ impl Runtime {
             step_id,
             action_id,
             policy_hash: self.policy_hash.clone(),
+            request_id: requests::current(),
             event,
         }
     }

@@ -81,8 +81,12 @@ impl Client {
     }
 
     /// Sends `request` under `request_id`: a request sent once more, after a connection broke,
-    /// goes under the id it first had (014c), so that it is applied once.
+    /// goes under the id it first had (014c), so that it is applied once. The answer to a request
+    /// that was applied before is the task as it is now, for the verbs that return one; for the
+    /// others it is an error that says where the request was applied (what 014c's reconnection
+    /// reads for itself).
     pub fn send_as(&self, request_id: RequestId, request: Request) -> Result<Reply, RuntimeError> {
+        let asked = (request.name(), returns_task(&request));
         let response = self.transport.send(
             Envelope {
                 request_id,
@@ -96,7 +100,10 @@ impl Client {
                 "an answer to another request than the one that was sent",
             ));
         }
-        response.into_result()
+        match response.into_outcome()? {
+            Ok(reply) => Ok(reply),
+            Err(already) => applied_before(asked, already),
+        }
     }
 
     /// A follower of the task begins: the driver takes it if it is running.
@@ -308,6 +315,40 @@ impl Client {
             other => Err(unexpected_reply("creation_forbidden", &other)),
         }
     }
+}
+
+/// The answer to a request that was applied before (external design §4, "The recorded outcome"):
+/// the task as it is now, for a verb that returns a task; any other verb's result was not kept,
+/// and the error says where it was applied.
+fn applied_before(
+    (name, returns_task): (&str, bool),
+    already: mimlys_core::api::AlreadyApplied,
+) -> Result<Reply, RuntimeError> {
+    match already.task {
+        Some(task) if returns_task => Ok(Reply::Task(task)),
+        _ => Err(RuntimeError::Conflict {
+            detail: format!(
+                "the request {name} was applied already, at event {} (`{}`)",
+                already.position, already.event
+            ),
+        }),
+    }
+}
+
+/// Whether the verb's reply is a task.
+fn returns_task(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::CreateTask(_)
+            | Request::ResumeTask { .. }
+            | Request::PauseTask { .. }
+            | Request::CancelTask { .. }
+            | Request::ApproveAction { .. }
+            | Request::RejectAction { .. }
+            | Request::AnswerQuestion { .. }
+            | Request::StopAtBoundary { .. }
+            | Request::StopAnyway { .. }
+    )
 }
 
 /// What the user is told while a request waits (external design §4): on standard error, so that

@@ -313,3 +313,73 @@ fn noted_task(task_id: mimlys_core::ids::TaskId) -> Task {
     task.state = TaskState::Running;
     task
 }
+
+/// External design §4: a request that was applied before is answered with the task as it is
+/// now, for a verb that returns one; for any other the error says where it was applied.
+#[test]
+fn req_arch_004_a_request_applied_before_is_answered_with_the_task_or_with_where_it_was_applied() {
+    let persistence = Arc::new(FakePersistence::default());
+    let runtime = Arc::new(
+        Runtime::new(RuntimeDeps {
+            persistence,
+            backend: Arc::new(ScriptedBackend::with_decisions(vec![])),
+            backend_name: "default".to_owned(),
+            workspaces: Arc::new(FakeWorkspaces::new(Arc::new(FakeToolProvider::new(vec![
+                read_file(),
+            ])))),
+            policy: Policy::shipped(),
+            ids: Arc::new(ScriptedIds::default()),
+            clock: Arc::new(FakeClock::default()),
+            runtime_version: "0.1.0-test".into(),
+            rules: PlatformRules::Posix,
+            probe: mimlys_core::confine::Probe::unavailable("no backend in tests"),
+            secrets: vec![],
+            context_chars: mimlys_core::limits::LIM_C1_CONTEXT_CHARS,
+            output_bytes: mimlys_core::limits::LIM_S4_OUTPUT_BYTES as usize,
+        })
+        .unwrap(),
+    );
+    let task = Client::in_process(runtime, session())
+        .create_task(CreateTask {
+            goal: "g".into(),
+            scope: ScopeSpec {
+                root: "/home/u/project".into(),
+                include: vec![],
+            },
+            profile: None,
+            grants: vec![],
+            budgets: None,
+            deadline_ms: None,
+            completion_check: None,
+            hold: true,
+            from_task: None,
+            from_snapshot: None,
+            plan_first: false,
+            effort: None,
+        })
+        .unwrap();
+    let kept = task.clone();
+    let transport = Recording::answering(move |e| Response {
+        request_id: e.request_id,
+        outcome: Outcome::AlreadyApplied(mimlys_core::api::AlreadyApplied {
+            position: 12,
+            event: "task.state_changed".into(),
+            task: Some(Box::new(kept.clone())),
+        }),
+    });
+    let client = Client::over(transport, session());
+    // A verb that returns a task: the task as it is now.
+    assert_eq!(client.cancel_task(task.task_id).unwrap(), task);
+    // Any other: its result was not kept, and the error says where it was applied.
+    let error = client
+        .revoke_capability(
+            task.task_id,
+            mimlys_core::ids::GrantId::new(&ScriptedIds::default()),
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), "conflict", "{error}");
+    assert!(
+        error.to_string().contains("event 12") && error.to_string().contains("revoke_capability"),
+        "{error}"
+    );
+}

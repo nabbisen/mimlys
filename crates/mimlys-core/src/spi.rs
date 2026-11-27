@@ -11,7 +11,7 @@ use crate::action::{Action, Execution, ExecutionMetrics, FailureCause, Terminati
 use crate::approval::ApprovalRequest;
 use crate::event::EventRecord;
 use crate::grant::Grant;
-use crate::ids::{ActionId, BlobId, PromotionId, SnapshotId, TaskId};
+use crate::ids::{ActionId, BlobId, PromotionId, RequestId, SnapshotId, TaskId};
 pub use crate::native::DecisionTransport;
 use crate::observation::Notice;
 use crate::observation::Observation;
@@ -2308,6 +2308,30 @@ pub mod fake {
                 .collect())
         }
 
+        fn event_of_request(
+            &self,
+            task_id: Option<TaskId>,
+            request_id: RequestId,
+        ) -> Result<Option<PositionedEvent>, PersistenceError> {
+            let inner = self.inner.lock().expect("fake lock");
+            let mut firsts = std::collections::HashSet::new();
+            Ok(inner
+                .events
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (i as u64 + 1, e))
+                .filter(|(_, e)| match task_id {
+                    Some(task) => e.task_id == Some(task),
+                    // A creation: the first event of each task.
+                    None => e.task_id.is_some_and(|t| firsts.insert(t)),
+                })
+                .find(|(_, e)| e.request_id == Some(request_id))
+                .map(|(position, record)| PositionedEvent {
+                    position,
+                    record: record.clone(),
+                }))
+        }
+
         fn read_events_since(
             &self,
             position: u64,
@@ -3130,6 +3154,19 @@ pub trait PersistenceRead: Send + Sync {
         task_id: Option<TaskId>,
         limit: usize,
     ) -> Result<Vec<PositionedEvent>, PersistenceError>;
+
+    /// The first event whose change a control-API request wrote, found by the request's id in the
+    /// event's envelope (external design §4, §17.1): none when no event carries it, which is
+    /// what a request that was refused, or never made, leaves. With a task, the events of that
+    /// task are searched (by the store's index on them); **with none, the request is a creation**
+    /// that has no task yet to name, and what is searched is the first event of each task, which
+    /// is its `task.created`: bounded by the tasks the store holds, which is what the creation's
+    /// own scan of the tasks costs already. No index is added, so the schema does not change.
+    fn event_of_request(
+        &self,
+        task_id: Option<TaskId>,
+        request_id: RequestId,
+    ) -> Result<Option<PositionedEvent>, PersistenceError>;
 
     /// Events after `position`, oldest first, at most `limit`, as a reader meets them: an event
     /// that holds a word this release does not know is kept as written, marked, and never fails

@@ -92,6 +92,7 @@ pub fn discard_task(
         step_id: None,
         action_id: None,
         policy_hash: mimlys_core::policy::Policy::shipped().hash(),
+        request_id: None,
         event: Event::TaskDeleted { audit: true },
     };
     match store.delete_task_data(task_id, true, &event) {

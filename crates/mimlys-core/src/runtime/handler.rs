@@ -8,9 +8,10 @@
 //! others need a state that has no step, and are *refused* as the state they would be refused
 //! in. The slot (`runtime::steps`) is where the three are kept.
 
+use super::requests::Scope;
 use super::steps::{Held, Note, Noted, OnStep, WriteGuard};
 use super::{Runtime, RuntimeError, Session};
-use crate::api::{Envelope, Notice, Outcome, Reply, Request, Response};
+use crate::api::{AlreadyApplied, Envelope, Notice, Outcome, Reply, Request, Response};
 use crate::ids::{RequestId, TaskId};
 use crate::task::{Task, TaskState};
 
@@ -33,14 +34,59 @@ impl Runtime {
             session,
             request,
         } = envelope;
-        let outcome = match self.apply(request_id, &session, request, notice) {
-            Ok(reply) => Outcome::Done(reply),
-            Err(error) => Outcome::Failed(error),
+        let outcome = if request.changes_state() {
+            self.handle_once(request_id, &session, request, notice)
+        } else {
+            self.apply(request_id, &session, request, notice)
+                .map(Outcome::Done)
+                .unwrap_or_else(Outcome::Failed)
         };
         Response {
             request_id,
             outcome,
         }
+    }
+
+    /// A request that may change the store, **applied once** (external design §4): a request
+    /// whose id is recorded already returns the recorded outcome, and nothing is applied again;
+    /// a request that was refused wrote nothing, so a repeat of it is answered afresh. The events
+    /// the change writes carry the id, in the same write as the change.
+    ///
+    /// Two requests of one id that are handled together take turns, so that the second finds
+    /// what the first recorded.
+    fn handle_once(
+        &self,
+        request_id: RequestId,
+        session: &Session,
+        request: Request,
+        notice: &dyn Fn(Notice),
+    ) -> Outcome {
+        let _turn = self.requests.enter(request_id);
+        let task_id = request.task_id();
+        match self.deps.persistence.event_of_request(task_id, request_id) {
+            Ok(Some(found)) => {
+                let task = found
+                    .record
+                    .task_id
+                    .or(task_id)
+                    .map(|id| self.deps.persistence.load_task(id))
+                    .transpose();
+                return match task {
+                    Ok(task) => Outcome::AlreadyApplied(AlreadyApplied {
+                        position: found.position,
+                        event: found.record.event.name().to_owned(),
+                        task: task.flatten().map(Box::new),
+                    }),
+                    Err(error) => Outcome::Failed(error.into()),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => return Outcome::Failed(error.into()),
+        }
+        let _scope = Scope::enter(request_id);
+        self.apply(request_id, session, request, notice)
+            .map(Outcome::Done)
+            .unwrap_or_else(Outcome::Failed)
     }
 
     /// The task held for a request that needs no step in flight: refused, as `state`, while a
@@ -234,6 +280,8 @@ impl Runtime {
             return;
         }
         if let Some(stop) = stop {
+            // The change is the request's own: its events carry its id.
+            let _scope = Scope::enter(stop.request_id);
             if let Err(error) = self.cancel_idle_task(&stop.session, task_id) {
                 tracing::warn!(
                     target: "mimlys_core",
@@ -245,6 +293,7 @@ impl Runtime {
             *running = false;
             return;
         }
+        let _scope = pause.as_ref().map(|note| Scope::enter(note.request_id));
         if let Some(pause) = pause
             && let Err(error) = self.pause_task(&pause.session, task_id)
         {
