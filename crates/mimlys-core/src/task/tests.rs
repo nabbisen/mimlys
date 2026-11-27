@@ -338,8 +338,8 @@ fn req_task_002_illegal_transitions_are_refused() {
                 assert_eq!(
                     result,
                     Err(StateError::Illegal {
-                        from: pair.0,
-                        input: pair.1
+                        from: pair.0.into(),
+                        input: pair.1.into()
                     }),
                     "expected refusal: {pair:?}"
                 );

@@ -119,6 +119,10 @@ id_type!(EventId, "Identifier of an event record.");
 id_type!(SnapshotId, "Identifier of a workspace snapshot.");
 id_type!(PromotionId, "Identifier of a promotion.");
 id_type!(BlobId, "Identifier of a stored blob.");
+id_type!(
+    RequestId,
+    "Identifier of a control-API request, made by the client (external design §4)."
+);
 
 #[cfg(test)]
 mod tests;

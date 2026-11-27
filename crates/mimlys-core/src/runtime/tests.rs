@@ -24,6 +24,7 @@ mod definitions_bound;
 mod effort_levels;
 mod engine_gate;
 mod halt_detail;
+mod handler;
 mod interrupt;
 mod long_lived;
 mod native;

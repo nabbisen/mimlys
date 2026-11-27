@@ -506,8 +506,8 @@ pub(super) fn promotion_plan(
     let task = load_task(persistence, task_id)?;
     if matches!(task.state, TaskState::Running | TaskState::Recovering) {
         return Err(RuntimeError::State(crate::task::StateError::Illegal {
-            from: task.state.name(),
-            input: "promote_workspace",
+            from: task.state.name().into(),
+            input: "promote_workspace".into(),
         }));
     }
     let base = base_snapshot(persistence, task_id)?;

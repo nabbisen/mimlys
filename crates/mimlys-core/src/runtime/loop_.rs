@@ -231,8 +231,8 @@ impl Runtime {
         let task = self.load(task_id)?;
         if task.state != TaskState::Running {
             return Err(RuntimeError::State(StateError::Illegal {
-                from: task.state.name(),
-                input: "run_step",
+                from: task.state.name().into(),
+                input: "run_step".into(),
             }));
         }
         // From here the step holds the tokens a request reaches (an entry made by a request

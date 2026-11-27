@@ -16,9 +16,10 @@
 //! (`observation`, `context`); snapshots as pure data and the recovery plan
 //! (`snapshot`, `recovery`); the confinement vocabulary and host-tool
 //! declarations (`confine`, `host_tool`); the runtime's step loop and control
-//! API (`runtime`); and the adapter SPI (`spi`).
+//! API (`runtime`, with its requests and responses in `api`); and the adapter SPI (`spi`).
 
 pub mod action;
+pub mod api;
 pub mod approval;
 pub mod bound;
 pub mod clock;

@@ -25,7 +25,7 @@ use crate::task::{
 };
 
 /// A request to create a task (REQ-TASK-001).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CreateTask {
     /// The goal.
     pub goal: String,
@@ -425,8 +425,8 @@ impl Runtime {
                 if !(source.state.is_terminal() || matches!(source.state, TaskState::Halted { .. }))
                 {
                     return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                        from: source.state.name(),
-                        input: "fork",
+                        from: source.state.name().into(),
+                        input: "fork".into(),
                     }));
                 }
                 let snapshots = self.deps.persistence.load_snapshots(source_id)?;
@@ -646,8 +646,8 @@ impl Runtime {
         let task = self.writable(task_id)?;
         if matches!(task.state, TaskState::Running | TaskState::Recovering) {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: task.state.name(),
-                input: "rollback_workspace",
+                from: task.state.name().into(),
+                input: "rollback_workspace".into(),
             }));
         }
         let snapshots = self.deps.persistence.load_snapshots(task_id)?;
@@ -699,8 +699,8 @@ impl Runtime {
         let task = self.writable(task_id)?;
         if matches!(task.state, TaskState::Running | TaskState::Recovering) {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: task.state.name(),
-                input: "promote_workspace",
+                from: task.state.name().into(),
+                input: "promote_workspace".into(),
             }));
         }
         let base = super::read::base_snapshot(self.deps.persistence.as_ref(), task_id)?;
@@ -834,14 +834,14 @@ impl Runtime {
         // project is not as the backup holds it, and the backup is kept to restore it from.
         if promotion.reversed_at.is_some() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: "reversed",
-                input: "revert_promotion",
+                from: "reversed".into(),
+                input: "revert_promotion".into(),
             }));
         }
         if !promotion.can_be_reversed() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: promotion.state.name(),
-                input: "revert_promotion",
+                from: promotion.state.name().into(),
+                input: "revert_promotion".into(),
             }));
         }
         let backup = self
@@ -931,8 +931,8 @@ impl Runtime {
         let task = self.writable(task_id)?;
         if !task.state.is_terminal() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: task.state.name(),
-                input: "delete_task",
+                from: task.state.name().into(),
+                input: "delete_task".into(),
             }));
         }
         let snapshots = self.deps.persistence.load_snapshots(task_id)?;
@@ -1434,8 +1434,8 @@ impl Runtime {
             }
         ) {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: task.state.name(),
-                input: "answer_question",
+                from: task.state.name().into(),
+                input: "answer_question".into(),
             }));
         }
         let mut question = self
@@ -1486,8 +1486,8 @@ impl Runtime {
         let task = self.writable(task_id)?;
         if task.state.is_terminal() {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: task.state.name(),
-                input: "grant_capability",
+                from: task.state.name().into(),
+                input: "grant_capability".into(),
             }));
         }
         if matches!(&kind, GrantKind::Tool { name } if name == crate::host_tool::RUN_HOST_TOOL) {
@@ -1611,8 +1611,8 @@ impl Runtime {
             },
             crate::grant::GrantError::NotActive => {
                 RuntimeError::State(crate::task::StateError::Illegal {
-                    from: "revoked",
-                    input: "revoke_capability",
+                    from: "revoked".into(),
+                    input: "revoke_capability".into(),
                 })
             }
         })?;
@@ -1892,8 +1892,8 @@ impl Runtime {
             }
         ) {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: task.state.name(),
-                input: "approve_action",
+                from: task.state.name().into(),
+                input: "approve_action".into(),
             }));
         }
         let approval = self
@@ -1905,8 +1905,8 @@ impl Runtime {
             })?;
         if approval.status != ApprovalStatus::Pending {
             return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: "approved",
-                input: "approve_action",
+                from: "approved".into(),
+                input: "approve_action".into(),
             }));
         }
         Ok((task, approval))
@@ -2063,7 +2063,7 @@ enum PlanVerdict {
 
 /// A start the profile forbids (REQ-SEC-010): the backend is `remote` and the task's profile has
 /// `external = false`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StartRefusal {
     /// The name of the backend in force.
     pub backend: String,
@@ -2073,7 +2073,7 @@ pub struct StartRefusal {
 
 /// The level a task is to be given and the backend its envelope names, before anything is created
 /// ([`Runtime::plan_effort`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffortPlan {
     /// The level.
     pub level: crate::effort::EffortLevel,
@@ -2088,7 +2088,7 @@ pub struct EffortPlan {
 
 /// A backend that serves another model under the same name than the task last ran with
 /// ([`Runtime::model_change`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ModelChange {
     /// The backend's name.
     pub backend: String,

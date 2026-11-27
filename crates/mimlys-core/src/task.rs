@@ -526,22 +526,24 @@ pub enum TaskInput {
     },
 }
 
-/// A transition was refused (API error kind `state`).
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// A transition was refused (API error kind `state`). The words are fixed ones, held as `Cow` so
+/// that the error can be sent (the control API's responses, handoff 014b) and read back as it was.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case")]
 pub enum StateError {
     /// The input is not valid in the current state.
     #[error("input {input} is not valid in state {from}")]
     Illegal {
         /// The state the task was in.
-        from: &'static str,
+        from: std::borrow::Cow<'static, str>,
         /// The input's name.
-        input: &'static str,
+        input: std::borrow::Cow<'static, str>,
     },
     /// An extension was requested where none is allowed, or beyond the ceiling.
     #[error("budget extension refused: {reason}")]
     Extension {
         /// What was wrong.
-        reason: &'static str,
+        reason: std::borrow::Cow<'static, str>,
     },
     /// A resume would halt again at once because the deadline has passed.
     #[error("the deadline has passed; resume with a later deadline")]
@@ -694,8 +696,8 @@ impl Task {
     /// (external design §5.1). The task itself is not modified.
     pub fn transition(&self, input: TaskInput, now: Instant) -> Result<Task, StateError> {
         let illegal = || StateError::Illegal {
-            from: self.state.name(),
-            input: input.name(),
+            from: self.state.name().into(),
+            input: input.name().into(),
         };
         let mut next = self.clone();
         next.updated_at = now;
@@ -704,7 +706,7 @@ impl Task {
             (TaskState::Created, TaskInput::Resume { extend, .. }) => {
                 if extend.is_some() {
                     return Err(StateError::Extension {
-                        reason: "an extension is allowed only from a budget halt",
+                        reason: "an extension is allowed only from a budget halt".into(),
                     });
                 }
                 TaskState::Running
@@ -793,7 +795,7 @@ impl Task {
             (TaskState::Paused, TaskInput::Resume { extend, .. }) => {
                 if extend.is_some() {
                     return Err(StateError::Extension {
-                        reason: "an extension is allowed only from a budget halt",
+                        reason: "an extension is allowed only from a budget halt".into(),
                     });
                 }
                 TaskState::Running
@@ -854,19 +856,19 @@ fn apply_extension(
         HaltReason::BudgetSteps | HaltReason::BudgetDeadline => {}
         _ => {
             return Err(StateError::Extension {
-                reason: "an extension is allowed only from a budget halt",
+                reason: "an extension is allowed only from a budget halt".into(),
             });
         }
     }
     if let Some(steps) = extension.steps {
         if steps <= task.budgets.steps {
             return Err(StateError::Extension {
-                reason: "the step limit can only be raised",
+                reason: "the step limit can only be raised".into(),
             });
         }
         if steps > ceiling.max_steps {
             return Err(StateError::Extension {
-                reason: "the step limit exceeds the ceiling",
+                reason: "the step limit exceeds the ceiling".into(),
             });
         }
         task.budgets.steps = steps;
@@ -874,12 +876,12 @@ fn apply_extension(
     if let Some(deadline) = extension.deadline {
         if deadline <= task.deadline {
             return Err(StateError::Extension {
-                reason: "the deadline can only be moved later",
+                reason: "the deadline can only be moved later".into(),
             });
         }
         if deadline > ceiling.max_deadline {
             return Err(StateError::Extension {
-                reason: "the deadline exceeds the ceiling",
+                reason: "the deadline exceeds the ceiling".into(),
             });
         }
         task.deadline = deadline;

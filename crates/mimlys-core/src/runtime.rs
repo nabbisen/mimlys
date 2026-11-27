@@ -8,6 +8,7 @@
 mod contain;
 mod context;
 mod control;
+mod handler;
 mod loop_;
 mod read;
 mod steps;
@@ -35,7 +36,7 @@ use crate::task::{HaltDetail, StateError, Task};
 use std::sync::Arc;
 
 /// The session the control API acts under (v1: the CLI process).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     /// A session identifier, `pid:<n>` in v1.
     pub id: String,
@@ -88,7 +89,8 @@ pub struct RuntimeDeps {
 }
 
 /// A runtime failure reported to the control API (external design §18).
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "error", content = "detail", rename_all = "snake_case")]
 pub enum RuntimeError {
     /// A parameter failed validation.
     #[error("invalid request: {detail}")]
@@ -559,8 +561,8 @@ impl Runtime {
                 })?;
         if task.state.is_terminal() {
             return Err(RuntimeError::State(StateError::Illegal {
-                from: task.state.name(),
-                input: request,
+                from: task.state.name().into(),
+                input: request.into(),
             }));
         }
         set(registry.entry(task_id).or_default());

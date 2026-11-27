@@ -214,8 +214,8 @@ pub fn delete(
     if !view.task.state.is_terminal() {
         return Err(AppError::Runtime(
             mimlys_core::runtime::RuntimeError::State(mimlys_core::task::StateError::Illegal {
-                from: view.task.state.name(),
-                input: "delete_task",
+                from: view.task.state.name().into(),
+                input: "delete_task".into(),
             }),
         ));
     }
