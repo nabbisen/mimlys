@@ -1,6 +1,6 @@
 # Handoff 014b — The control API: requests and responses, one handler, the driver and the follower (release 0.14, phase 1)
 
-**Status (2026-11-27):** items 1 to 6 landed at `3a2efec`, and 014b-5 at `0297d3a` (`.git-exclude/reviewed/handoff-014b/README.md`, `.git-exclude/reviewed/handoff-014b-5/README.md`); 014b-6 next.
+**Status (2026-11-27):** items 1 to 6 landed at `3a2efec`, 014b-5 at `0297d3a` and 014b-6 at `7756a8c` (`.git-exclude/reviewed/handoff-014b/README.md`, `.git-exclude/reviewed/handoff-014b-5/README.md`, `.git-exclude/reviewed/handoff-014b-6/README.md`); 014b-7 next.
 
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), decision 1, read with its **Amendment 1**, items 1, 2 and 9. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 1), after 014a.
 
@@ -145,3 +145,31 @@ Two things remain, each small.
 **Tests:** one for each case above. **Mutation:** for item 1, the kind dropped on the event. Say which test kills it.
 
 **Return:** `.git-exclude/review-requests/014b-6-after-review/README.md`.
+
+## After review: 014b-7
+
+The review of 2026-11-28 (`.git-exclude/reviewed/handoff-014b-6/README.md`) approved #229 and landed it by fast-forward (`main` = `7756a8c`).
+- **Your correction of item 2's premise holds:** a grant was already answered as applied, and rollback, promote and revert were not.
+- **Your point 3, the event of a stop before the apply, is accepted.** It is true, and external design §17.1 now says that it can follow a backup with no promotion started.
+- **Your points 6 and 7 are 014c's and 014d's:** the book's page and the reachable `Gone` arms.
+
+Four things close phase 1. Neither field is released, so a rename costs nothing now.
+
+1. **`kind` becomes `error_kind`** on `workspace.promotion_failed` (your point 5).
+   - **What is wrong:** `workspace.unreadable{kind}` holds the words of an input/output error. A second `kind` on another event, holding the error kinds of §18, is one name with two meanings for a script that reads both.
+   - **Change:** the field is `error_kind`, in the event, the code, the tests and the CHANGELOG (external design §17.1).
+2. **The detail comes back too** (your point 1).
+   - **What is wrong:** a repeated `conflict` keeps its kind and words, but its `detail` (`paths`, `kept`) is `{}`. A script that reads `detail.paths` after a repeat would find none.
+   - **Change:** the failure's event records the detail as the optional field `error_detail`, and the repeat answers with it. The repeat is then the first answer, whole.
+3. **An unknown kind is named** (your point 2, and the lead's gap: no test feeds it).
+   - **Change:** a kind this release does not know is answered `internal`, and its message names the word that was recorded. The event keeps the word, as it does.
+   - **The test:** an event written with a kind of a newer release. The answer is `internal`, naming it.
+4. **`Response::into_result` cannot call a success an error** (your point 4).
+   - **What is wrong:** it turns an applied request with no reply into `conflict`, "applied already". No caller should be able to do that, and 014c must not meet it.
+   - **Change:** remove it if nothing needs it. If something does, make it answer the applied request as `Client::applied_as` does.
+
+**Check:** the 0.13.0 binary reads a store with `error_kind` and `error_detail`, as before.
+
+**Tests:** one for each item. **Mutations:** for items 2 and 3, one each, and say which test kills it.
+
+**Return:** `.git-exclude/review-requests/014b-7-after-review/README.md`.
