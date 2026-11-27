@@ -856,7 +856,7 @@ mod tests {
     fn req_arch_004_the_follower_runs_no_step_and_calls_no_verb() {
         let source = include_str!("follow.rs");
         let code = source
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("the file has a first part");
         let code: String = code
