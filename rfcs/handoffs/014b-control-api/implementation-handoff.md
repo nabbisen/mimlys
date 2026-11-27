@@ -1,6 +1,6 @@
 # Handoff 014b — The control API: requests and responses, one handler, the driver and the follower (release 0.14, phase 1)
 
-**Status (2026-11-27):** items 1 to 6 landed at `3a2efec` (`.git-exclude/reviewed/handoff-014b/README.md`); 014b-5 next.
+**Status (2026-11-27):** items 1 to 6 landed at `3a2efec`, and 014b-5 at `0297d3a` (`.git-exclude/reviewed/handoff-014b/README.md`, `.git-exclude/reviewed/handoff-014b-5/README.md`); 014b-6 next.
 
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), decision 1, read with its **Amendment 1**, items 1, 2 and 9. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 1), after 014a.
 
@@ -121,3 +121,27 @@ The review of 2026-11-27 (`.git-exclude/reviewed/handoff-014b/README.md`) approv
 **Mutations:** for items 1 and 3, one each, and say which test kills it. For item 2, the before and after on CI.
 
 **Return:** `.git-exclude/review-requests/014b-5-after-review/README.md`.
+
+## After review: 014b-6
+
+The review of 2026-11-27 (`.git-exclude/reviewed/handoff-014b-5/README.md`) approved #228 and landed it by fast-forward (`main` = `0297d3a`).
+- **The yield's removal is accepted:** nothing a run shows needed it.
+- **Your points 2 to 4 are decided** in external design §4, "The recorded outcome".
+- **Point 1, the pinning test's premise:** decided too, but its change goes into 014c's handoff, as its first item, beside that handoff's other test work.
+- **Point 5 is 014c's.**
+
+Two things remain, each small.
+
+1. **A failure keeps its kind on a repeat** (your point 3).
+   - **What is wrong:** a promotion that failed as `conflict` answers its repeat as `internal` (`RuntimeError::Recorded`), with the same words. One request, two kinds: a script that tells a conflict from an internal fault would be misled.
+   - **Change:** the failure's event records the error's kind as the optional field `kind` (`workspace.promotion_failed{reason, kind?}`, external design §17.1). The repeat answers with that kind, and with `internal` only for an event that holds none (written before this change). A promotion that stopped before its apply was recorded keeps the kind of what stopped it.
+   - **Check:** the 0.13.0 binary reads a store with the field, as 014b did for `request_id`.
+2. **A request whose task was deleted since** (your point 4).
+   - **What is wrong:** a repeated grant (or any verb with no task result) whose task was deleted between the request and its repeat answers `not_found`. The grant took effect, so the truth is that it was applied and that the task is gone.
+   - **Change:** while the task's events are kept (a default deletion), the repeat is answered as applied earlier, and the client says that the task is gone since. After `delete --audit`, nothing of the task is known, and `not_found` stays.
+
+**Your point 2, decided to follow the code:** a repeated creation finds its task while the task's record stays, deleted or not. External design §4 says so now. Add the test you did not write: a creation, then a default deletion, then the repeat, is answered with that task, and makes none. After `--audit`, the repeat makes a new task.
+
+**Tests:** one for each case above. **Mutation:** for item 1, the kind dropped on the event. Say which test kills it.
+
+**Return:** `.git-exclude/review-requests/014b-6-after-review/README.md`.
