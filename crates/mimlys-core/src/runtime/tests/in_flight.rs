@@ -7,6 +7,7 @@
 //! A request is held in flight by a backend that waits for the test, and the calls that block run
 //! on threads of their own, as a second client's would.
 
+use super::interrupt::{Ask, Rig as ToolRig, classes};
 use super::long_lived::{Release, Rig, block_on_waiting, counts, rig, state_changes, until};
 use super::*;
 use crate::api::{Envelope, Notice, Reply, Request};
@@ -558,4 +559,52 @@ fn req_dec_001_a_request_that_finds_a_step_returning_waits_for_it_and_one_that_f
     });
     assert!(applied.load(Ordering::SeqCst));
     assert_eq!(steps.held(), 0);
+}
+
+/// REQ-CLI-005, REQ-TASK-006 (external design §4, §19.2): a stop noted while a step has an action
+/// that cannot be undone in flight leaves the task `halted` with `unknown_outcome`, as the
+/// interrupted step wrote it, and never `cancelled`: the noted stop is applied only to a task the
+/// step left `running`, and a halt is the step's own end. A second client's stop relies on it, so
+/// it is held here, in the core, whatever class of effect the action has.
+#[test]
+fn req_cli_005_a_stop_noted_during_an_action_that_cannot_be_undone_leaves_the_task_halted() {
+    for (definition, _) in classes().into_iter().filter(|(_, undoable)| !undoable) {
+        let name = definition.name.clone();
+        let rig = ToolRig::new(definition);
+        rig.ask(Ask::StopRequest);
+        let result = rig.execute_the_action();
+        let halted = TaskState::Halted {
+            halt_reason: HaltReason::UnknownOutcome,
+            halt_detail: None,
+        };
+        assert_eq!(result.state, halted, "{name}: the step's own end");
+        let task = rig.runtime.get_task(rig.task).unwrap().task;
+        assert_eq!(task.state, halted, "{name}: still halted after the step");
+        assert_eq!(rig.action().status, ActionStatus::Unknown, "{name}");
+        assert_eq!(
+            rig.last_state_change(),
+            Some(("halted".to_owned(), Some(HaltReason::UnknownOutcome))),
+            "{name}: the last change is the halt, not a cancellation"
+        );
+        assert_eq!(rig.runtime.steps.held(), 0, "{name}: no claim is left");
+    }
+}
+
+/// The same stop, noted while an action that can be undone is in flight, cancels the task the step
+/// leaves `running`: the rule above is the exception, not the way the stop stops working.
+#[test]
+fn req_cli_005_a_stop_noted_during_an_action_that_can_be_undone_cancels_the_task() {
+    for (definition, _) in classes().into_iter().filter(|(_, undoable)| *undoable) {
+        let name = definition.name.clone();
+        let rig = ToolRig::new(definition);
+        rig.ask(Ask::StopRequest);
+        let result = rig.execute_the_action();
+        assert_eq!(result.outcome, StepOutcome::Cancelled, "{name}");
+        assert_eq!(
+            rig.runtime.get_task(rig.task).unwrap().task.state,
+            TaskState::Cancelled,
+            "{name}"
+        );
+        assert_eq!(rig.runtime.steps.held(), 0, "{name}");
+    }
 }

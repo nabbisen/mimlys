@@ -16,7 +16,7 @@ mod second_check;
 
 /// What the provider asks of the runtime while its action runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ask {
+pub(super) enum Ask {
     Nothing,
     /// `Runtime::start_no_new_action`.
     NoNewAction,
@@ -28,6 +28,9 @@ enum Ask {
     /// thread of its own, and the execution then waits for the token it was given, as a real
     /// one does (the call waits for the step to end, and the step ends when the execution does).
     CancelTask,
+    /// `Runtime::handle` of a `StopAnyway` request, as a second client sends it: the step is in
+    /// flight, so the request is noted for the step's end, and the interruption is set at once.
+    StopRequest,
 }
 
 /// What the thread that cancelled the task saw right after: its state and its actions' statuses.
@@ -68,7 +71,7 @@ impl crate::spi::ToolProvider for Asking {
                 Ask::NoNewAction => runtime.start_no_new_action(task).unwrap(),
                 Ask::Undoable => runtime.interrupt_step(task).unwrap(),
                 Ask::Anyway => runtime.interrupt_step_anyway(task).unwrap(),
-                Ask::Nothing | Ask::CancelTask => {}
+                Ask::Nothing | Ask::CancelTask | Ask::StopRequest => {}
             }
         }
         self.inner.definitions()
@@ -87,6 +90,27 @@ impl crate::spi::ToolProvider for Asking {
                 Ask::NoNewAction => runtime.start_no_new_action(task).unwrap(),
                 Ask::Undoable => runtime.interrupt_step(task).unwrap(),
                 Ask::Anyway => runtime.interrupt_step_anyway(task).unwrap(),
+                Ask::StopRequest => {
+                    let response = runtime.handle(crate::api::Envelope {
+                        request_id: crate::ids::RequestId::new(&crate::ids::SystemIds),
+                        session: self.session.clone(),
+                        request: crate::api::Request::StopAnyway { task_id: task },
+                    });
+                    assert!(
+                        matches!(
+                            response.outcome,
+                            crate::api::Outcome::Done(crate::api::Reply::Noted(_))
+                        ),
+                        "the request is noted for the step's end: {response:?}"
+                    );
+                    // The execution ends when it sees the request, as a real one does.
+                    for _ in 0..10_000 {
+                        if context.cancel.is_cancelled() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
                 Ask::CancelTask => {
                     let after = Arc::clone(&self.after_cancel_task);
                     let session = self.session.clone();
@@ -157,14 +181,19 @@ impl ModelBackend for Stopping {
                 Ask::NoNewAction => runtime.start_no_new_action(task).unwrap(),
                 Ask::Undoable => runtime.interrupt_step(task).unwrap(),
                 Ask::Anyway => runtime.interrupt_step_anyway(task).unwrap(),
-                Ask::Nothing | Ask::CancelTask => {}
+                Ask::Nothing | Ask::CancelTask | Ask::StopRequest => {}
             }
         }
         self.inner.generate(request, cancel)
     }
 }
 
-fn effect_tool(name: &str, kind: EffectKind, reversible: bool, idempotent: bool) -> ToolDefinition {
+pub(super) fn effect_tool(
+    name: &str,
+    kind: EffectKind,
+    reversible: bool,
+    idempotent: bool,
+) -> ToolDefinition {
     let mut definition = tool(name, kind);
     definition.effect = EffectView {
         kind,
@@ -177,7 +206,7 @@ fn effect_tool(name: &str, kind: EffectKind, reversible: bool, idempotent: bool)
 /// Every effect class of external design §7.2 with the flags that decide its
 /// rule after `unknown`, and whether the runtime can undo it: it undoes no host
 /// write, a backed-up one included (§7.2, amended 2026-11-14).
-fn classes() -> Vec<(ToolDefinition, bool)> {
+pub(super) fn classes() -> Vec<(ToolDefinition, bool)> {
     vec![
         (
             effect_tool("a_read", EffectKind::WorkspaceRead, true, true),
@@ -229,19 +258,19 @@ fn classes() -> Vec<(ToolDefinition, bool)> {
     ]
 }
 
-struct Rig {
-    runtime: Arc<Runtime>,
-    persistence: Arc<FakePersistence>,
+pub(super) struct Rig {
+    pub(super) runtime: Arc<Runtime>,
+    pub(super) persistence: Arc<FakePersistence>,
     provider: Arc<Asking>,
     backend: Arc<Stopping>,
     workspaces: Arc<FakeWorkspaces>,
     session: Session,
-    task: TaskId,
+    pub(super) task: TaskId,
 }
 
 impl Rig {
     /// A task whose model proposes `tool` once, then completes.
-    fn new(definition: ToolDefinition) -> Self {
+    pub(super) fn new(definition: ToolDefinition) -> Self {
         Self::ending(definition, ExecutionOutcome::succeeded(json!({}), 1))
     }
 
@@ -361,7 +390,7 @@ impl Rig {
     }
 
     /// What the tool provider asks while the action runs.
-    fn ask(&self, ask: Ask) {
+    pub(super) fn ask(&self, ask: Ask) {
         *self.provider.ask.lock().unwrap() = ask;
     }
 
@@ -379,7 +408,7 @@ impl Rig {
 
     /// Runs the step that executes the action: the first step proposes it,
     /// and an action that needs approval waits for it, which is given.
-    fn execute_the_action(&self) -> StepResultView {
+    pub(super) fn execute_the_action(&self) -> StepResultView {
         let mut result = futures_block(self.runtime.run_step(self.task)).unwrap();
         if result.outcome == StepOutcome::Waited {
             self.runtime
@@ -390,7 +419,7 @@ impl Rig {
         result
     }
 
-    fn action(&self) -> crate::action::Action {
+    pub(super) fn action(&self) -> crate::action::Action {
         self.persistence.load_actions(self.task).unwrap().remove(0)
     }
 
@@ -404,7 +433,7 @@ impl Rig {
     }
 
     /// The last `task.state_changed` of the task: where it went and why.
-    fn last_state_change(&self) -> Option<(String, Option<HaltReason>)> {
+    pub(super) fn last_state_change(&self) -> Option<(String, Option<HaltReason>)> {
         self.persistence
             .events()
             .into_iter()
@@ -416,7 +445,7 @@ impl Rig {
             .next_back()
     }
 
-    fn events(&self) -> Vec<String> {
+    pub(super) fn events(&self) -> Vec<String> {
         self.persistence
             .events()
             .into_iter()
