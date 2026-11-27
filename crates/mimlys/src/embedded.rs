@@ -75,7 +75,14 @@ async fn drive(me: Weak<InProcess>, wake: Arc<Notify>) {
     loop {
         let Some(host) = me.upgrade() else { return };
         match host.driver.step_once().await {
-            Turn::Ran { .. } | Turn::Released(_) | Turn::Failed(_) => host.changed.notify_one(),
+            Turn::Ran { .. } | Turn::Released(_) | Turn::Failed(_) => {
+                host.changed.notify_one();
+                drop(host);
+                // A step blocks its thread in the store's writes, and what it started meanwhile
+                // (a server's notice that its tools changed, a signal) waits on that thread's
+                // queue: the next step's boundary comes after those have had their turn.
+                tokio::task::yield_now().await;
+            }
             Turn::Idle => {
                 host.changed.notify_one();
                 drop(host);
