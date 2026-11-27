@@ -214,7 +214,8 @@ fn req_ws_007_the_state_of_a_promotion_is_stored_and_the_applying_ones_are_found
                 &task,
                 Event::WorkspacePromotionFailed {
                     reason: "restored".into(),
-                    kind: None,
+                    error_kind: None,
+                    error_detail: None,
                 },
             ),
         )

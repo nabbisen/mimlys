@@ -303,17 +303,24 @@ pub enum Event {
         /// The files it writes or deletes.
         files: Vec<String>,
     },
-    /// A promotion did not complete: what it had written was restored from its backup.
+    /// A promotion did not complete: what it had written was restored from its backup. It also
+    /// follows a backup with no `workspace.promotion_started` when the promotion stopped before it
+    /// began to apply: nothing of the project was touched.
     #[serde(rename = "workspace.promotion_failed")]
     WorkspacePromotionFailed {
         /// Why, and what was left as it is.
         reason: String,
         /// The kind of the error the request was answered with the first time
         /// (`conflict`, `internal`, ..., external design §18), so that the same request sent
-        /// again is answered with the same kind (external design §4). From 0.14: absent in earlier
-        /// records, which answer a repeat as `internal`.
+        /// again is answered with the same kind (external design §4). Named `error_kind` because
+        /// `workspace.unreadable`'s `kind` holds the words of an input/output error, another
+        /// vocabulary. From 0.14: absent in earlier records, which answer a repeat as `internal`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        kind: Option<String>,
+        error_kind: Option<String>,
+        /// The `detail` of that error (`paths`, `kept`, `component`, ...), so that the repeat is
+        /// the first answer, whole. Absent when the error had none. From 0.14.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_detail: Option<serde_json::Value>,
     },
     /// Part of the task's tree could not be read, and the task halted for it: the path that
     /// could not be read.

@@ -123,18 +123,26 @@ impl Runtime {
                 }
             }
             Request::PromoteWorkspace { .. } => {
-                if let Some((event, reason, kind)) =
+                if let Some((event, reason, error_kind, error_detail)) =
                     events.iter().find_map(|e| match &e.record.event {
-                        Event::WorkspacePromotionFailed { reason, kind } => {
-                            Some((e.record.event.name(), reason.clone(), kind.clone()))
-                        }
+                        Event::WorkspacePromotionFailed {
+                            reason,
+                            error_kind,
+                            error_detail,
+                        } => Some((
+                            e.record.event.name(),
+                            reason.clone(),
+                            error_kind.clone(),
+                            error_detail.clone(),
+                        )),
                         _ => None,
                     })
                 {
                     return Ok(Did::Failed {
                         event: event.to_owned(),
                         reason,
-                        kind,
+                        error_kind,
+                        error_detail,
                     });
                 }
                 if !events
@@ -151,8 +159,9 @@ impl Runtime {
                              and nothing after it"
                         ),
                         // Nothing recorded what stopped it (a crash, or a store that could not
-                        // be written): no kind to keep.
-                        kind: None,
+                        // be written): no kind and no detail to keep.
+                        error_kind: None,
+                        error_detail: None,
                     });
                 }
                 let backup = named(|e| match e {

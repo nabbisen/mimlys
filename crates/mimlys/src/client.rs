@@ -8,7 +8,7 @@
 //! process (embedded mode); 014c adds the daemon's socket behind the same [`Transport`], so
 //! that REQ-ARCH-009 holds by construction: a command is written once.
 
-use mimlys_core::api::{AlreadyApplied, Did, Envelope, Notice, Reply, Request, Response};
+use mimlys_core::api::{AlreadyApplied, Envelope, Notice, Reply, Request, Response};
 use mimlys_core::grant::{Grant, GrantKind};
 use mimlys_core::ids::{GrantId, PromotionId, RequestId, SnapshotId, SystemIds, TaskId};
 use mimlys_core::runtime::{
@@ -487,40 +487,28 @@ fn applied_before(
         task_deleted,
         did,
     } = already;
-    match did {
-        // It wrote, and failed: the failure, never "applied", with the kind it had.
-        Did::Failed {
-            event,
-            reason,
-            kind,
-        } => Err(RuntimeError::Recorded {
-            event,
-            reason,
-            kind,
-        }),
-        Did::Applied { reply } => {
-            let reply = match (reply, task) {
-                (Some(reply), _) => Some(reply),
-                (None, Some(task)) if returns_task => Some(Reply::Task(task)),
-                (None, _) => None,
-            };
-            // It took effect before. If the task was deleted since (its events were kept), what
-            // was done is the answer and the task is gone; a reply that is not there to give (a
-            // deletion's footprint is not kept, and a snapshot or a promotion went with the
-            // task's data) says the same: the task is gone.
-            let mut said = vec![crate::messages::done_earlier(name, position, &event)];
-            if (task_deleted || reply.is_none())
-                && let Some(task_id) = task_id
-            {
-                said.push(crate::messages::task_gone(&task_id.to_string()));
-            }
-            let answer = match reply {
-                Some(reply) => Answered::Reply(reply),
-                None => Answered::Gone,
-            };
-            Ok((answer, said))
-        }
+    // It wrote, and failed: the failure, never "applied", with the kind and the detail it had.
+    let reply = did.into_reply()?;
+    let reply = match (reply, task) {
+        (Some(reply), _) => Some(reply),
+        (None, Some(task)) if returns_task => Some(Reply::Task(task)),
+        (None, _) => None,
+    };
+    // It took effect before. If the task was deleted since (its events were kept), what was done
+    // is the answer and the task is gone; a reply that is not there to give (a deletion's
+    // footprint is not kept, and a snapshot or a promotion went with the task's data) says the
+    // same: the task is gone.
+    let mut said = vec![crate::messages::done_earlier(name, position, &event)];
+    if (task_deleted || reply.is_none())
+        && let Some(task_id) = task_id
+    {
+        said.push(crate::messages::task_gone(&task_id.to_string()));
     }
+    let answer = match reply {
+        Some(reply) => Answered::Reply(reply),
+        None => Answered::Gone,
+    };
+    Ok((answer, said))
 }
 
 /// Whether the verb's reply is a task.

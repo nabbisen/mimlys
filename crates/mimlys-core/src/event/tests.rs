@@ -100,7 +100,8 @@ fn every_event() -> Vec<Event> {
         },
         Event::WorkspacePromotionFailed {
             reason: "restored".into(),
-            kind: Some("conflict".into()),
+            error_kind: Some("conflict".into()),
+            error_detail: Some(serde_json::json!({"paths": ["a"], "kept": []})),
         },
         Event::WorkspaceUnreadable {
             path: "d".into(),
@@ -282,14 +283,16 @@ fn req_sec_010_the_halt_event_carries_its_rule() {
 }
 
 /// External design §17.1 (REQ-MAIN-001, REQ-MAIN-006): `workspace.promotion_failed` carries the
-/// kind of the error the request was answered with, as an additive field. An event written
-/// before it existed reads without a kind and is written back byte for byte the same, and one
-/// with a kind round-trips; no schema version moves for it.
+/// kind and the detail of the error the request was answered with, as the additive fields
+/// `error_kind` and `error_detail` (not `kind`, which `workspace.unreadable` holds for another
+/// vocabulary). An event written before them reads without, and is written back byte for byte the
+/// same; one with them round-trips; no schema version moves for them.
 #[test]
-fn req_ws_007_the_promotion_failure_records_its_kind_and_an_older_one_reads_without() {
+fn req_ws_007_the_promotion_failure_records_its_error_and_an_older_one_reads_without() {
     let without = Event::WorkspacePromotionFailed {
         reason: "restored".into(),
-        kind: None,
+        error_kind: None,
+        error_detail: None,
     };
     let old = serde_json::json!({"event": "workspace.promotion_failed", "reason": "restored"});
     assert_eq!(
@@ -303,10 +306,23 @@ fn req_ws_007_the_promotion_failure_records_its_kind_and_an_older_one_reads_with
     );
     let with = Event::WorkspacePromotionFailed {
         reason: "restored".into(),
-        kind: Some("conflict".into()),
+        error_kind: Some("conflict".into()),
+        error_detail: Some(serde_json::json!({"paths": ["a.txt"], "kept": []})),
     };
     let json = serde_json::to_value(&with).unwrap();
-    assert_eq!(json["kind"], "conflict");
+    assert_eq!(json["error_kind"], "conflict");
+    assert_eq!(json["error_detail"]["paths"][0], "a.txt");
+    assert!(json.get("kind").is_none(), "`kind` is another event's word");
     assert_eq!(serde_json::from_value::<Event>(json).unwrap(), with);
+    // Only the kind, only the detail: each is skipped alone when absent.
+    let kind_only = Event::WorkspacePromotionFailed {
+        reason: "restored".into(),
+        error_kind: Some("internal".into()),
+        error_detail: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&kind_only).unwrap(),
+        r#"{"event":"workspace.promotion_failed","reason":"restored","error_kind":"internal"}"#
+    );
     assert_eq!(EVENT_SCHEMA_VERSION, 2, "an additive field raises nothing");
 }

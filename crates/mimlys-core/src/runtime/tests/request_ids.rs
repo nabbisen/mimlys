@@ -431,7 +431,8 @@ fn req_arch_004_a_repeat_of_a_promotion_that_failed_after_it_wrote_is_answered_w
             event: "workspace.promotion_failed".into(),
             reason: error.to_string(),
             // What the first answer was: `internal`, as a failed apply is not a conflict.
-            kind: Some(error.kind().into()),
+            error_kind: Some(error.kind().into()),
+            error_detail: error.detail(),
         }
     );
 }
@@ -470,14 +471,16 @@ fn req_arch_004_a_repeat_of_a_promotion_that_stopped_before_it_was_recorded_is_n
     let Did::Failed {
         event,
         reason,
-        kind,
+        error_kind,
+        error_detail,
     } = already.did
     else {
         panic!("not applied: {:?}", already.did)
     };
     assert_eq!(event, "workspace.snapshot");
     assert!(reason.contains("did not complete"), "{reason}");
-    assert_eq!(kind, None, "nothing recorded what stopped it");
+    assert_eq!(error_kind, None, "nothing recorded what stopped it");
+    assert_eq!(error_detail, None);
     assert_eq!(h.persistence.load_promotions(id).unwrap().len(), 0);
 }
 
@@ -572,12 +575,13 @@ fn req_arch_004_a_failure_keeps_its_kind_on_a_repeat() {
             recorded,
             vec![Event::WorkspacePromotionFailed {
                 reason: error.to_string(),
-                kind: Some(kind.into()),
+                error_kind: Some(kind.into()),
+                error_detail: error.detail(),
             }]
         );
         let Did::Failed {
             reason,
-            kind: answered,
+            error_kind: answered,
             ..
         } = again.did.clone()
         else {
@@ -586,12 +590,7 @@ fn req_arch_004_a_failure_keeps_its_kind_on_a_repeat() {
         assert_eq!(reason, error.to_string(), "the same words");
         assert_eq!(answered.as_deref(), Some(kind));
         // As an error, it is the kind the first one was.
-        let repeated = Response {
-            request_id: RequestId::new(&SystemIds),
-            outcome: Outcome::AlreadyApplied(again),
-        }
-        .into_result()
-        .unwrap_err();
+        let repeated = again.did.into_reply().unwrap_err();
         assert_eq!(repeated.kind(), kind, "{repeated}");
     }
 }
@@ -611,7 +610,8 @@ fn req_arch_004_a_failure_recorded_without_a_kind_is_answered_as_internal() {
         },
         Event::WorkspacePromotionFailed {
             reason: "the promotion failed (older)".into(),
-            kind: None,
+            error_kind: None,
+            error_detail: None,
         },
     ] {
         let mut written = h.runtime.event(Actor::Runtime, Some(id), None, None, event);
@@ -627,7 +627,15 @@ fn req_arch_004_a_failure_recorded_without_a_kind_is_answered_as_internal() {
         },
     ));
     let error = again.into_result().unwrap_err();
-    assert!(matches!(error, RuntimeError::Recorded { kind: None, .. }));
+    assert!(matches!(
+        error,
+        RuntimeError::Recorded {
+            error_kind: None,
+            error_detail: None,
+            ..
+        }
+    ));
+    assert_eq!(error.detail(), None, "a record without a detail has none");
     assert_eq!(error.kind(), "internal");
     assert_eq!(error.to_string(), "the promotion failed (older)");
 }
@@ -659,10 +667,117 @@ fn req_arch_004_a_promotion_stopped_before_its_apply_keeps_the_kind_of_what_stop
         Did::Failed {
             event: "workspace.promotion_failed".into(),
             reason: error.to_string(),
-            kind: Some("state".into()),
+            error_kind: Some("state".into()),
+            error_detail: None,
         }
     );
     assert!(h.persistence.load_promotions(id).unwrap().is_empty());
+}
+
+/// External design §4 and §17.1 (review of 014b-6): a failure keeps its detail on a repeat, as it
+/// keeps its kind: the failure's event records the first answer's `detail` (the paths of a
+/// conflict, what a failed restore kept), and the repeat is the first answer, whole: the same
+/// kind, the same words, the same detail.
+#[test]
+fn req_arch_004_a_failure_keeps_its_detail_on_a_repeat() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    h.workspaces.on_promote_apply(Box::new(|_| {
+        Err(crate::spi::WorkspaceError::Conflict {
+            paths: vec!["a.txt".into(), "b/c.txt".into()],
+        })
+    }));
+    let (error, again) = failed_then_repeated(
+        &h,
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    );
+    // The first answer had a detail: the paths of the conflict.
+    let first = error.detail().expect("a conflict names its paths");
+    assert_eq!(first["paths"], serde_json::json!(["a.txt", "b/c.txt"]));
+    // The event holds it, as the first answer had it.
+    let recorded: Vec<Option<serde_json::Value>> = h
+        .persistence
+        .events()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            Event::WorkspacePromotionFailed { error_detail, .. } => Some(error_detail),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(recorded, vec![Some(first.clone())]);
+    // The repeat is the first answer, whole.
+    let repeated = again.did.into_reply().unwrap_err();
+    assert_eq!(repeated.kind(), error.kind());
+    assert_eq!(repeated.to_string(), error.to_string());
+    assert_eq!(repeated.detail(), Some(first));
+}
+
+/// External design §4 (REQ-MAIN-006; review of 014b-6): a failure recorded with an error kind that
+/// this release does not know (a newer release wrote it) is answered `internal` when sent again,
+/// and its message names the word; the event keeps the word, as it was written.
+#[test]
+fn req_arch_004_an_unknown_kind_is_answered_internal_naming_the_word() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    let request = RequestId::new(&SystemIds);
+    let backup = h.persistence.load_snapshots(id).unwrap()[0].snapshot_id;
+    for event in [
+        Event::WorkspaceSnapshot {
+            snapshot_id: backup,
+            reason: "backup".into(),
+        },
+        // As a newer release wrote it: the field holds a word of its own.
+        serde_json::from_value(serde_json::json!({
+            "event": "workspace.promotion_failed",
+            "reason": "the promotion failed (newer)",
+            "error_kind": "quota_exceeded",
+            "error_detail": {"limit": 3},
+        }))
+        .unwrap(),
+    ] {
+        let mut written = h.runtime.event(Actor::Runtime, Some(id), None, None, event);
+        written.request_id = Some(request);
+        h.persistence.append_event(&written).unwrap();
+    }
+    let events = h.persistence.events();
+    let again = h.runtime.handle(envelope(
+        &h,
+        request,
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    ));
+    let Outcome::AlreadyApplied(already) = again.outcome else {
+        panic!("{again:?}")
+    };
+    let error = already.did.into_reply().unwrap_err();
+    assert_eq!(error.kind(), "internal", "{error}");
+    let words = error.to_string();
+    assert!(words.contains("the promotion failed (newer)"), "{words}");
+    assert!(
+        words.contains("quota_exceeded"),
+        "the word is named: {words}"
+    );
+    // The detail it was written with is kept, as the word is.
+    assert_eq!(error.detail(), Some(serde_json::json!({"limit": 3})));
+    // A word this release knows is not named: its message is the reason, as it was.
+    let known = RuntimeError::Recorded {
+        event: "workspace.promotion_failed".into(),
+        reason: "the promotion failed".into(),
+        error_kind: Some("conflict".into()),
+        error_detail: None,
+    };
+    assert_eq!(known.to_string(), "the promotion failed");
+    // The event keeps the word: nothing was written, and what is stored is what was written.
+    assert_eq!(h.persistence.events(), events);
+    assert!(events.iter().any(|e| matches!(
+        &e.event,
+        Event::WorkspacePromotionFailed { error_kind: Some(k), .. } if k == "quota_exceeded"
+    )));
 }
 
 /// The task cancelled, then deleted by a request of its own: with the audit or without.

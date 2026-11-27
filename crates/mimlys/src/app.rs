@@ -9,7 +9,7 @@ use crate::workspace::LocalWorkspaces;
 use mimlys_core::clock::SystemClock;
 use mimlys_core::ids::{IdSource, SystemIds, TaskId};
 use mimlys_core::path::PlatformRules;
-use mimlys_core::runtime::{MODEL_BACKEND, Runtime, RuntimeDeps, RuntimeError, Session};
+use mimlys_core::runtime::{Runtime, RuntimeDeps, RuntimeError, Session};
 use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_persist::recovery::{
     LeftAsIs, Recovered, RecoveredPromotion, RecoveryContext, recover_all_reporting,
@@ -136,7 +136,7 @@ impl AppError {
     /// error, does not compile until it says whether it is `unavailable` and which component.
     pub fn component(&self) -> Option<String> {
         match self {
-            AppError::Runtime(e) => runtime_component(e),
+            AppError::Runtime(e) => e.component(),
             AppError::Workspace(e) => workspace_component(e),
             AppError::Permissions(_) => Some("permissions".into()),
             AppError::Download(_) => Some("download".into()),
@@ -161,38 +161,13 @@ impl AppError {
                 "url": e.url,
                 "last_status": e.last_status,
             }),
-            AppError::Workspace(
-                mimlys_core::spi::WorkspaceError::Conflict { paths }
-                | mimlys_core::spi::WorkspaceError::Unlisted { paths }
-                | mimlys_core::spi::WorkspaceError::NotRemoved { paths, .. }
-                | mimlys_core::spi::WorkspaceError::EditedSince { paths },
-            )
-            | AppError::Runtime(RuntimeError::Workspace(
-                mimlys_core::spi::WorkspaceError::Conflict { paths }
-                | mimlys_core::spi::WorkspaceError::Unlisted { paths }
-                | mimlys_core::spi::WorkspaceError::NotRemoved { paths, .. }
-                | mimlys_core::spi::WorkspaceError::EditedSince { paths },
-            )) => {
-                serde_json::json!({ "paths": paths })
-            }
-            AppError::Workspace(
-                mimlys_core::spi::WorkspaceError::Unreadable { path }
-                | mimlys_core::spi::WorkspaceError::ReadFailed { path, .. },
-            )
-            | AppError::Runtime(RuntimeError::Workspace(
-                mimlys_core::spi::WorkspaceError::Unreadable { path }
-                | mimlys_core::spi::WorkspaceError::ReadFailed { path, .. },
-            )) => {
-                serde_json::json!({ "paths": [path] })
-            }
-            AppError::Runtime(RuntimeError::PromotionFailed { cause, kept, .. }) => {
-                let paths = match cause {
-                    mimlys_core::spi::WorkspaceError::Conflict { paths }
-                    | mimlys_core::spi::WorkspaceError::Unlisted { paths } => paths.clone(),
-                    _ => Vec::new(),
-                };
-                serde_json::json!({ "paths": paths, "kept": kept })
-            }
+            AppError::Workspace(e) => match e.paths() {
+                Some(paths) => serde_json::json!({ "paths": paths }),
+                None => serde_json::json!({}),
+            },
+            // What the runtime says of its own error: also what a failure that was recorded
+            // answers a repeat with (external design §4).
+            AppError::Runtime(e) => e.detail().unwrap_or_else(|| serde_json::json!({})),
             AppError::StoreInUse { pid, .. } => serde_json::json!({ "holder_pid": pid }),
             _ => serde_json::json!({}),
         };
@@ -204,32 +179,10 @@ impl AppError {
     }
 }
 
-/// The component of a runtime error of the kind `unavailable` (see [`AppError::component`]).
-fn runtime_component(e: &RuntimeError) -> Option<String> {
-    match e {
-        // The runtime names the component itself: the adapter whose call it contained.
-        RuntimeError::Unavailable { component } => Some(component.clone()),
-        RuntimeError::Backend(_) => Some(MODEL_BACKEND.into()),
-        RuntimeError::Workspace(w) => workspace_component(w),
-        RuntimeError::InvalidRequest { .. }
-        | RuntimeError::NotFound { .. }
-        | RuntimeError::State(_)
-        | RuntimeError::Denied { .. }
-        | RuntimeError::Conflict { .. }
-        | RuntimeError::Persistence(_)
-        | RuntimeError::PromotionFailed { .. }
-        | RuntimeError::Recorded { .. } => None,
-    }
-}
-
 /// The component of a workspace error of the kind `unavailable`: the permissions of a directory
 /// that could not be written (Windows).
 fn workspace_component(e: &mimlys_core::spi::WorkspaceError) -> Option<String> {
-    matches!(
-        e,
-        mimlys_core::spi::WorkspaceError::PermissionsNotApplied { .. }
-    )
-    .then(|| "permissions".into())
+    e.component().map(str::to_owned)
 }
 
 /// The running process.

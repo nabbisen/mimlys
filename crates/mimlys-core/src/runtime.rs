@@ -149,10 +149,11 @@ pub enum RuntimeError {
     },
     /// A change that a request wrote and then failed, answered when the request is sent again
     /// (external design §4, "The recorded outcome"): the reason as the change's event recorded
-    /// it, and with the kind the first answer had, as the event recorded it (`conflict` stays
-    /// `conflict`). The event does not keep the first answer's details (the paths of a
-    /// conflict), and an event that holds no kind (written before 0.14) is `internal`.
-    #[error("{reason}")]
+    /// it, with the kind and the detail the first answer had, as the event recorded them
+    /// (`conflict` stays `conflict`, its paths included). An event that holds no kind (written
+    /// before 0.14) is `internal`; so is one with a kind this release does not know (a newer
+    /// release's), and its message names the word.
+    #[error("{}", recorded_message(reason, error_kind.as_deref()))]
     Recorded {
         /// The event that recorded the failure.
         event: String,
@@ -160,7 +161,10 @@ pub enum RuntimeError {
         reason: String,
         /// The kind the first answer had (external design §18), when the event holds one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        kind: Option<String>,
+        error_kind: Option<String>,
+        /// The `detail` the first answer had, when the event holds one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_detail: Option<serde_json::Value>,
     },
     /// The backend failed.
     #[error("{0}")]
@@ -187,6 +191,18 @@ fn promotion_failed_message(
         kept.len(),
         kept.join(", ")
     )
+}
+
+/// The words of a failure that a repeated request is answered with: the reason as it was recorded,
+/// and, for an error kind this release does not know (a newer release wrote it), the word, so
+/// that it is shown by its name and not hidden behind `internal` (REQ-MAIN-006).
+fn recorded_message(reason: &str, error_kind: Option<&str>) -> String {
+    match error_kind {
+        Some(word) if !ERROR_KINDS.contains(&word) => format!(
+            "{reason} (recorded with the error kind `{word}`, which this release does not know; answered as `internal`)"
+        ),
+        _ => reason.to_owned(),
+    }
 }
 
 /// The error kinds of external design §18: the words an event records (`kind`) and a response
@@ -227,7 +243,7 @@ impl RuntimeError {
             RuntimeError::PromotionFailed { .. } => "internal",
             // The kind the event recorded; one this release does not know (a newer release wrote
             // it) or none at all is `internal`.
-            RuntimeError::Recorded { kind, .. } => kind
+            RuntimeError::Recorded { error_kind, .. } => error_kind
                 .as_deref()
                 .and_then(|k| ERROR_KINDS.iter().find(|known| **known == k).copied())
                 .unwrap_or("internal"),
@@ -248,6 +264,57 @@ impl RuntimeError {
             RuntimeError::Persistence(PersistenceError::NewerRecord { .. }) => "state",
             RuntimeError::Persistence(_) | RuntimeError::Workspace(_) => "internal",
         }
+    }
+
+    /// The component an error of the kind `unavailable` names in its `detail.component`
+    /// (external design §18; handoff 004d): `Some` for every runtime error of the kind
+    /// `unavailable` and for no other. The match has no wildcard: a new error does not compile
+    /// until it says whether it is `unavailable` and which component.
+    pub fn component(&self) -> Option<String> {
+        match self {
+            // The runtime names the component itself: the adapter whose call it contained.
+            RuntimeError::Unavailable { component } => Some(component.clone()),
+            RuntimeError::Backend(_) => Some(MODEL_BACKEND.into()),
+            RuntimeError::Workspace(w) => w.component().map(str::to_owned),
+            RuntimeError::InvalidRequest { .. }
+            | RuntimeError::NotFound { .. }
+            | RuntimeError::State(_)
+            | RuntimeError::Denied { .. }
+            | RuntimeError::Conflict { .. }
+            | RuntimeError::Persistence(_)
+            | RuntimeError::PromotionFailed { .. }
+            | RuntimeError::Recorded { .. } => None,
+        }
+    }
+
+    /// The `detail` of the error as `--json` prints it (external design §18): the paths of a
+    /// conflict, the paths a failed promotion kept, the component of an `unavailable`; none when
+    /// there is nothing to say. A failure that a request wrote is recorded with it
+    /// (`workspace.promotion_failed{error_detail}`) and a repeat of the request is answered with
+    /// it, so that the repeat is the first answer, whole (external design §4).
+    pub fn detail(&self) -> Option<serde_json::Value> {
+        let mut detail = match self {
+            RuntimeError::Workspace(w) => {
+                w.paths().map(|paths| serde_json::json!({ "paths": paths }))
+            }
+            RuntimeError::PromotionFailed { cause, kept, .. } => {
+                // Only a plan that was refused names paths; any other cause names none.
+                let paths = match cause {
+                    WorkspaceError::Conflict { paths } | WorkspaceError::Unlisted { paths } => {
+                        paths.clone()
+                    }
+                    _ => Vec::new(),
+                };
+                Some(serde_json::json!({ "paths": paths, "kept": kept }))
+            }
+            RuntimeError::Recorded { error_detail, .. } => error_detail.clone(),
+            _ => None,
+        };
+        if let Some(component) = self.component() {
+            let object = detail.get_or_insert_with(|| serde_json::json!({}));
+            object["component"] = serde_json::json!(component);
+        }
+        detail
     }
 }
 

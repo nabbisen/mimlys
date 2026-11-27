@@ -726,6 +726,30 @@ pub enum WorkspaceError {
     },
 }
 
+impl WorkspaceError {
+    /// The paths the error names, as `detail.paths` of an error of `--json` (external design
+    /// §18): the conflicting, unlisted, not removed or edited paths, or the one that could not
+    /// be read. None for an error that names none.
+    pub fn paths(&self) -> Option<Vec<String>> {
+        match self {
+            WorkspaceError::Conflict { paths }
+            | WorkspaceError::Unlisted { paths }
+            | WorkspaceError::NotRemoved { paths, .. }
+            | WorkspaceError::EditedSince { paths } => Some(paths.clone()),
+            WorkspaceError::Unreadable { path } | WorkspaceError::ReadFailed { path, .. } => {
+                Some(vec![path.clone()])
+            }
+            _ => None,
+        }
+    }
+
+    /// The component an error of the kind `unavailable` names (external design §18): the
+    /// permissions of a directory that could not be written (Windows).
+    pub fn component(&self) -> Option<&'static str> {
+        matches!(self, WorkspaceError::PermissionsNotApplied { .. }).then_some("permissions")
+    }
+}
+
 /// What a materialized workspace is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceInfo {

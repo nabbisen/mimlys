@@ -814,7 +814,8 @@ impl Runtime {
                         None,
                         Event::WorkspacePromotionFailed {
                             reason: error.to_string(),
-                            kind: Some(error.kind().to_owned()),
+                            error_kind: Some(error.kind().to_owned()),
+                            error_detail: error.detail(),
                         },
                     ),
                 )?;
@@ -842,7 +843,8 @@ impl Runtime {
             None,
             Event::WorkspacePromotionFailed {
                 reason: error.to_string(),
-                kind: Some(error.kind().to_owned()),
+                error_kind: Some(error.kind().to_owned()),
+                error_detail: error.detail(),
             },
         ));
         if let Err(cause) = recorded {

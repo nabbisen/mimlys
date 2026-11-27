@@ -4,7 +4,7 @@
 
 use super::*;
 use mimlys_core::action::{EffectKind, EffectView};
-use mimlys_core::api::{Notice, Outcome};
+use mimlys_core::api::{Did, Notice, Outcome};
 use mimlys_core::clock::{Clock, FakeClock};
 use mimlys_core::ids::ScriptedIds;
 use mimlys_core::path::PlatformRules;
@@ -743,4 +743,12 @@ fn req_arch_004_a_repeat_of_a_conflict_is_a_conflict_through_the_client() {
     );
     assert_eq!(second.kind(), "conflict", "{second}");
     assert_eq!(second.to_string(), first.to_string());
+    // The two answers as a script reads them (`--json`), whole: the same kind, the same words and
+    // the same detail, the paths of the conflict included (014b-7, item 2).
+    let as_json = |error: &RuntimeError| crate::app::AppError::Runtime(error.clone()).to_json();
+    assert_eq!(as_json(&second), as_json(&first));
+    assert_eq!(
+        as_json(&first)["error"]["detail"]["paths"],
+        serde_json::json!(["a.txt"])
+    );
 }

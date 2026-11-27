@@ -486,8 +486,34 @@ pub enum Did {
         /// The kind of the error the first answer was, as the event recorded it (external
         /// design §4, §17.1); none for an event that holds none, which answers `internal`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        kind: Option<String>,
+        error_kind: Option<String>,
+        /// The `detail` the first answer had, as the event recorded it; none when it had none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_detail: Option<serde_json::Value>,
     },
+}
+
+impl Did {
+    /// The reply the change gave, when it has one to give; or, for a change that failed after it
+    /// wrote, the error a repeated request is answered with: the recorded failure, with the kind
+    /// and the detail the first answer had (external design §4). A change that took effect is
+    /// never an error here.
+    pub fn into_reply(self) -> Result<Option<Reply>, RuntimeError> {
+        match self {
+            Did::Applied { reply } => Ok(reply),
+            Did::Failed {
+                event,
+                reason,
+                error_kind,
+                error_detail,
+            } => Err(RuntimeError::Recorded {
+                event,
+                reason,
+                error_kind,
+                error_detail,
+            }),
+        }
+    }
 }
 
 /// How a request ended.
@@ -513,36 +539,12 @@ pub struct Response {
 }
 
 impl Response {
-    /// The result a caller works with: the reply, or the error. A request that was recorded
-    /// before is neither: [`Response::into_outcome`] keeps it apart. Here it gives its rebuilt
-    /// reply when it has one, the recorded failure when it failed, and otherwise a `conflict`
-    /// that says where it was applied (a caller that needs the task reads
-    /// [`AlreadyApplied::task`] itself; the client does).
-    pub fn into_result(self) -> Result<Reply, RuntimeError> {
-        match self.into_outcome()? {
-            Ok(reply) => Ok(reply),
-            Err(already) => match already.did {
-                Did::Applied { reply: Some(reply) } => Ok(reply),
-                Did::Failed {
-                    event,
-                    reason,
-                    kind,
-                } => Err(RuntimeError::Recorded {
-                    event,
-                    reason,
-                    kind,
-                }),
-                Did::Applied { reply: None } => Err(RuntimeError::Conflict {
-                    detail: format!(
-                        "the request was applied already, at event {} (`{}`)",
-                        already.position, already.event
-                    ),
-                }),
-            },
-        }
-    }
-
     /// The reply, or what was recorded of a request that was applied before, or the error.
+    ///
+    /// There is no method that folds a repeat into a `Result<Reply, RuntimeError>`: a request that
+    /// took effect and has no reply to give (a task's verb, a deletion, a snapshot gone with its
+    /// task) has neither a reply nor an error to be. A caller says what it was told: the client
+    /// does, as `Applied` and `Answered` (handoff 014b-7, item 4).
     pub fn into_outcome(self) -> Result<Result<Reply, AlreadyApplied>, RuntimeError> {
         match self.outcome {
             Outcome::Done(reply) => Ok(Ok(reply)),

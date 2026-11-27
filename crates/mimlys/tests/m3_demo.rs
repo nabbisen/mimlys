@@ -626,8 +626,8 @@ fn req_ws_007_an_error_while_applying_restores_the_project_and_says_so() {
         "{names:?}"
     );
     assert!(!names.contains(&"workspace.promoted".to_owned()));
-    // The failure's event records the kind of the error the command answered with (014b-6): the
-    // one a repeat of the request is answered with.
+    // The failure's event records the kind and the detail of the error the command answered with
+    // (014b-6, 014b-7): the ones a repeat of the request is answered with.
     let (_, events) = env.json(&["events", &id]);
     let failed = events
         .as_array()
@@ -635,8 +635,17 @@ fn req_ws_007_an_error_while_applying_restores_the_project_and_says_so() {
         .iter()
         .find(|e| e["record"]["event"] == "workspace.promotion_failed")
         .expect("the failure is recorded");
-    assert_eq!(failed["record"]["kind"], value["error"]["kind"], "{failed}");
-    assert_eq!(failed["record"]["kind"], "internal", "{failed}");
+    assert_eq!(
+        failed["record"]["error_kind"], value["error"]["kind"],
+        "{failed}"
+    );
+    assert_eq!(failed["record"]["error_kind"], "internal", "{failed}");
+    assert_eq!(
+        failed["record"]["error_detail"], value["error"]["detail"],
+        "{failed}"
+    );
+    // `kind` is the other vocabulary's (`workspace.unreadable`): this event has none.
+    assert!(failed["record"].get("kind").is_none(), "{failed}");
 }
 
 /// REQ-WS-012 (promotion backups): a promoted task has a `backup` snapshot of

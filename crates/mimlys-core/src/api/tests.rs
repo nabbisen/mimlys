@@ -308,3 +308,51 @@ fn req_arch_004_a_response_keeps_the_id_of_its_request() {
     assert!(id.is_v7());
     assert_eq!(ids().next().get_version_num(), 7);
 }
+
+/// REQ-ARCH-004 (external design §4; review of 014b-6, item 4 of 014b-7): a request that took
+/// effect is never an error, through any path. What it did is read as it is: a reply when it has
+/// one, none when it has none, and the failure of a change that wrote and failed (the only error
+/// a repeat can be) with the kind and the detail it had. A caller that wants a `Result` of a repeat
+/// with no reply is not given one: the test helper stops, and the outcome stays apart.
+#[test]
+fn req_arch_004_a_request_that_took_effect_is_never_an_error() {
+    let ids = ids();
+    for reply in [None, Some(Reply::CreationForbidden(true))] {
+        let did = Did::Applied {
+            reply: reply.clone(),
+        };
+        assert_eq!(did.into_reply(), Ok(reply));
+    }
+    let failed = Did::Failed {
+        event: "workspace.promotion_failed".into(),
+        reason: "the promotion failed".into(),
+        error_kind: Some("conflict".into()),
+        error_detail: Some(serde_json::json!({"paths": ["a.txt"]})),
+    };
+    let error = failed.into_reply().unwrap_err();
+    assert_eq!(error.kind(), "conflict");
+    assert_eq!(
+        error.detail(),
+        Some(serde_json::json!({"paths": ["a.txt"]}))
+    );
+
+    let already = AlreadyApplied {
+        position: 7,
+        event: "workspace.snapshot".into(),
+        task: None,
+        task_deleted: true,
+        did: Did::Applied { reply: None },
+    };
+    let response = Response {
+        request_id: RequestId::new(&ids),
+        outcome: Outcome::AlreadyApplied(already.clone()),
+    };
+    // The outcome keeps it apart, whole.
+    assert_eq!(response.clone().into_outcome(), Ok(Err(already)));
+    // And the helper does not turn it into an error: it stops instead.
+    let folded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| response.into_result()));
+    assert!(
+        folded.is_err(),
+        "an applied request is not an `Err`: {folded:?}"
+    );
+}
