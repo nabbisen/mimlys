@@ -206,7 +206,7 @@ impl Runtime {
     /// task is not delayed by it.
     pub async fn run_step(&self, task_id: TaskId) -> Result<StepResultView, RuntimeError> {
         use tracing::Instrument;
-        let _step = self.steps.begin_step(task_id)?;
+        let step = self.steps.begin_step(task_id)?;
         let span = tracing::error_span!(
             "step",
             task_id = %task_id,
@@ -224,6 +224,12 @@ impl Runtime {
         {
             self.clear_interruption(task_id);
         }
+        // What requests noted while the step was in flight is taken now, in the step's own turn,
+        // while it still holds the task: no other write is made to a task whose step holds it
+        // (external design §4). A request noted as the step ends is not lost: the claim is
+        // released only when none is left.
+        let mut running = matches!(&result, Ok(view) if view.state == TaskState::Running);
+        step.finish(|pause, stop| self.apply_noted(task_id, &mut running, pause, stop));
         result
     }
 

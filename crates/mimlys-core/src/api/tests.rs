@@ -115,6 +115,9 @@ fn every_request() -> Vec<Request> {
             task_id,
             audit: true,
         },
+        Request::StopAtBoundary { task_id },
+        Request::InterruptStep { task_id },
+        Request::StopAnyway { task_id },
         Request::PlanEffort {
             profile: Some("workspace".into()),
             effort: Some(EffortLevel::Quick),
@@ -170,6 +173,9 @@ fn req_arch_004_the_requests_are_named_as_the_verbs_and_only_the_asks_change_not
             "promote_workspace",
             "revert_promotion",
             "delete_task",
+            "stop_at_boundary",
+            "interrupt_step",
+            "stop_anyway",
             "plan_effort",
             "model_change",
             "start_refusal",
@@ -186,8 +192,13 @@ fn req_arch_004_the_requests_are_named_as_the_verbs_and_only_the_asks_change_not
         .filter(|r| r.changes_state())
         .map(Request::name)
         .collect();
-    assert_eq!(changing.len(), 13, "the thirteen verbs: {changing:?}");
+    assert_eq!(
+        changing.len(),
+        15,
+        "the thirteen verbs and the two signals that may write: {changing:?}"
+    );
     assert!(!changing.contains(&"plan_effort"));
+    assert!(!changing.contains(&"interrupt_step"));
 }
 
 /// The task a request is about is the one it names, and a creation, a plan of the level and a

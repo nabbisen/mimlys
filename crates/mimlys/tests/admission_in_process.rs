@@ -1,6 +1,6 @@
 //! The runtime over the real registry, in process (handoff 013d; REQ-SCHED-006, REQ-CLI-005; RFC
 //! 013 decision 5 with Amendment 1). On every platform: the stop request is made as the signal's
-//! handler makes it (`Runtime::start_no_new_action`), so the same tests stand for the Ctrl-C of
+//! handler makes it (the request `StopAtBoundary`), so the same tests stand for the Ctrl-C of
 //! Unix and of Windows; the registry is the real one (files, locks) in a temporary directory; the
 //! runtime is the core's over its fakes. A wait has begun when the registry lists the runtime
 //! waiting: a state, never a time.
@@ -204,7 +204,15 @@ async fn req_sched_006_a_stop_request_ends_a_wait_over_the_real_registry() {
         tokio::spawn(async move { rig.runtime.run_step(rig.task).await })
     };
     until_waiting(dir.path(), 2222).await;
-    rig.runtime.start_no_new_action(rig.task).unwrap();
+    mimlys_core::api::testing::send(
+        &rig.runtime,
+        &mimlys_core::runtime::Session {
+            id: "s1".into(),
+            os_user: "tester".into(),
+        },
+        mimlys_core::api::Request::StopAtBoundary { task_id: rig.task },
+    )
+    .unwrap();
     let result = stepping.await.unwrap().unwrap();
     assert_eq!(result.outcome, StepOutcome::Cancelled);
     assert_eq!(result.state, TaskState::Running, "the caller pauses it");

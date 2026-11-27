@@ -21,10 +21,12 @@ use std::sync::Arc;
 
 mod approval_card;
 mod definitions_bound;
+mod driver;
 mod effort_levels;
 mod engine_gate;
 mod halt_detail;
 mod handler;
+mod in_flight;
 mod interrupt;
 mod long_lived;
 mod native;

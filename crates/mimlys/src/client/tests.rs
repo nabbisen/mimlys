@@ -4,7 +4,7 @@
 
 use super::*;
 use mimlys_core::action::{EffectKind, EffectView};
-use mimlys_core::api::Outcome;
+use mimlys_core::api::{Notice, Outcome};
 use mimlys_core::clock::FakeClock;
 use mimlys_core::ids::ScriptedIds;
 use mimlys_core::path::PlatformRules;
@@ -42,7 +42,7 @@ impl Recording {
 }
 
 impl Transport for Recording {
-    fn send(&self, envelope: Envelope) -> Response {
+    fn send(&self, envelope: Envelope, _notice: &dyn Fn(Notice)) -> Response {
         let response = (self.answer)(&envelope);
         self.seen.lock().unwrap().push(envelope);
         response

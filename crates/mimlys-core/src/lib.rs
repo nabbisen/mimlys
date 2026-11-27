@@ -26,6 +26,7 @@ pub mod clock;
 pub mod confine;
 pub mod context;
 pub mod decision;
+pub mod driver;
 pub mod effect;
 pub mod effort;
 pub mod event;

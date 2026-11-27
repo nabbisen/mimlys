@@ -268,6 +268,11 @@ pub const GRANT_PROMPT: &str = "Grant (`tool NAME`, `host_tool NAME`, `network D
 pub fn grant_issued(id: &str, kind: &str) -> String {
     format!("grant {id} issued: {kind}")
 }
+/// A grant or a revocation waits for the step in flight of the task to end, and then applies
+/// (external design §4): said once, when it begins to wait.
+pub fn waiting_for_step(task: &str) -> String {
+    format!("task {task} has a step in flight: the request is applied when it has ended")
+}
 /// A grant was revoked.
 pub fn grant_revoked(id: &str) -> String {
     format!("grant {id} revoked")

@@ -620,7 +620,7 @@ impl Runtime {
     ///
     /// A task that is not known, or has ended, is refused, and nothing is
     /// created: the error says which (external design §4).
-    pub fn start_no_new_action(&self, task_id: TaskId) -> Result<(), RuntimeError> {
+    pub(crate) fn start_no_new_action(&self, task_id: TaskId) -> Result<(), RuntimeError> {
         self.request_on(task_id, "start_no_new_action", |i| {
             i.no_new_action.cancel();
         })
@@ -648,7 +648,7 @@ impl Runtime {
     ///
     /// A task that is not known, or has ended, is refused, and nothing is
     /// created: the error says which (external design §4).
-    pub fn interrupt_step(&self, task_id: TaskId) -> Result<(), RuntimeError> {
+    pub(crate) fn interrupt_step(&self, task_id: TaskId) -> Result<(), RuntimeError> {
         self.request_on(task_id, "interrupt_step", |i| {
             i.no_new_action.cancel();
             i.undoable.cancel();
@@ -661,7 +661,7 @@ impl Runtime {
     /// listed, the rule of a crash (external design §16.3). Spent and cleared
     /// as [`Runtime::interrupt_step`] is, and refused for a task that is not
     /// known or has ended as it is.
-    pub fn interrupt_step_anyway(&self, task_id: TaskId) -> Result<(), RuntimeError> {
+    pub(crate) fn interrupt_step_anyway(&self, task_id: TaskId) -> Result<(), RuntimeError> {
         self.request_on(task_id, "interrupt_step_anyway", |i| {
             i.no_new_action.cancel();
             i.undoable.cancel();

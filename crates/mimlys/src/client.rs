@@ -8,7 +8,7 @@
 //! process (embedded mode); 014c adds the daemon's socket behind the same [`Transport`], so
 //! that REQ-ARCH-009 holds by construction: a command is written once.
 
-use mimlys_core::api::{Envelope, Reply, Request, Response};
+use mimlys_core::api::{Envelope, Notice, Reply, Request, Response};
 use mimlys_core::grant::{Grant, GrantKind};
 use mimlys_core::ids::{GrantId, PromotionId, RequestId, SnapshotId, SystemIds, TaskId};
 use mimlys_core::runtime::{
@@ -18,31 +18,36 @@ use mimlys_core::snapshot::{Footprint, Promotion, PromotionPlan, SnapshotRecord}
 use mimlys_core::spi::PersistenceError;
 use mimlys_core::task::{Extension, Task};
 use std::sync::Arc;
+use tokio::sync::Notify;
 
 /// What carries an envelope to the runtime that handles it and brings the response back. It
 /// blocks while the request is handled, as the verb does (a cancel waits for the step in
 /// flight), so a caller that must not block sends from a thread of its own.
 pub trait Transport: Send + Sync {
-    /// Sends the envelope and waits for its response.
-    fn send(&self, envelope: Envelope) -> Response;
-}
+    /// Sends the envelope and waits for its response; `notice` is told what the user is to be
+    /// told while the request waits (a grant waits for the step in flight).
+    fn send(&self, envelope: Envelope, notice: &dyn Fn(Notice)) -> Response;
 
-/// The transport of embedded mode: the runtime is in this process, and the envelope is handed
-/// to it.
-pub struct InProcess {
-    runtime: Arc<Runtime>,
-}
+    /// A follower of the task begins: the driver takes the task if it is running. A transport to
+    /// a daemon has nothing to do, the daemon owning the tasks it serves.
+    fn attach(&self, _task_id: TaskId) {}
 
-impl InProcess {
-    /// The transport to `runtime`.
-    pub fn new(runtime: Arc<Runtime>) -> Self {
-        Self { runtime }
+    /// Where a follower waits for something to look at: a step ended, or a request was handled.
+    /// A transport with nothing to push returns one that is never notified, and the follower's
+    /// own poll is what wakes it.
+    fn changes(&self) -> Arc<Notify> {
+        Arc::new(Notify::new())
     }
-}
 
-impl Transport for InProcess {
-    fn send(&self, envelope: Envelope) -> Response {
-        self.runtime.handle(envelope)
+    /// The driver's loop, when it has ended: it only ends by a panic of a step, and a follower
+    /// that finds it ends in the same way, never as a hang.
+    fn ended_driver(&self) -> Option<tokio::task::JoinHandle<()>> {
+        None
+    }
+
+    /// The error of the step that failed for this task, once.
+    fn failure(&self, _task_id: TaskId) -> Option<RuntimeError> {
+        None
     }
 }
 
@@ -54,9 +59,10 @@ pub struct Client {
 }
 
 impl Client {
-    /// A client of this process's own runtime, under `session`.
+    /// A client of this process's own runtime, under `session`: embedded mode, whose driver
+    /// lives as long as the command.
     pub fn in_process(runtime: Arc<Runtime>, session: Session) -> Self {
-        Self::over(Arc::new(InProcess::new(runtime)), session)
+        Self::over(crate::embedded::InProcess::new(runtime), session)
     }
 
     /// A client over any transport.
@@ -77,17 +83,47 @@ impl Client {
     /// Sends `request` under `request_id`: a request sent once more, after a connection broke,
     /// goes under the id it first had (014c), so that it is applied once.
     pub fn send_as(&self, request_id: RequestId, request: Request) -> Result<Reply, RuntimeError> {
-        let response = self.transport.send(Envelope {
-            request_id,
-            session: self.session.clone(),
-            request,
-        });
+        let response = self.transport.send(
+            Envelope {
+                request_id,
+                session: self.session.clone(),
+                request,
+            },
+            &say,
+        );
         if response.request_id != request_id {
             return Err(unexpected(
                 "an answer to another request than the one that was sent",
             ));
         }
         response.into_result()
+    }
+
+    /// A follower of the task begins: the driver takes it if it is running.
+    pub fn attach(&self, task_id: TaskId) {
+        self.transport.attach(task_id);
+    }
+
+    /// Waits until something changed that a follower should look at (a step ended, a request was
+    /// handled), and at most the poll of `events --follow` (LIM-O15).
+    pub async fn changed(&self) {
+        let changes = self.transport.changes();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(crate::commands::events::EVENTS_POLL_MS),
+            changes.notified(),
+        )
+        .await;
+        if let Some(ended) = self.transport.ended_driver()
+            && let Err(error) = ended.await
+            && error.is_panic()
+        {
+            std::panic::resume_unwind(error.into_panic());
+        }
+    }
+
+    /// The error of the step that failed for this task, once.
+    pub fn failure(&self, task_id: TaskId) -> Option<RuntimeError> {
+        self.transport.failure(task_id)
     }
 
     /// `create_task`.
@@ -270,6 +306,16 @@ impl Client {
         })? {
             Reply::CreationForbidden(forbidden) => Ok(forbidden),
             other => Err(unexpected_reply("creation_forbidden", &other)),
+        }
+    }
+}
+
+/// What the user is told while a request waits (external design §4): on standard error, so that
+/// what a command prints on standard output is what it printed before.
+fn say(notice: Notice) {
+    match notice {
+        Notice::WaitingForStep { task_id } => {
+            crate::output::diag(crate::messages::waiting_for_step(&task_id.to_string()));
         }
     }
 }

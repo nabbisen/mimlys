@@ -268,6 +268,28 @@ pub enum Request {
         /// Remove the audit too.
         audit: bool,
     },
+    /// The first stop signal (REQ-CLI-005): the step in flight starts no new action, and the task
+    /// pauses at the next boundary. The pause is noted at once and taken at the step's end
+    /// ([`Reply::Noted`]), or made now when no step is in flight.
+    StopAtBoundary {
+        /// The task.
+        task_id: TaskId,
+    },
+    /// What the first signal's watchdog does when the pause has not come within LIM-O1 less a
+    /// second: the step in flight is asked to stop what can be undone (the model request, an
+    /// action that can be undone), and starts no new action. An action that cannot be undone is
+    /// not interrupted.
+    InterruptStep {
+        /// The task.
+        task_id: TaskId,
+    },
+    /// The second stop signal (REQ-CLI-005): the step in flight is interrupted whatever it is
+    /// doing, an action that cannot be undone included (its outcome is then unknown, and the
+    /// task halts), and the task is cancelled when the step leaves it `running`.
+    StopAnyway {
+        /// The task.
+        task_id: TaskId,
+    },
     /// Ask: the level a task would be given and the backend its envelope names, before anything
     /// is created (`Runtime::plan_effort`).
     PlanEffort {
@@ -318,6 +340,9 @@ impl Request {
             Request::PromoteWorkspace { .. } => "promote_workspace",
             Request::RevertPromotion { .. } => "revert_promotion",
             Request::DeleteTask { .. } => "delete_task",
+            Request::StopAtBoundary { .. } => "stop_at_boundary",
+            Request::InterruptStep { .. } => "interrupt_step",
+            Request::StopAnyway { .. } => "stop_anyway",
             Request::PlanEffort { .. } => "plan_effort",
             Request::ModelChange { .. } => "model_change",
             Request::StartRefusal { .. } => "start_refusal",
@@ -325,12 +350,14 @@ impl Request {
         }
     }
 
-    /// Whether the request is a verb: it may change the store. An ask changes nothing.
+    /// Whether the request may change the store. An ask changes nothing, and neither does the
+    /// request to interrupt the step, which only sets what the step reads.
     #[must_use]
     pub fn changes_state(&self) -> bool {
         !matches!(
             self,
-            Request::PlanEffort { .. }
+            Request::InterruptStep { .. }
+                | Request::PlanEffort { .. }
                 | Request::ModelChange { .. }
                 | Request::StartRefusal { .. }
                 | Request::CreationForbidden { .. }
@@ -356,6 +383,9 @@ impl Request {
             | Request::PromoteWorkspace { task_id, .. }
             | Request::RevertPromotion { task_id, .. }
             | Request::DeleteTask { task_id, .. }
+            | Request::StopAtBoundary { task_id }
+            | Request::InterruptStep { task_id }
+            | Request::StopAnyway { task_id }
             | Request::ModelChange { task_id }
             | Request::StartRefusal { task_id } => Some(*task_id),
         }
@@ -369,6 +399,15 @@ pub enum Reply {
     /// The task as the verb left it: `create_task`, `resume_task`, `pause_task`, `cancel_task`,
     /// `approve_action`, `reject_action`, `answer_question`.
     Task(Box<Task>),
+    /// A request that waits for the step in flight to end was noted: the task as it is now. The
+    /// request is taken in the step's own turn, at its end (a pause at the next boundary, a stop
+    /// that cancels a task the step leaves `running`), and the reply says so at once.
+    Noted(Box<Task>),
+    /// The step was asked to stop (`interrupt_step`); whether one was in flight to be asked.
+    Interrupted {
+        /// A step of the task was in flight.
+        step_in_flight: bool,
+    },
     /// The grant issued or revoked.
     Grant(Grant),
     /// The snapshot the workspace was restored to.
@@ -385,6 +424,19 @@ pub enum Reply {
     StartRefusal(Option<StartRefusal>),
     /// The answer to `creation_forbidden`.
     CreationForbidden(bool),
+}
+
+/// What a client says to the user while a request waits (external design §4): the runtime tells
+/// it, as a request that waits for the step in flight begins to wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "notice", rename_all = "snake_case")]
+pub enum Notice {
+    /// A grant or a revocation waits for the step in flight of the task to end, and then applies
+    /// from a fresh read.
+    WaitingForStep {
+        /// The task.
+        task_id: TaskId,
+    },
 }
 
 /// How a request ended.

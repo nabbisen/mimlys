@@ -3,6 +3,8 @@
 //! tests of the core's fakes and the binary's tests drive the same code.
 
 use super::classify::{End, Observed, StepFacts};
+use crate::client::Client;
+use mimlys_core::api::Request;
 use mimlys_core::event::Event;
 use mimlys_core::ids::TaskId;
 use mimlys_core::native::DecisionTransport;
@@ -26,7 +28,7 @@ use std::sync::{Arc, Mutex};
 pub struct Stop {
     requested: AtomicBool,
     signals: AtomicU32,
-    armed: Mutex<Option<(Arc<Runtime>, TaskId)>>,
+    armed: Mutex<Option<(Client, TaskId)>>,
 }
 
 impl Stop {
@@ -63,27 +65,28 @@ impl Stop {
         let first = self.signals.fetch_add(1, Ordering::SeqCst) == 0;
         self.requested.store(true, Ordering::SeqCst);
         let armed = self.armed.lock().expect("stop lock");
-        if let Some((runtime, task_id)) = armed.as_ref() {
-            Self::interrupt(runtime, *task_id, first);
+        if let Some((client, task_id)) = armed.as_ref() {
+            Self::interrupt(client, *task_id, first);
         }
     }
 
-    fn interrupt(runtime: &Runtime, task_id: TaskId, first: bool) {
+    fn interrupt(client: &Client, task_id: TaskId, first: bool) {
+        let send = |request| crate::follow::interrupted(client.send(request).map(|_| ()));
         if first {
-            crate::follow::interrupted(runtime.start_no_new_action(task_id));
-            crate::follow::interrupted(runtime.interrupt_step(task_id));
+            send(Request::StopAtBoundary { task_id });
+            send(Request::InterruptStep { task_id });
         } else {
-            crate::follow::interrupted(runtime.interrupt_step_anyway(task_id));
+            send(Request::StopAnyway { task_id });
         }
     }
 
     /// The task now exists: a stop requested before it did is applied to it.
-    fn arm(&self, runtime: Arc<Runtime>, task_id: TaskId) {
+    fn arm(&self, client: Client, task_id: TaskId) {
         let mut armed = self.armed.lock().expect("stop lock");
         if self.requested() {
-            Self::interrupt(&runtime, task_id, true);
+            Self::interrupt(&client, task_id, true);
         }
-        *armed = Some((runtime, task_id));
+        *armed = Some((client, task_id));
     }
 
     fn disarm(&self) {
@@ -100,7 +103,8 @@ pub enum Driven {
     Stopped,
 }
 
-/// Runs the steps of the task until it leaves `running`, or a stop is requested. The limits are
+/// Follows the task until it leaves `running`, or a stop is requested: its steps are run by the
+/// driver of the runtime's client, as the steps of any task are, and never here. The limits are
 /// the task's own: LIM-E2 steps (its budget) and LIM-E3 (its deadline), which the runtime
 /// enforces at every step and in every request.
 pub async fn drive(
@@ -108,16 +112,31 @@ pub async fn drive(
     task_id: TaskId,
     stop: &Stop,
 ) -> Result<Driven, RuntimeError> {
-    stop.arm(Arc::clone(runtime), task_id);
+    let client = Client::in_process(
+        Arc::clone(runtime),
+        mimlys_core::runtime::Session {
+            id: format!("pid:{}", std::process::id()),
+            os_user: crate::app::os_user(),
+        },
+    );
+    stop.arm(client.clone(), task_id);
+    client.attach(task_id);
     let driven = async {
         loop {
-            if stop.requested() {
-                return Ok(Driven::Stopped);
-            }
+            // A stop ends the step in flight (it asks the model request to end, and the task to
+            // pause at its boundary), and the task leaves `running` when that is done: the driving
+            // does not end before the step has, as the command then deletes what it made.
             if runtime.get_task(task_id)?.task.state != TaskState::Running {
-                return Ok(Driven::Ended);
+                return Ok(if stop.requested() {
+                    Driven::Stopped
+                } else {
+                    Driven::Ended
+                });
             }
-            runtime.run_step(task_id).await?;
+            client.changed().await;
+            if let Some(error) = client.failure(task_id) {
+                return Err(error);
+            }
         }
     }
     .await;

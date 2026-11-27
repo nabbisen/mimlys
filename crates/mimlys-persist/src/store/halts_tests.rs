@@ -79,7 +79,15 @@ impl ModelBackend for Stopping {
         if let Some((runtime, task)) = self.ask.lock().unwrap().as_ref()
             && let Some(runtime) = runtime.upgrade()
         {
-            runtime.start_no_new_action(*task).unwrap();
+            mimlys_core::api::testing::send(
+                &runtime,
+                &mimlys_core::runtime::Session {
+                    id: "s1".into(),
+                    os_user: "tester".into(),
+                },
+                mimlys_core::api::Request::StopAtBoundary { task_id: *task },
+            )
+            .unwrap();
         }
         self.inner.generate(request, cancel)
     }

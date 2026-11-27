@@ -6,9 +6,11 @@
 //! still waiting.
 
 use crate::app::{App, AppError};
+use crate::client::Client;
 use crate::messages;
 use crate::output::Output;
 use crate::prompt::{Decision, Interaction, PlanDecision, StopHandle};
+use mimlys_core::api::{Reply, Request};
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::LIM_O1_STOP_MS;
 use mimlys_core::runtime::{Runtime, TaskView};
@@ -73,6 +75,12 @@ trait Interrupt: Send + Sync {
     /// Interrupts what can be undone: the model request, or an action whose
     /// rule after `unknown` (external design §7.2) is re-execution or rollback.
     fn interrupt(&self);
+    /// As [`Interrupt::interrupt`], and whether a step was in flight to be interrupted: a request
+    /// made between two steps interrupts nothing, and the step's end then says nothing of it.
+    fn interrupt_in_flight(&self) -> bool {
+        self.interrupt();
+        true
+    }
     /// Interrupts the step whatever it is doing. Returns the action that cannot
     /// be undone and was in flight, whose outcome is now unknown.
     fn interrupt_anyway(&self) -> Option<InFlight>;
@@ -95,24 +103,54 @@ pub(crate) fn interrupted(result: Result<(), mimlys_core::runtime::RuntimeError>
     }
 }
 
-/// The runtime as what the signals act on.
+/// What the signals act on: the requests of the stop signals, sent through the client, and the
+/// store's own record of what is in flight, read directly.
 struct StepOf {
     runtime: Arc<Runtime>,
+    client: Client,
     task_id: TaskId,
+}
+
+impl StepOf {
+    fn send(&self, request: Request) -> Result<Reply, mimlys_core::runtime::RuntimeError> {
+        self.client.send(request)
+    }
 }
 
 impl Interrupt for StepOf {
     fn start_no_new_action(&self) {
-        interrupted(self.runtime.start_no_new_action(self.task_id));
+        interrupted(
+            self.send(Request::StopAtBoundary {
+                task_id: self.task_id,
+            })
+            .map(|_| ()),
+        );
     }
 
     fn interrupt(&self) {
-        interrupted(self.runtime.interrupt_step(self.task_id));
+        self.interrupt_in_flight();
+    }
+
+    fn interrupt_in_flight(&self) -> bool {
+        match self.send(Request::InterruptStep {
+            task_id: self.task_id,
+        }) {
+            Ok(Reply::Interrupted { step_in_flight }) => step_in_flight,
+            other => {
+                interrupted(other.map(|_| ()));
+                false
+            }
+        }
     }
 
     fn interrupt_anyway(&self) -> Option<InFlight> {
         let in_flight = self.irreversible();
-        interrupted(self.runtime.interrupt_step_anyway(self.task_id));
+        interrupted(
+            self.send(Request::StopAnyway {
+                task_id: self.task_id,
+            })
+            .map(|_| ()),
+        );
         in_flight
     }
 
@@ -172,6 +210,7 @@ impl Signals {
     /// there is nothing to pause or to cancel.
     pub fn install(
         runtime: Arc<Runtime>,
+        client: Client,
         task_id: TaskId,
         at_prompt: Option<StopHandle>,
     ) -> Arc<Self> {
@@ -180,7 +219,11 @@ impl Signals {
             return signals;
         };
         let shared = Arc::clone(&signals);
-        let step: Arc<dyn Interrupt> = Arc::new(StepOf { runtime, task_id });
+        let step: Arc<dyn Interrupt> = Arc::new(StepOf {
+            runtime,
+            client,
+            task_id,
+        });
         tokio::spawn(async move {
             while stop.recv().await.is_ok() {
                 shared.stopped(&step, grace());
@@ -302,7 +345,10 @@ impl Signals {
                             // before, for the step may be between its model
                             // request and an action that cannot be undone.
                             shared.interrupted.store(true, Ordering::SeqCst);
-                            step.interrupt();
+                            if !step.interrupt_in_flight() {
+                                // Nothing was in flight: the step's end has nothing to say.
+                                shared.interrupted.store(false, Ordering::SeqCst);
+                            }
                         }
                     }
                 });
@@ -352,6 +398,11 @@ impl Signals {
         if self.interrupted.swap(false, Ordering::SeqCst) {
             self.say(messages::signal_interrupted(grace().as_secs(), rolled_back));
         }
+    }
+
+    /// Whether the watchdog interrupted a step in flight and the step's end has not said so.
+    fn is_interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
     }
 
     fn stage(&self) -> u8 {
@@ -422,8 +473,10 @@ impl StopSignals {
     }
 }
 
-/// Runs the task until it waits for the user without an interactive
-/// channel, pauses, halts or ends; prompts and continues otherwise.
+/// Follows the task until it waits for the user without an interactive channel, pauses, halts
+/// or ends: prints its events, prompts when it waits, and sends what the user decides, and the
+/// stop signals, as requests. **It never runs a step**: the driver does (external design §4, "The
+/// driver and the follower"), and in embedded mode lives as long as the command.
 pub async fn drive(
     app: &App,
     task_id: TaskId,
@@ -431,49 +484,37 @@ pub async fn drive(
     out: &Output,
 ) -> Result<TaskView, AppError> {
     let runtime = Arc::clone(&app.runtime);
-    let signals = Signals::install(Arc::clone(&runtime), task_id, interaction.stop_handle());
+    let client = app.client.clone();
+    let signals = Signals::install(
+        Arc::clone(&runtime),
+        client.clone(),
+        task_id,
+        interaction.stop_handle(),
+    );
     let mut position = last_position(&runtime, task_id)?;
+    // A task that is running is the driver's: it takes the task whoever made it so.
+    client.attach(task_id);
+    let mut rolled_back = false;
     loop {
         let view = runtime.get_task(task_id)?;
+        let printed = print_new(&runtime, task_id, &mut position, out)?;
+        if printed.step_started {
+            // What the watchdog did before this step began did not touch it.
+            signals.step_begins();
+        }
+        if signals.is_interrupted() {
+            rolled_back |= printed.rolled_back;
+        }
         match view.task.state {
             TaskState::Running => {
-                match signals.stage() {
-                    CANCEL => {
-                        app.client.cancel_task(task_id)?;
-                        print_new(&runtime, task_id, &mut position, out)?;
-                        continue;
-                    }
-                    PAUSE => {
-                        app.client.pause_task(task_id)?;
-                        signals.applied();
-                    }
-                    _ => {}
+                // The pause the first signal asked for is requested once the step in flight has
+                // ended: the watchdog stands down.
+                if signals.stage() == PAUSE && view.task.pause_requested {
+                    signals.applied();
                 }
-                // What the watchdog did before this step began did not touch it.
-                signals.step_begins();
-                let result = runtime.run_step(task_id).await?;
-                let printed = print_new(&runtime, task_id, &mut position, out)?;
-                if result.outcome == StepOutcome::Cancelled && result.state == TaskState::Running {
-                    if signals.stage() == CANCEL {
-                        app.client.cancel_task(task_id)?;
-                    } else {
-                        // The step was cancelled (the watchdog's request, or
-                        // one that came as the pause was being applied) and
-                        // the task is still running: the step has ended here.
-                        // The pause is requested and taken by the step that
-                        // follows, which returns at once: it does no work, it
-                        // calls no model and no tool, and the step that was
-                        // cancelled took the request with it (`run_step`), so
-                        // this step finds the pause and not the request.
-                        app.client.pause_task(task_id)?;
-                        signals.applied();
-                        runtime.run_step(task_id).await?;
-                        print_new(&runtime, task_id, &mut position, out)?;
-                        // The step has ended cancelled and the pause is taken:
-                        // now it is true that the step was interrupted.
-                        signals.report_interruption(printed.rolled_back);
-                    }
-                    print_new(&runtime, task_id, &mut position, out)?;
+                client.changed().await;
+                if let Some(error) = client.failure(task_id) {
+                    return Err(error.into());
                 }
             }
             TaskState::WaitingUser { wait_kind } => {
@@ -521,13 +562,13 @@ pub async fn drive(
                         }
                         match decision {
                             Decision::Approve => {
-                                app.client.approve_action(task_id, None)?;
+                                client.approve_action(task_id, None)?;
                             }
                             Decision::Reject { note, halt } => {
-                                app.client.reject_action(task_id, note, Some(halt))?;
+                                client.reject_action(task_id, note, Some(halt))?;
                             }
                             Decision::Grant(kind) => {
-                                let grant = app.client.grant_capability(task_id, kind)?;
+                                let grant = client.grant_capability(task_id, kind)?;
                                 out.line(messages::grant_issued(
                                     &grant.grant_id.to_string(),
                                     &serde_json::to_string(grant.kind()).unwrap_or_default(),
@@ -549,13 +590,13 @@ pub async fn drive(
                         }
                         match decision {
                             PlanDecision::Approve { note } => {
-                                app.client.approve_action(task_id, note)?;
+                                client.approve_action(task_id, note)?;
                             }
                             PlanDecision::Reject { note, halt } => {
-                                app.client.reject_action(task_id, note, Some(halt))?;
+                                client.reject_action(task_id, note, Some(halt))?;
                             }
                             PlanDecision::Cancel => {
-                                app.client.cancel_task(task_id)?;
+                                client.cancel_task(task_id)?;
                             }
                             PlanDecision::Leave => return Ok(view),
                         }
@@ -573,17 +614,33 @@ pub async fn drive(
                         }
                         match answer {
                             Some(text) => {
-                                app.client.answer_question(task_id, &text)?;
+                                client.answer_question(task_id, &text)?;
                             }
                             None => return Ok(view),
                         }
                     }
                 }
-                print_new(&runtime, task_id, &mut position, out)?;
             }
-            _ => return Ok(view),
+            _ => {
+                // The step that was interrupted at the grace has ended `cancelled` and the pause
+                // is taken: now it is true that the step was interrupted.
+                if view.task.state == TaskState::Paused && last_step_cancelled(&runtime, task_id) {
+                    signals.report_interruption(rolled_back);
+                }
+                return Ok(view);
+            }
         }
     }
+}
+
+/// Whether the task's last step ended `cancelled`.
+fn last_step_cancelled(runtime: &Runtime, task_id: TaskId) -> bool {
+    runtime
+        .persistence()
+        .load_steps(task_id)
+        .ok()
+        .and_then(|steps| steps.last().and_then(|s| s.outcome))
+        == Some(StepOutcome::Cancelled)
 }
 
 /// A stop signal came to a prompt, or before it: the task stays as it is,
@@ -616,6 +673,8 @@ struct Printed {
     /// A `workspace.rollback` was among them: the step's workspace changes
     /// were rolled back.
     rolled_back: bool,
+    /// A `step.started` was among them: a step began.
+    step_started: bool,
 }
 
 fn print_new(
@@ -632,6 +691,7 @@ fn print_new(
         }
         for e in &batch {
             printed.rolled_back |= e.record.event.name() == "workspace.rollback";
+            printed.step_started |= e.record.event.name() == "step.started";
             out.line(event_text(e));
             *position = e.position;
         }
@@ -786,6 +846,38 @@ mod tests {
             .lines()
             .iter()
             .any(|l| l.contains("so it was interrupted"))
+    }
+
+    /// REQ-ARCH-004, external design §4 ("The driver and the follower"): the follower runs no
+    /// step and calls no verb of the runtime: it reads the task and its events, prompts, and
+    /// sends requests. The text of this file, before its tests, names none of the methods that
+    /// run a step or write to a task.
+    #[test]
+    fn req_arch_004_the_follower_runs_no_step_and_calls_no_verb() {
+        let source = include_str!("follow.rs");
+        let code = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a first part");
+        let code: String = code
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in [
+            ".run_step(",
+            ".run_until_wait(",
+            "runtime.cancel_task",
+            "runtime.pause_task",
+            "runtime.approve_action",
+            "runtime.reject_action",
+            "runtime.answer_question",
+            "runtime.grant_capability",
+            "runtime.start_no_new_action",
+            "runtime.interrupt_step",
+        ] {
+            assert!(!code.contains(forbidden), "the follower calls {forbidden}");
+        }
     }
 
     /// REQ-CLI-005, LIM-O1: the grace is LIM-O1 less one second.

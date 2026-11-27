@@ -51,7 +51,10 @@ fn by_the_verb(h: &Harness, request: Request) -> Result<Reply, RuntimeError> {
         Request::DeleteTask { task_id, audit } => {
             Reply::Footprint(r.delete_task(s, task_id, audit)?)
         }
-        Request::PlanEffort { .. }
+        Request::StopAtBoundary { .. }
+        | Request::InterruptStep { .. }
+        | Request::StopAnyway { .. }
+        | Request::PlanEffort { .. }
         | Request::ModelChange { .. }
         | Request::StartRefusal { .. }
         | Request::CreationForbidden { .. } => unreachable!("not a verb of the scenario"),

@@ -25,6 +25,7 @@ pub mod client;
 pub mod commands;
 pub mod config;
 pub mod download;
+pub mod embedded;
 pub mod follow;
 pub mod logging;
 pub mod machine;

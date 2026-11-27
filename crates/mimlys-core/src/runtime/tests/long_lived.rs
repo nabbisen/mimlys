@@ -16,19 +16,19 @@ use std::time::Duration;
 /// A backend that holds its first request until the test releases it, or, when it `honours` the
 /// token it was given, until the token is requested (the request is then aborted, as a real
 /// backend aborts it). Every other request goes straight to the script.
-struct Holding {
+pub(super) struct Holding {
     inner: Arc<ScriptedBackend>,
-    hold_next: AtomicBool,
+    pub(super) hold_next: AtomicBool,
     /// The held request has been sent.
-    entered: AtomicBool,
-    released: AtomicBool,
+    pub(super) entered: AtomicBool,
+    pub(super) released: AtomicBool,
     honours: bool,
     /// The held request ended because its token was requested.
-    aborted: AtomicBool,
+    pub(super) aborted: AtomicBool,
 }
 
 impl Holding {
-    fn new(inner: Arc<ScriptedBackend>, honours: bool) -> Arc<Self> {
+    pub(super) fn new(inner: Arc<ScriptedBackend>, honours: bool) -> Arc<Self> {
         Arc::new(Self {
             inner,
             hold_next: AtomicBool::new(true),
@@ -75,7 +75,7 @@ impl ModelBackend for Holding {
 }
 
 /// As `futures_block`, for futures that pend until another thread acts: it sleeps between polls.
-fn block_on_waiting<F: std::future::Future>(future: F) -> F::Output {
+pub(super) fn block_on_waiting<F: std::future::Future>(future: F) -> F::Output {
     use std::task::{Context, Waker};
     let mut cx = Context::from_waker(Waker::noop());
     let mut future = std::pin::pin!(future);
@@ -88,7 +88,7 @@ fn block_on_waiting<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// Waits for a state of the world, with a limit that only a hang reaches.
-fn until(what: &str, mut reached: impl FnMut() -> bool) {
+pub(super) fn until(what: &str, mut reached: impl FnMut() -> bool) {
     for _ in 0..20_000 {
         if reached() {
             return;
@@ -105,7 +105,7 @@ fn unknown_task() -> TaskId {
 
 /// Lets the held request go when a test fails inside its scope, so that the failure is reported
 /// and not a hang.
-struct Release<'a>(&'a Holding);
+pub(super) struct Release<'a>(pub(super) &'a Holding);
 
 impl Drop for Release<'_> {
     fn drop(&mut self) {
@@ -113,12 +113,12 @@ impl Drop for Release<'_> {
     }
 }
 
-struct Rig {
-    h: Harness,
-    front: Arc<Holding>,
+pub(super) struct Rig {
+    pub(super) h: Harness,
+    pub(super) front: Arc<Holding>,
 }
 
-fn rig(decisions: Vec<Value>, honours: bool) -> Rig {
+pub(super) fn rig(decisions: Vec<Value>, honours: bool) -> Rig {
     let scripted = Arc::new(ScriptedBackend::with_decisions(decisions));
     let front = Holding::new(scripted.clone(), honours);
     let h = Harness::with_front(
@@ -137,7 +137,7 @@ fn complete() -> Value {
 }
 
 /// What the store holds of a task: its steps, its actions and its events.
-fn counts(h: &Harness, id: TaskId) -> (usize, usize, usize) {
+pub(super) fn counts(h: &Harness, id: TaskId) -> (usize, usize, usize) {
     (
         h.persistence.load_steps(id).unwrap().len(),
         h.persistence.load_actions(id).unwrap().len(),
@@ -150,7 +150,7 @@ fn counts(h: &Harness, id: TaskId) -> (usize, usize, usize) {
 }
 
 /// The states the task was changed to, in order.
-fn state_changes(h: &Harness, id: TaskId) -> Vec<String> {
+pub(super) fn state_changes(h: &Harness, id: TaskId) -> Vec<String> {
     h.persistence
         .events()
         .into_iter()

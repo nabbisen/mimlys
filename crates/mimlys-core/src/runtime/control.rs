@@ -1216,7 +1216,11 @@ impl Runtime {
 
     /// The cancel itself, with no step of the task in flight and none to begin (the caller
     /// holds the claim).
-    fn cancel_idle_task(&self, session: &Session, task_id: TaskId) -> Result<Task, RuntimeError> {
+    pub(super) fn cancel_idle_task(
+        &self,
+        session: &Session,
+        task_id: TaskId,
+    ) -> Result<Task, RuntimeError> {
         let task = self.writable(task_id)?;
         let now = self.deps.clock.now();
         let next = task.transition(TaskInput::Cancel, now)?;
