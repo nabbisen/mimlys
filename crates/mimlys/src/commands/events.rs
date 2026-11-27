@@ -8,9 +8,8 @@ use mimlys_core::limits::LIM_O17_FOLLOW_HOLDER_WAIT_MS;
 use mimlys_core::task::TaskState;
 use std::time::{Duration, Instant};
 
-/// How often `events --follow` reads for new events, in milliseconds. A
-/// reader's poll; it takes no lock and writes nothing. (Not in the limits
-/// register: the value was a literal before this name; see the review request.)
+/// How often `events --follow` reads for new events, in milliseconds (LIM-O15). A
+/// reader's poll; it takes no lock and writes nothing.
 pub const EVENTS_POLL_MS: u64 = 500;
 
 /// Prints events after `since`; with `follow`, keeps polling until the
