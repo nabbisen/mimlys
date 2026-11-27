@@ -4,7 +4,7 @@
 //! `tools/call` from rypsok's committed example transcripts, plus four
 //! control tools: `echo_env` (the child's environment, REQ-TEST-015),
 //! `slow` (sleeps, honours `notifications/cancelled`), `change_definition`
-//! (the next list differs and `notifications/tools/list_changed` is sent)
+//! (the next list differs and `notifications/tools/list_changed` is sent, before the answer)
 //! and `die` (exits at once). Both the 2026-07-28 revision
 //! (`server/discover`, `_meta` per request) and the handshake-based
 //! revisions (`initialize`) are served, like rypsok.
@@ -809,12 +809,16 @@ pub fn main() {
                         if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_CHANGED_FILE") {
                             let _ = std::fs::write(path, b"changed");
                         }
-                        reply(
-                            json!({"content": [{"type": "text", "text": "{}"}], "structuredContent": {}}),
-                        );
+                        // The notice comes before the answer, so that whoever has the answer has
+                        // the notice already, whatever the timing: a boundary after the call
+                        // asks for the list with the change known (a test judges by that state,
+                        // not by which of two messages is read first).
                         write(
                             &stdout,
                             &json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                        );
+                        reply(
+                            json!({"content": [{"type": "text", "text": "{}"}], "structuredContent": {}}),
                         );
                     }
                     "slow" if env_flag("MIMLYS_TESTSERVER_IGNORE_CANCEL") => {
