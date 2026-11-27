@@ -425,7 +425,7 @@ pub fn recover_promotions(
                 action_id: None,
                 policy_hash: ctx.policy_hash.clone(),
                 request_id: None,
-                event: Event::WorkspacePromotionFailed { reason },
+                event: Event::WorkspacePromotionFailed { reason, kind: None },
             },
         )?;
         out.push(RecoveredPromotion {

@@ -626,6 +626,17 @@ fn req_ws_007_an_error_while_applying_restores_the_project_and_says_so() {
         "{names:?}"
     );
     assert!(!names.contains(&"workspace.promoted".to_owned()));
+    // The failure's event records the kind of the error the command answered with (014b-6): the
+    // one a repeat of the request is answered with.
+    let (_, events) = env.json(&["events", &id]);
+    let failed = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["record"]["event"] == "workspace.promotion_failed")
+        .expect("the failure is recorded");
+    assert_eq!(failed["record"]["kind"], value["error"]["kind"], "{failed}");
+    assert_eq!(failed["record"]["kind"], "internal", "{failed}");
 }
 
 /// REQ-WS-012 (promotion backups): a promoted task has a `backup` snapshot of

@@ -739,22 +739,30 @@ impl Runtime {
                 },
             ),
         )?;
-        self.deps.workspaces.seal(backup.record.snapshot_id)?;
+        self.deps
+            .workspaces
+            .seal(backup.record.snapshot_id)
+            .map_err(RuntimeError::from)
+            .map_err(|e| self.stopped_before_apply(session, task_id, e))?;
         // 3. The promotion is recorded `applying`.
         let files: Vec<String> = promotion.files.iter().map(|c| c.path.clone()).collect();
         promotion.state = PromotionState::Applying;
-        self.deps.persistence.record_promotion(
-            &promotion,
-            &self.event(
-                session.actor(),
-                Some(task_id),
-                None,
-                None,
-                Event::WorkspacePromotionStarted {
-                    files: files.clone(),
-                },
-            ),
-        )?;
+        self.deps
+            .persistence
+            .record_promotion(
+                &promotion,
+                &self.event(
+                    session.actor(),
+                    Some(task_id),
+                    None,
+                    None,
+                    Event::WorkspacePromotionStarted {
+                        files: files.clone(),
+                    },
+                ),
+            )
+            .map_err(RuntimeError::from)
+            .map_err(|e| self.stopped_before_apply(session, task_id, e))?;
         // 4. The project is written.
         match self
             .deps
@@ -806,12 +814,46 @@ impl Runtime {
                         None,
                         Event::WorkspacePromotionFailed {
                             reason: error.to_string(),
+                            kind: Some(error.kind().to_owned()),
                         },
                     ),
                 )?;
                 Err(error)
             }
         }
+    }
+
+    /// A promotion that stopped after its backup was recorded and before its apply began (the
+    /// backup could not be sealed, or the promotion could not be recorded `applying`): the project
+    /// was not touched. The failure is recorded, with its kind, so that the same request sent
+    /// again is answered with the kind it had (external design §4, "The recorded outcome"),
+    /// and the error is returned as it was. The record is the best that can be done: when the
+    /// store cannot take it either, the repeat finds the backup alone, and answers `internal`.
+    fn stopped_before_apply(
+        &self,
+        session: &Session,
+        task_id: TaskId,
+        error: RuntimeError,
+    ) -> RuntimeError {
+        let recorded = self.deps.persistence.append_event(&self.event(
+            session.actor(),
+            Some(task_id),
+            None,
+            None,
+            Event::WorkspacePromotionFailed {
+                reason: error.to_string(),
+                kind: Some(error.kind().to_owned()),
+            },
+        ));
+        if let Err(cause) = recorded {
+            tracing::warn!(
+                target: "mimlys_core",
+                task = %task_id,
+                %cause,
+                "the stop of a promotion before its apply could not be recorded"
+            );
+        }
+        error
     }
 
     /// The promotion to reverse and its backup: an applied promotion that was not reversed, or a

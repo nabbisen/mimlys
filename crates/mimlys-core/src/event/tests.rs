@@ -100,6 +100,7 @@ fn every_event() -> Vec<Event> {
         },
         Event::WorkspacePromotionFailed {
             reason: "restored".into(),
+            kind: Some("conflict".into()),
         },
         Event::WorkspaceUnreadable {
             path: "d".into(),
@@ -278,4 +279,34 @@ fn req_sec_010_the_halt_event_carries_its_rule() {
         }
     );
     assert_eq!(serde_json::to_value(&read).unwrap(), old);
+}
+
+/// External design §17.1 (REQ-MAIN-001, REQ-MAIN-006): `workspace.promotion_failed` carries the
+/// kind of the error the request was answered with, as an additive field. An event written
+/// before it existed reads without a kind and is written back byte for byte the same, and one
+/// with a kind round-trips; no schema version moves for it.
+#[test]
+fn req_ws_007_the_promotion_failure_records_its_kind_and_an_older_one_reads_without() {
+    let without = Event::WorkspacePromotionFailed {
+        reason: "restored".into(),
+        kind: None,
+    };
+    let old = serde_json::json!({"event": "workspace.promotion_failed", "reason": "restored"});
+    assert_eq!(
+        serde_json::from_value::<Event>(old.clone()).unwrap(),
+        without
+    );
+    assert_eq!(serde_json::to_value(&without).unwrap(), old);
+    assert_eq!(
+        serde_json::to_string(&without).unwrap(),
+        r#"{"event":"workspace.promotion_failed","reason":"restored"}"#
+    );
+    let with = Event::WorkspacePromotionFailed {
+        reason: "restored".into(),
+        kind: Some("conflict".into()),
+    };
+    let json = serde_json::to_value(&with).unwrap();
+    assert_eq!(json["kind"], "conflict");
+    assert_eq!(serde_json::from_value::<Event>(json).unwrap(), with);
+    assert_eq!(EVENT_SCHEMA_VERSION, 2, "an additive field raises nothing");
 }

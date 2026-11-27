@@ -619,3 +619,30 @@ fn req_arch_004_a_request_that_took_effect_on_a_task_deleted_since_finds_it_gone
         .unwrap_err();
     assert_eq!(error.kind(), "not_found", "{error}");
 }
+
+/// External design §4 (review of 014b-5): a failure keeps its kind on a repeat, through the
+/// client: a promotion that failed as a `conflict` is answered as a `conflict`, with the same
+/// words.
+#[test]
+fn req_arch_004_a_repeat_of_a_conflict_is_a_conflict_through_the_client() {
+    let w = world();
+    let id = w.task().task_id;
+    w.workspaces.on_promote_apply(Box::new(|_| {
+        Err(mimlys_core::spi::WorkspaceError::Conflict {
+            paths: vec!["a.txt".into()],
+        })
+    }));
+    let (first, second) = w.twice(Request::PromoteWorkspace {
+        task_id: id,
+        plan: w.plan(id),
+    });
+    let first = first.unwrap_err();
+    assert_eq!(first.kind(), "conflict", "{first}");
+    let second = second.unwrap_err();
+    assert!(
+        matches!(second, RuntimeError::Recorded { .. }),
+        "{second:?}"
+    );
+    assert_eq!(second.kind(), "conflict", "{second}");
+    assert_eq!(second.to_string(), first.to_string());
+}

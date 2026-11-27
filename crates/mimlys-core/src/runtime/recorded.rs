@@ -113,15 +113,18 @@ impl Runtime {
                 }
             }
             Request::PromoteWorkspace { .. } => {
-                if let Some(failed) = events.iter().find_map(|e| match &e.record.event {
-                    Event::WorkspacePromotionFailed { reason } => {
-                        Some((e.record.event.name(), reason.clone()))
-                    }
-                    _ => None,
-                }) {
+                if let Some((event, reason, kind)) =
+                    events.iter().find_map(|e| match &e.record.event {
+                        Event::WorkspacePromotionFailed { reason, kind } => {
+                            Some((e.record.event.name(), reason.clone(), kind.clone()))
+                        }
+                        _ => None,
+                    })
+                {
                     return Ok(Did::Failed {
-                        event: failed.0.to_owned(),
-                        reason: failed.1,
+                        event: event.to_owned(),
+                        reason,
+                        kind,
                     });
                 }
                 if !events
@@ -137,6 +140,9 @@ impl Runtime {
                             "the promotion did not complete: its request wrote up to `{last}`, \
                              and nothing after it"
                         ),
+                        // Nothing recorded what stopped it (a crash, or a store that could not
+                        // be written): no kind to keep.
+                        kind: None,
                     });
                 }
                 let backup = named(|e| match e {

@@ -308,6 +308,12 @@ pub enum Event {
     WorkspacePromotionFailed {
         /// Why, and what was left as it is.
         reason: String,
+        /// The kind of the error the request was answered with the first time
+        /// (`conflict`, `internal`, ..., external design §18), so that the same request sent
+        /// again is answered with the same kind (external design §4). From 0.14: absent in earlier
+        /// records, which answer a repeat as `internal`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// Part of the task's tree could not be read, and the task halted for it: the path that
     /// could not be read.

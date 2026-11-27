@@ -415,8 +415,16 @@ fn applied_before(
         did,
     } = already;
     match did {
-        // It wrote, and failed: the failure, never "applied".
-        Did::Failed { event, reason } => Err(RuntimeError::Recorded { event, reason }),
+        // It wrote, and failed: the failure, never "applied", with the kind it had.
+        Did::Failed {
+            event,
+            reason,
+            kind,
+        } => Err(RuntimeError::Recorded {
+            event,
+            reason,
+            kind,
+        }),
         Did::Applied { reply } => {
             let reply = match (reply, task) {
                 (Some(reply), _) => Some(reply),

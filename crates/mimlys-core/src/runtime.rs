@@ -149,14 +149,18 @@ pub enum RuntimeError {
     },
     /// A change that a request wrote and then failed, answered when the request is sent again
     /// (external design §4, "The recorded outcome"): the reason as the change's event recorded
-    /// it. The first answer was the verb's own error, whose kind and details the event does not
-    /// keep, so this one is `internal`.
+    /// it, and with the kind the first answer had, as the event recorded it (`conflict` stays
+    /// `conflict`). The event does not keep the first answer's details (the paths of a
+    /// conflict), and an event that holds no kind (written before 0.14) is `internal`.
     #[error("{reason}")]
     Recorded {
         /// The event that recorded the failure.
         event: String,
         /// Why, as it was recorded.
         reason: String,
+        /// The kind the first answer had (external design §18), when the event holds one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// The backend failed.
     #[error("{0}")]
@@ -185,6 +189,18 @@ fn promotion_failed_message(
     )
 }
 
+/// The error kinds of external design §18: the words an event records (`kind`) and a response
+/// carries.
+const ERROR_KINDS: [&str; 7] = [
+    "invalid_request",
+    "not_found",
+    "state",
+    "denied",
+    "conflict",
+    "unavailable",
+    "internal",
+];
+
 impl RuntimeError {
     /// The error kind of external design §18.
     pub fn kind(&self) -> &'static str {
@@ -208,7 +224,13 @@ impl RuntimeError {
                 cause: WorkspaceError::Conflict { .. } | WorkspaceError::Unlisted { .. },
                 ..
             } => "conflict",
-            RuntimeError::PromotionFailed { .. } | RuntimeError::Recorded { .. } => "internal",
+            RuntimeError::PromotionFailed { .. } => "internal",
+            // The kind the event recorded; one this release does not know (a newer release wrote
+            // it) or none at all is `internal`.
+            RuntimeError::Recorded { kind, .. } => kind
+                .as_deref()
+                .and_then(|k| ERROR_KINDS.iter().find(|known| **known == k).copied())
+                .unwrap_or("internal"),
             RuntimeError::Workspace(WorkspaceError::NotFound { .. }) => "not_found",
             RuntimeError::Workspace(
                 WorkspaceError::Refused { .. }

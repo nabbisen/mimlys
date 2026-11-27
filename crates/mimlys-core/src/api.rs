@@ -476,6 +476,10 @@ pub enum Did {
         event: String,
         /// Why, as it was recorded.
         reason: String,
+        /// The kind of the error the first answer was, as the event recorded it (external
+        /// design §4, §17.1); none for an event that holds none, which answers `internal`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
 }
 
@@ -512,7 +516,15 @@ impl Response {
             Ok(reply) => Ok(reply),
             Err(already) => match already.did {
                 Did::Applied { reply: Some(reply) } => Ok(reply),
-                Did::Failed { event, reason } => Err(RuntimeError::Recorded { event, reason }),
+                Did::Failed {
+                    event,
+                    reason,
+                    kind,
+                } => Err(RuntimeError::Recorded {
+                    event,
+                    reason,
+                    kind,
+                }),
                 Did::Applied { reply: None } => Err(RuntimeError::Conflict {
                     detail: format!(
                         "the request was applied already, at event {} (`{}`)",

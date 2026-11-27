@@ -1447,6 +1447,8 @@ pub mod fake {
         unreadable: Mutex<Option<(String, bool, Option<String>)>>,
         tree: Mutex<Option<String>>,
         apply_hook: Mutex<Option<ApplyHook>>,
+        /// What the next seal of a backup fails with.
+        seal_error: Mutex<Option<WorkspaceError>>,
         reverted: Mutex<Vec<(PromotionId, EditedPaths)>>,
         fail_reverts: Mutex<bool>,
         edited: Mutex<Vec<String>>,
@@ -1477,6 +1479,7 @@ pub mod fake {
                 unreadable: Mutex::new(None),
                 tree: Mutex::new(None),
                 apply_hook: Mutex::new(None),
+                seal_error: Mutex::new(None),
                 reverted: Mutex::new(Vec::new()),
                 fail_reverts: Mutex::new(false),
                 edited: Mutex::new(Vec::new()),
@@ -1659,7 +1662,10 @@ pub mod fake {
         }
 
         fn seal(&self, _snapshot_id: SnapshotId) -> Result<(), WorkspaceError> {
-            Ok(())
+            match self.seal_error.lock().expect("fake lock").take() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         }
 
         fn restore(
@@ -1858,6 +1864,12 @@ pub mod fake {
         /// From now on a promotion is applied by running `hook`, whose error fails the apply.
         pub fn on_promote_apply(&self, hook: ApplyHook) {
             *self.apply_hook.lock().expect("fake lock") = Some(hook);
+        }
+
+        /// The next seal of a snapshot's journal fails with `error`: a promotion stops after its
+        /// backup was recorded, before it began to apply.
+        pub fn fail_next_seal(&self, error: WorkspaceError) {
+            *self.seal_error.lock().expect("fake lock") = Some(error);
         }
 
         /// From now on every reversal of a promotion fails with a storage error.

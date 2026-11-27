@@ -429,7 +429,9 @@ fn req_arch_004_a_repeat_of_a_promotion_that_failed_after_it_wrote_is_answered_w
         again.did,
         Did::Failed {
             event: "workspace.promotion_failed".into(),
-            reason: error.to_string()
+            reason: error.to_string(),
+            // What the first answer was: `internal`, as a failed apply is not a conflict.
+            kind: Some(error.kind().into()),
         }
     );
 }
@@ -465,11 +467,17 @@ fn req_arch_004_a_repeat_of_a_promotion_that_stopped_before_it_was_recorded_is_n
     let Outcome::AlreadyApplied(already) = again.outcome else {
         panic!("{again:?}")
     };
-    let Did::Failed { event, reason } = already.did else {
+    let Did::Failed {
+        event,
+        reason,
+        kind,
+    } = already.did
+    else {
         panic!("not applied: {:?}", already.did)
     };
     assert_eq!(event, "workspace.snapshot");
     assert!(reason.contains("did not complete"), "{reason}");
+    assert_eq!(kind, None, "nothing recorded what stopped it");
     assert_eq!(h.persistence.load_promotions(id).unwrap().len(), 0);
 }
 
@@ -509,4 +517,150 @@ fn req_arch_004_a_repeat_of_a_deletion_finds_the_task_gone() {
         panic!("{second:?}")
     };
     assert_eq!(error.kind(), "not_found", "{error}");
+}
+
+/// The answer to a request sent twice under one id, when the first did not apply: the first
+/// answer's error and the repeat's recorded outcome.
+fn failed_then_repeated(h: &Harness, request: Request) -> (RuntimeError, AlreadyApplied) {
+    let (first, again) = sent_twice(h, request);
+    let Outcome::Failed(error) = first else {
+        panic!("{first:?}")
+    };
+    (error, again)
+}
+
+/// External design §4 and §17.1 (review of 014b-5): a promotion that failed as a `conflict` is
+/// answered as a `conflict` when sent again, with the same words, and not as `internal`: the
+/// failure's event records the kind the first answer had. A failure that was `internal` stays so.
+#[test]
+fn req_arch_004_a_failure_keeps_its_kind_on_a_repeat() {
+    for (injected, kind) in [
+        (
+            crate::spi::WorkspaceError::Conflict {
+                paths: vec!["a.txt".into()],
+            },
+            "conflict",
+        ),
+        (
+            crate::spi::WorkspaceError::Storage {
+                detail: "injected".into(),
+            },
+            "internal",
+        ),
+    ] {
+        let h = Harness::new(vec![]);
+        let id = h.create_with(|c| c.hold = true);
+        h.workspaces
+            .on_promote_apply(Box::new(move |_| Err(injected.clone())));
+        let (error, again) = failed_then_repeated(
+            &h,
+            Request::PromoteWorkspace {
+                task_id: id,
+                plan: one_file_plan(&h, id),
+            },
+        );
+        assert_eq!(error.kind(), kind, "{error}");
+        // The event holds the kind: it is what the repeat is answered from.
+        let recorded: Vec<Event> = h
+            .persistence
+            .events()
+            .into_iter()
+            .map(|e| e.event)
+            .filter(|e| e.name() == "workspace.promotion_failed")
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![Event::WorkspacePromotionFailed {
+                reason: error.to_string(),
+                kind: Some(kind.into()),
+            }]
+        );
+        let Did::Failed {
+            reason,
+            kind: answered,
+            ..
+        } = again.did.clone()
+        else {
+            panic!("{:?}", again.did)
+        };
+        assert_eq!(reason, error.to_string(), "the same words");
+        assert_eq!(answered.as_deref(), Some(kind));
+        // As an error, it is the kind the first one was.
+        let repeated = Response {
+            request_id: RequestId::new(&SystemIds),
+            outcome: Outcome::AlreadyApplied(again),
+        }
+        .into_result()
+        .unwrap_err();
+        assert_eq!(repeated.kind(), kind, "{repeated}");
+    }
+}
+
+/// External design §4: a failure whose event holds no kind (written before 0.14) is answered
+/// `internal` on a repeat, with its reason.
+#[test]
+fn req_arch_004_a_failure_recorded_without_a_kind_is_answered_as_internal() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    let request = RequestId::new(&SystemIds);
+    let backup = h.persistence.load_snapshots(id).unwrap()[0].snapshot_id;
+    for event in [
+        Event::WorkspaceSnapshot {
+            snapshot_id: backup,
+            reason: "backup".into(),
+        },
+        Event::WorkspacePromotionFailed {
+            reason: "the promotion failed (older)".into(),
+            kind: None,
+        },
+    ] {
+        let mut written = h.runtime.event(Actor::Runtime, Some(id), None, None, event);
+        written.request_id = Some(request);
+        h.persistence.append_event(&written).unwrap();
+    }
+    let again = h.runtime.handle(envelope(
+        &h,
+        request,
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    ));
+    let error = again.into_result().unwrap_err();
+    assert!(matches!(error, RuntimeError::Recorded { kind: None, .. }));
+    assert_eq!(error.kind(), "internal");
+    assert_eq!(error.to_string(), "the promotion failed (older)");
+}
+
+/// External design §4 (review of 014b-5): a promotion that stopped before its apply was recorded
+/// keeps the kind of what stopped it: its failure is recorded with that kind, so the repeat is
+/// answered with it. Here the backup could not be sealed, after it was recorded; the project is
+/// not touched and no promotion is recorded.
+#[test]
+fn req_arch_004_a_promotion_stopped_before_its_apply_keeps_the_kind_of_what_stopped_it() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    h.workspaces
+        .fail_next_seal(crate::spi::WorkspaceError::Refused {
+            reason: "the journal is not writable".into(),
+        });
+    let (error, again) = failed_then_repeated(
+        &h,
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    );
+    assert_eq!(error.kind(), "state", "{error}");
+    // The backup is the first event it wrote; the failure is the last.
+    assert_eq!(again.event, "workspace.snapshot");
+    assert_eq!(
+        again.did,
+        Did::Failed {
+            event: "workspace.promotion_failed".into(),
+            reason: error.to_string(),
+            kind: Some("state".into()),
+        }
+    );
+    assert!(h.persistence.load_promotions(id).unwrap().is_empty());
 }
