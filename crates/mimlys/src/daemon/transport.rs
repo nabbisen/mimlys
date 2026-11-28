@@ -15,6 +15,7 @@
 use crate::client::{ConnectionBroken, Transport};
 use crate::config::Loaded;
 use crate::daemon::connect::{self, Daemon, Reach};
+use crate::daemon::socket;
 use crate::daemon::wire::{self, ProbeFailure, Reply, Request};
 use crate::probe::drive::Stop;
 use crate::probe::run::Ended;
@@ -83,7 +84,7 @@ impl Socket {
                 Some(refusal)
                     if daemon.hello.runtime_version == crate::daemon::wire::runtime_version() =>
                 {
-                    Attempt::Refused(refusal.message)
+                    Attempt::Refused(refusal.shown())
                 }
                 _ => Attempt::Refused(crate::messages::daemon_version_refused(
                     crate::daemon::wire::runtime_version(),
@@ -152,7 +153,7 @@ impl Socket {
                 ProbeFailure::Runtime { error } => crate::app::AppError::Runtime(error),
                 ProbeFailure::Other { message } => io(message),
             }),
-            Reply::Refused { refusal } => Err(io(refusal.message)),
+            Reply::Refused { refusal } => Err(io(refusal.shown())),
             other => Err(io(format!("the daemon answered {other:?} to a probe"))),
         }
     }
@@ -189,9 +190,11 @@ impl Socket {
                     }
                     // The daemon beats every couple of seconds: a connection that is silent for
                     // longer than that is gone.
-                    let _ = daemon
-                        .stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                    let _ = socket::set_timeouts(
+                        &daemon.stream,
+                        Some(std::time::Duration::from_secs(10)),
+                        None,
+                    );
                     while let Ok(reply) = wire::read::<Reply>(&mut daemon.stream) {
                         if matches!(reply, Reply::Changed) {
                             changed.notify_one();
@@ -242,7 +245,7 @@ impl Transport for Socket {
                     return Ok(Response {
                         request_id,
                         outcome: Outcome::Failed(RuntimeError::Denied {
-                            detail: refusal.message,
+                            detail: refusal.shown(),
                         }),
                     });
                 }

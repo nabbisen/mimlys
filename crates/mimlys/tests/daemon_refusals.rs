@@ -299,6 +299,81 @@ fn req_sec_016_a_changed_configuration_is_refused_what_changes_state() {
     assert_eq!(listed.stdout.trim(), "[]");
 }
 
+/// REQ-SEC-016, external design §19.5 (014c-6): **a refusal's word is read by any client.** A
+/// daemon of a later release refuses in a word this one does not know; the client reads the whole
+/// answer, shows the daemon's message (with the word), and refuses as for any refusal: it fails,
+/// and applies nothing. (`mutation: RefusalKind a closed enum again` fails the read of the frame.)
+#[test]
+fn req_sec_016_a_refusal_in_a_word_this_client_does_not_know_is_shown_and_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+    let env = Env::new();
+    let data = env.data.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let run = env.registry.path();
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = mimlys::daemon::socket::socket_path(&run, &data)
+        .unwrap()
+        .unwrap();
+    let listener = UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // A daemon of a later release: its hello is as ever; its answer refuses in a new word. One
+    // connection for each command below; the thread is left to end with the process.
+    let _daemon = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let hello = DaemonHello {
+                protocol: wire::PROTOCOL.to_owned(),
+                hello_version: wire::HELLO_VERSION,
+                runtime_version: wire::runtime_version().to_owned(),
+                config_hash: "x".into(),
+                salt: "ab".repeat(16),
+            };
+            let _ = wire::write(&mut stream, &hello);
+            let _: Result<ClientHello, _> = wire::read(&mut stream);
+            let _ = wire::write(
+                &mut stream,
+                &serde_json::json!({
+                    "accepted": false,
+                    "refusal": {
+                        "kind": "a_word_of_a_later_release",
+                        "message": "the daemon of a later release refuses this client",
+                    },
+                }),
+            );
+        }
+    });
+    for _ in 0..2 {
+        // A command that changes a task goes through the daemon (a reader reads the store).
+        let scope = env.data.path().join("scope");
+        std::fs::create_dir_all(&scope).unwrap();
+        let listed = env.run(&[
+            "task",
+            "new",
+            "--hold",
+            "g",
+            "--scope",
+            scope.to_str().unwrap(),
+        ]);
+        assert_eq!(listed.code(), 1, "{}\n{}", listed.stdout, listed.stderr);
+        assert!(
+            listed
+                .stderr
+                .contains("the daemon of a later release refuses this client"),
+            "the daemon's own message is shown: {}",
+            listed.stderr
+        );
+        assert!(
+            listed.stderr.contains("a_word_of_a_later_release"),
+            "and the word it used: {}",
+            listed.stderr
+        );
+    }
+}
+
 /// REQ-SEC-016, external design §20: **a secret whose value differs** is refused what changes
 /// state, naming the reference and never the value.
 #[test]

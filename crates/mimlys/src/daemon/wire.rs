@@ -84,9 +84,12 @@ pub struct ClientHello {
     pub secrets: BTreeMap<String, String>,
 }
 
-/// Why a daemon refuses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Why a daemon refuses, as a word. **Read tolerantly:** a client of any release reads the answer
+/// of a daemon of any release, so a word it does not know (a newer daemon's) is
+/// [`RefusalKind::Unknown`], and the answer is read whole; it never fails to read the frame
+/// (REQ-MAIN-006's rule, applied to the hello; external design §19.5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum RefusalKind {
     /// Another runtime version.
     Version,
@@ -101,6 +104,46 @@ pub enum RefusalKind {
     NoPeerPid,
     /// The daemon is stopping.
     Stopping,
+    /// A word this client does not know: the daemon's own message says why.
+    Unknown(String),
+}
+
+impl RefusalKind {
+    /// The word on the wire.
+    pub fn word(&self) -> &str {
+        match self {
+            Self::Version => "version",
+            Self::Configuration => "configuration",
+            Self::Secret => "secret",
+            Self::OwnTree => "own_tree",
+            Self::NoPeerPid => "no_peer_pid",
+            Self::Stopping => "stopping",
+            Self::Unknown(word) => word,
+        }
+    }
+}
+
+impl From<String> for RefusalKind {
+    fn from(word: String) -> Self {
+        match word.as_str() {
+            "version" => Self::Version,
+            "configuration" => Self::Configuration,
+            "secret" => Self::Secret,
+            "own_tree" => Self::OwnTree,
+            "no_peer_pid" => Self::NoPeerPid,
+            "stopping" => Self::Stopping,
+            _ => Self::Unknown(word),
+        }
+    }
+}
+
+impl From<RefusalKind> for String {
+    fn from(kind: RefusalKind) -> Self {
+        match kind {
+            RefusalKind::Unknown(word) => word,
+            known => known.word().to_owned(),
+        }
+    }
 }
 
 /// A refusal, as the daemon says it.
@@ -113,6 +156,19 @@ pub struct Refusal {
     /// The reference a secret refusal names; never its value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+}
+
+impl Refusal {
+    /// What a client shows: the daemon's message, and, when the kind is a word this client does
+    /// not know, the word beside it. The refusal is refused as any is.
+    pub fn shown(&self) -> String {
+        match &self.kind {
+            RefusalKind::Unknown(word) => {
+                crate::messages::daemon_refused_for_another_reason(word, &self.message)
+            }
+            _ => self.message.clone(),
+        }
+    }
 }
 
 /// The third frame, from the daemon: whether the connection goes on.

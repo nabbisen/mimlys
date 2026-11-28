@@ -13,6 +13,7 @@
 use crate::app::{App, AppError};
 use crate::config::Loaded;
 use crate::daemon::connect::{self, Daemon, Reach};
+use crate::daemon::socket;
 use crate::daemon::wire::{self, DaemonStatus, Reply, Request};
 use crate::messages;
 use crate::output::Output;
@@ -77,7 +78,7 @@ pub fn control_once(
         match wire::read::<Reply>(&mut daemon.stream).map_err(|e| io(e.to_string()))? {
             Reply::Notice { notice: n } => notice(n),
             Reply::Control { answer } => return Ok(*answer),
-            Reply::Refused { refusal } => return Err(io(refusal.message)),
+            Reply::Refused { refusal } => return Err(io(refusal.shown())),
             other => return Err(io(format!("the daemon answered {other:?}, not a response"))),
         }
     }
@@ -366,11 +367,16 @@ fn say_the_wait_ended(data_dir: &std::path::Path, waited: &[Waited]) {
 fn stop_daemon(mut daemon: Box<Daemon>, loaded: &Loaded) -> Result<Stopped, AppError> {
     let (_, data_dir) = places(loaded)?;
     let begun = Instant::now();
+    // The timeout is set before `stop` is sent, while the daemon is certain to be there; and a
+    // daemon that has answered and gone by the time it is set is its end, not an error
+    // (`socket::set_timeouts`): what it answered is read.
+    socket::set_timeouts(
+        &daemon.stream,
+        Some(Duration::from_millis(LIM_O24_DAEMON_STOP_MS)),
+        None,
+    )
+    .map_err(|e| io(e.to_string()))?;
     wire::write(&mut daemon.stream, &Request::Stop).map_err(|e| io(e.to_string()))?;
-    daemon
-        .stream
-        .set_read_timeout(Some(Duration::from_millis(LIM_O24_DAEMON_STOP_MS)))
-        .map_err(|e| io(e.to_string()))?;
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watch = watch_the_wait(data_dir.clone(), begun, std::sync::Arc::clone(&done));
     let reply = wire::read::<Reply>(&mut daemon.stream);

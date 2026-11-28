@@ -289,8 +289,7 @@ impl Served {
 
     fn serve_connection(&self, stream: &mut UnixStream, peer: Peer) -> Result<(), FrameError> {
         let timeout = Some(Duration::from_millis(LIM_O14_DAEMON_CONNECT_MS));
-        stream.set_read_timeout(timeout)?;
-        stream.set_write_timeout(timeout)?;
+        socket::set_timeouts(stream, timeout, timeout)?;
         let salt = wire::new_salt()?;
         wire::write(
             stream,
@@ -343,8 +342,7 @@ impl Served {
             return Ok(());
         }
         tracing::info!(pid = ?peer.pid, accepted, "client connected");
-        stream.set_read_timeout(None)?;
-        stream.set_write_timeout(None)?;
+        socket::set_timeouts(stream, None, None)?;
         loop {
             let request: Request = match wire::read(stream) {
                 Ok(request) => request,
@@ -963,7 +961,7 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
                     }
                 };
                 let Ok(stream) = stream.into_std() else { continue };
-                if stream.set_nonblocking(false).is_err() {
+                if socket::set_nonblocking(&stream, false).is_err() {
                     continue;
                 }
                 let served = Arc::clone(&served);

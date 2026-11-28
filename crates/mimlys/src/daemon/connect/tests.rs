@@ -90,6 +90,65 @@ fn req_cli_008_a_dead_daemons_socket_is_removed() {
     ));
 }
 
+/// REQ-SEC-016, external design §19.5 (014c-6): **a client reads the answer of a daemon that
+/// refused it in a word it does not know**, whole, whatever the word, and the daemon has closed
+/// its end by the time the client has finished reading (the options of the socket are set after
+/// the peer has gone, which macOS answers with `EINVAL`: the answer is read all the same). Many
+/// times, since the order of the two ends is the system's.
+#[test]
+fn req_sec_016_a_client_reads_a_refusal_in_a_word_it_does_not_know_from_a_daemon_that_has_gone() {
+    let base = tempfile::tempdir().unwrap();
+    let data = base.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let run = base.path().join("run");
+    std::fs::create_dir(&run).unwrap();
+    private(&run);
+    let path = socket::socket_path(&run, &data).unwrap().unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    const TIMES: usize = 200;
+    let daemon = std::thread::spawn(move || {
+        for _ in 0..TIMES {
+            let (mut stream, _) = listener.accept().unwrap();
+            let hello = DaemonHello {
+                protocol: wire::PROTOCOL.to_owned(),
+                hello_version: wire::HELLO_VERSION,
+                runtime_version: wire::runtime_version().to_owned(),
+                config_hash: "x".into(),
+                salt: "ab".repeat(16),
+            };
+            wire::write(&mut stream, &hello).unwrap();
+            let _: ClientHello = wire::read(&mut stream).unwrap();
+            wire::write(
+                &mut stream,
+                &serde_json::json!({
+                    "accepted": false,
+                    "refusal": {"kind": "a_word_of_a_later_release", "message": "go away"},
+                }),
+            )
+            .unwrap();
+            // Closed at once: the client finds nobody there.
+        }
+    });
+    for _ in 0..TIMES {
+        let Ok(Reach::Daemon(daemon)) = reach(&run, &data, &loaded(), false) else {
+            panic!("a daemon that refused: its answer is read")
+        };
+        assert!(!daemon.usable());
+        let refusal = daemon.answer.refusal.expect("the refusal");
+        assert_eq!(
+            refusal.kind,
+            wire::RefusalKind::Unknown("a_word_of_a_later_release".into())
+        );
+        let shown = refusal.shown();
+        assert!(
+            shown.contains("go away") && shown.contains("a_word_of_a_later_release"),
+            "{shown}"
+        );
+    }
+    daemon.join().unwrap();
+}
+
 /// REQ-SEC-016: a socket of mode 0660 is refused, and one that is not a socket.
 #[test]
 fn req_sec_016_a_client_refuses_a_socket_that_is_not_0600() {

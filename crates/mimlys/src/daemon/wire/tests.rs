@@ -253,6 +253,74 @@ fn req_sec_016_a_peer_with_no_pid_is_refused_in_a_word_of_its_own() {
     );
 }
 
+/// REQ-SEC-016, REQ-MAIN-006's rule (014c-6): **a refusal's word is read by any client.** A word
+/// this release does not know is read whole, kept as the daemon wrote it, written back as it
+/// came, and shown with the daemon's message; the words it knows are read as they were.
+#[test]
+fn req_sec_016_a_refusal_in_an_unknown_word_is_read_and_shown() {
+    same_on_the_wire(
+        &HelloAnswer {
+            accepted: false,
+            refusal: Some(Refusal {
+                kind: RefusalKind::Unknown("a_word_of_a_later_release".into()),
+                message: "the daemon says why".into(),
+                reference: None,
+            }),
+            writes_refused: None,
+        },
+        json!({
+            "version": 1,
+            "accepted": false,
+            "refusal": {"kind": "a_word_of_a_later_release", "message": "the daemon says why"},
+        }),
+    );
+    // As a writes-refused one, beside an accepted connection.
+    let answer: HelloAnswer = serde_json::from_value(json!({
+        "accepted": true,
+        "writes_refused": {"kind": "another_word", "message": "m", "reference": "r"},
+    }))
+    .unwrap();
+    let refused = answer.writes_refused.unwrap();
+    assert_eq!(refused.kind, RefusalKind::Unknown("another_word".into()));
+    assert_eq!(refused.reference.as_deref(), Some("r"));
+    // Shown: the message, and the word beside it when it is one a person can read.
+    let shown = |word: &str| {
+        Refusal {
+            kind: RefusalKind::Unknown(word.into()),
+            message: "the daemon says why".into(),
+            reference: None,
+        }
+        .shown()
+    };
+    assert_eq!(
+        shown("no_peer_pid_2"),
+        "the daemon says why (the daemon's reason: no_peer_pid_2)"
+    );
+    assert_eq!(
+        shown("a\u{1b}[31mb"),
+        "the daemon says why",
+        "no control bytes"
+    );
+    assert_eq!(shown(&"x".repeat(41)), "the daemon says why");
+    // A word this release knows is its message alone, as before.
+    for known in [
+        RefusalKind::Version,
+        RefusalKind::Configuration,
+        RefusalKind::Secret,
+        RefusalKind::OwnTree,
+        RefusalKind::NoPeerPid,
+        RefusalKind::Stopping,
+    ] {
+        assert_eq!(RefusalKind::from(known.word().to_owned()), known);
+        let refusal = Refusal {
+            kind: known,
+            message: "m".into(),
+            reference: None,
+        };
+        assert_eq!(refusal.shown(), "m");
+    }
+}
+
 /// REQ-MDL-011 (014c-5): `model probe` through the daemon is two additive requests and two additive
 /// answers, whose shapes are these.
 #[test]

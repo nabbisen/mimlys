@@ -80,6 +80,22 @@ pub fn daemon_no_peer_pid_refused() -> String {
     "refused: the system gave no process id for this client, and the daemon cannot tell its own tree (the worker, or a tool server it started) from it; nothing was applied".to_owned()
 }
 
+/// A refusal whose word this client does not know (a newer daemon's): the daemon's own message,
+/// and the word when it is one a person can read (a short word of letters, digits and `_`; the
+/// daemon is the user's own, but what it sends is not echoed unclean).
+pub fn daemon_refused_for_another_reason(word: &str, message: &str) -> String {
+    let readable = !word.is_empty()
+        && word.len() <= 40
+        && word
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if readable {
+        format!("{message} (the daemon's reason: {word})")
+    } else {
+        message.to_owned()
+    }
+}
+
 /// The daemon is stopping, and takes no new request.
 pub fn daemon_stopping() -> String {
     "the daemon is stopping".to_owned()

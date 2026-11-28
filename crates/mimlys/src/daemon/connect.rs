@@ -89,56 +89,59 @@ enum Connected {
 /// or none).
 fn connect(path: &Path) -> Connected {
     let path = path.to_owned();
-    let work = std::thread::Builder::new()
-        .name("daemon-connect".into())
-        .spawn(move || {
-            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return Connected::Silent;
-            };
-            runtime.block_on(async {
-                let wait = Duration::from_millis(LIM_O14_DAEMON_CONNECT_MS);
-                let stream = match tokio::time::timeout(
-                    wait,
-                    tokio::net::UnixStream::connect(&path),
-                )
-                .await
-                {
-                    Ok(Ok(stream)) => stream,
-                    Ok(Err(e)) => {
-                        return match e.kind() {
-                            std::io::ErrorKind::ConnectionRefused
-                            | std::io::ErrorKind::NotFound => Connected::Silent,
-                            kind => Connected::Refused(SocketError::Io {
-                                what: "connecting to the daemon",
-                                kind,
-                            }),
+    let work =
+        std::thread::Builder::new()
+            .name("daemon-connect".into())
+            .spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return Connected::Silent;
+                };
+                runtime.block_on(async {
+                    let wait = Duration::from_millis(LIM_O14_DAEMON_CONNECT_MS);
+                    let stream =
+                        match tokio::time::timeout(wait, tokio::net::UnixStream::connect(&path))
+                            .await
+                        {
+                            Ok(Ok(stream)) => stream,
+                            Ok(Err(e)) => {
+                                return match e.kind() {
+                                    std::io::ErrorKind::ConnectionRefused
+                                    | std::io::ErrorKind::NotFound => Connected::Silent,
+                                    kind => Connected::Refused(SocketError::Io {
+                                        what: "connecting to the daemon",
+                                        kind,
+                                    }),
+                                };
+                            }
+                            Err(_) => return Connected::Silent,
                         };
+                    let cred = match stream.peer_cred() {
+                        Ok(cred) => cred,
+                        // A daemon that has gone already (macOS answers `EINVAL`) is not there.
+                        Err(e) if socket::is_peer_gone(&e) => return Connected::Silent,
+                        Err(e) => {
+                            return Connected::Refused(SocketError::Io {
+                                what: "reading the daemon's credentials",
+                                kind: e.kind(),
+                            });
+                        }
+                    };
+                    // The client sends nothing to a daemon of another user.
+                    let peer = match Peer::admit(&cred) {
+                        Ok(peer) => peer,
+                        Err(e) => return Connected::Refused(e),
+                    };
+                    match stream.into_std() {
+                        Ok(std) if socket::set_nonblocking(&std, false).is_ok() => {
+                            Connected::Stream(std, peer)
+                        }
+                        _ => Connected::Silent,
                     }
-                    Err(_) => return Connected::Silent,
-                };
-                let cred = match stream.peer_cred() {
-                    Ok(cred) => cred,
-                    Err(e) => {
-                        return Connected::Refused(SocketError::Io {
-                            what: "reading the daemon's credentials",
-                            kind: e.kind(),
-                        });
-                    }
-                };
-                // The client sends nothing to a daemon of another user.
-                let peer = match Peer::admit(&cred) {
-                    Ok(peer) => peer,
-                    Err(e) => return Connected::Refused(e),
-                };
-                match stream.into_std() {
-                    Ok(std) if std.set_nonblocking(false).is_ok() => Connected::Stream(std, peer),
-                    _ => Connected::Silent,
-                }
-            })
-        });
+                })
+            });
     match work.map(std::thread::JoinHandle::join) {
         Ok(Ok(connected)) => connected,
         _ => Connected::Silent,
@@ -158,8 +161,7 @@ fn greet(
 ) -> Result<Daemon, ReachError> {
     let timeout = Some(Duration::from_millis(LIM_O14_DAEMON_CONNECT_MS));
     let io = |e: std::io::Error| ReachError::Hello(e.to_string());
-    stream.set_read_timeout(timeout).map_err(io)?;
-    stream.set_write_timeout(timeout).map_err(io)?;
+    socket::set_timeouts(&stream, timeout, timeout).map_err(io)?;
     let hello: DaemonHello = wire::read(&mut stream).map_err(|e| hello_error(&e))?;
     if hello.protocol != wire::PROTOCOL || hello.hello_version != wire::HELLO_VERSION {
         return Err(ReachError::Hello(format!(
@@ -186,9 +188,8 @@ fn greet(
     .map_err(|e| hello_error(&e))?;
     let answer: HelloAnswer = wire::read(&mut stream).map_err(|e| hello_error(&e))?;
     // Clearing the timeouts is a courtesy: a daemon that refused this client has closed its end
-    // already, and macOS answers `EINVAL` to a socket option of a socket whose peer has gone.
-    let _ = stream.set_read_timeout(None);
-    let _ = stream.set_write_timeout(None);
+    // already (a peer that has gone is no fault of the option: `socket::set_timeouts`).
+    let _ = socket::set_timeouts(&stream, None, None);
     Ok(Daemon {
         stream,
         hello,

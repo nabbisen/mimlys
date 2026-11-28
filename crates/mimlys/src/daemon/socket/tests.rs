@@ -253,3 +253,77 @@ fn req_sec_016_a_peer_with_no_pid_is_refused_whatever_the_daemons_sessions_are()
     };
     assert_eq!(judge_tree(gone, &[session]), Tree::Unreadable);
 }
+
+/// External design §19.5 (014c-6): **what the system answers to an option of a socket whose peer
+/// has gone is the peer's end, and no other error is.** `EINVAL` is what macOS answers; the helper
+/// reads it as `Ok`, and every other error (a closed descriptor, a permission, a bad value that
+/// is not the peer's) stays an error. (`mutation: the EINVAL arm removed` fails this on every
+/// platform.)
+#[test]
+fn ed_19_5_a_peer_that_has_gone_is_no_error_of_an_option_and_no_other_error_is_hidden() {
+    let invalid = std::io::Error::from_raw_os_error(rustix::io::Errno::INVAL.raw_os_error());
+    assert!(is_peer_gone(&invalid));
+    assert!(peer_end_is_not_a_fault(Err(invalid)).is_ok());
+    assert!(peer_end_is_not_a_fault(Ok(())).is_ok());
+    for other in [
+        rustix::io::Errno::BADF,
+        rustix::io::Errno::PERM,
+        rustix::io::Errno::NOTSOCK,
+        rustix::io::Errno::NOMEM,
+    ] {
+        let error = std::io::Error::from_raw_os_error(other.raw_os_error());
+        assert!(!is_peer_gone(&error), "{error}");
+        assert!(peer_end_is_not_a_fault(Err(error)).is_err());
+    }
+    // An error with no system code is not the peer's end either.
+    assert!(!is_peer_gone(&std::io::Error::from(
+        std::io::ErrorKind::InvalidInput
+    )));
+}
+
+/// External design §19.5 (014c-6): **a peer that writes its answer and closes before the other end
+/// sets its options is read as it would be on Linux:** the options are set (or the peer's end is
+/// read as no fault, on macOS), and the answer it sent before it went is read whole. Many times,
+/// since the order of two ends is the system's and macOS is where the error is; this one closes
+/// first, always. (`mutation: the EINVAL arm removed` fails on macOS.)
+#[test]
+fn ed_19_5_a_peer_that_wrote_its_answer_and_closed_is_read_after_the_options_are_set() {
+    use crate::daemon::wire;
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+    for round in 0..1000 {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        wire::write(&mut theirs, &serde_json::json!({"answer": round})).unwrap();
+        drop(theirs);
+        // The peer has gone: every option the product sets is set through the helper.
+        let five = Some(Duration::from_secs(5));
+        set_timeouts(&ours, five, five).unwrap();
+        set_nonblocking(&ours, false).unwrap();
+        let answer: serde_json::Value = wire::read(&mut ours).unwrap();
+        assert_eq!(answer, serde_json::json!({"answer": round}));
+        // Clearing them, as a client does when the answer is in, is no error either.
+        set_timeouts(&ours, None, None).unwrap();
+        // And there is nothing more: the end of the stream, not a hang and not an option's error.
+        assert!(matches!(
+            wire::read::<serde_json::Value>(&mut ours),
+            Err(mimlys_exec::frame::FrameError::Eof)
+        ));
+    }
+}
+
+/// External design §19.5 (014c-6): a peer that went **without a word** is the end of the stream
+/// (and not `Invalid argument`), when the options were set after it went.
+#[test]
+fn ed_19_5_a_peer_that_went_without_a_word_is_the_end_of_the_stream() {
+    use crate::daemon::wire;
+    use std::os::unix::net::UnixStream;
+    for _ in 0..200 {
+        let (mut ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        set_timeouts(&ours, Some(std::time::Duration::from_secs(5)), None).unwrap();
+        assert!(matches!(
+            wire::read::<serde_json::Value>(&mut ours),
+            Err(mimlys_exec::frame::FrameError::Eof)
+        ));
+    }
+}

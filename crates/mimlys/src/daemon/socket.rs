@@ -118,6 +118,45 @@ pub fn socket_path(run_dir: &Path, data_dir: &Path) -> Result<Option<PathBuf>, S
     Ok(Some(path))
 }
 
+/// Whether `error` is what macOS answers to a socket option of a socket whose peer has gone
+/// (`EINVAL`, "Invalid argument"): the peer's end, not a fault of the socket. Linux answers
+/// nothing of the kind; the words mean the same there, so a test can make the error.
+pub fn is_peer_gone(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error())
+}
+
+/// The outcome of setting an option of a socket, with the peer's end read as no fault: an option
+/// that macOS refuses with `EINVAL` because the peer has closed is `Ok`. What the peer sent
+/// before it went is still there to read, as it is on Linux; a peer that sent nothing is read as
+/// the end of the stream. **Every option of a daemon's socket is set through this** (external
+/// design §19.5): a user never sees `Invalid argument` for a daemon that answered and closed.
+pub fn peer_end_is_not_a_fault(result: std::io::Result<()>) -> std::io::Result<()> {
+    match result {
+        Err(e) if is_peer_gone(&e) => Ok(()),
+        other => other,
+    }
+}
+
+/// Sets the read and write timeouts of `stream` ([`peer_end_is_not_a_fault`]).
+pub fn set_timeouts(
+    stream: &std::os::unix::net::UnixStream,
+    read: Option<std::time::Duration>,
+    write: Option<std::time::Duration>,
+) -> std::io::Result<()> {
+    // Both are tried, so that one that the peer's end made refuse does not leave the other unset.
+    let read = peer_end_is_not_a_fault(stream.set_read_timeout(read));
+    let write = peer_end_is_not_a_fault(stream.set_write_timeout(write));
+    read.and(write)
+}
+
+/// Sets the blocking mode of `stream` ([`peer_end_is_not_a_fault`]).
+pub fn set_nonblocking(
+    stream: &std::os::unix::net::UnixStream,
+    nonblocking: bool,
+) -> std::io::Result<()> {
+    peer_end_is_not_a_fault(stream.set_nonblocking(nonblocking))
+}
+
 fn io(what: &'static str, e: &std::io::Error) -> SocketError {
     SocketError::Io {
         what,

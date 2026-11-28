@@ -747,7 +747,7 @@ fn route(
             Some(refusal)
                 if daemon.hello.runtime_version == mimlys::daemon::wire::runtime_version() =>
             {
-                refusal.message.clone()
+                refusal.shown()
             }
             _ => mimlys::messages::daemon_version_refused(
                 mimlys::daemon::wire::runtime_version(),
