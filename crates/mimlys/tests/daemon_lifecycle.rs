@@ -247,7 +247,10 @@ fn req_cli_008_an_idle_daemon_exits_by_itself_and_says_so_in_its_log() {
     let env = Env::new();
     let started = env.run_with(
         &["--json", "daemon", "start"],
-        &[("MIMLYS_DAEMON_IDLE_MS", "400")],
+        // Long enough for `start` to greet the daemon before it idles out: on a loaded runner
+        // (macOS x86_64 under Rosetta, `main`'s run 46119145949) 400 ms passed before the first
+        // greeting, and `start` found a daemon that had ended: "its process ended with code 0".
+        &[("MIMLYS_DAEMON_IDLE_MS", "4000")],
     );
     assert_eq!(started.code(), 0, "{}\n{}", started.stdout, started.stderr);
     let log = PathBuf::from(env.status()["log"].as_str().unwrap_or_default());
