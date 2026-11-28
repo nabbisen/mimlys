@@ -1012,6 +1012,8 @@ One daemon per operating-system user and data directory serves the control API (
   - **another runtime version:** refused, naming both versions and `mimlys daemon restart`;
   - **another configuration, or another value of a secret:** state-changing requests are refused, naming the remedy `mimlys daemon restart` (and the reference, never the value). Readers are not affected.
 - **`stop` is also fixed for every version,** so that a client of any release can stop a daemon of any release.
+- **A refusal's word is read by any client:** the answer carries the kind as a word and the daemon's own message. A client that does not know the word (a newer daemon's) shows the message and refuses as for any refusal; it never fails to read the frame (REQ-MAIN-006's rule, applied to the hello, review of 014c-5).
+- **A peer that has gone is not an error of the socket.** On macOS, setting an option of a socket whose peer has closed answers `EINVAL`. Both ends read that as the peer's end, and read what it sent before it went, as on Linux. A user never sees `Invalid argument` for a daemon that answered and closed.
 
 **Lifecycle** (REQ-CLI-008).
 - **`mimlys daemon start`** detaches (a new session, its standard streams closed) and returns once the daemon answers a hello, or fails with the reason. `--foreground` keeps it attached, for a service manager or a test.

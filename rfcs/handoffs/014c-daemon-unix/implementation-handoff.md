@@ -1,6 +1,6 @@
 # Handoff 014c — The daemon on Linux and macOS (release 0.14, phase 2)
 
-**Status (2026-11-28):** items 0 to 7 landed at `82eb524` (`.git-exclude/reviewed/handoff-014c/README.md`); 014c-5 next.
+**Status (2026-11-28):** items 0 to 7 landed at `82eb524`, and 014c-5 at `26b7af2` (`.git-exclude/reviewed/handoff-014c/README.md`, `.git-exclude/reviewed/handoff-014c-5/README.md`); 014c-6 next.
 
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), read with its **Amendment 1**, items 4 to 11. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 2), after 014a and 014b.
 
@@ -147,3 +147,28 @@ Six things remain before the release.
 **Tests:** one for each item, the served run included for item 5. **Mutations:** for items 1, 2 and 5, one each, and say which test kills it.
 
 **Return:** `.git-exclude/review-requests/014c-5-after-review/README.md`.
+
+## After review: 014c-6
+
+The review of 2026-11-28 (`.git-exclude/reviewed/handoff-014c-5/README.md`) approved #236 and landed it by fast-forward (`main` = `26b7af2`). **Accepted as you did them:**
+- `status` listing every `created` task as not started (true of a held one too);
+- a probe refused while a task runs, naming the remedy;
+- "until <time> at the latest" for `stop`'s wait;
+- the client reading the store while `stop` waits, since the fixed frame cannot carry progress;
+- one commit for five items.
+
+Two things remain.
+
+1. **macOS's `EINVAL` on a closed peer, everywhere** (`main`'s run `46103850558`, on `43f1582`: macOS x86_64 under Rosetta).
+   - **What happened:** `daemon_lifecycle::req_cli_008_start_status_stop` failed. `mimlys --json daemon stop` exited 1 with `internal`, "Invalid argument (os error 22)". The daemon answered and closed before the client set a timeout on the socket, and macOS answers `EINVAL` to a socket option of a socket whose peer has gone. 014c fixed one such place (`connect.rs:190`).
+   - **The others still pass it up** with `?`: `command.rs:372`, `connect.rs:161-162`, `server.rs:292-293` and `:346-347`, and `transport.rs:194`. Check `set_nonblocking` (`connect.rs:137`, `server.rs:966`) the same way.
+   - **Change:** one way to set a socket's options that reads macOS's `EINVAL` as the peer's end. Then read what the peer sent before it went, as Linux would. Use it everywhere (external design §19.5). A user must never see `Invalid argument` for a daemon that answered.
+   - **Test:** a peer that writes its answer and closes before the other end sets its options. Run it on macOS and Linux, in CI, many times (as 014a-5 did on Windows): before (failing on macOS) and after.
+2. **A refusal word any client can read** (your point 7).
+   - **What is wrong:** `RefusalKind` is a closed enum, so a client meeting a word it does not know (`no_peer_pid` from a newer daemon) fails to read the whole answer frame, which §19.5 fixes for every version.
+   - **Change:** the answer's kind is read tolerantly. A word the client does not know is shown with the daemon's message, and refused as any refusal is. Nothing of the daemon has been released, so doing it now covers every version that follows.
+   - **Test:** an answer frame with an unknown kind, read by the client.
+
+**Tests:** as above. **Mutation:** for item 1, the helper's `EINVAL` arm removed. Say which test kills it.
+
+**Return:** `.git-exclude/review-requests/014c-6-after-review/README.md`.
