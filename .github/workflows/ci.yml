@@ -65,10 +65,23 @@ jobs:
       # (crates/mimlys/tests/common/served.rs). A test that cannot be served says why, by name,
       # in the skips below. The daemon is Linux's and macOS's in this release. A step of the job,
       # not a job: it adds no check of its own to the count.
+      #
+      # The served run keeps its skips in a file of its own (`skips-served.log`): the embedded
+      # run's `skips.log` is put aside for it and back after, so that "skipped tests on <runner>"
+      # counts the embedded run alone (0, except windows-latest's 2), and the tests that are not
+      # served are counted by their own line, `not served on <runner>` (handoff 014c-5, item 3).
       - name: the suite served by a daemon
         if: runner.os != 'Windows'
         shell: bash
-        run: MIMLYS_TEST_SERVED=1 cargo test -p mimlys --all-features --tests --no-fail-fast
+        run: |
+          mkdir -p target/tmp
+          rm -f target/tmp/skips-served.log target/tmp/skips-embedded.log
+          if [ -f target/tmp/skips.log ]; then mv target/tmp/skips.log target/tmp/skips-embedded.log; fi
+          status=0
+          MIMLYS_TEST_SERVED=1 cargo test -p mimlys --all-features --tests --no-fail-fast || status=$?
+          if [ -f target/tmp/skips.log ]; then mv target/tmp/skips.log target/tmp/skips-served.log; fi
+          if [ -f target/tmp/skips-embedded.log ]; then mv target/tmp/skips-embedded.log target/tmp/skips.log; fi
+          exit "$status"
       # REQ-CONF-013 (handoff 013d item 3): the CPU part of clause C on a real
       # cgroup. The job's own cgroup is not writable, so the suites above run on
       # the subreaper rung. This step runs the two suites that touch the cgroup
@@ -102,13 +115,36 @@ jobs:
             echo "skipped tests on ${{ matrix.os }}: $n"
             if [ "$n" -gt 0 ]; then cat "$f"; fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
+      # The tests of the served run that cannot be served (each says why, by its name): their
+      # own line, apart from the skips above (handoff 014c-5, item 3). A skip of the served run
+      # that is not a `not served` is counted on a line of its own too, and is expected to be 0.
+      - name: tests not served, counted per platform
+        if: always() && runner.os != 'Windows'
+        shell: bash
+        run: |
+          f=target/tmp/skips-served.log
+          n=0
+          other=0
+          if [ -s "$f" ]; then
+            n=$(grep -c ': not served: ' "$f" || true)
+            other=$(grep -vc ': not served: ' "$f" || true)
+          fi
+          {
+            echo "not served on ${{ matrix.os }}: $n"
+            if [ "$n" -gt 0 ]; then grep ': not served: ' "$f"; fi
+            echo "other skips of the served run on ${{ matrix.os }}: $other"
+            if [ "$other" -gt 0 ]; then grep -v ': not served: ' "$f"; fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       # The Linux full tier is asserted (REQ-PLAT-003, handoff 002d item 11): a
       # Linux job fails when a skip's reason is the tier. The rule, and what it
       # allows by name, is scripts/check-skip-tier.sh (repository-guards.md §1).
+      # The served run's skips are held to it too.
       - name: the Linux full tier holds (no skip on the tier)
         if: always() && runner.os == 'Linux'
         shell: bash
-        run: sh scripts/check-skip-tier.sh target/tmp/skips.log
+        run: |
+          sh scripts/check-skip-tier.sh target/tmp/skips.log
+          sh scripts/check-skip-tier.sh target/tmp/skips-served.log
 
   # REQ-PLAT-002 (macOS x86_64): the Intel build and tests under Rosetta on the
   # arm runner. A job of its own, so a Rosetta problem never hides the native
