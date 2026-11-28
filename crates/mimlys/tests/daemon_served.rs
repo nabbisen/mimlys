@@ -641,10 +641,10 @@ fn req_cli_008_restart_resumes_exactly_the_tasks_its_stop_paused() {
 
 /// REQ-SCHED-008, external design §19.5: **one line under one budget.** A second task that
 /// would run beside the first waits in line, says what it waits behind, and starts when the first
-/// leaves `running`. A task that waits for the user keeps the daemon alive past its idle time.
+/// leaves `running`. (The daemon runs with its default idle time: nothing here is about idling.)
 #[test]
-fn req_sched_008_a_second_task_waits_in_line_and_a_waiting_task_keeps_the_daemon_alive() {
-    let env = Env::new(&[slow("3"), complete(), complete()]).env("MIMLYS_DAEMON_IDLE_MS", "400");
+fn req_sched_008_a_second_task_waits_in_line_and_starts_when_the_first_leaves_running() {
+    let env = Env::new(&[slow("3"), complete(), complete()]);
     env.start_daemon();
     let first = env.run_detached(&["--grant", "host_tool:probe"]);
     // The second, on a scope of its own (two tasks never share one), while the first runs.
@@ -679,30 +679,54 @@ fn req_sched_008_a_second_task_waits_in_line_and_a_waiting_task_keeps_the_daemon
     env.wait_state(&second, "completed");
 }
 
-/// REQ-CLI-008, LIM-O13: a task that waits for an approval keeps the daemon alive: nothing the
-/// idle time would end while it waits.
+/// The idle time the debug seam gives the daemons of the tests below. It is the **shortness** of the
+/// product's minute and nothing a test waits for: each of them waits for a state (the daemon's
+/// line in its log, its process gone), and the number only has to be long enough that the
+/// daemon is not idle before the test's own first command reaches it (handoff 014d, item 0).
+const IDLE_SEAM_MS: &str = "4000";
+
+/// REQ-CLI-008, LIM-O13: **a task that waits for an approval keeps the daemon alive.** The test
+/// relies on that task alone to keep the daemon busy, and checks it: it waits for the daemon's own
+/// line that it is past its idle time and stays (naming the task that waits), asks the daemon
+/// nothing (a client that connects is activity), and finds it alive; then, once the task is
+/// cancelled, the daemon has nothing to do and ends, which the test waits for as a state.
 #[test]
 fn req_cli_008_a_task_that_waits_for_the_user_keeps_the_daemon_alive() {
-    let env = Env::new(&[write_file(), complete()]).env("MIMLYS_DAEMON_IDLE_MS", "300");
+    let env = Env::new(&[write_file(), complete()]).env("MIMLYS_DAEMON_IDLE_MS", IDLE_SEAM_MS);
     env.start_daemon();
     let id = env.run_detached(&[]);
     env.wait_state(&id, "waiting_user");
-    std::thread::sleep(Duration::from_secs(3));
     assert!(
-        env.daemon_pid().is_some(),
+        wait_for(Duration::from_secs(120), || {
+            env.daemon_log().contains("past its idle time and stays")
+        }),
+        "the daemon did not say that it stays: {}",
+        env.daemon_log()
+    );
+    let log = env.daemon_log();
+    assert!(log.contains("a task waits for the user"), "{log}");
+    assert!(
+        !log.contains("nothing to do for its idle time"),
+        "the daemon went while a task waited: {log}"
+    );
+    assert!(
+        daemon_pid_in_registry(&env).is_some(),
         "the daemon is alive past its idle time"
     );
     // Once it is cancelled the daemon has nothing to do, and ends.
     assert_eq!(env.run(&["task", "cancel", &id]).code(), 0);
     // (Without asking it: a client that connects is activity, and would keep it from ending.)
-    assert!(wait_for(Duration::from_secs(60), || {
-        std::fs::read_dir(env.registry.path())
-            .map(|d| {
-                !d.flatten()
-                    .any(|e| e.path().extension().is_some_and(|x| x == "sock"))
-            })
-            .unwrap_or(true)
-    }));
+    assert!(
+        wait_for(Duration::from_secs(120), || daemon_pid_in_registry(&env)
+            .is_none()),
+        "the daemon did not end after the task was cancelled: {}",
+        env.daemon_log()
+    );
+    assert!(
+        env.daemon_log().contains("nothing to do for its idle time"),
+        "{}",
+        env.daemon_log()
+    );
 }
 
 /// What a command that a repeat answers as "took effect, and its task is gone" prints (handoff
@@ -864,7 +888,7 @@ impl Drop for EndsDaemon {
 fn req_sec_016_a_peer_with_no_pid_is_refused_saying_so_and_the_refusal_is_recorded() {
     let env = Env::new(&[complete()])
         .env("MIMLYS_PRETEND_NO_PID", "1")
-        .env("MIMLYS_DAEMON_IDLE_MS", "1500");
+        .env("MIMLYS_DAEMON_IDLE_MS", IDLE_SEAM_MS);
     let started = env.run(&["daemon", "start"]);
     assert_eq!(started.code(), 0, "{}\n{}", started.stdout, started.stderr);
     let _ends = EndsDaemon(daemon_pid_in_registry(&env));
