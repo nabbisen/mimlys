@@ -111,15 +111,9 @@ pub enum Response {
     },
 }
 
-/// One framed message: the protocol version and the body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Frame<T> {
-    /// Protocol version.
-    pub version: u32,
-    /// The body.
-    #[serde(flatten)]
-    pub body: T,
-}
+/// The framing is the crate's one (`frame`), shared with the daemon's protocol: the worker's
+/// version and limit are given to it here.
+pub use crate::frame::{Frame, FrameError};
 
 /// What a record holds besides its two streams (the payload, the notices, the metrics), and what
 /// a request holds: room for a script's source and the arguments of a call.
@@ -161,96 +155,23 @@ mod stream_bytes {
     }
 }
 
-/// A framing failure.
-#[derive(Debug, thiserror::Error)]
-pub enum FrameError {
-    /// The peer closed the stream.
-    #[error("end of stream")]
-    Eof,
-    /// A frame above the limit in force ([`frame_limit`]).
-    #[error("frame of {len} bytes exceeds the limit of {limit}")]
-    TooLarge {
-        /// Its length.
-        len: usize,
-        /// The limit it exceeds.
-        limit: usize,
-    },
-    /// The body is not the expected JSON.
-    #[error("malformed frame: {0}")]
-    Malformed(String),
-    /// The peer speaks another protocol version.
-    #[error("protocol version {0} is not {PROTOCOL_VERSION}")]
-    Version(u32),
-    /// The stream failed.
-    #[error("stream: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-/// Writes one frame: a 4-byte big-endian length, then the JSON body. A body above `limit`
-/// is not written.
+/// Writes one frame of the worker's protocol ([`PROTOCOL_VERSION`]): a 4-byte big-endian length,
+/// then the JSON body. A body above `limit` is not written.
 pub fn write_frame<T: Serialize>(
     out: &mut impl std::io::Write,
     body: &T,
     limit: usize,
 ) -> Result<(), FrameError> {
-    let frame = Frame {
-        version: PROTOCOL_VERSION,
-        body,
-    };
-    let bytes = serde_json::to_vec(&frame).map_err(|e| FrameError::Malformed(e.to_string()))?;
-    if bytes.len() > limit {
-        return Err(FrameError::TooLarge {
-            len: bytes.len(),
-            limit,
-        });
-    }
-    out.write_all(&(bytes.len() as u32).to_be_bytes())?;
-    out.write_all(&bytes)?;
-    out.flush()?;
-    Ok(())
+    crate::frame::write_frame_versioned(out, PROTOCOL_VERSION, body, limit)
 }
 
-/// Reads one frame of at most `limit` bytes and checks its version. A frame of another
-/// version is `Version` whatever its body holds: the version is looked at before the body's
-/// shape is blamed, so that a worker of another build is named as that.
+/// Reads one frame of at most `limit` bytes and checks that it is of the worker's protocol
+/// ([`PROTOCOL_VERSION`]); another version is `Version` whatever the body holds.
 pub fn read_frame<T: serde::de::DeserializeOwned>(
     input: &mut impl std::io::Read,
     limit: usize,
 ) -> Result<T, FrameError> {
-    let mut len = [0u8; 4];
-    match input.read_exact(&mut len) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Err(FrameError::Eof),
-        Err(e) => return Err(e.into()),
-    }
-    let len = u32::from_be_bytes(len) as usize;
-    if len > limit {
-        return Err(FrameError::TooLarge { len, limit });
-    }
-    // Read what arrives, up to the length declared: the buffer grows with the bytes, so a
-    // peer that declares a long frame and sends none holds no memory.
-    use std::io::Read as _;
-    let mut bytes = Vec::new();
-    input.take(len as u64).read_to_end(&mut bytes)?;
-    if bytes.len() < len {
-        return Err(FrameError::Io(std::io::ErrorKind::UnexpectedEof.into()));
-    }
-    match serde_json::from_slice::<Frame<T>>(&bytes) {
-        Ok(frame) if frame.version == PROTOCOL_VERSION => Ok(frame.body),
-        Ok(frame) => Err(FrameError::Version(frame.version)),
-        Err(e) => {
-            #[derive(Deserialize)]
-            struct Versioned {
-                version: u32,
-            }
-            match serde_json::from_slice::<Versioned>(&bytes) {
-                Ok(Versioned { version }) if version != PROTOCOL_VERSION => {
-                    Err(FrameError::Version(version))
-                }
-                _ => Err(FrameError::Malformed(e.to_string())),
-            }
-        }
-    }
+    crate::frame::read_frame_versioned(input, PROTOCOL_VERSION, limit)
 }
 
 #[cfg(test)]

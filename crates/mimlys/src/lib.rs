@@ -24,6 +24,7 @@ pub mod backends;
 pub mod client;
 pub mod commands;
 pub mod config;
+pub mod daemon;
 pub mod download;
 pub mod embedded;
 pub mod follow;

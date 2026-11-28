@@ -3,6 +3,9 @@
 //! so that another language can be added without touching the commands.
 //! Texts are short, name the thing and what to do next (CLR-1 … CLR-3).
 
+mod daemon;
+pub use daemon::*;
+
 use mimlys_core::task::{HaltReason, TaskState, WaitKind};
 
 /// `mimlys check`: the configuration is valid.

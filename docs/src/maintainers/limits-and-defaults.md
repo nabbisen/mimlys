@@ -144,6 +144,9 @@
 | LIM-O19 | Wait of a cancel for the step in flight to end (external design §4) | 5000 ms: LIM-O2 + 3000 ms | fixed (follows LIM-O2) | Design choice (reviews of 014a and 014a-5): the step's execution is terminated within LIM-O2, then the step writes its end in the 3000 ms after it |
 | LIM-O20 | Size of the daemon's log file before it is rotated | 10 MiB | fixed | Design choice (014c): a bound, so that a long-lived daemon's log cannot fill the disk |
 | LIM-O21 | Rotated copies of the daemon's log that are kept | 5 | fixed | Design choice (014c): about 50 MiB in all, the oldest dropped |
+| LIM-O22 | Largest frame of the daemon's protocol | 16 MiB | fixed | Design choice (014c, found in the implementation: the register had none for the daemon's own frames): the largest request is a promotion's plan with its text diffs |
+| LIM-O23 | Wait of `mimlys daemon start` for the daemon it started to answer a hello | 120000 ms | fixed | Design choice (014c, as LIM-O22): the daemon opens the store, recovers and probes its worker before it listens; LIM-O14 fences a daemon that is up |
+| LIM-O24 | Wait of `mimlys daemon stop` for the daemon's answer | 700000 ms | fixed | Design choice (014c, as LIM-O22): an action that cannot be undone is waited for up to its own deadline (REQ-CLI-005, at most 600 s), then the worker is ended |
 | LIM-O16 | Grace for an MCP server to end after its standard input closes, before its group is killed | 5000 ms | 500 – 30000; per server `shutdown_ms` | rypsok's graceful shutdown takes up to 3 s by default (its letter of 2026-11-11); LIM-O2's 2 s cut it short |
 
 ## Model backend

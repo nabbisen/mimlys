@@ -156,6 +156,29 @@ pub const LIM_O12_MAX_IN_FLIGHT_RANGE: (usize, usize) = (1, 16);
 /// LIM-O11: the bound of one admission-registry operation (take, return, reap), in
 /// milliseconds; past it the runtime runs unadmitted and says so (RFC 013 decision 7).
 pub const LIM_O11_REGISTRY_MS: u64 = 2_000;
+/// LIM-O13 (RFC 014, Amendment 1, item 10): idle time after which a daemon exits, in
+/// milliseconds (30 minutes); `[runtime] daemon_idle` sets it from [`LIM_O13_DAEMON_IDLE_RANGE_MS`],
+/// or `never`.
+pub const LIM_O13_DAEMON_IDLE_MS: u64 = 30 * 60 * 1000;
+/// LIM-O13 range: one minute to one week, in milliseconds (`never` is not a number).
+pub const LIM_O13_DAEMON_IDLE_RANGE_MS: (u64, u64) = (60 * 1000, 7 * 24 * 60 * 60 * 1000);
+/// LIM-O14: the wait for a connection to the daemon, and for its hello, in milliseconds.
+pub const LIM_O14_DAEMON_CONNECT_MS: u64 = 2_000;
+/// LIM-O20: the size of the daemon's log file before it is rotated, in bytes (10 MiB).
+pub const LIM_O20_DAEMON_LOG_BYTES: u64 = 10 * 1024 * 1024;
+/// LIM-O21: the rotated copies of the daemon's log that are kept.
+pub const LIM_O21_DAEMON_LOG_COPIES: usize = 5;
+/// LIM-O22 (014c; a design choice registered with it): the largest frame of the daemon's
+/// protocol, in bytes (16 MiB): the largest request is a promotion's plan with its text diffs.
+pub const LIM_O22_DAEMON_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// LIM-O23 (014c; a design choice registered with it): the wait of `mimlys daemon start` for the
+/// daemon it started to answer a hello, in milliseconds: the daemon opens the store, recovers and
+/// probes its worker before it listens.
+pub const LIM_O23_DAEMON_START_MS: u64 = 120_000;
+/// LIM-O24 (014c; a design choice registered with it): the wait of `mimlys daemon stop` for the
+/// daemon's answer, in milliseconds: an action that cannot be undone is waited for, up to its own
+/// deadline (REQ-CLI-005), and the daemon then ends its worker.
+pub const LIM_O24_DAEMON_STOP_MS: u64 = 700_000;
 /// LIM-O1: time to exit after a stop signal, in milliseconds.
 pub const LIM_O1_STOP_MS: i64 = 5_000;
 /// LIM-W1: workspace size in bytes (1 GiB), best effort.

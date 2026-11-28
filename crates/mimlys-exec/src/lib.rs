@@ -7,6 +7,7 @@
 
 pub mod builtin;
 pub mod confine;
+pub mod frame;
 pub mod fsinfo;
 pub mod host_tool;
 pub mod interpreters;
