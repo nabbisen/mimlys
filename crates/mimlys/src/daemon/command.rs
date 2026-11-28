@@ -175,7 +175,7 @@ fn spawn_daemon(loaded: &Loaded) -> Result<Spawned, AppError> {
     );
     // The daemon is given its three standard streams and nothing else of this process's.
     #[cfg(windows)]
-    mimlys_exec::daemon_pipe::keep_standard_handles_from_children();
+    let _ = mimlys_exec::daemon_pipe::keep_standard_handles_from_children;
     command.args(["daemon", "start", "--foreground", "--detached"]);
     if let Some(path) = &loaded.path {
         command.arg("--config").arg(path);
