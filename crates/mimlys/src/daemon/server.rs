@@ -772,11 +772,11 @@ impl Served {
         })
     }
 
-    /// Whether the daemon has nothing to do: no client, and no task running, queued or waiting
-    /// for the user (LIM-O13).
-    fn idle_now(&self) -> bool {
+    /// What keeps the daemon from idling out, in words for its log: a client is connected, or a
+    /// task is running, queued or waiting for the user (LIM-O13). `None` when it has nothing to do.
+    fn busy_reason(&self) -> Option<&'static str> {
         if self.connections.counts().0 > 0 {
-            return false;
+            return Some("a client is connected");
         }
         let runtime = &self.runtime;
         let busy = |state: &str| {
@@ -787,11 +787,19 @@ impl Served {
                 // A store that cannot be read is not a reason to leave tasks unserved.
                 .unwrap_or(true)
         };
-        !(busy("running")
-            || busy("waiting_user")
-            || busy("recovering")
-            || !self.transport.driver().waiting().is_empty()
-            || !self.transport.driver().owned_tasks().is_empty())
+        if busy("running") {
+            Some("a task is running")
+        } else if busy("waiting_user") {
+            Some("a task waits for the user")
+        } else if busy("recovering") {
+            Some("a task is recovering")
+        } else if !self.transport.driver().waiting().is_empty()
+            || !self.transport.driver().owned_tasks().is_empty()
+        {
+            Some("a task is in line or owned by the daemon")
+        } else {
+            None
+        }
     }
 }
 
@@ -902,6 +910,10 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
         let served = Arc::clone(&served);
         tokio::spawn(async move {
             let tick = (idle / 4).clamp(Duration::from_millis(50), Duration::from_secs(5));
+            // Said once each time the idle time passes with something to do: the log's line is
+            // the state a reader (and a test) waits for, rather than a time chosen to be long
+            // enough (handoff 014d, item 0).
+            let mut said_busy = false;
             loop {
                 tokio::time::sleep(tick).await;
                 let quiet = served
@@ -909,13 +921,28 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .elapsed();
-                if quiet >= idle && served.idle_now() {
-                    tracing::info!(
-                        idle_secs = idle.as_secs(),
-                        "the daemon has had nothing to do for its idle time and exits"
-                    );
-                    served.shutdown.notify_one();
-                    return;
+                if quiet < idle {
+                    said_busy = false;
+                    continue;
+                }
+                match served.busy_reason() {
+                    None => {
+                        tracing::info!(
+                            idle_secs = idle.as_secs(),
+                            "the daemon has had nothing to do for its idle time and exits"
+                        );
+                        served.shutdown.notify_one();
+                        return;
+                    }
+                    Some(why) if !said_busy => {
+                        said_busy = true;
+                        tracing::info!(
+                            idle_secs = idle.as_secs(),
+                            why,
+                            "the daemon is past its idle time and stays: it has something to do"
+                        );
+                    }
+                    Some(_) => {}
                 }
             }
         });
