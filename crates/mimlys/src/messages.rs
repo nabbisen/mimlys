@@ -4,6 +4,8 @@
 //! Texts are short, name the thing and what to do next (CLR-1 … CLR-3).
 
 mod daemon;
+// What Windows uses of it is nothing yet (the daemon is Linux's and macOS's in this release).
+#[allow(unused_imports)]
 pub use daemon::*;
 
 use mimlys_core::task::{HaltReason, TaskState, WaitKind};

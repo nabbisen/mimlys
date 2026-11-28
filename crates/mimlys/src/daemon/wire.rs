@@ -280,12 +280,12 @@ pub fn config_hash(path: Option<&std::path::Path>) -> String {
     hex(&Sha256::digest(&text))
 }
 
-/// The salt of one connection: 32 random bytes, hex.
+/// The salt of one connection: 32 random bytes from the system's source, hex.
 #[cfg(unix)]
 pub fn new_salt() -> Result<String, std::io::Error> {
+    use std::io::Read;
     let mut bytes = [0u8; 32];
-    rustix::rand::getrandom(&mut bytes, rustix::rand::GetRandomFlags::empty())
-        .map_err(std::io::Error::from)?;
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(hex(&bytes))
 }
 
