@@ -707,8 +707,9 @@ fn read_trustees(acl: *mut ACL) -> io::Result<Vec<String>> {
         if unsafe { GetAce(acl, index, &mut ace) } == 0 {
             return Err(last());
         }
-        // SAFETY: every entry begins with the header and, for the access-allowed type, the mask
-        // and the SID; the SID starts at `SidStart`, inside the ACL's memory. Read in place.
+        // Every entry begins with the header and, for the access-allowed type, the mask and the SID;
+        // the SID starts at `SidStart`, inside the ACL's memory, and is read in place.
+        // SAFETY: `ace` points at an entry of the valid ACL, as just said.
         let sid: PSID =
             unsafe { std::ptr::addr_of_mut!((*ace.cast::<ACCESS_ALLOWED_ACE>()).SidStart).cast() };
         trustees.push(sid_string(sid)?);
