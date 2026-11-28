@@ -231,6 +231,21 @@ pub fn daemon_connection_lost(detail: &str) -> String {
     format!("the daemon does not answer ({detail}); the connection was made again once and failed")
 }
 
+/// `--detach` without a daemon (external design §19.5): refused before anything is created.
+pub const DETACH_NEEDS_A_DAEMON: &str = "--detach needs a daemon, and none runs for this data directory: start one with `mimlys daemon start`, or leave the command to follow the task";
+
+/// `--detach`: the task goes on in the daemon.
+pub fn detached_from(task_id: &str) -> String {
+    format!(
+        "task {task_id} goes on in the daemon: follow it with `mimlys events {task_id} --follow`, pause it with `mimlys task pause {task_id}`, cancel it with `mimlys task cancel {task_id}`"
+    )
+}
+
+/// A command that needs the store itself (`model probe`, `toolchain grant`), reached while the
+/// daemon holds it.
+pub const NEEDS_THE_STORE_ITSELF: &str =
+    "this command needs the store itself, which the daemon holds: run `mimlys daemon stop` first";
+
 /// `mimlys daemon` on a platform whose transport is not part of this release (Windows: 014d).
 pub const DAEMON_NOT_ON_THIS_PLATFORM: &str =
     "the daemon runs on Linux and macOS in this release; on Windows every command runs embedded";
@@ -244,4 +259,9 @@ pub fn store_in_use_by_daemon(pid: u32, since: &str) -> String {
     format!(
         "the store is in use by the daemon (pid {pid}) since {since}: this command does not run beside it; the commands that run tasks go through it, and for this one run `mimlys daemon stop` first"
     )
+}
+
+/// `status`: a daemon that is there and cannot be used by this client.
+pub fn daemon_unreachable(why: &str) -> String {
+    format!("daemon: not used ({why})")
 }

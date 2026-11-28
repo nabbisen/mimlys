@@ -30,7 +30,9 @@ fn req_cli_008_without_a_socket_there_is_no_daemon() {
     ));
 }
 
-/// REQ-SEC-016: a registry directory that is not 0700 is refused before anything is sent.
+/// REQ-SEC-016: a registry directory that is not 0700 is refused before anything is sent, when a
+/// socket is in it; a directory with no socket holds no daemon, and is no reason to refuse a
+/// command.
 #[test]
 fn req_sec_016_a_client_refuses_a_directory_that_is_not_0700() {
     let base = tempfile::tempdir().unwrap();
@@ -39,6 +41,13 @@ fn req_sec_016_a_client_refuses_a_directory_that_is_not_0700() {
     let run = base.path().join("run");
     std::fs::create_dir(&run).unwrap();
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        reach(&run, &data, &loaded(), true),
+        Ok(Reach::None)
+    ));
+    let path = socket::socket_path(&run, &data).unwrap().unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let refused = reach(&run, &data, &loaded(), true).err().unwrap();
     assert!(matches!(
         refused,

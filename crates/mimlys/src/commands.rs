@@ -40,13 +40,20 @@ pub async fn finish(
     interaction: &mut dyn Interaction,
     out: &Output,
 ) -> Result<(), AppError> {
-    let view = match app.runtime.get_task(task_id)?.task.state {
-        TaskState::Running | TaskState::WaitingUser { .. } => {
-            follow::drive(app, task_id, interaction, out).await?
-        }
-        _ => app.runtime.get_task(task_id)?,
+    let state = app.reader.get_task(task_id)?.task.state;
+    // A task that waits in the daemon's line is followed too (external design §19.5).
+    let in_line = app.client.queued(task_id).is_some();
+    let follows = matches!(state, TaskState::Running | TaskState::WaitingUser { .. }) || in_line;
+    let view = if follows && !app.detach {
+        follow::drive(app, task_id, interaction, out).await?
+    } else {
+        app.reader.get_task(task_id)?
     };
     print_view(&view, out);
+    // `--detach`: the daemon goes on with the task, and the line says how to follow or stop it.
+    if follows && app.detach {
+        out.line(messages::detached_from(&task_id.to_string()));
+    }
     // A task halted `policy` is told why, by the rule that stopped it (`halt_detail`, from the
     // task's own record: not asked again of what is in force now), REQ-SEC-010.
     if let TaskState::Halted {

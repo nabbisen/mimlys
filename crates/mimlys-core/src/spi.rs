@@ -784,6 +784,15 @@ pub trait WorkspaceRead: Send + Sync {
 
     /// Bytes of the working tree.
     fn tree_bytes(&self, task_id: TaskId) -> Result<u64, WorkspaceError>;
+
+    /// What reversing a promotion would do: the paths it restores or removes, and the ones edited
+    /// since. Nothing is changed, so it is a reader's (a client of a daemon plans a reversal
+    /// itself, REQ-PERS-013).
+    fn promotion_revert_plan(
+        &self,
+        promotion: &Promotion,
+        backup: &SnapshotRecord,
+    ) -> Result<RevertPlan, WorkspaceError>;
 }
 
 /// Task workspaces: materialization, tools over the tree, quota (external design §14; REQ-WS-002, REQ-WS-008).
@@ -865,14 +874,6 @@ pub trait WorkspaceProvider: WorkspaceRead {
         promotion: &Promotion,
         base: &SnapshotRecord,
     ) -> Result<(), WorkspaceError>;
-
-    /// What reversing a promotion would do: the paths it restores or removes, and the ones edited
-    /// since. Nothing is changed.
-    fn promotion_revert_plan(
-        &self,
-        promotion: &Promotion,
-        backup: &SnapshotRecord,
-    ) -> Result<RevertPlan, WorkspaceError>;
 
     /// Reverses a promotion from its backup, also the part of one that was applied: a path is
     /// restored while it holds what the promotion wrote or is missing. A path edited since is kept
@@ -1594,6 +1595,19 @@ pub mod fake {
         fn tree_bytes(&self, _task_id: TaskId) -> Result<u64, WorkspaceError> {
             Ok(0)
         }
+
+        fn promotion_revert_plan(
+            &self,
+            promotion: &Promotion,
+            _backup: &SnapshotRecord,
+        ) -> Result<RevertPlan, WorkspaceError> {
+            Ok(RevertPlan {
+                promotion_id: promotion.promotion_id,
+                entries: vec![],
+                conflicts: self.edited.lock().expect("fake lock").clone(),
+                edits_detected: true,
+            })
+        }
     }
 
     impl WorkspaceProvider for FakeWorkspaces {
@@ -1801,19 +1815,6 @@ pub mod fake {
                 Some(hook) => hook(promotion),
                 None => Ok(()),
             }
-        }
-
-        fn promotion_revert_plan(
-            &self,
-            promotion: &Promotion,
-            _backup: &SnapshotRecord,
-        ) -> Result<RevertPlan, WorkspaceError> {
-            Ok(RevertPlan {
-                promotion_id: promotion.promotion_id,
-                entries: vec![],
-                conflicts: self.edited.lock().expect("fake lock").clone(),
-                edits_detected: true,
-            })
         }
 
         fn revert_promotion(

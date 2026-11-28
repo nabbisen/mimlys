@@ -66,6 +66,8 @@ pub fn idle_in_force(configured: Option<Duration>) -> Option<Duration> {
 /// Everything the connection threads share.
 pub struct Served {
     app: App,
+    /// The runtime of the app, which the daemon owns.
+    runtime: Arc<mimlys_core::runtime::Runtime>,
     transport: Arc<InProcess>,
     socket: PathBuf,
     config_hash: String,
@@ -80,6 +82,9 @@ pub struct Served {
     shutdown: tokio::sync::Notify,
     /// What the first `stop` answered, for the ones after it.
     stopped: Mutex<Option<(Vec<String>, Vec<String>)>>,
+    /// The test seam of the repeat after a break ([`CUT_ANSWER_ENV`]): the request whose first
+    /// answer is not sent. Always none in a release.
+    cut_answer: Mutex<Option<String>>,
 }
 
 /// A client is connected for as long as this lives.
@@ -106,6 +111,19 @@ impl Served {
             .last_activity
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Instant::now();
+    }
+
+    /// Whether the answer to a request of this name is the one the seam cuts (once).
+    fn cut_answer_of(&self, name: &str) -> bool {
+        let mut cut = self
+            .cut_answer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cut.as_deref() == Some(name) {
+            *cut = None;
+            return true;
+        }
+        false
     }
 
     fn session(&self) -> Session {
@@ -153,7 +171,7 @@ impl Served {
     /// What the hellos say about the client: the refusal that ends the connection, and the one
     /// that only refuses what changes state.
     fn judge(&self, salt: &str, client: &ClientHello) -> (Option<Refusal>, Option<Refusal>) {
-        let mine = env!("CARGO_PKG_VERSION");
+        let mine = crate::daemon::wire::runtime_version();
         if client.runtime_version != mine {
             return (
                 Some(Refusal {
@@ -211,7 +229,7 @@ impl Served {
             &DaemonHello {
                 protocol: wire::PROTOCOL.to_owned(),
                 hello_version: wire::HELLO_VERSION,
-                runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+                runtime_version: crate::daemon::wire::runtime_version().to_owned(),
                 config_hash: self.config_hash.clone(),
                 salt: salt.clone(),
             },
@@ -222,14 +240,10 @@ impl Served {
         let (mut refusal, writes_refused) = match self.refuse_own_tree(peer) {
             Some(own_tree) => {
                 tracing::warn!(pid = ?peer.pid, "a client of the daemon's own tree was refused");
-                if let Err(e) = self
-                    .app
-                    .runtime
-                    .record_server_events(&[Event::DaemonRefused {
-                        reason: "own_tree".into(),
-                        peer_pid: peer.pid,
-                    }])
-                {
+                if let Err(e) = self.runtime.record_server_events(&[Event::DaemonRefused {
+                    reason: "own_tree".into(),
+                    peer_pid: peer.pid,
+                }]) {
                     tracing::warn!("the refusal could not be recorded: {e}");
                 }
                 (Some(own_tree), None)
@@ -291,6 +305,7 @@ impl Served {
                     return Ok(());
                 }
                 Request::Control { envelope } => {
+                    let name = envelope.request.name();
                     let answer = {
                         let cell = RefCell::new(&mut *stream);
                         self.control(*envelope, peer, writes_refused.as_ref(), &|notice| {
@@ -298,6 +313,10 @@ impl Served {
                                 wire::write(&mut **cell.borrow_mut(), &Reply::Notice { notice });
                         })
                     };
+                    // The seam: the request was applied, and the connection ends before the answer.
+                    if self.cut_answer_of(name) {
+                        return Ok(());
+                    }
                     wire::write(
                         stream,
                         &Reply::Control {
@@ -406,14 +425,14 @@ impl Served {
     }
 
     fn status(&self) -> DaemonStatus {
-        let runtime = &self.app.runtime;
+        let runtime = &self.runtime;
         let waiting_user = runtime
             .persistence()
             .tasks_in_state("waiting_user")
             .unwrap_or_default();
         DaemonStatus {
             pid: std::process::id(),
-            runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+            runtime_version: crate::daemon::wire::runtime_version().to_owned(),
             started_at: self.started_at.clone(),
             uptime_secs: self.started.elapsed().as_secs(),
             socket: self.socket.to_string_lossy().into_owned(),
@@ -445,7 +464,7 @@ impl Served {
             .into_iter()
             .map(|id| id.to_string())
             .collect();
-        let runtime = &self.app.runtime;
+        let runtime = &self.runtime;
         let running = runtime.running_tasks().unwrap_or_default();
         let session = self.session();
         let send = |request: mimlys_core::api::Request| {
@@ -512,7 +531,7 @@ impl Served {
         if self.clients.load(Ordering::SeqCst) > 0 {
             return false;
         }
-        let runtime = &self.app.runtime;
+        let runtime = &self.runtime;
         let busy = |state: &str| {
             runtime
                 .persistence()
@@ -587,16 +606,18 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
             pid: std::process::id(),
             data_dir: data_dir.to_string_lossy().into_owned(),
             socket: path.to_string_lossy().into_owned(),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: crate::daemon::wire::runtime_version().to_owned(),
             since: started_at,
         })
         .map_err(|detail| AppError::Io {
             detail: format!("the daemon cannot be recorded in the registry: {detail}"),
         })?;
-    let transport = InProcess::with_line(Arc::clone(&app.runtime));
+    let runtime = Arc::clone(app.runtime()?);
+    let transport = InProcess::with_line(Arc::clone(&runtime));
     transport.start_driving();
     let served = Arc::new(Served {
         config_hash: wire::config_hash(app.loaded.path.as_deref()),
+        runtime,
         app,
         transport,
         socket: path.clone(),
@@ -609,6 +630,11 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
         seen: (Mutex::new(0), Condvar::new()),
         shutdown: tokio::sync::Notify::new(),
         stopped: Mutex::new(None),
+        cut_answer: Mutex::new(
+            std::env::var(crate::daemon::transport::CUT_ANSWER_ENV)
+                .ok()
+                .filter(|_| cfg!(debug_assertions)),
+        ),
     });
     // What the driver's host says changed reaches every subscriber.
     {
@@ -691,12 +717,27 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
                     continue;
                 }
                 let served = Arc::clone(&served);
+                let executor = tokio::runtime::Handle::current();
                 let spawned = std::thread::Builder::new()
                     .name("daemon-connection".into())
                     .spawn(move || {
+                        // The runtime's verbs reach the executor (a server is started, a cancel
+                        // waits): the thread of a connection runs inside the daemon's own.
+                        let _inside = executor.enter();
                         let mut stream = stream;
-                        if let Err(e) = served.connection(&mut stream, peer) {
-                            tracing::debug!(pid = ?peer.pid, "connection ended: {e}");
+                        // A defect in the handling of one request ends that connection, and
+                        // never the daemon, which owns every client's tasks.
+                        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            served.connection(&mut stream, peer)
+                        }));
+                        match ended {
+                            Ok(Err(e)) => {
+                                tracing::debug!(pid = ?peer.pid, "connection ended: {e}");
+                            }
+                            Ok(Ok(())) => {}
+                            Err(_) => {
+                                tracing::error!(pid = ?peer.pid, "a request panicked; its connection was closed");
+                            }
                         }
                     });
                 if let Err(e) = spawned {

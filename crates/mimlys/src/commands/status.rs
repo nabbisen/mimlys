@@ -15,6 +15,11 @@ struct Status<'a> {
     /// it was before several backends; `null` when no backend is named `default`. **Deprecated**
     /// (RFC 015, Amendment 1): kept until the release that prepares 1.0; read `backends`.
     backend: Option<BackendView>,
+    /// Which mode is in force: `embedded`, or `served` by a daemon (REQ-ARCH-009, from 0.14).
+    mode: &'static str,
+    /// The daemon, when served: its process, version, socket and uptime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon: Option<serde_json::Value>,
     /// Every configured backend, `default` first, then by name: each probed at once within one
     /// LIM-M4 (REQ-MDL-010).
     backends: Vec<BackendView>,
@@ -330,6 +335,20 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     for line in messages::status_head_lines(&status.version, &app.data_dir.to_string_lossy()) {
         out.line(line);
     }
+    // Which mode is in force, and, when served, what `daemon status` says first.
+    let (daemon, daemon_trouble) = daemon_mode(&app.loaded);
+    match &daemon {
+        Some(d) => {
+            out.line(messages::mode_served(d.pid, &d.runtime_version, &d.socket));
+            if let Some(first) = messages::daemon_status_lines(d, true).into_iter().next() {
+                out.line(first);
+            }
+        }
+        None => out.line(messages::MODE_EMBEDDED),
+    }
+    if let Some(trouble) = &daemon_trouble {
+        out.line(messages::daemon_unreachable(trouble));
+    }
     for line in backend_lines {
         out.line(line);
     }
@@ -478,6 +497,16 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         backend: backend_view,
         backends: views,
         effort,
+        mode: if daemon.is_some() { "served" } else { "embedded" },
+        daemon: daemon.as_ref().map(|d| {
+            serde_json::json!({
+                "pid": d.pid,
+                "version": d.runtime_version,
+                "socket": d.socket,
+                "started_at": d.started_at,
+                "uptime_secs": d.uptime_secs,
+            })
+        }),
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         data_dir_in_temporary_directory: data_dir_in_temp,
         xcrun_cache_missing: xcrun_missing,
@@ -569,6 +598,22 @@ fn mark_function_name_unavailable(servers: &mut [mimlys_mcp::ServerStatus]) {
             server.unavailable.push((tool, reason));
         }
     }
+}
+
+/// The daemon of this store, and why it could not be reached when it could not.
+#[cfg(unix)]
+fn daemon_mode(
+    loaded: &crate::config::Loaded,
+) -> (Option<crate::daemon::wire::DaemonStatus>, Option<String>) {
+    crate::daemon::command::mode(loaded)
+}
+
+/// Windows has no daemon in this release.
+#[cfg(not(unix))]
+fn daemon_mode(
+    _loaded: &crate::config::Loaded,
+) -> (Option<crate::daemon::wire::DaemonStatus>, Option<String>) {
+    (None, None)
 }
 
 #[cfg(test)]

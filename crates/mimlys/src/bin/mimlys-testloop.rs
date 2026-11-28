@@ -206,13 +206,13 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
         Some(backend.clone()),
     )?;
     let existing = match cli.resume.as_deref() {
-        Some("latest") => app.runtime.list_tasks()?.first().map(|t| t.task_id),
+        Some("latest") => app.runtime()?.list_tasks()?.first().map(|t| t.task_id),
         Some(id) => Some(app.resolve_task(id)?),
         None => None,
     };
     let task_id = match existing {
         Some(id) => {
-            let state = app.runtime.get_task(id)?.task.state;
+            let state = app.runtime()?.get_task(id)?.task.state;
             if matches!(
                 state,
                 TaskState::Created | TaskState::Paused | TaskState::Halted { .. }
@@ -264,7 +264,7 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
     };
     let out = Output::new(true);
     let view = follow::drive(&app, task_id, &mut scripted, &out).await?;
-    let persistence = app.runtime.persistence();
+    let persistence = app.runtime()?.persistence();
     let actions = persistence.load_actions(task_id)?;
     let mut executions = Vec::new();
     for a in &actions {
@@ -282,7 +282,7 @@ async fn run(cli: Cli) -> Result<Report, AppError> {
         })
         .collect();
     let events = app
-        .runtime
+        .runtime()?
         .get_events(Some(task_id), 0, 10_000)?
         .iter()
         .map(|e| EventReport {

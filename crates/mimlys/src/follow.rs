@@ -13,7 +13,7 @@ use crate::prompt::{Decision, Interaction, PlanDecision, StopHandle};
 use mimlys_core::api::{Reply, Request};
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::LIM_O1_STOP_MS;
-use mimlys_core::runtime::{Runtime, TaskView};
+use mimlys_core::runtime::{Reader, TaskView};
 use mimlys_core::spi::PositionedEvent;
 use mimlys_core::step::StepOutcome;
 use mimlys_core::task::{TaskState, WaitKind};
@@ -106,7 +106,7 @@ pub(crate) fn interrupted(result: Result<(), mimlys_core::runtime::RuntimeError>
 /// What the signals act on: the requests of the stop signals, sent through the client, and the
 /// store's own record of what is in flight, read directly.
 struct StepOf {
-    runtime: Arc<Runtime>,
+    runtime: Reader,
     client: Client,
     task_id: TaskId,
 }
@@ -209,7 +209,7 @@ impl Signals {
     /// ends that wait through `at_prompt` instead: nothing runs at a prompt, so
     /// there is nothing to pause or to cancel.
     pub fn install(
-        runtime: Arc<Runtime>,
+        runtime: Reader,
         client: Client,
         task_id: TaskId,
         at_prompt: Option<StopHandle>,
@@ -483,10 +483,10 @@ pub async fn drive(
     interaction: &mut dyn Interaction,
     out: &Output,
 ) -> Result<TaskView, AppError> {
-    let runtime = Arc::clone(&app.runtime);
+    let runtime = app.reader.clone();
     let client = app.client.clone();
     let signals = Signals::install(
-        Arc::clone(&runtime),
+        runtime.clone(),
         client.clone(),
         task_id,
         interaction.stop_handle(),
@@ -626,6 +626,16 @@ pub async fn drive(
                     }
                 }
             }
+            // A task that waits in the daemon's line is not running yet, and is followed all the
+            // same: it starts when the one ahead leaves `running` (external design §19.5).
+            TaskState::Created | TaskState::Paused | TaskState::Halted { .. }
+                if client.queued(task_id).is_some() =>
+            {
+                client.changed().await;
+                if let Some(error) = client.failure(task_id) {
+                    return Err(error.into());
+                }
+            }
             _ => {
                 // The step that was interrupted at the grace has ended `cancelled` and the pause
                 // is taken: now it is true that the step was interrupted.
@@ -639,7 +649,7 @@ pub async fn drive(
 }
 
 /// Whether the task's last step ended `cancelled`.
-fn last_step_cancelled(runtime: &Runtime, task_id: TaskId) -> bool {
+fn last_step_cancelled(runtime: &Reader, task_id: TaskId) -> bool {
     runtime
         .persistence()
         .load_steps(task_id)
@@ -661,7 +671,7 @@ fn leave_at_prompt(signals: &Signals, view: TaskView) -> TaskView {
     view
 }
 
-fn last_position(runtime: &Runtime, task_id: TaskId) -> Result<u64, AppError> {
+fn last_position(runtime: &Reader, task_id: TaskId) -> Result<u64, AppError> {
     let mut position = 0;
     loop {
         let batch = runtime.get_events(Some(task_id), position, 1000)?;
@@ -683,7 +693,7 @@ struct Printed {
 }
 
 fn print_new(
-    runtime: &Runtime,
+    runtime: &Reader,
     task_id: TaskId,
     position: &mut u64,
     out: &Output,
@@ -695,9 +705,15 @@ fn print_new(
             return Ok(printed);
         }
         for e in &batch {
-            printed.rolled_back |= e.record.event.name() == "workspace.rollback";
-            printed.step_started |= e.record.event.name() == "step.started";
-            out.line(event_text(e));
+            let name = match &e.record {
+                mimlys_core::newer::Read::Known(record) => record.event.name().to_owned(),
+                mimlys_core::newer::Read::Newer(newer) => {
+                    newer.text("event").unwrap_or_default().to_owned()
+                }
+            };
+            printed.rolled_back |= name == "workspace.rollback";
+            printed.step_started |= name == "step.started";
+            out.line(event_text_read(e));
             *position = e.position;
         }
     }

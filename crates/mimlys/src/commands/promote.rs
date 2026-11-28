@@ -35,7 +35,7 @@ pub fn run(
     out: &Output,
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    let plan = app.runtime.promotion_plan(id)?;
+    let plan = app.reader.promotion_plan(id)?;
     if plan.changes.is_empty() {
         out.line(messages::PROMOTE_NOTHING);
         out.value(&serde_json::json!({ "plan": plan, "applied": false }));

@@ -135,11 +135,16 @@ fn close_standard_streams() {
 
 /// `daemon start`: the daemon, detached, or already running.
 pub fn start(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
+    start_with(loaded, out, true)
+}
+
+/// As [`start`]; `value` says whether it prints its JSON value (a restart prints its own).
+fn start_with(loaded: &Loaded, out: &Output, value: bool) -> Result<(), AppError> {
     let (run_dir, data_dir) = places(loaded)?;
     if let Some(daemon) = find(loaded, false)? {
         if !daemon.usable() {
             return Err(io(messages::daemon_version_refused(
-                env!("CARGO_PKG_VERSION"),
+                crate::daemon::wire::runtime_version(),
                 &daemon.hello.runtime_version,
             )));
         }
@@ -149,6 +154,7 @@ pub fn start(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
             daemon.peer.pid,
             &daemon.socket,
             true,
+            value,
         );
         return Ok(());
     }
@@ -194,7 +200,7 @@ pub fn start(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
             )));
         }
         if let Ok(Reach::Daemon(daemon)) = connect::reach(&run_dir, &data_dir, loaded, false)
-            && daemon.hello.runtime_version == env!("CARGO_PKG_VERSION")
+            && daemon.hello.runtime_version == crate::daemon::wire::runtime_version()
         {
             say_started(
                 out,
@@ -202,6 +208,7 @@ pub fn start(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
                 daemon.peer.pid,
                 &daemon.socket,
                 false,
+                value,
             );
             // The child is the daemon's own now: it is not waited for.
             std::mem::forget(child);
@@ -219,13 +226,23 @@ pub fn start(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
     }
 }
 
-fn say_started(out: &Output, version: &str, pid: Option<u32>, socket: &std::path::Path, was: bool) {
+fn say_started(
+    out: &Output,
+    version: &str,
+    pid: Option<u32>,
+    socket: &std::path::Path,
+    was: bool,
+    value: bool,
+) {
     out.line(messages::daemon_started(
         version,
         pid,
         &socket.to_string_lossy(),
         was,
     ));
+    if !value {
+        return;
+    }
     out.value(&json!({
         "daemon": {
             "running": true,
@@ -322,7 +339,7 @@ pub fn restart(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         }
         None => None,
     };
-    start(loaded, out)?;
+    start_with(loaded, out, stopped.is_none())?;
     let Some(stopped) = stopped else {
         return Ok(());
     };
@@ -386,6 +403,12 @@ pub fn status(loaded: &Loaded, log: Option<usize>, out: &Output) -> Result<(), A
         out.value(&json!({ "daemon": { "running": false } }));
         return Ok(());
     };
+    if !daemon.usable() {
+        return Err(io(messages::daemon_version_refused(
+            wire::runtime_version(),
+            &daemon.hello.runtime_version,
+        )));
+    }
     wire::write(&mut daemon.stream, &Request::Status).map_err(|e| io(e.to_string()))?;
     let Reply::Status { status } = wire::read(&mut daemon.stream).map_err(|e| io(e.to_string()))?
     else {
@@ -430,4 +453,34 @@ pub fn daemon_json(
         "idle_secs": status.idle_secs,
         "log_tail": tail,
     })
+}
+
+/// The mode `status` says (external design §19.5; REQ-ARCH-009): the daemon that serves this data
+/// directory, with what `daemon status` says first, or none (embedded). A daemon that cannot be
+/// reached for a reason that is not "there is none" (a directory that is not the user's own, a
+/// refusal) is said, and the mode is embedded: `status` is a diagnosis and does not stop at it.
+#[cfg(unix)]
+pub fn mode(loaded: &Loaded) -> (Option<DaemonStatus>, Option<String>) {
+    let daemon = match find(loaded, false) {
+        Ok(Some(daemon)) => daemon,
+        Ok(None) => return (None, None),
+        Err(e) => return (None, Some(e.to_string())),
+    };
+    let mut daemon = daemon;
+    if !daemon.usable() {
+        return (
+            None,
+            Some(messages::daemon_version_refused(
+                crate::daemon::wire::runtime_version(),
+                &daemon.hello.runtime_version,
+            )),
+        );
+    }
+    if wire::write(&mut daemon.stream, &Request::Status).is_err() {
+        return (None, None);
+    }
+    match wire::read::<Reply>(&mut daemon.stream) {
+        Ok(Reply::Status { status }) => (Some(*status), None),
+        _ => (None, None),
+    }
 }

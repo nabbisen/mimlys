@@ -76,6 +76,9 @@ struct NewArgs {
     /// is a budget, never a permission.
     #[arg(long, value_name = "LEVEL", value_parser = ["quick", "standard", "deep"])]
     effort: Option<String>,
+    /// Return when the task is running, without following it (a daemon runs it; it needs one).
+    #[arg(long)]
+    detach: bool,
 }
 
 impl NewArgs {
@@ -114,6 +117,9 @@ enum Command {
         /// A note for the model, in your own words.
         #[arg(long, value_name = "TEXT")]
         note: Option<String>,
+        /// Return when the task is running, without following it (a daemon runs it; it needs one).
+        #[arg(long)]
+        detach: bool,
     },
     /// Reject the pending action, or the plan a plan-first task waits for.
     Reject {
@@ -125,6 +131,9 @@ enum Command {
         /// Halt the task instead of continuing.
         #[arg(long)]
         halt: bool,
+        /// Return when the task is running, without following it (a daemon runs it; it needs one).
+        #[arg(long)]
+        detach: bool,
     },
     /// Answer the pending question.
     Answer {
@@ -132,6 +141,9 @@ enum Command {
         task: String,
         /// The answer.
         text: String,
+        /// Return when the task is running, without following it (a daemon runs it; it needs one).
+        #[arg(long)]
+        detach: bool,
     },
     /// Issue a grant within the ceiling: `tool NAME`, `host_tool NAME`, `network DOMAIN[:PORT]`.
     Grant {
@@ -348,6 +360,9 @@ enum TaskCommand {
         /// Move the deadline, e.g. `30m` (from `halted`).
         #[arg(long, value_name = "DURATION")]
         extend_deadline: Option<String>,
+        /// Return when the task is running, without following it (a daemon runs it; it needs one).
+        #[arg(long)]
+        detach: bool,
     },
     /// Request a pause at the next step boundary.
     Pause {
@@ -581,9 +596,24 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
         }
         return dispatch_read(&app, read, out).await;
     }
+    // A daemon of this store serves the commands that run tasks (REQ-ARCH-009): their requests go
+    // through it, and this process opens no store for writing. Without one, the command runs
+    // embedded, as before. `--detach` needs a daemon, and is refused without one, before anything
+    // is created.
+    let detach = detach_of(&cli.command);
+    let served = route(&loaded, &cli.command)?;
+    if detach && served.is_none() {
+        return Err(AppError::Io {
+            detail: mimlys::messages::DETACH_NEEDS_A_DAEMON.to_owned(),
+        });
+    }
     // Every writer is refused while another process holds the store, naming it (LIM-O3): the
     // refusal is made where the store is opened (`App::open`), by one function.
-    let app = App::open(loaded)?;
+    let mut app = match served {
+        Some(transport) => App::open_served(loaded, transport, None)?,
+        None => App::open(loaded)?,
+    };
+    app.detach = detach;
     // A task runs on the backend named `default`, and no command picks another when there is
     // none (REQ-CFG-007; RFC 015, Amendment 1): this is said before anything is created or run.
     // Every command that can lead to a step says it, `grant` and `revoke` included (`Steps`).
@@ -598,7 +628,7 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     // the one that it can answer, which is not a reason to answer for a task that is refused.
     if let Some(task) = changes_task(&cli.command) {
         let id = app.resolve_task(task)?;
-        mimlys_core::newer::refuse_if_newer(app.runtime.persistence(), id)?;
+        mimlys_core::newer::refuse_if_newer(app.reader.persistence(), id)?;
     }
     // The backend the task of this command runs on: the one its level's envelope names, found by
     // that name (REQ-TASK-013). A command opens a connection to that backend and to no other.
@@ -669,6 +699,79 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     let result = dispatch(&app, cli.command, &mut terminal, out).await;
     let closed = app.close();
     result.and(closed)
+}
+
+/// `--detach`: return when the task is running, without following it.
+fn detach_of(command: &Command) -> bool {
+    match command {
+        Command::Run(args) => args.detach,
+        Command::Task(TaskCommand::New { args, .. }) => args.detach,
+        Command::Task(TaskCommand::Resume { detach, .. })
+        | Command::Approve { detach, .. }
+        | Command::Reject { detach, .. }
+        | Command::Answer { detach, .. } => *detach,
+        _ => false,
+    }
+}
+
+/// Whether the daemon serves the command: every one that goes through the control API and the
+/// store's readers. Not `model probe` (it builds a runtime of its own over the store) and not
+/// `toolchain grant` and `toolchain revoke` (they write this machine's permissions and the
+/// store's record of them): those need the store itself, and are refused, naming the daemon,
+/// while one holds it.
+#[cfg(unix)]
+fn servable(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Model(_)
+            | Command::Toolchain(ToolchainCommand::Grant { .. } | ToolchainCommand::Revoke { .. })
+    )
+}
+
+/// The transport to the daemon of this store, when one runs and serves the command; an error
+/// when one runs and refuses this client (another version).
+#[cfg(unix)]
+fn route(
+    loaded: &mimlys::config::Loaded,
+    command: &Command,
+) -> Result<Option<std::sync::Arc<dyn mimlys::client::Transport>>, AppError> {
+    use mimlys::daemon::command as lifecycle;
+    if !servable(command) {
+        return Ok(None);
+    }
+    let Some(daemon) = lifecycle::find(loaded, false)? else {
+        return Ok(None);
+    };
+    if !daemon.usable() {
+        let detail = match &daemon.answer.refusal {
+            Some(refusal)
+                if daemon.hello.runtime_version == mimlys::daemon::wire::runtime_version() =>
+            {
+                refusal.message.clone()
+            }
+            _ => mimlys::messages::daemon_version_refused(
+                mimlys::daemon::wire::runtime_version(),
+                &daemon.hello.runtime_version,
+            ),
+        };
+        return Err(AppError::Io { detail });
+    }
+    drop(daemon);
+    let (run_dir, data_dir) = lifecycle::places(loaded)?;
+    Ok(Some(mimlys::daemon::transport::Socket::new(
+        run_dir,
+        data_dir,
+        loaded.clone(),
+    )))
+}
+
+/// Windows has no daemon in this release: every command runs embedded.
+#[cfg(not(unix))]
+fn route(
+    _loaded: &mimlys::config::Loaded,
+    _command: &Command,
+) -> Result<Option<std::sync::Arc<dyn mimlys::client::Transport>>, AppError> {
+    Ok(None)
 }
 
 /// The task a command would change or run, as the user named it (REQ-MAIN-006; handoff 004e,
@@ -980,6 +1083,7 @@ async fn dispatch(
                 task,
                 extend_steps,
                 extend_deadline,
+                ..
             } => {
                 commands::task::resume(
                     app,
@@ -1036,13 +1140,13 @@ async fn dispatch(
         Command::Promote { patch: true, .. } => {
             unreachable!("routed to the reader by ReadCommand::of")
         }
-        Command::Approve { task, note } => {
+        Command::Approve { task, note, .. } => {
             commands::approve::run(app, &task, note, terminal, out).await
         }
-        Command::Reject { task, note, halt } => {
-            commands::reject::run(app, &task, note, halt, terminal, out).await
-        }
-        Command::Answer { task, text } => {
+        Command::Reject {
+            task, note, halt, ..
+        } => commands::reject::run(app, &task, note, halt, terminal, out).await,
+        Command::Answer { task, text, .. } => {
             commands::answer::run(app, &task, &text, terminal, out).await
         }
         Command::Grant { task, kind } => {

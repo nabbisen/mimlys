@@ -9,7 +9,7 @@ use crate::workspace::LocalWorkspaces;
 use mimlys_core::clock::SystemClock;
 use mimlys_core::ids::{IdSource, SystemIds, TaskId};
 use mimlys_core::path::PlatformRules;
-use mimlys_core::runtime::{Runtime, RuntimeDeps, RuntimeError, Session};
+use mimlys_core::runtime::{Reader, Runtime, RuntimeDeps, RuntimeError, Session};
 use mimlys_core::spi::{ModelBackend, Persistence, PersistenceError};
 use mimlys_persist::recovery::{
     LeftAsIs, Recovered, RecoveredPromotion, RecoveryContext, recover_all_reporting,
@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 pub use crate::backends::BackendProbe;
 mod read;
+mod served;
 pub use read::{HolderView, ReadApp, StoreState, StoreView, probe_confinement};
 
 /// Anything a command can fail with (external design §18). Exit code 1.
@@ -191,9 +192,20 @@ pub struct App {
     pub loaded: Loaded,
     /// The data directory.
     pub data_dir: PathBuf,
-    /// The runtime: what a reader asks directly (REQ-PERS-013). A command that changes anything
-    /// sends its requests through [`App::client`], never to a method of this.
-    pub runtime: Arc<Runtime>,
+    /// The runtime of this process, when this process is the store's owner (embedded mode; the
+    /// daemon's own app). A command that changes anything sends its requests through
+    /// [`App::client`], never to a method of this; it is `None` in a client of a daemon, which
+    /// holds no store ([`App::runtime`]).
+    pub(crate) runtime: Option<Arc<Runtime>>,
+    /// What a command reads directly, in either mode (REQ-PERS-013): the store read-only (the
+    /// owner's own store in embedded mode, a reader's in a client of a daemon) and the reading
+    /// half of the workspaces.
+    pub reader: Reader,
+    /// `--detach`: a command that follows a task returns when it runs, and leaves it to the
+    /// daemon.
+    pub detach: bool,
+    /// The policy in force: what the configuration resolves to, as the runtime was given it.
+    pub policy: mimlys_core::policy::Policy,
     /// This process as a session.
     pub session: Session,
     /// The one client of the control API, over this process's own runtime: every command sends
@@ -210,7 +222,7 @@ pub struct App {
     backend_probe: std::sync::Mutex<std::collections::BTreeMap<String, BackendProbe>>,
     /// The store, as the runtime holds it: the fitness probe builds a runtime of its own over it
     /// (REQ-MDL-011).
-    pub(crate) store: Arc<dyn Persistence>,
+    pub(crate) store: Option<Arc<dyn Persistence>>,
     /// What the confinement probe found at the start, which the probe's runtime is given too.
     pub(crate) confinement: mimlys_core::confine::Probe,
     /// The registry of the user's runtimes, where the engine gates are (RFC 013 decision 7).
@@ -628,6 +640,7 @@ impl App {
                 .map(mimlys_mcp::server::Server::new)
                 .collect(),
         ));
+        let policy_for_app = policy.clone();
         let workspaces = Arc::new(
             LocalWorkspaces::new(
                 data_dir.clone(),
@@ -645,6 +658,7 @@ impl App {
             })
             .with_external(Arc::clone(&servers)),
         );
+        let reader_workspaces = Arc::clone(&workspaces);
         // A fitness probe that a crash cut short is not the user's: its task, its workspace and
         // its scope go before recovery, which would otherwise report the task as recovered
         // (REQ-MDL-011, THR-40).
@@ -783,6 +797,12 @@ impl App {
         ));
         let confinement = probe.clone();
         let shared_store = Arc::clone(&store);
+        let reader = Reader::new(
+            Arc::clone(&store) as Arc<dyn mimlys_core::spi::PersistenceRead>,
+            Arc::clone(&reader_workspaces) as Arc<dyn mimlys_core::spi::WorkspaceRead>,
+            Arc::new(SystemClock),
+        );
+        let policy_in_force = policy_for_app;
         let runtime = Runtime::new(RuntimeDeps {
             persistence: store,
             backend: Arc::clone(&backend.adapter),
@@ -820,12 +840,15 @@ impl App {
             loaded,
             data_dir,
             client: Client::in_process(Arc::clone(&runtime), session.clone()),
-            runtime,
+            runtime: Some(runtime),
+            reader,
+            detach: false,
+            policy: policy_in_force,
             session,
             backend,
             backends,
             backend_probe: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            store: shared_store,
+            store: Some(shared_store),
             confinement,
             registry_dir,
             owner,
@@ -955,11 +978,24 @@ impl App {
                 tokio::runtime::Handle::current().block_on(servers.shutdown())
             });
             // Their stop events belong to the audit (RFC 009 §1).
-            self.runtime
-                .record_server_events(&self.servers.drain_events())?;
+            if let Some(runtime) = &self.runtime {
+                runtime.record_server_events(&self.servers.drain_events())?;
+            }
         }
-        self.runtime.record_stopped()?;
+        // A client of a daemon owns nothing that records a stop.
+        if let Some(runtime) = &self.runtime {
+            runtime.record_stopped()?;
+        }
         Ok(())
+    }
+
+    /// The runtime of this process: its owner's (embedded mode, the daemon). A client of a
+    /// daemon has none: what it needs of the store it reads (`reader`) or asks of the daemon
+    /// (`client`), and a command that needs the runtime itself is not one a daemon serves.
+    pub fn runtime(&self) -> Result<&Arc<Runtime>, AppError> {
+        self.runtime.as_ref().ok_or_else(|| AppError::Io {
+            detail: crate::messages::NEEDS_THE_STORE_ITSELF.to_owned(),
+        })
     }
 
     /// The servers' status (RFC 009 §8). Each server is started, within LIM-O6, and listed, so
@@ -978,7 +1014,7 @@ impl App {
     pub fn resolve_task(&self, text: &str) -> Result<TaskId, AppError> {
         resolve_task_ref(text, || {
             Ok(self
-                .runtime
+                .reader
                 .list_tasks()?
                 .into_iter()
                 .map(|t| t.task_id)

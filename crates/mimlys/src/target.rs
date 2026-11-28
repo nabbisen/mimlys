@@ -58,7 +58,7 @@ impl Target {
     /// not there: the command says so itself.
     pub fn for_task(app: &App, task: &str) -> Option<Self> {
         let id = app.resolve_task(task).ok()?;
-        let task = app.runtime.get_task(id).ok()?.task;
+        let task = app.reader.get_task(id).ok()?.task;
         Some(Self {
             backend: task.effort_in_force().envelope.backend,
             task: Some(task),

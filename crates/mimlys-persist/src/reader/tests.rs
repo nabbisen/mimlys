@@ -384,6 +384,14 @@ impl mimlys_core::spi::WorkspaceRead for Manifests {
     ) -> Result<u64, mimlys_core::spi::WorkspaceError> {
         panic!("the storage view never walks a working tree");
     }
+
+    fn promotion_revert_plan(
+        &self,
+        _promotion: &mimlys_core::snapshot::Promotion,
+        _backup: &mimlys_core::snapshot::SnapshotRecord,
+    ) -> Result<mimlys_core::snapshot::RevertPlan, mimlys_core::spi::WorkspaceError> {
+        Err(mimlys_core::spi::WorkspaceError::Missing)
+    }
 }
 
 /// REQ-WS-013: the holdings come from the records. Objects only one task's

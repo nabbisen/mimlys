@@ -231,7 +231,7 @@ pub fn remove_orphans(
 /// finishes it).
 fn orphans(app: &App) -> Result<Vec<Orphan>, AppError> {
     let mut referenced: std::collections::BTreeSet<String> = app
-        .runtime
+        .reader
         .list_tasks()?
         .into_iter()
         .map(|t| t.task_id.to_string())
@@ -264,13 +264,13 @@ fn candidates(
 ) -> Result<(Vec<Candidate>, Vec<NewerTask>), AppError> {
     let mut out = Vec::new();
     let mut newer = Vec::new();
-    let mut tasks = app.runtime.list_tasks()?;
+    let mut tasks = app.reader.list_tasks()?;
     tasks.sort_by_key(|t| t.updated_at);
     for t in tasks {
         if !filter.matches(&t.state, t.updated_at, now) {
             continue;
         }
-        let found = mimlys_core::newer::scan(app.runtime.persistence(), t.task_id)?;
+        let found = mimlys_core::newer::scan(app.reader.persistence(), t.task_id)?;
         if let Some(first) = found.first() {
             newer.push(NewerTask {
                 task_id: t.task_id.to_string(),
@@ -279,7 +279,7 @@ fn candidates(
             });
             continue;
         }
-        let deleted = match app.runtime.persistence().load_workspace_state(t.task_id) {
+        let deleted = match app.reader.persistence().load_workspace_state(t.task_id) {
             Ok(state) => state == Some(mimlys_core::snapshot::WorkspaceState::Deleted),
             Err(mimlys_core::spi::PersistenceError::NewerRecord { field, word, .. }) => {
                 newer.push(NewerTask {
@@ -296,7 +296,7 @@ fn candidates(
         if !audit && deleted {
             continue;
         }
-        let view = app.runtime.get_task(t.task_id)?;
+        let view = app.reader.get_task(t.task_id)?;
         // The state is read again with the footprint: only a terminal task is listed.
         if !view.task.state.is_terminal() {
             continue;

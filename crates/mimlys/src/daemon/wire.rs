@@ -21,6 +21,24 @@ use std::collections::BTreeMap;
 pub const PROTOCOL: &str = "mimlys-daemon";
 /// The hello's version: the shape of the first three frames, never changed.
 pub const HELLO_VERSION: u32 = 1;
+/// The test seam of the version check: `MIMLYS_PRETEND_VERSION` names the runtime version this
+/// process says it is **to a daemon or a client** (a debug build only, as `MIMLYS_RUN_DIR` is),
+/// so that a test makes a peer of another version without another build.
+pub const PRETEND_VERSION_ENV: &str = "MIMLYS_PRETEND_VERSION";
+
+/// The runtime version this process speaks as: its own, or, in a debug build, the seam's.
+pub fn runtime_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            std::env::var(PRETEND_VERSION_ENV)
+                .ok()
+                .filter(|v| cfg!(debug_assertions) && !v.is_empty())
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
+        })
+        .as_str()
+}
+
 /// The `version` every frame of the daemon's protocol carries, never changed.
 pub const FRAME_VERSION: u32 = 1;
 /// The largest frame either side accepts (LIM-O22).

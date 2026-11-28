@@ -136,3 +136,7 @@ required-features = ["test-bins"]
 [[test]]
 name = "admission"
 required-features = ["test-bins"]
+
+[[test]]
+name = "daemon_served"
+required-features = ["test-bins"]

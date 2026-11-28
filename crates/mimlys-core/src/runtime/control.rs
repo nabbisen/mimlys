@@ -865,37 +865,7 @@ impl Runtime {
         task_id: TaskId,
         promotion_id: crate::ids::PromotionId,
     ) -> Result<(Promotion, SnapshotRecord), RuntimeError> {
-        let promotion = self
-            .deps
-            .persistence
-            .load_promotions(task_id)?
-            .into_iter()
-            .find(|p| p.promotion_id == promotion_id)
-            .ok_or(RuntimeError::NotFound {
-                what: "promotion".into(),
-            })?;
-        // An applied promotion, or one that failed and whose own restore failed too: the
-        // project is not as the backup holds it, and the backup is kept to restore it from.
-        if promotion.reversed_at.is_some() {
-            return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: "reversed".into(),
-                input: "revert_promotion".into(),
-            }));
-        }
-        if !promotion.can_be_reversed() {
-            return Err(RuntimeError::State(crate::task::StateError::Illegal {
-                from: promotion.state.name().into(),
-                input: "revert_promotion".into(),
-            }));
-        }
-        let backup = self
-            .deps
-            .persistence
-            .load_snapshot(promotion.backup_snapshot)?
-            .ok_or(RuntimeError::NotFound {
-                what: "snapshot".into(),
-            })?;
-        Ok((promotion, backup))
+        super::read::promotion_to_revert(self.deps.persistence.as_ref(), task_id, promotion_id)
     }
 
     /// What reversing a promotion would do, and which paths were edited since (REQ-WS-007).

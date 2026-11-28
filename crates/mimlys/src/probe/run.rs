@@ -150,7 +150,9 @@ pub async fn probe_backend(
     // No admission: the tools of the probe take no slot (REQ-SCHED-006 is for executions of the
     // worker's and of host tools); its model requests take the engine's gate.
     let runtime = Runtime::new(RuntimeDeps {
-        persistence: Arc::clone(&app.store),
+        persistence: Arc::clone(app.store.as_ref().ok_or_else(|| AppError::Io {
+            detail: crate::messages::NEEDS_THE_STORE_ITSELF.to_owned(),
+        })?),
         backend: Arc::clone(&backend.adapter),
         backend_name: backend.name.clone(),
         workspaces: Arc::clone(&workspaces) as Arc<dyn WorkspaceProvider>,
@@ -186,7 +188,9 @@ pub async fn probe_backend(
     // the next start finds what a crash left).
     if let Some(task_id) = task_id {
         left.extend(super::leftovers::discard_task(
-            &*app.store,
+            &**app.store.as_ref().ok_or_else(|| AppError::Io {
+                detail: crate::messages::NEEDS_THE_STORE_ITSELF.to_owned(),
+            })?,
             &*workspaces,
             task_id,
             clock.as_ref(),

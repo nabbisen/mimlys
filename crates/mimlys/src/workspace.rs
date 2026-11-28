@@ -566,6 +566,14 @@ impl WorkspaceRead for LocalWorkspaces {
             .map_err(|_| WorkspaceError::Missing)?;
         Self::tree_size(&dir)
     }
+
+    fn promotion_revert_plan(
+        &self,
+        promotion: &mimlys_core::snapshot::Promotion,
+        backup: &mimlys_core::snapshot::SnapshotRecord,
+    ) -> Result<mimlys_core::snapshot::RevertPlan, WorkspaceError> {
+        self.promotion_revert_plan_impl(promotion, backup)
+    }
 }
 
 impl WorkspaceProvider for LocalWorkspaces {
@@ -765,14 +773,6 @@ impl WorkspaceProvider for LocalWorkspaces {
         base: &mimlys_core::snapshot::SnapshotRecord,
     ) -> Result<(), WorkspaceError> {
         self.promote_apply_impl(task_id, promotion, base)
-    }
-
-    fn promotion_revert_plan(
-        &self,
-        promotion: &mimlys_core::snapshot::Promotion,
-        backup: &mimlys_core::snapshot::SnapshotRecord,
-    ) -> Result<mimlys_core::snapshot::RevertPlan, WorkspaceError> {
-        self.promotion_revert_plan_impl(promotion, backup)
     }
 
     fn revert_promotion(

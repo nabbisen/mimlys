@@ -24,13 +24,13 @@ pub fn run(
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     if let Some(p) = promotion {
-        let view = app.runtime.get_task(id)?;
+        let view = app.reader.get_task(id)?;
         let promotion_id = resolve_id(
             p,
             view.promotions.iter().map(|p| p.promotion_id.to_string()),
         )
         .map(|s| PromotionId::from_uuid(uuid::Uuid::parse_str(&s).expect("listed id")))?;
-        let plan = app.runtime.revert_plan(id, promotion_id)?;
+        let plan = app.reader.revert_plan(id, promotion_id)?;
         out.line(messages::revert_header(
             &plan.promotion_id.to_string(),
             plan.entries.len() + plan.conflicts.len(),
@@ -75,7 +75,7 @@ pub fn run(
     }
     let snapshot_id = match snapshot {
         Some(s) => {
-            let view = app.runtime.get_task(id)?;
+            let view = app.reader.get_task(id)?;
             Some(
                 resolve_id(s, view.snapshots.iter().map(|s| s.snapshot_id.to_string())).map(
                     |s| SnapshotId::from_uuid(uuid::Uuid::parse_str(&s).expect("listed id")),

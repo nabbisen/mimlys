@@ -38,7 +38,7 @@ impl Daemon {
     /// Whether this client and this daemon talk: they are of one runtime version and the daemon
     /// accepted the connection. A connection that is not usable can still `stop` the daemon.
     pub fn usable(&self) -> bool {
-        self.answer.accepted && self.hello.runtime_version == env!("CARGO_PKG_VERSION")
+        self.answer.accepted && self.hello.runtime_version == crate::daemon::wire::runtime_version()
     }
 }
 
@@ -178,7 +178,7 @@ fn greet(
     wire::write(
         &mut stream,
         &ClientHello {
-            runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+            runtime_version: crate::daemon::wire::runtime_version().to_owned(),
             config_hash: wire::config_hash(loaded.path.as_deref()),
             secrets,
         },
@@ -204,25 +204,28 @@ pub fn reach(
     loaded: &Loaded,
     remove_dead: bool,
 ) -> Result<Reach, ReachError> {
-    match socket::check_directory(run_dir) {
-        Ok(()) => {}
-        Err(SocketError::Directory {
-            fault: socket::Fault::Missing,
-            ..
-        }) => return Ok(Reach::None),
+    // Where the socket would be. A path that does not fit the platform's limit holds no socket
+    // (the daemon could not bind one there): there is no daemon, and a command that only looks
+    // for one goes on; `daemon start` says why it cannot start one there.
+    let path = match socket::socket_path(run_dir, data_dir) {
+        Ok(Some(path)) => path,
+        Ok(None) | Err(SocketError::PathTooLong { .. }) => return Ok(Reach::None),
         Err(e) => return Err(ReachError::Socket(e)),
-    }
-    let Some(path) = socket::socket_path(run_dir, data_dir).map_err(ReachError::Socket)? else {
-        return Ok(Reach::None);
     };
-    match socket::check_socket_file(&path) {
-        Ok(()) => {}
-        Err(SocketError::File {
-            fault: socket::Fault::Missing,
-            ..
-        }) => return Ok(Reach::None),
-        Err(e) => return Err(ReachError::Socket(e)),
+    // No socket, no daemon, and nothing of the directory is used. A socket that is there is
+    // looked at, and so is its directory, before anything is sent (REQ-SEC-016).
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Reach::None),
+        Err(e) => {
+            return Err(ReachError::Socket(SocketError::Io {
+                what: "looking at the socket",
+                kind: e.kind(),
+            }));
+        }
     }
+    socket::check_directory(run_dir).map_err(ReachError::Socket)?;
+    socket::check_socket_file(&path).map_err(ReachError::Socket)?;
     match connect(&path) {
         Connected::Stream(stream, peer) => {
             greet(stream, peer, path, loaded).map(|d| Reach::Daemon(Box::new(d)))

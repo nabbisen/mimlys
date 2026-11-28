@@ -197,7 +197,7 @@ pub async fn resume(
 pub fn pause(app: &App, task: &str, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     app.client.pause_task(id)?;
-    print_view(&app.runtime.get_task(id)?, out);
+    print_view(&app.reader.get_task(id)?, out);
     Ok(())
 }
 
@@ -211,7 +211,7 @@ pub fn delete(
     out: &Output,
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
-    let view = app.runtime.get_task(id)?;
+    let view = app.reader.get_task(id)?;
     if !view.task.state.is_terminal() {
         return Err(AppError::Runtime(
             mimlys_core::runtime::RuntimeError::State(mimlys_core::task::StateError::Illegal {
@@ -247,6 +247,6 @@ pub fn delete(
 pub fn cancel(app: &App, task: &str, out: &Output) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     app.client.cancel_task(id)?;
-    print_view(&app.runtime.get_task(id)?, out);
+    print_view(&app.reader.get_task(id)?, out);
     Ok(())
 }

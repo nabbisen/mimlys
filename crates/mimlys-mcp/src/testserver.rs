@@ -581,6 +581,17 @@ pub fn main() {
     if let Some(path) = std::env::var_os("MIMLYS_TESTSERVER_HEARTBEAT") {
         std::thread::spawn(move || beat(&path));
     }
+    // `MIMLYS_TESTSERVER_RUN_AT_START=<script>` runs `sh <script>` as a child of the server, in
+    // the server's own session: a process of the daemon's own tree that tries what a hostile
+    // tool server could (a request to the daemon's socket, REQ-SEC-016, THR-39).
+    if let Some(script) = std::env::var_os("MIMLYS_TESTSERVER_RUN_AT_START") {
+        let _ = std::process::Command::new("sh")
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let changed = Arc::new(AtomicBool::new(false));
     let list_requests = std::sync::atomic::AtomicUsize::new(0);

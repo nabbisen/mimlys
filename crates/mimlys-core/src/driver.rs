@@ -13,7 +13,7 @@
 
 use crate::api::{Envelope, Line, Notice, Outcome, Reply, Request, Response};
 use crate::clock::Instant;
-use crate::ids::TaskId;
+use crate::ids::{RequestId, SystemIds, TaskId};
 use crate::limits::LIM_X1_RUNNING_TASKS;
 use crate::runtime::{Runtime, RuntimeError};
 use crate::step::StepOutcome;
@@ -243,6 +243,9 @@ impl Driver {
         if let Some(response) = self.queue_resume(&envelope) {
             return response;
         }
+        if let Some(response) = self.queue_creation(&envelope, notice) {
+            return response;
+        }
         let response = self.runtime.handle_noticing(envelope, notice);
         if let Outcome::Done(Reply::Task(task) | Reply::Noted(task)) = &response.outcome
             && task.state == TaskState::Running
@@ -250,6 +253,61 @@ impl Driver {
             self.hand_over(task.task_id);
         }
         response
+    }
+
+    /// What a task started now would wait behind: the task that runs, when LIM-X1 is full.
+    fn ahead_of_new(&self) -> Option<Line> {
+        self.line.as_ref()?;
+        let running = self.runtime.running_tasks().ok()?;
+        if running.len() < LIM_X1_RUNNING_TASKS {
+            return None;
+        }
+        let behind = *running.first()?;
+        let running_since = self
+            .line()?
+            .since
+            .get(&behind)
+            .copied()
+            .unwrap_or_else(|| self.runtime.now());
+        Some(Line {
+            behind,
+            running_since,
+        })
+    }
+
+    /// A creation that starts its task (`hold` false), while LIM-X1 is full: the task is created
+    /// held, so that the creation is recorded under the client's id as it always is, and its
+    /// start waits in line under an id of its own. The answer says what it waits behind.
+    fn queue_creation(&self, envelope: &Envelope, notice: &dyn Fn(Notice)) -> Option<Response> {
+        let Request::CreateTask(create) = &envelope.request else {
+            return None;
+        };
+        if create.hold {
+            return None;
+        }
+        let line = self.ahead_of_new()?;
+        let mut held = envelope.clone();
+        if let Request::CreateTask(create) = &mut held.request {
+            create.hold = true;
+        }
+        let response = self.runtime.handle_noticing(held, notice);
+        let task = match &response.outcome {
+            Outcome::Done(Reply::Task(task)) => task.clone(),
+            _ => return Some(response),
+        };
+        let start = Envelope {
+            request_id: RequestId::new(&SystemIds),
+            session: envelope.session.clone(),
+            request: Request::ResumeTask {
+                task_id: task.task_id,
+                extend: None,
+            },
+        };
+        self.line()?.waiting.push_back(start);
+        Some(Response {
+            request_id: envelope.request_id,
+            outcome: Outcome::Done(Reply::Queued { task, line }),
+        })
     }
 
     /// A resume that LIM-X1 does not allow yet, of a task that can be resumed, waits in line: the

@@ -48,7 +48,7 @@ pub fn create(app: &App, args: &NewTask) -> Result<mimlys_core::task::Task, AppE
     };
     let from_snapshot = match (&args.from_snapshot, from_task) {
         (Some(s), Some(source)) => {
-            let view = app.runtime.get_task(source)?;
+            let view = app.reader.get_task(source)?;
             let id = crate::commands::rollback::resolve_id(
                 s,
                 view.snapshots.iter().map(|s| s.snapshot_id.to_string()),
@@ -67,7 +67,7 @@ pub fn create(app: &App, args: &NewTask) -> Result<mimlys_core::task::Task, AppE
     // A fork defaults to the source's scope; otherwise the current directory.
     let scope = match (from_task, args.scope.as_os_str().is_empty()) {
         (Some(source), true) => {
-            std::path::PathBuf::from(app.runtime.get_task(source)?.task.scope.root)
+            std::path::PathBuf::from(app.reader.get_task(source)?.task.scope.root)
         }
         (None, true) => std::path::PathBuf::from("."),
         _ => args.scope.clone(),
@@ -86,12 +86,11 @@ pub fn create(app: &App, args: &NewTask) -> Result<mimlys_core::task::Task, AppE
     let profile_name = args
         .profile
         .clone()
-        .unwrap_or_else(|| app.runtime.policy().default_profile.clone());
+        .unwrap_or_else(|| app.policy.default_profile.clone());
     let budgets = match args.steps {
         Some(steps) => {
             let base = app
-                .runtime
-                .policy()
+                .policy
                 .profile(&profile_name)
                 .map(|p| p.budgets)
                 .unwrap_or_default();
@@ -153,7 +152,7 @@ pub async fn run(
         &task.state,
     ));
     if args.hold {
-        print_view(&app.runtime.get_task(task.task_id)?, out);
+        print_view(&app.reader.get_task(task.task_id)?, out);
         return Ok(());
     }
     finish(app, task.task_id, interaction, out).await
@@ -167,7 +166,7 @@ fn lowered_by(app: &App, task: &mimlys_core::task::Task) -> Option<String> {
     if effort.chosen_by != ChosenBy::Default || effort.level >= EffortLevel::Standard {
         return None;
     }
-    let policy = app.runtime.policy();
+    let policy = &app.policy;
     let profile = policy.profile(&task.profile)?;
     match policy.effort_bound(profile).1 {
         Bound::Profile(name) => Some(format!("[policy.profiles.{name}] effort_max")),

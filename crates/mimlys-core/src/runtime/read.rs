@@ -535,6 +535,7 @@ pub(super) fn base_snapshot(
 
 /// The views of a command that only reads. Built over the reading traits
 /// alone (REQ-PERS-013).
+#[derive(Clone)]
 pub struct Reader {
     persistence: Arc<dyn PersistenceRead>,
     workspaces: Arc<dyn WorkspaceRead>,
@@ -634,4 +635,70 @@ impl Reader {
     pub fn promotion_plan(&self, task_id: TaskId) -> Result<PromotionPlan, RuntimeError> {
         promotion_plan(self.persistence.as_ref(), self.workspaces.as_ref(), task_id)
     }
+
+    /// What reversing a promotion would do, and which paths were edited since (REQ-WS-007).
+    /// Nothing is changed.
+    pub fn revert_plan(
+        &self,
+        task_id: TaskId,
+        promotion_id: crate::ids::PromotionId,
+    ) -> Result<crate::snapshot::RevertPlan, RuntimeError> {
+        let (promotion, backup) =
+            promotion_to_revert(self.persistence.as_ref(), task_id, promotion_id)?;
+        Ok(self.workspaces.promotion_revert_plan(&promotion, &backup)?)
+    }
+
+    /// The action of the task now running that cannot be undone, if any: the one a stop signal
+    /// waits for instead of interrupting (REQ-CLI-005). Read from the store, so that a client that
+    /// follows a task of a daemon asks it as the daemon's own process does.
+    pub fn irreversible_in_flight(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<super::IrreversibleAction>, RuntimeError> {
+        Ok(self
+            .persistence
+            .load_running_action(task_id)?
+            .filter(|action| !crate::action::can_be_undone(action.content().effect()))
+            .map(|action| super::IrreversibleAction {
+                action_id: action.action_id,
+                tool: action.content().tool().to_owned(),
+                effect: action.content().effect().kind,
+            }))
+    }
+}
+
+/// The promotion to reverse and its backup: an applied promotion that was not reversed, or a
+/// failed one whose own restore failed too.
+pub(super) fn promotion_to_revert(
+    persistence: &dyn PersistenceRead,
+    task_id: TaskId,
+    promotion_id: crate::ids::PromotionId,
+) -> Result<(Promotion, SnapshotRecord), RuntimeError> {
+    let promotion = persistence
+        .load_promotions(task_id)?
+        .into_iter()
+        .find(|p| p.promotion_id == promotion_id)
+        .ok_or(RuntimeError::NotFound {
+            what: "promotion".into(),
+        })?;
+    // An applied promotion, or one that failed and whose own restore failed too: the project is
+    // not as the backup holds it, and the backup is kept to restore it from.
+    if promotion.reversed_at.is_some() {
+        return Err(RuntimeError::State(crate::task::StateError::Illegal {
+            from: "reversed".into(),
+            input: "revert_promotion".into(),
+        }));
+    }
+    if !promotion.can_be_reversed() {
+        return Err(RuntimeError::State(crate::task::StateError::Illegal {
+            from: promotion.state.name().into(),
+            input: "revert_promotion".into(),
+        }));
+    }
+    let backup = persistence
+        .load_snapshot(promotion.backup_snapshot)?
+        .ok_or(RuntimeError::NotFound {
+            what: "snapshot".into(),
+        })?;
+    Ok((promotion, backup))
 }

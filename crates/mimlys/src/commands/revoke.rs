@@ -39,7 +39,7 @@ fn resolve_grant(
         return Ok(GrantId::from_uuid(uuid));
     }
     let matches: Vec<GrantId> = app
-        .runtime
+        .reader
         .get_task(task_id)?
         .grants
         .iter()
