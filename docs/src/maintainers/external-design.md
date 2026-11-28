@@ -998,13 +998,14 @@ One daemon per operating-system user and data directory serves the control API (
 
 **Where it is, and who may reach it** (REQ-SEC-016; THR-39).
 - **Unix (Linux, macOS):** a Unix domain socket of mode 0600, named `d-<hash>.sock` from a short hash of the data directory's canonical path, in the registry's directory of RFC 013 (`$XDG_RUNTIME_DIR/mimlys`, or its fallbacks).
-  - **The directory is checked by both ends** before use: owned by the user, mode 0700, not a symbolic link. A path that does not fit the platform's limit for a socket (about 104 bytes on macOS) is refused, saying why, never truncated.
+  - **The directory is checked by both ends** whenever a socket is in it: owned by the user, mode 0700, not a symbolic link, and the socket a socket of the user's, mode 0600. A directory with no socket holds no daemon, and a command that only looks for one goes on (review of 014c). A path that does not fit the platform's limit for a socket (about 104 bytes on macOS) is refused, saying why, never truncated.
   - **The check is mutual.** The daemon reads the client's peer credentials and refuses every uid but its own. The client reads the daemon's and refuses to send anything to a process of another user.
 - **Windows** (from 014d): a named pipe, created as its first instance, with a DACL for the user's SID alone; the client checks the server's process owner before it sends.
 - **The daemon's own tree is refused** (Amendment 1, item 5). A request from a process in a session that the daemon made (the worker's, an MCP server's) is refused, the reason said and the refusal recorded. On Unix this is the peer's session id (`getsid`), against the sessions of the daemon's children; on Windows, Job Object membership. A descendant that leaves its session (a new `setsid`) is not caught: THR-39 says so.
-- **The session is verified:** the client's pid from the peer credentials where the system gives one, never the client's claim, and the daemon's own user as `os_user`.
+- **The session is verified:** the client's pid from the peer credentials, never the client's claim, and the daemon's own user as `os_user`. **A peer whose pid the system does not give is refused,** saying why: without it the daemon cannot tell its own tree from a client (review of 014c). Linux and macOS give one.
+- **The worker leads a session of its own** (from 0.14, in both modes), as every MCP server does, so that the session check can tell the daemon's tree from its clients. A session leader is a group leader, so the kill of the worker's group is unchanged.
 
-**The hello** (fixed for every version, never changing shape). A connection opens with one frame each way, length-prefixed JSON, as the worker's protocol frames are.
+**The hello** (fixed for every version, never changing shape). A connection opens with three frames, length-prefixed JSON (LIM-O22): the daemon's hello, the client's hello, and the daemon's answer (`accepted`, `refusal`, or `writes_refused`), since a refusal needs an answer.
 - **The daemon's hello:** the protocol's name, the hello's version, the runtime's version, the configuration's hash, and a random salt.
 - **The client's hello:** the runtime's version, the hash of its own configuration file, and, for each `env:` reference, a keyed hash of its own value under the salt.
 - **What the daemon answers:**
@@ -1014,15 +1015,16 @@ One daemon per operating-system user and data directory serves the control API (
 
 **Lifecycle** (REQ-CLI-008).
 - **`mimlys daemon start`** detaches (a new session, its standard streams closed) and returns once the daemon answers a hello, or fails with the reason. `--foreground` keeps it attached, for a service manager or a test.
-- **`mimlys daemon stop`:** running tasks pause at their next boundary (REQ-CLI-005's rule, within LIM-O2 for an execution). It lists every task it paused and how to resume it, then exits. Nothing resumes by itself.
-- **`mimlys daemon restart`:** a stop, then a start, then the resumption of exactly the tasks the stop paused, said by name.
-- **`mimlys daemon status`:** the daemon's pid, uptime, socket, clients and configuration hash, the tasks it holds, and, on request, the tail of its log.
+- **`mimlys daemon stop`:** running tasks pause at their next boundary (REQ-CLI-005's rule, within LIM-O2 for an execution). **While it waits for an action that cannot be undone** (up to its own deadline, within LIM-O24), the client says which action it waits for and until when. It lists every task it paused, and every task that waited in line, with how to resume each, then exits. Nothing resumes by itself.
+- **`mimlys daemon restart`:** a stop, then a start, then the resumption of exactly the tasks the stop paused, and the tasks that waited in line put back in it, in their order, each said by name. The line itself lives in the daemon, not in the store: a daemon that ended any other way leaves its queued tasks `created`, and `status` lists them.
+- **`mimlys daemon status`:** the daemon's pid, uptime, socket and configuration hash; its clients, counted as client processes (by their pid) with their connections beside them; the tasks it holds and those in line; and, on request, the tail of its log.
 - **Idle:** no client connected, and no task running, queued or waiting for the user. A daemon idle for LIM-O13 exits and says so in its log. `[runtime] daemon_idle` sets it, `never` included.
 - **A dead daemon:** a client whose connect is refused, or not answered within LIM-O14, with the store's lock free, removes the stale socket, says `daemon not running` once, and runs embedded.
 - **On-demand start** (`[runtime] serve = on_demand`) is 014d's.
 
 **One owner, one scheduler** (REQ-PERS-014, REQ-SCHED-008).
-- **The daemon holds the store's lock for its life.** An embedded runtime that meets it names the daemon's pid.
+- **The daemon holds the store's lock for its life.** An embedded runtime that meets it names the daemon's pid. **What a command does with its own runtime goes through the daemon** while one serves: `mimlys model probe` is a request the daemon runs, never refused for the lock (review of 014c).
+- **The daemon's record in the registry** is a file of its own kind (`daemon-<id>.daemon`, with its lock held), not an entry, so that an older release, which reaps an entry it cannot parse, leaves it alone.
 - **The daemon's driver owns every client's tasks:** LIM-X1 and LIM-X2 are counted across them, and the engine gate is the daemon's. Its clients take no registry slots, and the daemon is recorded in the registry, so that the machine view of `status` shows it.
 - **A task that waits in line says so:** `queued behind task <id>, running since <time>`.
 
@@ -1033,7 +1035,7 @@ One daemon per operating-system user and data directory serves the control API (
   - **A client that goes away** leaves the task running, and the daemon goes on.
 - **A broken connection:** the client reconnects within LIM-O14 and sends the same request once more, with the same id (§4), and answers with what the store recorded. It never says that it does not know whether a request took effect.
 
-**The daemon's log** is a file under the data directory (`logs/daemon.log`). The file is bounded by LIM-O20 and its rotated copies by LIM-O21, the oldest dropped. It holds the connections, which are not events.
+**The daemon's log** is a file under the data directory (`logs/daemon.log`). The file is bounded by LIM-O20 and its rotated copies by LIM-O21, the oldest dropped. It holds the connections, which are not events. A refusal of a peer is both a line of the log and the event `daemon.refused` (§17.1), because a refusal is what an audit looks for.
 
 **`status` in both modes** says which mode is in force, and, when served, what `mimlys daemon status` says first.
 

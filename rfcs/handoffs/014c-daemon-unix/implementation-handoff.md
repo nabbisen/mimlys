@@ -1,5 +1,7 @@
 # Handoff 014c — The daemon on Linux and macOS (release 0.14, phase 2)
 
+**Status (2026-11-28):** items 0 to 7 landed at `82eb524` (`.git-exclude/reviewed/handoff-014c/README.md`); 014c-5 next.
+
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), read with its **Amendment 1**, items 4 to 11. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 2), after 014a and 014b.
 
 **Specification** (written before this handoff):
@@ -110,3 +112,38 @@ Run each, and say which test kills it:
   - the served run's results, and the tests that cannot be served, with why;
   - what is still open, and why;
   - anything in §19.5 that the code showed to be wrong or unclear. Say it, and do not work around it.
+
+## After review: 014c-5
+
+The review of 2026-11-28 (`.git-exclude/reviewed/handoff-014c/README.md`) approved the stack #231 to #235 and landed it by fast-forward (`main` = `82eb524`). External design §19.5 now holds what the code showed: three frames, the worker's own session, the directory checked when a socket is in it, and the registry's record as a file of its own kind. **Accepted as you did them:**
+- the worker's `setsid`;
+- the `daemon.refused` event and LIM-O22 to O24;
+- one connection per request;
+- `--detach` on `reject`;
+- the debug-only seams (checked: each reads `cfg!(debug_assertions)`, and the MCP test server is behind its feature);
+- the unreachable `Gone` arms of `grant` and `revoke`.
+
+Six things remain before the release.
+
+1. **A peer with no pid is refused** (your open point; REQ-SEC-016).
+   - **What is wrong:** it is served, without the own-tree check, so the check fails open.
+   - **Change:** refused, saying that the system gave no process id and the daemon cannot tell its own tree from it. Both supported platforms give one, so nothing works less; a platform that does not fails closed.
+2. **`restart` puts the line back** (your open point; §19.5).
+   - **What is wrong:** a task that waited in line stays `created` after a restart, and nothing says so.
+   - **Change:** `stop` lists the queued tasks with how to resume them. `restart` resumes what its stop paused and puts the queued ones back in line, in their order, each said by name. A daemon that ended any other way leaves them `created`, and `status` lists them.
+3. **The CI counts served skips apart** (the lead's point).
+   - **What is wrong:** "skipped tests on ubuntu-latest: 46" mixes the served run's `not served` lines with the tier's skips. The baseline that every review reads ("0 except windows-latest's 2") is lost.
+   - **Change:** the served step prints its own line, `not served on <runner>: <n>`, with the names, and the `skipped tests on …` line counts the embedded run alone, as before.
+4. **`daemon status` counts client processes** (your open point).
+   - **What is wrong:** it counts connections, which a follower holds and each request opens.
+   - **Change:** it counts client processes, by the peer's pid, with their connections beside them, and says which it counts.
+5. **`model probe` runs through the daemon** (your served list: 25 tests "not served").
+   - **What is wrong:** with a daemon running, `model probe` is refused for the store's lock. A user would have to stop the daemon to learn whether a model acts.
+   - **Change:** the probe is a request the daemon runs, with its class and detail as the answer, as in embedded mode. The 25 tests are then served.
+6. **`daemon stop` says what it waits for.**
+   - **What is wrong:** it may wait up to LIM-O24 (700 s) for an action that cannot be undone, saying nothing.
+   - **Change:** the client says which action of which task it waits for, and until when (its deadline), and says again when it ends.
+
+**Tests:** one for each item, the served run included for item 5. **Mutations:** for items 1, 2 and 5, one each, and say which test kills it.
+
+**Return:** `.git-exclude/review-requests/014c-5-after-review/README.md`.
