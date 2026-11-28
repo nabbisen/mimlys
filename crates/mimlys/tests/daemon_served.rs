@@ -62,7 +62,7 @@ struct Env {
     /// granted (the tools are not beside the worker, RFC 017).
     #[allow(dead_code)]
     tools: tempfile::TempDir,
-    granted: std::cell::Cell<bool>,
+    granted: std::sync::atomic::AtomicBool,
 }
 
 /// Where the probe tool is for the tests, and the folder to declare for it: itself (beside the
@@ -152,7 +152,7 @@ env_allow = ["PATH", "MIMLYS_TESTSERVER_RUN_AT_START", "SystemRoot", "ComSpec", 
             config,
             extra_env: vec![],
             tools,
-            granted: std::cell::Cell::new(false),
+            granted: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -197,7 +197,7 @@ env_allow = ["PATH", "MIMLYS_TESTSERVER_RUN_AT_START", "SystemRoot", "ComSpec", 
     /// that needs it). Once for an environment.
     #[cfg(windows)]
     fn grant_tools(&self) {
-        if self.granted.replace(true) {
+        if self.granted.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         let dir = tool_in(&self.tools).1;
@@ -1439,4 +1439,37 @@ fn req_sec_016_a_tool_in_the_appcontainer_cannot_open_the_daemons_pipe() {
         !seen.iter().any(|o| o.contains("pipe-connect connected")),
         "{seen:?}"
     );
+}
+
+/// REQ-SCHED-008, external design §19.5 (found by the test of two clients at once, handoff 014d):
+/// **two creations at once through one daemon both succeed**: the second waits in line, as a task
+/// that starts behind another does. Each used to find the line free and start; LIM-X1 then
+/// refused one with `conflict`, or the two wrote the same snapshot object at the same moment.
+/// (`mutation: creations not taken one at a time`)
+#[test]
+fn req_sched_008_two_creations_at_once_through_a_running_daemon_both_succeed() {
+    let env = Env::new(&[complete(), complete()]);
+    env.start_daemon();
+    let scopes: Vec<String> = ["one", "two"]
+        .iter()
+        .map(|name| {
+            let dir = env.data.path().join(name);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/lib.rs"), "fn a() {}\n").unwrap();
+            dir.to_string_lossy().into_owned()
+        })
+        .collect();
+    let results: Vec<common::Bounded> = std::thread::scope(|s| {
+        let handles: Vec<_> = scopes
+            .iter()
+            .map(|scope| {
+                let env = &env;
+                s.spawn(move || env.run(&["--json", "run", "goal", "--detach", "--scope", scope]))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for r in &results {
+        assert_eq!(r.code(), 0, "{}\n{}", r.stdout, r.stderr);
+    }
 }
