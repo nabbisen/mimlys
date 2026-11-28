@@ -599,44 +599,60 @@ impl PipeListener {
             Some(instance) => instance,
             None => self.instance(false)?,
         };
+        let connected = self.connect(&waiting);
+        // The next instance is made before this one is handed over, and also when this one failed:
+        // the name is never without an instance (a client would find no pipe). If it cannot be
+        // made now, the next `accept` makes it.
+        if let Ok(next) = self.instance(false) {
+            *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(next);
+        }
+        connected?;
+        Ok(PipeStream::new(waiting, End::Server))
+    }
+
+    /// Waits until a client is connected to `waiting`, or the stopper is used.
+    fn connect(&self, waiting: &Owned) -> io::Result<()> {
         let event = event(true)?;
         let mut overlapped = overlapped_with(&event);
         let handle = waiting.raw();
         // SAFETY: the handle is an open overlapped pipe instance; the overlapped outlives the
         // operation (it is waited for, or cancelled and waited for, before this function returns).
         let started = unsafe { ConnectNamedPipe(handle, &mut overlapped) };
-        if started == 0 {
-            let error = last();
-            match code(&error) {
-                // A client connected between the creation of the instance and this call.
-                Some(ERROR_PIPE_CONNECTED) => {}
-                Some(ERROR_IO_PENDING) => {
-                    let handles = [event.raw(), self.stop.raw()];
-                    // SAFETY: both handles are open events; the array outlives the call.
-                    let woken = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
-                    let mut moved = 0u32;
-                    if woken != WAIT_OBJECT_0 {
-                        // Stopped: the connect is cancelled and waited for.
-                        // SAFETY: the overlapped is the connect's own.
-                        unsafe { CancelIoEx(handle, &overlapped) };
-                        // SAFETY: as above; the call waits for the cancelled connect to be over.
-                        unsafe { GetOverlappedResult(handle, &overlapped, &mut moved, 1) };
-                        return Err(io::Error::from(io::ErrorKind::Interrupted));
-                    }
-                    // SAFETY: the connect is over (its event was signalled).
-                    if unsafe { GetOverlappedResult(handle, &overlapped, &mut moved, 0) } == 0 {
-                        return Err(last());
-                    }
+        if started != 0 {
+            return Ok(());
+        }
+        let error = last();
+        match code(&error) {
+            // A client connected between the creation of the instance and this call, and one that
+            // has gone since is a connection too: what it wrote is there to be read, and the
+            // check of its process (which the daemon makes next) says whether it is still known.
+            Some(ERROR_PIPE_CONNECTED | ERROR_NO_DATA) => Ok(()),
+            Some(ERROR_IO_PENDING) => {
+                let handles = [event.raw(), self.stop.raw()];
+                // SAFETY: both handles are open events; the array outlives the call.
+                let woken = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
+                let mut moved = 0u32;
+                if woken != WAIT_OBJECT_0 {
+                    // Stopped: the connect is cancelled and waited for.
+                    // SAFETY: the overlapped is the connect's own.
+                    unsafe { CancelIoEx(handle, &overlapped) };
+                    // SAFETY: as above; the call waits for the cancelled connect to be over.
+                    unsafe { GetOverlappedResult(handle, &overlapped, &mut moved, 1) };
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
                 }
-                _ => return Err(error),
+                // SAFETY: the connect is over (its event was signalled).
+                if unsafe { GetOverlappedResult(handle, &overlapped, &mut moved, 0) } == 0 {
+                    let error = last();
+                    return if code(&error) == Some(ERROR_NO_DATA) {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    };
+                }
+                Ok(())
             }
+            _ => Err(error),
         }
-        // The next instance is made before this one is handed over; if it cannot be made now, the
-        // next `accept` makes it.
-        if let Ok(next) = self.instance(false) {
-            *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(next);
-        }
-        Ok(PipeStream::new(waiting, End::Server))
     }
 
     /// The SIDs of the entries of the pipe's DACL, read back from the system (a test's proof that
