@@ -573,7 +573,7 @@ impl PipeListener {
                 PIPE_BUFFER,
                 PIPE_BUFFER,
                 0,
-                &self.security.attributes,
+                std::ptr::null(),
             )
         };
         if handle == INVALID_HANDLE_VALUE {
