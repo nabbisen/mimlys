@@ -180,6 +180,34 @@ fn req_cli_008_start_status_stop() {
     assert!(records.is_empty(), "{records:?}");
 }
 
+/// REQ-CLI-008, external design §19.5 (found by the served run on `windows-latest`, handoff 014d):
+/// **`daemon start` returns when it has started the daemon, though its caller reads its output through
+/// pipes.** A process made with inheritable handles inherits every inheritable handle of its parent, so
+/// the daemon held the caller's pipes open for as long as it lived, and a caller that reads to the end
+/// of the stream (`Command::output`, a script capturing the output) waited for the daemon to end.
+/// (`mutation: the standard handles left inheritable`)
+#[test]
+fn req_cli_008_a_start_whose_output_is_read_through_pipes_returns_when_start_does() {
+    let env = Env::new();
+    let mut command = env.command(&["daemon", "start"]);
+    command.stdin(std::process::Stdio::null());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let _ = tx.send(command.output());
+    });
+    let out = rx
+        .recv_timeout(Duration::from_secs(90))
+        .expect("`daemon start` did not return: the daemon holds its output pipes")
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = reader.join();
+    assert_eq!(env.status()["running"], true);
+}
+
 /// REQ-SEC-016: the socket is of mode 0600, in a directory of mode 0700; the daemon is recorded
 /// in the registry by a file an older release does not read as an entry.
 #[test]

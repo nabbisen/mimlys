@@ -33,7 +33,8 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING,
     ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
     ERROR_PIPE_NOT_CONNECTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -930,6 +931,25 @@ pub fn random_bytes(buf: &mut [u8]) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Makes this process's own standard handles ones that a child it starts next does not inherit.
+/// A child made with `bInheritHandles` (every `std::process::Command` on Windows) inherits **every**
+/// inheritable handle of its parent, not only the three it was given: the daemon `start` makes would
+/// otherwise hold the pipes its own caller reads (a test harness, a script that captures its output)
+/// open for as long as it lives, and the caller would wait for the end of a stream that never ends.
+/// The three that the child is given are made for it by the standard library, whatever this says.
+pub fn keep_standard_handles_from_children() {
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: the standard handle is read, and its inherit flag cleared; a null or invalid
+        // handle (no such stream) is left as it is.
+        unsafe {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
 }
 
 /// Points the standard streams of this process at `NUL` and closes what they were: the daemon
