@@ -46,7 +46,6 @@ pub fn init(section: &LoggingSection, secrets: &[(String, String)]) -> Option<&'
 /// Installs the subscriber of a daemon: the same lines as [`init`], redacted as they are there, in
 /// the daemon's log file (`logs/daemon.log`, bounded by LIM-O20 and LIM-O21) and not on standard
 /// error, which the daemon has closed.
-#[cfg(unix)]
 pub fn init_daemon(
     section: &LoggingSection,
     secrets: &[(String, String)],
@@ -75,14 +74,12 @@ pub fn init_daemon(
 }
 
 /// The daemon's log file with every written line redacted.
-#[cfg(unix)]
 struct RedactingFile {
     redactor: Arc<Redactor>,
     log: Arc<crate::daemon::log::RotatingLog>,
     buffer: Vec<u8>,
 }
 
-#[cfg(unix)]
 impl Write for RedactingFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.buffer.extend_from_slice(buf);
@@ -102,7 +99,6 @@ impl Write for RedactingFile {
     }
 }
 
-#[cfg(unix)]
 impl Drop for RedactingFile {
     fn drop(&mut self) {
         let _ = self.flush();

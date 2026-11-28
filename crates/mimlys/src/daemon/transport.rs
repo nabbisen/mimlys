@@ -15,7 +15,7 @@
 use crate::client::{ConnectionBroken, Transport};
 use crate::config::Loaded;
 use crate::daemon::connect::{self, Daemon, Reach};
-use crate::daemon::socket;
+use crate::daemon::plat;
 use crate::daemon::wire::{self, ProbeFailure, Reply, Request};
 use crate::probe::drive::Stop;
 use crate::probe::run::Ended;
@@ -190,7 +190,7 @@ impl Socket {
                     }
                     // The daemon beats every couple of seconds: a connection that is silent for
                     // longer than that is gone.
-                    let _ = socket::set_timeouts(
+                    let _ = plat::set_timeouts(
                         &daemon.stream,
                         Some(std::time::Duration::from_secs(10)),
                         None,

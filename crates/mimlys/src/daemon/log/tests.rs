@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 /// External design §19.5, LIM-O20 and LIM-O21: the log is bounded in size and in the number of
@@ -46,7 +47,9 @@ fn ed_19_5_the_log_rotates_by_size_and_keeps_a_bounded_number_of_copies() {
     }
 }
 
-/// The log is the user's own: its directory 0700 and its file 0600.
+/// The log is the user's own: its directory 0700 and its file 0600 (Unix: Windows's directories
+/// are the user's by the data directory's own permissions, `create_private_dir`).
+#[cfg(unix)]
 #[test]
 fn ed_19_5_the_log_is_the_users_own() {
     let dir = tempfile::tempdir().unwrap();

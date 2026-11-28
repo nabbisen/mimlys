@@ -3,10 +3,9 @@
 //! repeat after a broken connection, `stop` and `restart` with a task running, the line, and the
 //! daemon's own tree.
 //!
-//! Each test owns one environment (one registry and so one socket, one data directory) and one
-//! daemon, which it stops when it ends. Unix only: the daemon is Linux's and macOS's in this
-//! release.
-#![cfg(unix)]
+//! Each test owns one environment (one registry and so one socket or pipe, one data directory) and
+//! one daemon, which it stops when it ends. On Windows the tools run in the AppContainer and the
+//! tests that need a signal to a process (Ctrl-C) are not there: there is no portable one.
 
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -35,9 +34,10 @@ fn ask() -> Value {
 }
 
 /// A host tool that runs for `secs` seconds: on Linux it leaves a sleeper in a session of its own
-/// too (the tree a cancel must end); macOS has no `setsid` command, and its tool only sleeps.
+/// too (the tree a cancel must end), and on Windows one in a process group of its own; macOS has
+/// no `setsid` command, and its tool only sleeps.
 fn slow(secs: &str) -> Value {
-    let mode = if cfg!(target_os = "linux") {
+    let mode = if cfg!(any(target_os = "linux", windows)) {
         "setsid-sleep"
     } else {
         "sleep"
@@ -58,6 +58,35 @@ struct Env {
     data: tempfile::TempDir,
     config: PathBuf,
     extra_env: Vec<(String, String)>,
+    /// Windows: a folder of its own holding a copy of the probe tool, which the container is
+    /// granted (the tools are not beside the worker, RFC 017).
+    #[allow(dead_code)]
+    tools: tempfile::TempDir,
+    granted: std::sync::atomic::AtomicBool,
+}
+
+/// Where the probe tool is for the tests, and the folder to declare for it: itself (beside the
+/// worker) on Unix; on Windows a copy in a folder of its own.
+fn tool_in(tools: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+    #[cfg(windows)]
+    {
+        let dir = PathBuf::from(
+            tools
+                .path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\"),
+        );
+        let tool = dir.join(probe_tool().file_name().unwrap());
+        std::fs::copy(probe_tool(), &tool).unwrap();
+        (tool, dir)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tools;
+        (probe_tool(), probe_tool().parent().unwrap().to_path_buf())
+    }
 }
 
 impl Env {
@@ -72,6 +101,8 @@ impl Env {
     /// its section).
     fn with(script: &[Value], extra_tools: &str, extra_server: &str) -> Self {
         let data = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let (tool_path, tool_dir) = tool_in(&tools);
         let config = data.path().join("config.toml");
         let script_path = data.path().join("script.json");
         std::fs::write(&script_path, serde_json::to_string(script).unwrap()).unwrap();
@@ -93,16 +124,25 @@ arg_pattern = "[0-9]+"
 max_args = 2
 effect = "workspace_write"
 timeout_ms = 60000
+[host_tools.pipe]
+command = {tool:?}
+read_paths = [{tooldir:?}]
+allowed_args = ["pipe-connect"]
+arg_pattern = "[A-Za-z0-9_.:\\\\-]+"
+allow_paths = true
+max_args = 2
+effect = "workspace_write"
+timeout_ms = 60000
 [servers.rypsok]
 command = {server:?}
-env_allow = ["PATH", "MIMLYS_TESTSERVER_RUN_AT_START"]
+env_allow = ["PATH", "MIMLYS_TESTSERVER_RUN_AT_START", "SystemRoot", "ComSpec", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA"]
 {extra_server}
 "#,
             data = data.path().join("data").to_string_lossy(),
             script = script_path.to_string_lossy(),
             builtin = BUILTIN,
-            tool = probe_tool().to_string_lossy(),
-            tooldir = probe_tool().parent().unwrap().to_string_lossy(),
+            tool = tool_path.to_string_lossy(),
+            tooldir = tool_dir.to_string_lossy(),
             server = testserver().to_string_lossy(),
         );
         std::fs::write(&config, text).unwrap();
@@ -111,6 +151,8 @@ env_allow = ["PATH", "MIMLYS_TESTSERVER_RUN_AT_START"]
             data,
             config,
             extra_env: vec![],
+            tools,
+            granted: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -150,7 +192,26 @@ env_allow = ["PATH", "MIMLYS_TESTSERVER_RUN_AT_START"]
         (out.code(), value)
     }
 
+    /// Windows: the container is granted the folder of the tools, as a user does for a declared
+    /// toolchain directory (REQ-CONF-008), before a daemon holds the store (the grant is a command
+    /// that needs it). Once for an environment.
+    #[cfg(windows)]
+    fn grant_tools(&self) {
+        if self.granted.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let dir = tool_in(&self.tools).1;
+        let (code, granted) = self.json(&["toolchain", "grant", dir.to_str().unwrap(), "--yes"]);
+        assert_eq!(code, 0, "{granted}");
+    }
+
+    #[cfg(not(windows))]
+    fn grant_tools(&self) {
+        let _ = &self.granted;
+    }
+
     fn start_daemon(&self) {
+        self.grant_tools();
         let out = self.run(&["daemon", "start"]);
         assert_eq!(out.code(), 0, "{}\n{}", out.stdout, out.stderr);
     }
@@ -225,9 +286,9 @@ impl Drop for Env {
     fn drop(&mut self) {
         let pid = self.daemon_pid_quietly();
         let _ = self.run(&["daemon", "stop"]);
-        if let Some(pid) = pid.and_then(rustix::process::Pid::from_raw) {
+        if let Some(pid) = pid.and_then(|p| u32::try_from(p).ok()) {
             std::thread::sleep(Duration::from_millis(300));
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            common::kill_pid(pid);
         }
     }
 }
@@ -264,8 +325,26 @@ fn wait_for(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
     done()
 }
 
+/// How many processes of a slow tool's tree run now (Windows): the probe tool's own processes
+/// whose command line holds `sleep <secs>` (the tool, and the sleeper it left in a group of its own).
+#[cfg(windows)]
+fn sleepers(secs: &str) -> usize {
+    let script = format!(
+        "@(Get-CimInstance Win32_Process | Where-Object {{ $_.Name -like 'mimlys-probe-tool*' -and $_.CommandLine -match 'sleep {secs}' }}).Count"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
 /// How many processes of a slow tool's tree run now: those whose command line ends with
 /// `sleep <secs>` (the tool, its shell and its sleepers).
+#[cfg(unix)]
 fn sleepers(secs: &str) -> usize {
     let out = Command::new("pgrep")
         .args(["-f", &format!("sleep {secs}$")])
@@ -398,9 +477,11 @@ fn req_task_006_a_running_host_tool_is_cancelled_from_a_second_client() {
 }
 
 /// REQ-CLI-005, external design §19.5: **Ctrl-C in a following client pauses the task, and
-/// closing it leaves the task running.** The first signal asks for a pause at the boundary; a
+/// closing it leaves the task running.** (Unix: a signal to a process has no portable form on
+/// Windows.) The first signal asks for a pause at the boundary; a
 /// client that is killed outright (its terminal closed) leaves the task running in the daemon,
 /// which goes on to its end.
+#[cfg(unix)]
 #[test]
 fn req_cli_005_ctrl_c_in_a_following_client_pauses_and_closing_it_leaves_the_task_running() {
     // Ctrl-C: the pause.
@@ -503,22 +584,35 @@ fn req_sec_016_a_request_from_the_daemons_own_tree_is_refused_and_recorded() {
     let probe_dir = tempfile::tempdir().unwrap();
     let marker = probe_dir.path().join("task-id");
     let (code_file, err_file) = (probe_dir.path().join("code"), probe_dir.path().join("err"));
-    let script = probe_dir.path().join("try-approve.sh");
+    let script = probe_dir.path().join(if cfg!(windows) {
+        "try-approve.cmd"
+    } else {
+        "try-approve.sh"
+    });
     // Filled in after the environment exists (its registry and configuration are the script's).
     let mut env = Env::new(&[write_file(), complete()]);
     let run_dir = env.registry.path();
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nwhile [ ! -s {marker:?} ]; do sleep 0.1; done\nMIMLYS_RUN_DIR={run:?} MIMLYS_CONFIG= {bin:?} --config {config:?} approve \"$(cat {marker:?})\" > /dev/null 2> {err:?}\necho $? > {code:?}\n",
-            run = run_dir,
-            bin = env!("CARGO_BIN_EXE_mimlys"),
-            config = env.config,
-            err = err_file,
-            code = code_file,
-        ),
-    )
-    .unwrap();
+    #[cfg(unix)]
+    let text = format!(
+        "#!/bin/sh\nwhile [ ! -s {marker:?} ]; do sleep 0.1; done\nMIMLYS_RUN_DIR={run:?} MIMLYS_CONFIG= {bin:?} --config {config:?} approve \"$(cat {marker:?})\" > /dev/null 2> {err:?}\necho $? > {code:?}\n",
+        run = run_dir,
+        bin = env!("CARGO_BIN_EXE_mimlys"),
+        config = env.config,
+        err = err_file,
+        code = code_file,
+    );
+    // The same, as a batch file: wait for the marker, ask the daemon to approve, say how it ended.
+    #[cfg(windows)]
+    let text = format!(
+        "@echo off\r\n:wait\r\nif exist \"{marker}\" (for %%A in (\"{marker}\") do if %%~zA GTR 0 goto go)\r\nping -n 2 127.0.0.1 >nul\r\ngoto wait\r\n:go\r\nset /p TASK=<\"{marker}\"\r\nset MIMLYS_RUN_DIR={run}\r\nset MIMLYS_CONFIG=\r\n\"{bin}\" --config \"{config}\" approve %TASK% >nul 2>\"{err}\"\r\n(echo %ERRORLEVEL%) >\"{code}\"\r\n",
+        marker = marker.display(),
+        run = run_dir.display(),
+        bin = env!("CARGO_BIN_EXE_mimlys"),
+        config = env.config.display(),
+        err = err_file.display(),
+        code = code_file.display(),
+    );
+    std::fs::write(&script, text).unwrap();
     env = env.env("MIMLYS_TESTSERVER_RUN_AT_START", script.to_str().unwrap());
     env.start_daemon();
     let id = env.run_detached(&[]);
@@ -865,7 +959,10 @@ fn daemon_pid_in_registry(env: &Env) -> Option<i32> {
         .find_map(|e| {
             let text = std::fs::read_to_string(e.path()).ok()?;
             let record: Value = serde_json::from_str(&text).ok()?;
-            i32::try_from(record["pid"].as_i64()?).ok()
+            let pid = i32::try_from(record["pid"].as_i64()?).ok()?;
+            // A daemon that was killed leaves its record until the next one is made (on Unix its
+            // socket too): the record of a process that is gone is no daemon.
+            common::pid_alive(u32::try_from(pid).ok()?).then_some(pid)
         })
 }
 
@@ -874,8 +971,8 @@ struct EndsDaemon(Option<i32>);
 
 impl Drop for EndsDaemon {
     fn drop(&mut self) {
-        if let Some(pid) = self.0.and_then(rustix::process::Pid::from_raw) {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+        if let Some(pid) = self.0.and_then(|p| u32::try_from(p).ok()) {
+            common::terminate_pid(pid);
         }
     }
 }
@@ -1073,8 +1170,8 @@ fn req_cli_008_a_daemon_that_ended_another_way_leaves_the_line_created_and_statu
         return;
     };
     let (first, second) = (&ids[0], &ids[1]);
-    let pid = rustix::process::Pid::from_raw(env.daemon_pid().unwrap()).unwrap();
-    rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+    // (A stop signal on Unix, which nobody answers; the end of the process on Windows.)
+    common::terminate_pid(u32::try_from(env.daemon_pid().unwrap()).unwrap());
     assert!(
         wait_for(Duration::from_secs(60), || {
             daemon_pid_in_registry(&env).is_none()
@@ -1291,4 +1388,91 @@ fn req_mdl_011_a_probe_while_a_task_runs_in_the_daemon_is_refused_naming_it() {
     assert_eq!(scopes, 0, "nothing of the probe is left");
     assert_eq!(env.state(first), "running", "the task goes on");
     assert_eq!(env.run(&["task", "cancel", first]).code(), 0);
+}
+
+/// REQ-SEC-016, THR-39, external design §19.5 (Windows): **a tool in the AppContainer cannot open
+/// the daemon's pipe.** Its token is not the user's SID alone, so the pipe's DACL refuses it by
+/// construction: the host tool the task runs (inside the worker's container) is told "permission
+/// denied", while the same open by the user's own process works.
+#[cfg(windows)]
+#[test]
+fn req_sec_016_a_tool_in_the_appcontainer_cannot_open_the_daemons_pipe() {
+    // The pipe's name is known once the data directory is there; the script names it.
+    let env = Env::new(&[]);
+    if !full_tier(
+        &env,
+        "req_sec_016_a_tool_in_the_appcontainer_cannot_open_the_daemons_pipe",
+    ) {
+        return;
+    }
+    let data = env.data.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let name = mimlys::daemon::pipe::pipe_name(&data).unwrap().unwrap();
+    let script = [
+        json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "pipe", "args": ["pipe-connect", name]}}),
+        complete(),
+    ];
+    std::fs::write(
+        env.data.path().join("script.json"),
+        serde_json::to_string(&script).unwrap(),
+    )
+    .unwrap();
+    env.start_daemon();
+    // The user's own process opens it: it is there.
+    let own = mimlys_exec::daemon_pipe::PipeStream::connect(&name, Duration::from_secs(10));
+    assert!(own.is_ok(), "{:?}", own.err());
+    drop(own);
+    let id = env.run_detached(&["--grant", "host_tool:pipe"]);
+    env.wait_state(&id, "completed");
+    let conn = rusqlite::Connection::open(env.data.path().join("data/mimlys.db")).unwrap();
+    let mut stmt = conn
+        .prepare("select o.record from observations o join actions a on a.action_id = o.action_id where a.task_id = ?1 order by o.rowid")
+        .unwrap();
+    let seen: Vec<String> = stmt
+        .query_map([&id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        seen.iter()
+            .any(|o| o.contains("pipe-connect failed: permission denied")),
+        "the tool in the container was not refused by the pipe: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|o| o.contains("pipe-connect connected")),
+        "{seen:?}"
+    );
+}
+
+/// REQ-SCHED-008, external design §19.5 (found by the test of two clients at once, handoff 014d):
+/// **two creations at once through one daemon both succeed**: the second waits in line, as a task
+/// that starts behind another does. Each used to find the line free and start; LIM-X1 then
+/// refused one with `conflict`, or the two wrote the same snapshot object at the same moment.
+/// (`mutation: creations not taken one at a time`)
+#[test]
+fn req_sched_008_two_creations_at_once_through_a_running_daemon_both_succeed() {
+    let env = Env::new(&[complete(), complete()]);
+    env.start_daemon();
+    let scopes: Vec<String> = ["one", "two"]
+        .iter()
+        .map(|name| {
+            let dir = env.data.path().join(name);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/lib.rs"), "fn a() {}\n").unwrap();
+            dir.to_string_lossy().into_owned()
+        })
+        .collect();
+    let results: Vec<common::Bounded> = std::thread::scope(|s| {
+        let handles: Vec<_> = scopes
+            .iter()
+            .map(|scope| {
+                let env = &env;
+                s.spawn(move || env.run(&["--json", "run", "goal", "--detach", "--scope", scope]))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for r in &results {
+        assert_eq!(r.code(), 0, "{}\n{}", r.stdout, r.stderr);
+    }
 }

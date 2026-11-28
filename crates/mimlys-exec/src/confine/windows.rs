@@ -157,6 +157,12 @@ impl Job {
         Ok(())
     }
 
+    /// The job's handle as a number, for the daemon's check of its own tree: only valid while the
+    /// job lives (`daemon_pipe::process_in_any_job` refuses on an error of the system's).
+    pub fn raw(&self) -> usize {
+        self.handle as usize
+    }
+
     /// Terminates every process in the job.
     pub fn kill(&mut self) {
         // SAFETY: the job handle is valid until Drop closes it.

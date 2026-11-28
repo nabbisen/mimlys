@@ -197,6 +197,9 @@ impl Connection {
         wrapped.wrap(process_wrap::tokio::KillOnDrop);
         let mut child = wrapped.spawn().map_err(|e| format!("spawn:{}", e.kind()))?;
         let process_id = child.id();
+        if let (Some(hook), Some(pid)) = (&config.on_spawn, process_id) {
+            (hook.0)(pid);
+        }
         let stdin = child.stdin().take();
         let stdout = child.stdout().take();
         let stderr = child.stderr().take();

@@ -403,5 +403,13 @@ pub fn new_salt() -> Result<String, std::io::Error> {
     Ok(hex(&bytes))
 }
 
+/// The salt of one connection: 32 random bytes from the system's source, hex.
+#[cfg(windows)]
+pub fn new_salt() -> Result<String, std::io::Error> {
+    let mut bytes = [0u8; 32];
+    mimlys_exec::daemon_pipe::random_bytes(&mut bytes)?;
+    Ok(hex(&bytes))
+}
+
 #[cfg(test)]
 mod tests;
