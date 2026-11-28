@@ -1,6 +1,6 @@
 # Handoff 014c — The daemon on Linux and macOS (release 0.14, phase 2)
 
-**Status (2026-11-28):** items 0 to 7 landed at `82eb524`, and 014c-5 at `26b7af2` (`.git-exclude/reviewed/handoff-014c/README.md`, `.git-exclude/reviewed/handoff-014c-5/README.md`); 014c-6 next.
+**Status (2026-11-28): done.** Items 0 to 7 landed at `82eb524`, 014c-5 at `26b7af2` and 014c-6 at `1c87e80` (`.git-exclude/reviewed/handoff-014c/README.md` and its `-5` and `-6`).
 
 **RFC.** [RFC 014](../../accepted/014-local-daemon.md), read with its **Amendment 1**, items 4 to 11. **From.** The scope of 0.14 (`ROADMAP.md`, "Release 0.14", phase 2), after 014a and 014b.
 

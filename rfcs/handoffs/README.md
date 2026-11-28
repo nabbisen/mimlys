@@ -88,6 +88,7 @@ The local daemon (ROADMAP, "Release 0.14"; RFC 014 with its Amendment 1). Each l
 | 1 | [014a What a long-lived process needs](./014a-long-lived-process/implementation-handoff.md) | RFC 014 | — |
 | 2 | [014b The control API: requests and responses, one handler, the driver and the follower](./014b-control-api/implementation-handoff.md) | RFC 014 | 014a |
 | 3 | [014c The daemon on Linux and macOS](./014c-daemon-unix/implementation-handoff.md) | RFC 014 | 014a, 014b |
+| 4 | [014d The daemon on Windows, on-demand start, and the book's page](./014d-daemon-windows-on-demand/implementation-handoff.md) | RFC 014 | 014c |
 
 ## Release 0.13
 

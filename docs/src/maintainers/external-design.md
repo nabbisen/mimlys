@@ -781,6 +781,7 @@ config_version = 2                     # 2 from 0.13; a version-1 file (one `[ba
 [runtime]
 data_dir = "…"                         # platform default when absent
 # daemon_idle = "30m"                  # LIM-O13: an idle daemon exits after this; "never" allowed (§19.5, from 0.14)
+# serve = "manual"                     # manual | on_demand: the first client that finds no daemon starts one (§19.5, from 0.14)
 
 [backends.default]                     # a level that names no backend runs on `default` (RFC 015)
 kind = "openai_compatible"             # or "fake" with `script = "decisions.json"` (the scripted decisions)
@@ -1000,7 +1001,12 @@ One daemon per operating-system user and data directory serves the control API (
 - **Unix (Linux, macOS):** a Unix domain socket of mode 0600, named `d-<hash>.sock` from a short hash of the data directory's canonical path, in the registry's directory of RFC 013 (`$XDG_RUNTIME_DIR/mimlys`, or its fallbacks).
   - **The directory is checked by both ends** whenever a socket is in it: owned by the user, mode 0700, not a symbolic link, and the socket a socket of the user's, mode 0600. A directory with no socket holds no daemon, and a command that only looks for one goes on (review of 014c). A path that does not fit the platform's limit for a socket (about 104 bytes on macOS) is refused, saying why, never truncated.
   - **The check is mutual.** The daemon reads the client's peer credentials and refuses every uid but its own. The client reads the daemon's and refuses to send anything to a process of another user.
-- **Windows** (from 014d): a named pipe, created as its first instance, with a DACL for the user's SID alone; the client checks the server's process owner before it sends.
+- **Windows** (from 014d): a named pipe, `\\.\pipe\mimlys-d-<hash>`, from a short hash of the user's SID and the data directory's canonical path, because a pipe's name is global to the machine.
+  - **The daemon creates it as its first instance,** with a DACL that admits the user's SID alone, never the default DACL (which lets Everyone read).
+  - **The client checks the server's process** before it sends anything (`GetNamedPipeServerProcessId`): owned by the user's SID, else refused, as a socket of another user is.
+  - **The daemon reads the client's process** from the pipe (`GetNamedPipeClientProcessId`) for the session's pid and the own-tree check. The own tree is a process in the worker's Job Object or in an MCP server's.
+  - **An AppContainer's token** is not the user's SID, so the pipe's DACL refuses a confined tool by construction.
+  - **The Win32 calls** live in `mimlys-exec`'s module for the daemon's transport (REQ-CONF-010).
 - **The daemon's own tree is refused** (Amendment 1, item 5). A request from a process in a session that the daemon made (the worker's, an MCP server's) is refused, the reason said and the refusal recorded. On Unix this is the peer's session id (`getsid`), against the sessions of the daemon's children; on Windows, Job Object membership. A descendant that leaves its session (a new `setsid`) is not caught: THR-39 says so.
 - **The session is verified:** the client's pid from the peer credentials, never the client's claim, and the daemon's own user as `os_user`. **A peer whose pid the system does not give is refused,** saying why: without it the daemon cannot tell its own tree from a client (review of 014c). Linux and macOS give one.
 - **The worker leads a session of its own** (from 0.14, in both modes), as every MCP server does, so that the session check can tell the daemon's tree from its clients. A session leader is a group leader, so the kill of the worker's group is unchanged.
@@ -1022,7 +1028,11 @@ One daemon per operating-system user and data directory serves the control API (
 - **`mimlys daemon status`:** the daemon's pid, uptime, socket and configuration hash; its clients, counted as client processes (by their pid) with their connections beside them; the tasks it holds and those in line; and, on request, the tail of its log.
 - **Idle:** no client connected, and no task running, queued or waiting for the user. A daemon idle for LIM-O13 exits and says so in its log. `[runtime] daemon_idle` sets it, `never` included.
 - **A dead daemon:** a client whose connect is refused, or not answered within LIM-O14, with the store's lock free, removes the stale socket, says `daemon not running` once, and runs embedded.
-- **On-demand start** (`[runtime] serve = on_demand`) is 014d's.
+- **On-demand start** (from 014d; `[runtime] serve = "on_demand"`, opt-in; the default `manual` is the behaviour above).
+  - **The first client that finds no daemon starts one,** detached (Unix: a new session; Windows: a detached process with no console), waits for its hello within LIM-O23, then sends its request through it. The daemon outlives that client.
+  - **Two clients that start one at once:** the store's lock decides. The second daemon names the first and exits, and its client connects to the first.
+  - **A daemon started on demand** inherits that client's environment (§19.5, secrets), and the client says once that it started one, with its pid.
+  - **A start that fails** says why, and the command does not run embedded instead: a user who asked for a daemon is not given another mode silently.
 
 **One owner, one scheduler** (REQ-PERS-014, REQ-SCHED-008).
 - **The daemon holds the store's lock for its life.** An embedded runtime that meets it names the daemon's pid. **What a command does with its own runtime goes through the daemon** while one serves: `mimlys model probe` is a request the daemon runs, never refused for the lock (review of 014c).
