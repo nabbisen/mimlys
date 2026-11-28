@@ -3,7 +3,8 @@
 //! `sh` block preceded by the comment `<!-- tested -->` is executed line by
 //! line against a store with finished, cancelled and held tasks; every
 //! `mimlys …` line must exit 0, with `<task>` standing for a finished task.
-//! `<project>` stands for a project directory made for the command, and a command with
+//! `<project>` stands for a project directory made for the command, `<scratch>` for one of its own
+//! that no other example uses (a task holds its scope while it is active), and a command with
 //! `--plan-first` is run against a fake backend whose script begins with a `plan`: with the
 //! book's own script the first decision is an action, which a plan-first task rejects.
 //! There is no list of page names here: a page that carries the marker but is
@@ -194,7 +195,10 @@ impl Env {
             .arg(config)
             .args(args)
             .env("MIMLYS_CONFIG", "")
-            .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"));
+            .env("MIMLYS_WORKER_BIN", env!("CARGO_BIN_EXE_mimlys-worker"))
+            // A daemon that an example starts and a failing test leaves ends by itself (the debug
+            // seam of LIM-O13).
+            .env("MIMLYS_DAEMON_IDLE_MS", "60000");
         let out = run_bounded(&mut cmd, self.dir.path());
         (out.code(), out.stdout, out.stderr)
     }
@@ -205,6 +209,11 @@ impl Env {
         std::fs::write(dir.join("src/lib.rs"), "fn a() -> i32 { 0 }\n").unwrap();
         std::fs::write(dir.join("src/old.rs"), "// to be deleted\n").unwrap();
         dir.to_string_lossy().into_owned()
+    }
+
+    /// Ends the daemon an example started and a failure left: the store is the book's alone.
+    fn stop_daemon(&self) {
+        let _ = self.run(&["daemon", "stop"]);
     }
 
     /// Two finished tasks, a cancelled one and one held in `created`; returns a finished task's id.
@@ -230,6 +239,12 @@ impl Env {
             }
         }
         finished
+    }
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        self.stop_daemon();
     }
 }
 
@@ -279,6 +294,7 @@ fn req_cli_007_the_commands_in_the_books_tested_blocks_run() {
     let env = Env::new();
     let finished = env.fill();
     let project = env.scope("project");
+    let scratch = env.scope("scratch");
     for (page, commands) in &pages {
         for command in commands {
             let words: Vec<String> = shell_words(command)
@@ -287,6 +303,7 @@ fn req_cli_007_the_commands_in_the_books_tested_blocks_run() {
                 .map(|w| {
                     w.replace("<task>", &finished)
                         .replace("<project>", &project)
+                        .replace("<scratch>", &scratch)
                 })
                 .collect();
             let args: Vec<&str> = words.iter().map(String::as_str).collect();

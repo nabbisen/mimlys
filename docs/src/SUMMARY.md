@@ -6,6 +6,7 @@
 
 - [Getting started](./getting-started.md)
 - [How a task runs](./how-a-task-runs.md)
+- [Running mimlys as a daemon](./running-as-a-daemon.md)
 - [Storage](./reference/storage.md)
 
 # For integrators
