@@ -94,10 +94,12 @@ enum Connected {
 fn connect(path: &Path) -> Connected {
     let within = Duration::from_millis(LIM_O14_DAEMON_CONNECT_MS);
     match Stream::connect(&path.to_string_lossy(), within) {
-        Ok(stream) => match Peer::admit(&stream) {
-            Ok(peer) => Connected::Stream(stream, peer),
-            Err(e) => Connected::Refused(e),
-        },
+        Ok(stream) => {
+            let peer = Peer {
+                pid: stream.peer_process_id().ok(),
+            };
+            Connected::Stream(stream, peer)
+        }
         Err(e) => match e.kind() {
             std::io::ErrorKind::NotFound => Connected::Absent,
             // Every instance stayed busy for LIM-O14: nobody answers.
