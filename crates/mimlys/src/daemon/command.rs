@@ -173,6 +173,9 @@ fn spawn_daemon(loaded: &Loaded) -> Result<Spawned, AppError> {
         std::env::current_exe()
             .map_err(|e| io(format!("cannot find this program: {}", e.kind())))?,
     );
+    // The daemon is given its three standard streams and nothing else of this process's.
+    #[cfg(windows)]
+    mimlys_exec::daemon_pipe::keep_standard_handles_from_children();
     command.args(["daemon", "start", "--foreground", "--detached"]);
     if let Some(path) = &loaded.path {
         command.arg("--config").arg(path);
