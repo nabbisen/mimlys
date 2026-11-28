@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::Config;
+use crate::daemon::socket;
 use std::os::unix::fs::PermissionsExt;
 
 fn loaded() -> Loaded {

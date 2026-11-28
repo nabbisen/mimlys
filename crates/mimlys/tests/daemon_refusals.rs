@@ -3,14 +3,14 @@
 //! secret. Each as §20 says it, with nothing applied, and `stop` fixed for every version.
 //!
 //! Some tests speak the daemon's protocol directly (the library's `daemon::wire`), the shape the
-//! hellos have for every version; others go through the command line. Unix only.
-#![cfg(unix)]
+//! hellos have for every version; others go through the command line. The test that makes a fake
+//! daemon at the real socket is Unix's.
 
+use mimlys::daemon::plat::Stream;
 use mimlys::daemon::wire::{
     self, ClientHello, DaemonHello, HelloAnswer, RefusalKind, Reply, Request,
 };
 use serde_json::Value;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -71,21 +71,40 @@ impl Env {
         assert_eq!(out.code(), 0, "{}\n{}", out.stdout, out.stderr);
     }
 
-    fn socket(&self) -> PathBuf {
-        std::fs::read_dir(self.registry.path())
-            .unwrap()
-            .flatten()
-            .map(|e| e.path())
-            .find(|p| p.extension().is_some_and(|e| e == "sock"))
-            .expect("the daemon's socket")
+    /// A connection to the daemon (its socket, or its pipe), with a timeout on its reads.
+    fn connect(&self) -> Stream {
+        #[cfg(unix)]
+        {
+            let path = std::fs::read_dir(self.registry.path())
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|e| e == "sock"))
+                .expect("the daemon's socket");
+            let stream = Stream::connect(path).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+            stream
+        }
+        #[cfg(windows)]
+        {
+            let status = self.run(&["--json", "daemon", "status"]);
+            let value: Value = serde_json::from_str(status.stdout.trim()).unwrap();
+            let name = value["daemon"]["socket"]
+                .as_str()
+                .expect("the daemon's pipe");
+            let stream = Stream::connect(name, Duration::from_secs(30)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+            stream
+        }
     }
 
     /// A connection that has read the daemon's hello, to answer as a client of its own making.
-    fn greeted(&self) -> (UnixStream, DaemonHello) {
-        let mut stream = UnixStream::connect(self.socket()).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .unwrap();
+    fn greeted(&self) -> (Stream, DaemonHello) {
+        let mut stream = self.connect();
         let hello: DaemonHello = wire::read(&mut stream).unwrap();
         (stream, hello)
     }
@@ -304,6 +323,7 @@ fn req_sec_016_a_changed_configuration_is_refused_what_changes_state() {
 /// answer, shows the daemon's message (with the word), and refuses as for any refusal: it fails,
 /// and applies nothing. (`mutation: RefusalKind a closed enum again` fails the read of the frame.)
 #[test]
+#[cfg(unix)]
 fn req_sec_016_a_refusal_in_a_word_this_client_does_not_know_is_shown_and_refused() {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;

@@ -637,7 +637,18 @@ impl App {
             config
                 .servers(&data_dir, &loaded.secrets)
                 .into_iter()
-                .map(mimlys_mcp::server::Server::new)
+                .map(|config| {
+                    // On Windows a daemon marks each server's process as its own tree.
+                    #[cfg(windows)]
+                    let config = {
+                        let mut config = config;
+                        config.on_spawn = Some(mimlys_mcp::server::SpawnHook(Arc::new(
+                            crate::daemon::marks::mark,
+                        )));
+                        config
+                    };
+                    mimlys_mcp::server::Server::new(config)
+                })
                 .collect(),
         ));
         let policy_for_app = policy.clone();

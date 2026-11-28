@@ -36,6 +36,7 @@ pub struct RotatingLog {
 fn open_append(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).append(true);
+    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);

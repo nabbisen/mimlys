@@ -7,6 +7,9 @@
 
 pub mod builtin;
 pub mod confine;
+/// The daemon's transport on Windows: a named pipe (REQ-CONF-010's second module of foreign calls).
+#[cfg(windows)]
+pub mod daemon_pipe;
 pub mod frame;
 pub mod fsinfo;
 pub mod host_tool;

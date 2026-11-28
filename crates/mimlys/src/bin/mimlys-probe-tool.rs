@@ -401,6 +401,26 @@ fn main() {
                 }
             }
         }
+        // Opens a named pipe, as a client would: a tool in the AppContainer is refused by the
+        // daemon's pipe's DACL (REQ-SEC-016, THR-39), which admits the user's SID alone.
+        #[cfg(windows)]
+        Some("pipe-connect") => {
+            let name = args.get(1).map(String::as_str).unwrap_or("");
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(name)
+            {
+                Ok(_) => {
+                    println!("pipe-connect connected");
+                    0
+                }
+                Err(e) => {
+                    println!("pipe-connect failed: {}", e.kind());
+                    3
+                }
+            }
+        }
         Some("getaddrinfo") => {
             use std::net::ToSocketAddrs;
             let name = args.get(1).map(String::as_str).unwrap_or("localhost");

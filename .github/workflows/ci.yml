@@ -63,15 +63,15 @@ jobs:
       # The suite, served (handoff 014c, "Tests"): every integration test of `mimlys` again, its
       # environment's commands going through a daemon that the harness starts for the environment
       # (crates/mimlys/tests/common/served.rs). A test that cannot be served says why, by name,
-      # in the skips below. The daemon is Linux's and macOS's in this release. A step of the job,
+      # in the skips below. On every platform of the matrix (a socket on Linux and macOS, a pipe on
+      # Windows; handoff 014d). A step of the job,
       # not a job: it adds no check of its own to the count.
       #
       # The served run keeps its skips in a file of its own (`skips-served.log`): the embedded
       # run's `skips.log` is put aside for it and back after, so that "skipped tests on <runner>"
-      # counts the embedded run alone (0, except windows-latest's 2), and the tests that are not
+      # counts the embedded run alone, and the tests that are not
       # served are counted by their own line, `not served on <runner>` (handoff 014c-5, item 3).
       - name: the suite served by a daemon
-        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p target/tmp
@@ -119,7 +119,7 @@ jobs:
       # own line, apart from the skips above (handoff 014c-5, item 3). A skip of the served run
       # that is not a `not served` is counted on a line of its own too, and is expected to be 0.
       - name: tests not served, counted per platform
-        if: always() && runner.os != 'Windows'
+        if: always()
         shell: bash
         run: |
           f=target/tmp/skips-served.log

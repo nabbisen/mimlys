@@ -16,6 +16,12 @@ use sha2::{Digest, Sha256};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+/// One connection, either end.
+pub type Stream = std::os::unix::net::UnixStream;
+/// What a check of the daemon's own tree is asked against: the process that leads a session the
+/// daemon made.
+pub type Leader = u32;
+
 /// The mode of the socket's file (REQ-SEC-016).
 pub const SOCKET_MODE: u32 = 0o600;
 /// The mode of the socket's directory (REQ-SEC-016).
@@ -139,7 +145,7 @@ pub fn peer_end_is_not_a_fault(result: std::io::Result<()>) -> std::io::Result<(
 
 /// Sets the read and write timeouts of `stream` ([`peer_end_is_not_a_fault`]).
 pub fn set_timeouts(
-    stream: &std::os::unix::net::UnixStream,
+    stream: &Stream,
     read: Option<std::time::Duration>,
     write: Option<std::time::Duration>,
 ) -> std::io::Result<()> {
@@ -150,10 +156,7 @@ pub fn set_timeouts(
 }
 
 /// Sets the blocking mode of `stream` ([`peer_end_is_not_a_fault`]).
-pub fn set_nonblocking(
-    stream: &std::os::unix::net::UnixStream,
-    nonblocking: bool,
-) -> std::io::Result<()> {
+pub fn set_nonblocking(stream: &Stream, nonblocking: bool) -> std::io::Result<()> {
     peer_end_is_not_a_fault(stream.set_nonblocking(nonblocking))
 }
 
@@ -314,7 +317,7 @@ pub enum Tree {
 
 /// Judges `peer` against the sessions `leaders` lead. The one place that decides who is served: a
 /// peer with no pid is [`Tree::NoPid`] **whatever the leaders are**, the empty set included.
-pub fn judge_tree(peer: Peer, leaders: &[u32]) -> Tree {
+pub fn judge_tree(peer: Peer, leaders: &[Leader]) -> Tree {
     let Some(pid) = peer.pid else {
         return Tree::NoPid;
     };
