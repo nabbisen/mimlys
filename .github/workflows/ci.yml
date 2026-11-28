@@ -60,6 +60,15 @@ jobs:
       - run: rm -f target/tmp/skips.log
         shell: bash
       - run: cargo test --workspace --all-features --no-fail-fast
+      # The suite, served (handoff 014c, "Tests"): every integration test of `mimlys` again, its
+      # environment's commands going through a daemon that the harness starts for the environment
+      # (crates/mimlys/tests/common/served.rs). A test that cannot be served says why, by name,
+      # in the skips below. The daemon is Linux's and macOS's in this release. A step of the job,
+      # not a job: it adds no check of its own to the count.
+      - name: the suite served by a daemon
+        if: runner.os != 'Windows'
+        shell: bash
+        run: MIMLYS_TEST_SERVED=1 cargo test -p mimlys --all-features --tests --no-fail-fast
       # REQ-CONF-013 (handoff 013d item 3): the CPU part of clause C on a real
       # cgroup. The job's own cgroup is not writable, so the suites above run on
       # the subreaper rung. This step runs the two suites that touch the cgroup

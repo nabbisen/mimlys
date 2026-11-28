@@ -21,9 +21,10 @@ pub async fn run(
         detail: e.to_owned(),
     })?;
     app.check_host_tool_grant(&kind)?;
-    // Sent once, so never answered that it took effect before and its task is gone; if it were,
-    // the client has said so.
+    // Sent once, but a repeat after a broken connection may find it recorded and its task deleted
+    // since: it took effect, and the task is gone.
     let Applied::Done(grant) = app.client.grant_capability(id, kind)? else {
+        crate::commands::applied_earlier_gone(out, "grant_capability", id);
         return Ok(());
     };
     out.line(messages::grant_issued(

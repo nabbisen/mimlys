@@ -11,6 +11,8 @@ pub mod newer_store;
 pub mod printer;
 #[cfg(unix)]
 pub mod pty;
+#[cfg(unix)]
+pub mod served;
 
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
@@ -130,9 +132,11 @@ impl HeldRegistry {
 }
 
 /// The prefix of the directory that holds the registry of one command alone ([`run_dir`]).
-const SOLO: &str = "registry-solo-";
+const SOLO: &str = "mly-s-";
 
-/// A directory that did not exist, made now under the shared `CARGO_TARGET_TMPDIR`, with a name no
+/// A directory that did not exist, made now under the system's temporary directory (a short path:
+/// the daemon's socket is in the registry, and a path to a Unix socket is limited to about 104
+/// bytes, which the target directory of a checkout in a deep path passes), with a name no
 /// other process can have: the directory is created, which fails if the name is taken, and the name
 /// is random (handoff 014a-5, item 3; a name made of a process id and a counter was met again by
 /// a later test binary on Windows, which reuses process ids quickly).
@@ -140,7 +144,7 @@ fn fresh_holder(prefix: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(prefix)
         .rand_bytes(12)
-        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .tempdir_in(std::env::temp_dir())
         .expect("a directory for a registry")
 }
 
@@ -170,6 +174,14 @@ impl Registry {
     /// The path a command names with `MIMLYS_RUN_DIR`.
     pub fn path(&self) -> std::path::PathBuf {
         self.holder.path().join("run")
+    }
+}
+
+impl Drop for Registry {
+    fn drop(&mut self) {
+        // The suite served (`MIMLYS_TEST_SERVED=1`): the daemon of this environment ends with it.
+        #[cfg(unix)]
+        served::stop_all_for(&self.path());
     }
 }
 
@@ -238,7 +250,7 @@ fn remove_solo_registry(cmd: &Command) {
     let is_solo = holder
         .file_name()
         .is_some_and(|name| name.to_string_lossy().starts_with(SOLO));
-    if is_solo && holder.parent() == Some(Path::new(env!("CARGO_TARGET_TMPDIR"))) {
+    if is_solo && holder.parent() == Some(std::env::temp_dir().as_path()) {
         let _ = std::fs::remove_dir_all(holder);
     }
 }
@@ -300,6 +312,9 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
         "this run of {:?} names no MIMLYS_RUN_DIR: it would use the user's own registry, shared with every other run (give it its environment's registry, or `common::run_dir()`, after any `env_clear`)",
         cmd.get_program()
     );
+    // The suite served: the command's environment has its daemon before the command runs.
+    #[cfg(unix)]
+    served::before(cmd);
     let out_path = dir.join(format!("run-{}-{n}.stdout", std::process::id()));
     let err_path = dir.join(format!("run-{}-{n}.stderr", std::process::id()));
     cmd.stdin(Stdio::null())
@@ -327,6 +342,15 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
             bound.as_secs()
         );
     };
+    // A command alone in the world ends its daemon with its registry.
+    #[cfg(unix)]
+    if let Some(run_dir) = cmd
+        .get_envs()
+        .find(|(key, _)| *key == "MIMLYS_RUN_DIR")
+        .and_then(|(_, value)| value)
+    {
+        served::stop_all_for(Path::new(run_dir));
+    }
     remove_solo_registry(cmd);
     Bounded {
         status,

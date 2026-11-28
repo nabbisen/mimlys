@@ -697,6 +697,84 @@ fn req_cli_008_a_task_that_waits_for_the_user_keeps_the_daemon_alive() {
     }));
 }
 
+/// What a command that a repeat answers as "took effect, and its task is gone" prints (handoff
+/// 014c, item 7; external design §4): the one line, the one JSON object, success, and on standard
+/// error what the client says (that it was done earlier, and that the task is gone).
+fn assert_gone(out: &common::Bounded, request: &str, id: &str) {
+    assert_eq!(out.code(), 0, "{}\n{}", out.stdout, out.stderr);
+    let value: Value = serde_json::from_str(out.stdout.trim())
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}\n{}", out.stdout, out.stderr));
+    assert_eq!(
+        value,
+        json!({"applied": true, "gone": true, "request": request, "task_id": id}),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stderr.contains("done earlier"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains(&format!("task {id} is gone")),
+        "{}",
+        out.stderr
+    );
+}
+
+/// External design §4, handoff 014c item 7: **a rollback that took effect and whose task was
+/// deleted since** (the answer was cut, and the task deleted before the client asked again) is
+/// answered as that: a success that says so, in `--json` too, and never `not_found`.
+#[test]
+fn req_arch_004_a_rollback_whose_task_is_gone_is_answered_as_applied_and_gone() {
+    let env = Env::new(&[complete()])
+        .env("MIMLYS_DAEMON_CUT_ANSWER", "rollback_workspace")
+        .env("MIMLYS_DAEMON_DELETE_AFTER_CUT", "1");
+    env.start_daemon();
+    let scope = env.scope();
+    let (code, ran) = env.json(&["run", "goal", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(code, 0, "{ran}");
+    let id = ran["task"]["task_id"].as_str().unwrap().to_owned();
+    let out = env.run(&["--json", "rollback", &id]);
+    assert_gone(&out, "rollback_workspace", &id);
+}
+
+/// The same for a promotion (`promote --yes`) and for the reversal of one (`rollback --promotion`):
+/// each of the five arms prints the one line and the one object.
+#[test]
+fn req_arch_004_a_promotion_and_its_reversal_whose_task_is_gone_are_answered_as_applied_and_gone() {
+    // The promotion: the cut and the deletion fall on it.
+    let env = Env::new(&[write_file(), complete()])
+        .env("MIMLYS_DAEMON_CUT_ANSWER", "promote_workspace")
+        .env("MIMLYS_DAEMON_DELETE_AFTER_CUT", "1");
+    env.start_daemon();
+    let id = env.run_detached(&[]);
+    env.wait_state(&id, "waiting_user");
+    assert_eq!(env.run(&["approve", &id]).code(), 0);
+    let out = env.run(&["--json", "promote", &id, "--yes"]);
+    assert_gone(&out, "promote_workspace", &id);
+    drop(env);
+    // The reversal: a promotion made as usual, then the cut and the deletion fall on its reversal.
+    let env = Env::new(&[write_file(), complete()])
+        .env("MIMLYS_DAEMON_CUT_ANSWER", "revert_promotion")
+        .env("MIMLYS_DAEMON_DELETE_AFTER_CUT", "1");
+    env.start_daemon();
+    let id = env.run_detached(&[]);
+    env.wait_state(&id, "waiting_user");
+    assert_eq!(env.run(&["approve", &id]).code(), 0);
+    let (code, promoted) = env.json(&["promote", &id, "--yes"]);
+    assert_eq!(code, 0, "{promoted}");
+    let promotion = promoted["promotion"]["promotion_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let out = env.run(&[
+        "--json",
+        "rollback",
+        &id,
+        "--promotion",
+        &promotion,
+        "--yes",
+    ]);
+    assert_gone(&out, "revert_promotion", &id);
+}
+
 /// REQ-ARCH-009, external design §19.5: **`status` says which mode is in force**, and, when
 /// served, the daemon first.
 #[test]

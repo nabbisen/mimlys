@@ -82,6 +82,22 @@ pub async fn finish(
     Ok(())
 }
 
+/// A request that took effect before (a repeat after a broken connection found it recorded) and
+/// whose task has been deleted since, so that what it made (a grant, a snapshot, a promotion) went
+/// with the task's data (external design §4, "The recorded outcome"; handoff 014c, item 7). It is
+/// a success, not an error: the client has said on standard error that it was done earlier and
+/// that the task is gone, and the command says the same on standard output, in one line, and as
+/// one JSON object, so that a script does not read an empty answer.
+pub fn applied_earlier_gone(out: &Output, verb: &str, task_id: TaskId) {
+    out.line(messages::applied_earlier_gone(verb, &task_id.to_string()));
+    out.value(&serde_json::json!({
+        "applied": true,
+        "gone": true,
+        "request": verb,
+        "task_id": task_id,
+    }));
+}
+
 /// The task view: lines for humans, the object for JSON.
 pub fn print_view(view: &TaskView, out: &Output) {
     out.line(messages::task_state_after(

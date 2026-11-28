@@ -30,6 +30,11 @@ use tokio::sync::Notify;
 /// before its answer was read. Nothing else reads it.
 pub const CUT_ANSWER_ENV: &str = "MIMLYS_DAEMON_CUT_ANSWER";
 
+/// The test seam of a request that took effect on a task that is deleted since
+/// (`MIMLYS_DAEMON_DELETE_AFTER_CUT`, with [`CUT_ANSWER_ENV`]; a debug build only): after the cut
+/// answer, the daemon deletes the request's task before the client asks again.
+pub const DELETE_AFTER_CUT_ENV: &str = "MIMLYS_DAEMON_DELETE_AFTER_CUT";
+
 /// What a connection attempt came to.
 enum Attempt {
     Usable(Box<Daemon>),

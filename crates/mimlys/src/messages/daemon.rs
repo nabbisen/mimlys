@@ -241,6 +241,11 @@ pub fn detached_from(task_id: &str) -> String {
     )
 }
 
+/// A request that took effect before, and whose task has been deleted since (external design §4).
+pub fn applied_earlier_gone(verb: &str, task_id: &str) -> String {
+    format!("{verb}: it took effect earlier, and task {task_id} has been deleted since")
+}
+
 /// A command that needs the store itself (`model probe`, `toolchain grant`), reached while the
 /// daemon holds it.
 pub const NEEDS_THE_STORE_ITSELF: &str =

@@ -306,6 +306,7 @@ impl Served {
                 }
                 Request::Control { envelope } => {
                     let name = envelope.request.name();
+                    let task_of_request = envelope.request.task_id();
                     let answer = {
                         let cell = RefCell::new(&mut *stream);
                         self.control(*envelope, peer, writes_refused.as_ref(), &|notice| {
@@ -315,6 +316,27 @@ impl Served {
                     };
                     // The seam: the request was applied, and the connection ends before the answer.
                     if self.cut_answer_of(name) {
+                        // With `MIMLYS_DAEMON_DELETE_AFTER_CUT`, the task is deleted before the
+                        // client asks again: a request that took effect, whose task is gone.
+                        if let (true, Some(task_id)) = (
+                            cfg!(debug_assertions)
+                                && std::env::var_os(crate::daemon::transport::DELETE_AFTER_CUT_ENV)
+                                    .is_some(),
+                            task_of_request,
+                        ) {
+                            let _ = crate::client::Transport::send(
+                                &*self.transport,
+                                Envelope {
+                                    request_id: RequestId::new(&SystemIds),
+                                    session: self.session(),
+                                    request: mimlys_core::api::Request::DeleteTask {
+                                        task_id,
+                                        audit: false,
+                                    },
+                                },
+                                &|_| {},
+                            );
+                        }
                         return Ok(());
                     }
                     wire::write(

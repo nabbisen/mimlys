@@ -18,8 +18,9 @@ pub async fn run(
 ) -> Result<(), AppError> {
     let id = app.resolve_task(task)?;
     let grant_id = resolve_grant(app, id, grant)?;
-    // Sent once: see `grant`.
+    // See `grant`.
     let Applied::Done(grant) = app.client.revoke_capability(id, grant_id)? else {
+        crate::commands::applied_earlier_gone(out, "revoke_capability", id);
         return Ok(());
     };
     out.line(messages::grant_revoked(&grant.grant_id.to_string()));

@@ -74,9 +74,9 @@ pub fn run(
         out.value(&serde_json::json!({ "plan": plan, "applied": false }));
         return Ok(());
     }
-    // Sent once, so never answered that it took effect before and its task is gone; if it were,
-    // the client has said so.
+    // See `grant`: a promotion that took effect before, and whose task is gone since.
     let Applied::Done(promotion) = app.client.promote_workspace(id, &plan)? else {
+        crate::commands::applied_earlier_gone(out, "promote_workspace", id);
         return Ok(());
     };
     out.line(messages::promoted(

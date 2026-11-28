@@ -61,9 +61,10 @@ pub fn run(
         let overwrite = !plan.conflicts.is_empty()
             && (overwrite_edited
                 || (interactive && interaction.confirm(messages::REVERT_OVERWRITE_CONFIRM)));
-        // Sent once: see `promote`.
+        // See `promote`.
         let Applied::Done(reversed) = app.client.revert_promotion(id, promotion_id, overwrite)?
         else {
+            crate::commands::applied_earlier_gone(out, "revert_promotion", id);
             return Ok(());
         };
         out.line(messages::promotion_reversed(
@@ -85,6 +86,7 @@ pub fn run(
         None => None,
     };
     let Applied::Done(record) = app.client.rollback_workspace(id, snapshot_id)? else {
+        crate::commands::applied_earlier_gone(out, "rollback_workspace", id);
         return Ok(());
     };
     out.line(messages::rolled_back(
