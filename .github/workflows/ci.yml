@@ -117,7 +117,8 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
       # The tests of the served run that cannot be served (each says why, by its name): their
       # own line, apart from the skips above (handoff 014c-5, item 3). A skip of the served run
-      # that is not a `not served` is counted on a line of its own too, and is expected to be 0.
+      # that is not a `not served` is counted on a line of its own too, and is expected to be 0, except
+      # on windows-latest, where the two tests the embedded run skips run again, and skip again.
       - name: tests not served, counted per platform
         if: always()
         shell: bash

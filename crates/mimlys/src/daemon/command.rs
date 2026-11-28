@@ -95,6 +95,12 @@ pub async fn serve_here(loaded: Loaded, detached: bool) -> Result<(), AppError> 
     if detached {
         let _ = rustix::process::setsid();
     }
+    // The seam of a start that fails (a debug build only): the daemon ends at once, saying why.
+    if cfg!(debug_assertions)
+        && let Ok(why) = std::env::var(START_FAILS_ENV)
+    {
+        return Err(io(why));
+    }
     // The tool servers this daemon starts are marked as its own tree (Windows).
     #[cfg(windows)]
     crate::daemon::marks::enable();
@@ -152,26 +158,17 @@ pub fn start(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
     start_with(loaded, out, true)
 }
 
-/// As [`start`]; `value` says whether it prints its JSON value (a restart prints its own).
-fn start_with(loaded: &Loaded, out: &Output, value: bool) -> Result<(), AppError> {
-    let (run_dir, data_dir) = places(loaded)?;
-    if let Some(daemon) = find(loaded, false)? {
-        if !daemon.usable() {
-            return Err(io(messages::daemon_version_refused(
-                crate::daemon::wire::runtime_version(),
-                &daemon.hello.runtime_version,
-            )));
-        }
-        say_started(
-            out,
-            &daemon.hello.runtime_version,
-            daemon.peer.pid,
-            &daemon.socket,
-            true,
-            value,
-        );
-        return Ok(());
-    }
+/// The process `start` made, and the thread that reads what it says on its standard error until
+/// it listens (so that a start that fails says why).
+struct Spawned {
+    child: std::process::Child,
+    reader: std::thread::JoinHandle<String>,
+}
+
+/// Starts the process that will be the daemon: this program with `daemon start --foreground
+/// --detached`, in this process's environment (a daemon started by a client has that client's, and
+/// so its secrets, external design §19.5), detached from the terminal.
+fn spawn_daemon(loaded: &Loaded) -> Result<Spawned, AppError> {
     let mut command = std::process::Command::new(
         std::env::current_exe()
             .map_err(|e| io(format!("cannot find this program: {}", e.kind())))?,
@@ -199,23 +196,54 @@ fn start_with(loaded: &Loaded, out: &Output, value: bool) -> Result<(), AppError
         }
         text
     });
+    Ok(Spawned { child, reader })
+}
+
+impl Spawned {
+    /// Why the process ended, as the user is told: what it said (the reason, without the
+    /// `error (kind): ` a command puts before it), or its exit code.
+    fn failure(self, status: std::process::ExitStatus, data_dir: &std::path::Path) -> String {
+        let said = self.reader.join().unwrap_or_default();
+        let said = said
+            .trim()
+            .split_once("): ")
+            .filter(|(kind, _)| kind.starts_with("error ("))
+            .map_or(said.trim(), |(_, reason)| reason)
+            .to_owned();
+        messages::daemon_did_not_start(
+            status.code(),
+            &said,
+            &crate::daemon::log::log_path(data_dir),
+        )
+    }
+}
+
+/// As [`start`]; `value` says whether it prints its JSON value (a restart prints its own).
+fn start_with(loaded: &Loaded, out: &Output, value: bool) -> Result<(), AppError> {
+    let (run_dir, data_dir) = places(loaded)?;
+    if let Some(daemon) = find(loaded, false)? {
+        if !daemon.usable() {
+            return Err(io(messages::daemon_version_refused(
+                crate::daemon::wire::runtime_version(),
+                &daemon.hello.runtime_version,
+            )));
+        }
+        say_started(
+            out,
+            &daemon.hello.runtime_version,
+            daemon.peer.pid,
+            &daemon.socket,
+            true,
+            value,
+        );
+        return Ok(());
+    }
+    let mut spawned = spawn_daemon(loaded)?;
     let begun = Instant::now();
     let limit = Duration::from_millis(LIM_O23_DAEMON_START_MS);
     loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            let said = reader.join().unwrap_or_default();
-            // The process said it as a command does (`error (kind): …`): the reason is the rest.
-            let said = said
-                .trim()
-                .split_once("): ")
-                .filter(|(kind, _)| kind.starts_with("error ("))
-                .map_or(said.trim(), |(_, reason)| reason)
-                .to_owned();
-            return Err(io(messages::daemon_did_not_start(
-                status.code(),
-                &said,
-                &crate::daemon::log::log_path(&data_dir),
-            )));
+        if let Ok(Some(status)) = spawned.child.try_wait() {
+            return Err(io(spawned.failure(status, &data_dir)));
         }
         if let Ok(Reach::Daemon(daemon)) = connect::reach(&run_dir, &data_dir, loaded, false)
             && daemon.hello.runtime_version == crate::daemon::wire::runtime_version()
@@ -229,16 +257,147 @@ fn start_with(loaded: &Loaded, out: &Output, value: bool) -> Result<(), AppError
                 value,
             );
             // The child is the daemon's own now: it is not waited for.
-            std::mem::forget(child);
+            std::mem::forget(spawned.child);
             return Ok(());
         }
         if begun.elapsed() >= limit {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = spawned.child.kill();
+            let _ = spawned.child.wait();
             return Err(io(messages::daemon_start_timed_out(
                 LIM_O23_DAEMON_START_MS,
                 &crate::daemon::log::log_path(&data_dir),
             )));
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// The test seam of the on-demand start's race: `MIMLYS_ON_DEMAND_SPAWN_AT_MS=<epoch ms>` makes a
+/// **client** (in a debug build only) wait for that instant before it starts a daemon, so that two
+/// clients that began apart start theirs at the same moment, and the store's lock has to decide.
+pub const SPAWN_AT_ENV: &str = "MIMLYS_ON_DEMAND_SPAWN_AT_MS";
+
+/// The test seam of a start that fails: `MIMLYS_DAEMON_START_FAILS=<reason>` makes the daemon
+/// process (in a debug build only) end at once with that reason, as a daemon that cannot start does.
+pub const START_FAILS_ENV: &str = "MIMLYS_DAEMON_START_FAILS";
+
+/// Whether nobody holds the store: its lock is free, or there is no store yet.
+fn store_is_free(data_dir: &std::path::Path) -> bool {
+    mimlys_persist::open_read_only(data_dir)
+        .map(|store| store.probe_lock() == mimlys_persist::LockState::Free)
+        .unwrap_or(true)
+}
+
+/// The on-demand start (`[runtime] serve = "on_demand"`; external design §19.5; REQ-CLI-008): the
+/// client that finds no daemon starts one, detached, waits for its hello (LIM-O23), says once that
+/// it started one with its pid, and returns it for the request to go through.
+///
+/// - **Two clients at once:** each may start one; **the store's lock decides**. The daemon that
+///   does not get it ends, naming the holder, and its client waits for the other's hello and goes
+///   through that daemon (it says nothing of having started one: it did not).
+/// - **A store that someone else holds** (a daemon another client is starting, or an embedded
+///   runtime) is waited for, up to LIM-O23, for it to be a daemon that answers; a client that
+///   waits longer than LIM-O14 says whose the store is.
+/// - **A start that fails says why** (what the process said, or its exit code), when the store is
+///   free: there is no other holder to wait for. The command then **does not run embedded**: a user
+///   who asked for a daemon is not given another mode without being told.
+pub fn start_on_demand(loaded: &Loaded) -> Result<Box<Daemon>, AppError> {
+    let (run_dir, data_dir) = places(loaded)?;
+    let begun = Instant::now();
+    let limit = Duration::from_millis(LIM_O23_DAEMON_START_MS);
+    let mut spawned: Option<Spawned> = None;
+    let mut failure: Option<String> = None;
+    let mut said_waiting = false;
+    loop {
+        // A daemon that answers: the one this client started, or the one another client did.
+        match connect::reach(&run_dir, &data_dir, loaded, false) {
+            Ok(Reach::Daemon(daemon)) => {
+                if !daemon.usable() {
+                    if let Some(mut s) = spawned.take() {
+                        let _ = s.child.kill();
+                    }
+                    return Err(io(messages::daemon_version_refused(
+                        crate::daemon::wire::runtime_version(),
+                        &daemon.hello.runtime_version,
+                    )));
+                }
+                if let Some(s) = spawned.take() {
+                    if daemon.peer.pid == Some(s.child.id()) {
+                        let idle = loaded.config.runtime.daemon_idle.text();
+                        crate::output::diag(messages::daemon_started_on_demand(
+                            s.child.id(),
+                            &idle,
+                        ));
+                    }
+                    // The child is the daemon's own (or has ended): it is not waited for.
+                    std::mem::forget(s.child);
+                }
+                return Ok(daemon);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if let Some(mut s) = spawned.take() {
+                    let _ = s.child.kill();
+                }
+                return Err(io(e.to_string()));
+            }
+        }
+        // The process this client started has ended: if nobody holds the store, it could not
+        // start, and says why; if someone does, it lost the lock to another daemon, which is what
+        // this client waits for.
+        if let Some(s) = spawned.as_mut()
+            && let Ok(Some(status)) = s.child.try_wait()
+        {
+            let s = spawned.take().expect("just seen");
+            let why = s.failure(status, &data_dir);
+            if store_is_free(&data_dir) {
+                return Err(io(why));
+            }
+            failure = Some(why);
+        }
+        // Nobody holds the store and this client has no process running: start one.
+        if spawned.is_none() && store_is_free(&data_dir) {
+            if cfg!(debug_assertions)
+                && let Some(at) = std::env::var(SPAWN_AT_ENV)
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+            {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
+                if at > now {
+                    std::thread::sleep(Duration::from_millis(at - now));
+                }
+            }
+            spawned = Some(spawn_daemon(loaded)?);
+        }
+        if begun.elapsed() >= limit {
+            if let Some(mut s) = spawned.take() {
+                let _ = s.child.kill();
+                let _ = s.child.wait();
+            }
+            return Err(io(failure.unwrap_or_else(|| {
+                if store_is_free(&data_dir) {
+                    messages::daemon_start_timed_out(
+                        LIM_O23_DAEMON_START_MS,
+                        &crate::daemon::log::log_path(&data_dir),
+                    )
+                } else {
+                    messages::daemon_on_demand_store_held(
+                        &crate::app::store_in_use(&data_dir).to_string(),
+                    )
+                }
+            })));
+        }
+        if !said_waiting
+            && spawned.is_none()
+            && begun.elapsed()
+                >= Duration::from_millis(mimlys_core::limits::LIM_O14_DAEMON_CONNECT_MS)
+        {
+            said_waiting = true;
+            crate::output::diag(messages::daemon_waiting_for_the_store(
+                &crate::app::store_in_use(&data_dir).to_string(),
+            ));
         }
         std::thread::sleep(POLL);
     }

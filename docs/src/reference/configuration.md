@@ -34,6 +34,7 @@ config_version = 2
 data_dir = "/home/me/.local/share/mimlys"   # platform default when absent
 admission_slots = 2             # LIM-X5, 1–16: executions of yours at once across all runtimes; beyond it an execution waits
 daemon_idle = "30m"              # LIM-O13, 1m–7d or "never": an idle daemon (no client, no task running, queued or waiting for you) exits after this (from 0.14)
+serve = "manual"                # "manual" (default) or "on_demand": the first command that finds no daemon starts one and goes through it (from 0.14; see Running mimlys as a daemon)
 
 [backends.default]              # the backend a task runs on; more entries: see Several backends
 kind = "fake"                   # "fake" (scripted) or "openai_compatible" (a local model)
