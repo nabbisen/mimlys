@@ -360,6 +360,14 @@ impl ConfinedChild {
         }
     }
 
+    /// The worker's Job Object, as the daemon's check of its own tree names it (Windows).
+    #[cfg(windows)]
+    pub fn tree_job(&self) -> Option<crate::daemon_pipe::JobRef> {
+        match &self.tree {
+            Tree::Job(j) => Some(crate::daemon_pipe::JobRef::from_raw(j.raw())),
+        }
+    }
+
     /// Process id, for the orphan marker.
     pub fn id(&self) -> u32 {
         match &self.proc {

@@ -11,7 +11,6 @@ pub mod newer_store;
 pub mod printer;
 #[cfg(unix)]
 pub mod pty;
-#[cfg(unix)]
 pub mod served;
 
 use std::path::Path;
@@ -180,7 +179,6 @@ impl Registry {
 impl Drop for Registry {
     fn drop(&mut self) {
         // The suite served (`MIMLYS_TEST_SERVED=1`): the daemon of this environment ends with it.
-        #[cfg(unix)]
         served::stop_all_for(&self.path());
     }
 }
@@ -313,7 +311,6 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
         cmd.get_program()
     );
     // The suite served: the command's environment has its daemon before the command runs.
-    #[cfg(unix)]
     served::before(cmd);
     let out_path = dir.join(format!("run-{}-{n}.stdout", std::process::id()));
     let err_path = dir.join(format!("run-{}-{n}.stderr", std::process::id()));
@@ -343,7 +340,6 @@ pub fn run_bounded(cmd: &mut Command, dir: &Path) -> Bounded {
         );
     };
     // A command alone in the world ends its daemon with its registry.
-    #[cfg(unix)]
     if let Some(run_dir) = cmd
         .get_envs()
         .find(|(key, _)| *key == "MIMLYS_RUN_DIR")
@@ -377,5 +373,55 @@ pub fn skip(test: &str, reason: &str) {
     {
         // One write per line: appends from parallel tests do not interleave.
         let _ = file.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+/// Ends the process `pid` at once (a daemon a test left, or one the test kills to see what its end
+/// leaves).
+pub fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    if let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+    }
+}
+
+/// Asks the process `pid` to end, as a stop signal does where there is one (SIGTERM), and at once
+/// where there is not (Windows).
+pub fn terminate_pid(pid: u32) {
+    #[cfg(unix)]
+    if let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+    }
+    #[cfg(windows)]
+    kill_pid(pid);
+}
+
+/// Whether the process `pid` still runs.
+pub fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        i32::try_from(pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+            .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+    }
+    #[cfg(windows)]
+    {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output();
+        out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\",\"{pid}\"")))
     }
 }

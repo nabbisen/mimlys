@@ -27,6 +27,12 @@ pub struct InProcess {
     changed: Arc<Notify>,
     /// The driver's loop, once started (at the first request that gives it work).
     task: Mutex<Option<JoinHandle<()>>>,
+    /// One creation or resumption at a time. A daemon takes requests on a thread of each
+    /// connection: two creations at once would both find the line free and both start (LIM-X1 then
+    /// refuses the second with `conflict`, though it should wait in line), and would write the
+    /// same snapshot objects at the same moment. Held only for the request itself, which does not
+    /// wait for a step, so that no stop request is held behind it (handoff 014d).
+    starting: Mutex<()>,
     me: Weak<InProcess>,
 }
 
@@ -51,6 +57,7 @@ impl InProcess {
             wake: Arc::new(Notify::new()),
             changed: Arc::new(Notify::new()),
             task: Mutex::new(None),
+            starting: Mutex::new(()),
             me: me.clone(),
         })
     }
@@ -120,6 +127,8 @@ impl Transport for InProcess {
         envelope: Envelope,
         notice: &dyn Fn(Notice),
     ) -> Result<Response, ConnectionBroken> {
+        let _one_at_a_time = matches!(envelope.request.name(), "create_task" | "resume_task")
+            .then(|| self.starting.lock().unwrap_or_else(PoisonError::into_inner));
         let response = self.driver.handle_noticing(envelope, notice);
         // The request may have made a task `running`, or ended the wait of a task.
         self.ensure_driving();

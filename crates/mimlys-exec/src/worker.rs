@@ -252,6 +252,10 @@ pub struct Worker {
     /// daemon asks, from another thread, without waiting for the lock of an execution
     /// (REQ-SEC-016: the worker leads a session, which is the daemon's own tree).
     pid: std::sync::atomic::AtomicU32,
+    /// The Job Object of that worker (Windows), 0 when none: the daemon's own tree there is a
+    /// process in it.
+    #[cfg(windows)]
+    job: std::sync::atomic::AtomicUsize,
 }
 
 impl Worker {
@@ -261,6 +265,15 @@ impl Worker {
         match self.pid.load(std::sync::atomic::Ordering::SeqCst) {
             0 => None,
             pid => Some(pid),
+        }
+    }
+
+    /// The Job Object of the worker, when one runs (Windows): its tree is the daemon's own.
+    #[cfg(windows)]
+    pub fn tree_job(&self) -> Option<crate::daemon_pipe::JobRef> {
+        match self.job.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => None,
+            raw => Some(crate::daemon_pipe::JobRef::from_raw(raw)),
         }
     }
 
@@ -287,6 +300,8 @@ impl Worker {
             facts: Mutex::new(WorkerFacts::default()),
             reader_span: mimlys_core::log_span::ReaderSpan::new(),
             pid: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(windows)]
+            job: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -568,6 +583,11 @@ impl Worker {
         };
         self.pid
             .store(live.child.id(), std::sync::atomic::Ordering::SeqCst);
+        #[cfg(windows)]
+        self.job.store(
+            live.child.tree_job().map_or(0, |j| j.raw()),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         tracing::debug!(target: "mimlys_worker", "worker {} started, probing", live.child.id());
         let probing = Instant::now();
         write_frame(&mut live.stdin, &Request::Probe, limit).map_err(|e| e.to_string())?;
@@ -736,6 +756,15 @@ impl Worker {
             std::sync::atomic::Ordering::SeqCst,
             std::sync::atomic::Ordering::SeqCst,
         );
+        #[cfg(windows)]
+        if let Some(job) = l.child.tree_job() {
+            let _ = self.job.compare_exchange(
+                job.raw(),
+                0,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
         let _ = write_frame(&mut l.stdin, &Request::Shutdown, l.frame_limit);
         if !l.child.wait_within(Duration::from_millis(LIM_O2_CANCEL_MS)) {
             l.child.kill_tree();

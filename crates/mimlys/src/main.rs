@@ -720,7 +720,6 @@ fn detach_of(command: &Command) -> bool {
 /// may do, REQ-PERS-014). Not `toolchain grant` and `toolchain revoke` (they write this machine's
 /// permissions and the store's record of them): those need the store itself, and are refused,
 /// naming the daemon, while one holds it.
-#[cfg(unix)]
 fn servable(command: &Command) -> bool {
     !matches!(
         command,
@@ -730,7 +729,6 @@ fn servable(command: &Command) -> bool {
 
 /// The transport to the daemon of this store, when one runs and serves the command; an error
 /// when one runs and refuses this client (another version).
-#[cfg(unix)]
 fn route(
     loaded: &mimlys::config::Loaded,
     command: &Command,
@@ -739,8 +737,14 @@ fn route(
     if !servable(command) {
         return Ok(None);
     }
-    let Some(daemon) = lifecycle::find(loaded, false)? else {
-        return Ok(None);
+    let daemon = match lifecycle::find(loaded, false)? {
+        Some(daemon) => daemon,
+        // No daemon: `manual` (the default) runs embedded; `on_demand` starts one, and a start
+        // that fails is the command's failure, never a silent run of another mode (§19.5).
+        None if loaded.config.runtime.serve == mimlys::config::ServeMode::OnDemand => {
+            lifecycle::start_on_demand(loaded)?
+        }
+        None => return Ok(None),
     };
     if !daemon.usable() {
         let detail = match &daemon.answer.refusal {
@@ -763,15 +767,6 @@ fn route(
         data_dir,
         loaded.clone(),
     )))
-}
-
-/// Windows has no daemon in this release: every command runs embedded.
-#[cfg(not(unix))]
-fn route(
-    _loaded: &mimlys::config::Loaded,
-    _command: &Command,
-) -> Result<Option<std::sync::Arc<dyn mimlys::client::Transport>>, AppError> {
-    Ok(None)
 }
 
 /// The task a command would change or run, as the user named it (REQ-MAIN-006; handoff 004e,
@@ -1186,9 +1181,8 @@ async fn dispatch(
     }
 }
 
-/// `mimlys daemon …` (RFC 014; external design §19.5): the lifecycle of the daemon. Linux and
-/// macOS; Windows has its own transport in a later release.
-#[cfg(unix)]
+/// `mimlys daemon …` (RFC 014; external design §19.5): the lifecycle of the daemon, on every
+/// platform (a Unix socket on Linux and macOS, a named pipe on Windows).
 async fn run_daemon(
     command: DaemonCommand,
     loaded: mimlys::config::Loaded,
@@ -1210,16 +1204,4 @@ async fn run_daemon(
             tokio::task::block_in_place(|| lifecycle::status(&loaded, log, out))
         }
     }
-}
-
-/// The daemon is not part of this platform's release yet.
-#[cfg(not(unix))]
-async fn run_daemon(
-    _command: DaemonCommand,
-    _loaded: mimlys::config::Loaded,
-    _out: &Output,
-) -> Result<(), AppError> {
-    Err(AppError::Io {
-        detail: mimlys::messages::DAEMON_NOT_ON_THIS_PLATFORM.to_owned(),
-    })
 }

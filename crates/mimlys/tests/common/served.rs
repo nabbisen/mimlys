@@ -1,6 +1,6 @@
 //! The suite, served (handoff 014c, "Tests": the whole CLI suite also runs against a daemon).
 //!
-//! With `MIMLYS_TEST_SERVED=1` (Linux and macOS only), every `mimlys` command that `run_bounded`
+//! With `MIMLYS_TEST_SERVED=1` (every platform: a socket on Linux and macOS, a pipe on Windows), every `mimlys` command that `run_bounded`
 //! runs for a test environment is served: the first one of an environment (its registry, so its
 //! socket, and its configuration) starts a daemon for it, with its own data directory, and the
 //! commands that follow go through it. The daemon is stopped when the environment ends (its
@@ -14,8 +14,6 @@
 //! embedded mode itself (the store's lock, the registry's slots between runtimes), or the test
 //! runs its commands **outside** `run_bounded` (a pseudo-terminal, a process it signals), which
 //! this hook never sees.
-
-#![cfg(unix)]
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
