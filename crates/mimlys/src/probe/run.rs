@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// How one probe ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "ended", rename_all = "snake_case")]
 pub enum Ended {
     /// A class was found: the record to write, and what could not be removed afterwards (the next
     /// start that writes removes it).

@@ -166,6 +166,10 @@ pub struct RuntimeStatus {
     /// (REQ-MAIN-006). Absent when there is none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unknown_state: Vec<(TaskId, String)>,
+    /// Tasks in `created`: made and not started. A daemon that ended before its line started a
+    /// task leaves it so (external design §19.5). Absent when there is none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub created: Vec<TaskId>,
     /// The words above that this release does not know, with the field that holds each
     /// (`pending`, `unknown_state`). Absent when there is none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1905,6 +1909,7 @@ impl Runtime {
             running: activity.running,
             pending: activity.pending,
             unknown_state: activity.unknown_state,
+            created: activity.created,
         })
     }
 

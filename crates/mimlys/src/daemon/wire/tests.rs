@@ -230,3 +230,86 @@ fn ed_19_5_the_configuration_hash_is_of_the_files_bytes() {
     assert_ne!(hash(None), hash(Some(&a)));
     assert_ne!(hash(Some(&dir.path().join("missing.toml"))), hash(None));
 }
+
+/// REQ-SEC-016 (014c-5): the refusal of a peer whose pid the system did not give has its own word,
+/// added to the kinds (the others are as they were), and the probe's frames have theirs.
+#[test]
+fn req_sec_016_a_peer_with_no_pid_is_refused_in_a_word_of_its_own() {
+    same_on_the_wire(
+        &HelloAnswer {
+            accepted: false,
+            refusal: Some(Refusal {
+                kind: RefusalKind::NoPeerPid,
+                message: "the system gave no process id".into(),
+                reference: None,
+            }),
+            writes_refused: None,
+        },
+        json!({
+            "version": 1,
+            "accepted": false,
+            "refusal": {"kind": "no_peer_pid", "message": "the system gave no process id"},
+        }),
+    );
+}
+
+/// REQ-MDL-011 (014c-5): `model probe` through the daemon is two additive requests and two additive
+/// answers, whose shapes are these.
+#[test]
+fn req_mdl_011_the_probes_frames_have_their_shapes() {
+    same_on_the_wire(
+        &Request::Probe {
+            backend: "default".into(),
+        },
+        json!({"version": 1, "request": "probe", "backend": "default"}),
+    );
+    same_on_the_wire(
+        &Request::StopProbe,
+        json!({"version": 1, "request": "stop_probe"}),
+    );
+    same_on_the_wire(
+        &Reply::Probed {
+            ended: Box::new(crate::probe::run::Ended::Unreachable { left: vec![] }),
+        },
+        json!({"version": 1, "response": "probed", "ended": {"ended": "unreachable", "left": []}}),
+    );
+    same_on_the_wire(
+        &Reply::ProbeFailed {
+            failure: ProbeFailure::Other {
+                message: "no scope".into(),
+            },
+        },
+        json!({
+            "version": 1,
+            "response": "probe_failed",
+            "failure": {"failure": "other", "message": "no scope"},
+        }),
+    );
+}
+
+/// REQ-CLI-008 (014c-5): `daemon status` counts client processes and says how many connections they
+/// hold; a status written by a build that had no `connections` is read as none.
+#[test]
+fn req_cli_008_the_status_counts_processes_and_connections_apart() {
+    let status = DaemonStatus {
+        pid: 1,
+        runtime_version: "0.14.0".into(),
+        started_at: "2026-11-28T00:00:00.000Z".into(),
+        uptime_secs: 3,
+        socket: "/run/d.sock".into(),
+        config_hash: "ab".repeat(32),
+        clients: 2,
+        connections: 5,
+        running: vec![],
+        queued: vec![],
+        waiting_user: vec![],
+        log: "/data/logs/daemon.log".into(),
+        idle_secs: None,
+    };
+    let mut value = serde_json::to_value(&status).unwrap();
+    assert_eq!(value["clients"], 2);
+    assert_eq!(value["connections"], 5);
+    value.as_object_mut().unwrap().remove("connections");
+    let older: DaemonStatus = serde_json::from_value(value).unwrap();
+    assert_eq!(older.connections, 0);
+}

@@ -13,12 +13,17 @@
 //! request is not held by a request that waits for the step in flight.
 
 use crate::app::{App, AppError, os_user};
+use crate::backends::Backend;
 use crate::client::Transport as _;
 use crate::daemon::socket::{self, Peer};
 use crate::daemon::wire::{
-    self, ClientHello, DaemonHello, DaemonStatus, HelloAnswer, Refusal, RefusalKind, Reply, Request,
+    self, ClientHello, DaemonHello, DaemonStatus, HelloAnswer, ProbeFailure, Refusal, RefusalKind,
+    Reply, Request,
 };
 use crate::embedded::InProcess;
+use crate::probe;
+use crate::probe::drive::Stop;
+use crate::probe::run::probe_backend;
 use crate::registry::{Bounds, DaemonEntry, Registry};
 use mimlys_core::api::{Envelope, Outcome, Response};
 use mimlys_core::clock::{Clock, SystemClock};
@@ -29,15 +34,24 @@ use mimlys_core::runtime::{RuntimeError, Session};
 use mimlys_core::task::TaskState;
 use mimlys_exec::frame::FrameError;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+/// The reason `daemon.refused` records for a peer of the daemon's own tree (§17.1).
+const REFUSED_OWN_TREE: &str = "own_tree";
+/// The reason it records for a peer whose process id the system did not give (REQ-SEC-016).
+const REFUSED_NO_PEER_PID: &str = "no_peer_pid";
 
 /// How often an idle subscription writes to its client anyway, so that a client that has gone is
 /// found by the failed write and its connection does not keep the daemon alive.
 const SUBSCRIPTION_BEAT: Duration = Duration::from_secs(2);
+
+/// How often a wait on the daemon's side (for a probe, for a task to pause) looks again.
+const WAIT_POLL: Duration = Duration::from_millis(50);
 
 /// What the daemon is started with.
 pub struct Options {
@@ -74,7 +88,9 @@ pub struct Served {
     started: Instant,
     started_at: String,
     options: Options,
-    clients: AtomicU32,
+    /// The open connections, by the pid of the peer's process (none for a peer the system gave
+    /// no pid for, which is refused at once): how many each process holds.
+    connections: Connections,
     stopping: AtomicBool,
     last_activity: Mutex<Instant>,
     /// Counts what the driver's host said changed; each subscriber waits for it to move.
@@ -82,26 +98,57 @@ pub struct Served {
     shutdown: tokio::sync::Notify,
     /// What the first `stop` answered, for the ones after it.
     stopped: Mutex<Option<(Vec<String>, Vec<String>)>>,
+    /// The stop handles of the probes that run now (`model probe` through the daemon): a stop of
+    /// the daemon signals each, as a stop signal ends a probe of a command.
+    probes: Mutex<Vec<Arc<Stop>>>,
     /// The test seam of the repeat after a break ([`CUT_ANSWER_ENV`]): the request whose first
     /// answer is not sent. Always none in a release.
     cut_answer: Mutex<Option<String>>,
 }
 
-/// A client is connected for as long as this lives.
-struct Connected<'a>(&'a Served);
+/// The connections that are open, by the pid of the peer's process: a client **process** is what
+/// `daemon status` counts (a follower holds one connection for as long as it follows, each request
+/// its own for a moment, so the connections alone say little of how many terminals there are).
+#[derive(Default)]
+struct Connections(Mutex<BTreeMap<Option<u32>, u32>>);
 
-impl<'a> Connected<'a> {
-    fn new(served: &'a Served) -> Self {
-        served.clients.fetch_add(1, Ordering::SeqCst);
-        served.touch();
-        Self(served)
+impl Connections {
+    /// A connection of the process `pid` is open until the returned guard is dropped.
+    fn open(&self, pid: Option<u32>) -> OpenConnection<'_> {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(pid)
+            .or_insert(0) += 1;
+        OpenConnection { of: self, pid }
+    }
+
+    /// How many processes hold a connection, and how many connections they hold.
+    fn counts(&self) -> (u32, u32) {
+        let open = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        (
+            u32::try_from(open.len()).unwrap_or(u32::MAX),
+            open.values().sum(),
+        )
     }
 }
 
-impl Drop for Connected<'_> {
+/// One open connection, counted under its peer's process until it is dropped.
+struct OpenConnection<'a> {
+    of: &'a Connections,
+    pid: Option<u32>,
+}
+
+impl Drop for OpenConnection<'_> {
     fn drop(&mut self) {
-        self.0.clients.fetch_sub(1, Ordering::SeqCst);
-        self.0.touch();
+        let mut open = self.of.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = open.get_mut(&self.pid) {
+            *count -= 1;
+            if *count == 0 {
+                open.remove(&self.pid);
+            }
+        }
     }
 }
 
@@ -147,25 +194,37 @@ impl Served {
         leaders
     }
 
-    fn refuse_own_tree(&self, peer: Peer) -> Option<Refusal> {
-        let pid = peer.pid?;
-        let leaders = self.session_leaders();
-        let own = match socket::in_own_tree(pid, &leaders) {
-            Ok(own) => own,
-            // A session that cannot be read is refused, never served.
-            Err(e) => {
-                tracing::warn!(
-                    pid,
-                    "the session of a client could not be read ({e}): refused"
-                );
-                true
+    /// The refusal of a peer that is the daemon's own tree, or that the daemon cannot tell from
+    /// it, and the reason the audit records. A peer with no pid is refused (REQ-SEC-016): the
+    /// check below needs the pid, and serving a peer it cannot check would fail open.
+    fn refuse_peer(&self, peer: Peer) -> Option<(Refusal, &'static str)> {
+        let tree = socket::judge_tree(peer, &self.session_leaders());
+        let pid = peer.pid.unwrap_or_default();
+        match tree {
+            socket::Tree::Outside => None,
+            socket::Tree::NoPid => Some((
+                Refusal {
+                    kind: RefusalKind::NoPeerPid,
+                    message: crate::messages::daemon_no_peer_pid_refused(),
+                    reference: None,
+                },
+                REFUSED_NO_PEER_PID,
+            )),
+            socket::Tree::Own | socket::Tree::Unreadable => {
+                if tree == socket::Tree::Unreadable {
+                    // A session that cannot be read is refused, never served.
+                    tracing::warn!(pid, "the session of a client could not be read: refused");
+                }
+                Some((
+                    Refusal {
+                        kind: RefusalKind::OwnTree,
+                        message: crate::messages::daemon_own_tree_refused(pid),
+                        reference: None,
+                    },
+                    REFUSED_OWN_TREE,
+                ))
             }
-        };
-        own.then(|| Refusal {
-            kind: RefusalKind::OwnTree,
-            message: crate::messages::daemon_own_tree_refused(pid),
-            reference: None,
-        })
+        }
     }
 
     /// What the hellos say about the client: the refusal that ends the connection, and the one
@@ -217,9 +276,18 @@ impl Served {
         (None, None)
     }
 
-    /// One connection, from its hello to its end.
+    /// One connection, from its hello to its end. It is counted under its peer's process while it
+    /// is open, and its beginning and its end are activity (LIM-O13).
     fn connection(&self, stream: &mut UnixStream, peer: Peer) -> Result<(), FrameError> {
-        let _connected = Connected::new(self);
+        let open = self.connections.open(peer.pid);
+        self.touch();
+        let result = self.serve_connection(stream, peer);
+        drop(open);
+        self.touch();
+        result
+    }
+
+    fn serve_connection(&self, stream: &mut UnixStream, peer: Peer) -> Result<(), FrameError> {
         let timeout = Some(Duration::from_millis(LIM_O14_DAEMON_CONNECT_MS));
         stream.set_read_timeout(timeout)?;
         stream.set_write_timeout(timeout)?;
@@ -237,16 +305,16 @@ impl Served {
         let hello: ClientHello = wire::read(stream)?;
         // The daemon's own tree is refused before anything it says is read, and the refusal is
         // recorded; so is a daemon that is stopping.
-        let (mut refusal, writes_refused) = match self.refuse_own_tree(peer) {
-            Some(own_tree) => {
-                tracing::warn!(pid = ?peer.pid, "a client of the daemon's own tree was refused");
+        let (mut refusal, writes_refused) = match self.refuse_peer(peer) {
+            Some((refused, reason)) => {
+                tracing::warn!(pid = ?peer.pid, reason, "a client was refused");
                 if let Err(e) = self.runtime.record_server_events(&[Event::DaemonRefused {
-                    reason: "own_tree".into(),
+                    reason: reason.into(),
                     peer_pid: peer.pid,
                 }]) {
                     tracing::warn!("the refusal could not be recorded: {e}");
                 }
-                (Some(own_tree), None)
+                (Some(refused), None)
             }
             None => self.judge(&salt, &hello),
         };
@@ -266,9 +334,11 @@ impl Served {
                 writes_refused: writes_refused.clone(),
             },
         )?;
+        // A peer of the own tree, or one that cannot be told from it, is read no further: not even
+        // `stop`.
         if refusal
             .as_ref()
-            .is_some_and(|r| r.kind == RefusalKind::OwnTree)
+            .is_some_and(|r| matches!(r.kind, RefusalKind::OwnTree | RefusalKind::NoPeerPid))
         {
             return Ok(());
         }
@@ -370,6 +440,28 @@ impl Served {
                     wire::write(stream, &Reply::Subscribed)?;
                     return self.subscription(stream);
                 }
+                Request::Probe { backend } => {
+                    // The probe writes to the store (a task of its own, deleted when it ends): a
+                    // client whose configuration or secrets differ may not ask for it, as for
+                    // any request that changes state.
+                    if let Some(refusal) = &writes_refused {
+                        wire::write(
+                            stream,
+                            &Reply::Refused {
+                                refusal: refusal.clone(),
+                            },
+                        )?;
+                        return Ok(());
+                    }
+                    let reply = self.probe(stream, &backend)?;
+                    wire::write(stream, &reply)?;
+                    // The connection is the probe's alone: the thread that watched it for a stop
+                    // request ends with it.
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    return Ok(());
+                }
+                // A stop request with no probe to stop is nothing.
+                Request::StopProbe => {}
             }
         }
     }
@@ -452,6 +544,9 @@ impl Served {
             .persistence()
             .tasks_in_state("waiting_user")
             .unwrap_or_default();
+        // Client processes, by the peer's pid, and the connections they hold (the connection that
+        // asks for this is one of them).
+        let (clients, connections) = self.connections.counts();
         DaemonStatus {
             pid: std::process::id(),
             runtime_version: crate::daemon::wire::runtime_version().to_owned(),
@@ -459,12 +554,40 @@ impl Served {
             uptime_secs: self.started.elapsed().as_secs(),
             socket: self.socket.to_string_lossy().into_owned(),
             config_hash: self.config_hash.clone(),
-            clients: self.clients.load(Ordering::SeqCst),
+            clients,
+            connections,
             running: runtime.running_tasks().unwrap_or_default(),
             queued: self.transport.driver().waiting(),
             waiting_user,
             log: self.options.log.to_string_lossy().into_owned(),
             idle_secs: self.options.idle.map(|d| d.as_secs()),
+        }
+    }
+
+    /// Signals every probe that runs, and waits for each to end (within LIM-O24).
+    fn stop_probes(&self) {
+        let signal = |stops: &[Arc<Stop>]| stops.iter().for_each(|s| s.signal());
+        let begun = Instant::now();
+        let cap = Duration::from_millis(LIM_O24_DAEMON_STOP_MS);
+        let grace = Duration::from_millis(LIM_O1_STOP_MS.unsigned_abs());
+        let mut signalled = 0;
+        loop {
+            let running = self
+                .probes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if running.is_empty() || begun.elapsed() >= cap {
+                return;
+            }
+            // One signal at once, and a second after the grace of the first (it interrupts
+            // anyway; no tool of the probe's has an effect that cannot be undone).
+            let due = if begun.elapsed() >= grace { 2 } else { 1 };
+            while signalled < due {
+                signal(&running);
+                signalled += 1;
+            }
+            std::thread::sleep(WAIT_POLL);
         }
     }
 
@@ -479,6 +602,10 @@ impl Served {
             return answer.clone();
         }
         self.stopping.store(true, Ordering::SeqCst);
+        // A probe that runs is stopped as a stop signal stops one, and waited for before the
+        // tasks are looked at: its task is the probe's, deleted when it ends, never a task the
+        // user paused.
+        self.stop_probes();
         let queued: Vec<String> = self
             .transport
             .driver()
@@ -526,7 +653,7 @@ impl Served {
                     send(mimlys_core::api::Request::InterruptStep { task_id: *task_id });
                 }
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(WAIT_POLL);
         }
         let paused: Vec<String> = running
             .iter()
@@ -547,10 +674,110 @@ impl Served {
         (paused, queued)
     }
 
+    /// `mimlys model probe` for one backend, run here: the probe builds a runtime of its own over
+    /// the store, and the daemon is the process that holds it (REQ-PERS-014). The same code runs
+    /// as in embedded mode ([`probe_backend`]), over the daemon's own store handle; nothing of it
+    /// is the daemon's own task, and no second process owns the store. A stop request on the
+    /// connection (or the connection's end) stops the probe as a signal stops one, and so does a
+    /// stop of the daemon ([`Served::stop`]).
+    fn probe(&self, stream: &mut UnixStream, name: &str) -> Result<Reply, FrameError> {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Ok(Reply::ProbeFailed {
+                failure: ProbeFailure::Runtime {
+                    error: RuntimeError::Unavailable {
+                        component: crate::messages::daemon_stopping(),
+                    },
+                },
+            });
+        }
+        let failed = |e: AppError| Reply::ProbeFailed {
+            failure: match e {
+                AppError::Runtime(error) => ProbeFailure::Runtime { error },
+                other => ProbeFailure::Other {
+                    message: other.to_string(),
+                },
+            },
+        };
+        // One task runs at a time (LIM-X1), the probe's own included: with one running, the
+        // runtime would refuse the probe's task with no name to give. Said here, naming it.
+        if let Some(running) = self
+            .runtime
+            .running_tasks()
+            .ok()
+            .and_then(|r| r.first().copied())
+        {
+            return Ok(Reply::ProbeFailed {
+                failure: ProbeFailure::Runtime {
+                    error: RuntimeError::Conflict {
+                        detail: crate::messages::daemon_probe_refused_for_task(
+                            &running.to_string(),
+                        ),
+                    },
+                },
+            });
+        }
+        // The same plan as the command's: a remote backend is probed only when it is named and the
+        // administrator allowed it, and that is what lets its probe's profile send the fixed
+        // mini-task. The client's word is the name alone.
+        let plan = match probe::plan(self.app.config(), Some(name)) {
+            Ok(plan) => plan,
+            Err(e) => return Ok(failed(e)),
+        };
+        let backend = match Backend::make(&self.app.loaded, name, None).and_then(|b| {
+            b.ready()?;
+            Ok(b)
+        }) {
+            Ok(backend) => backend,
+            Err(e) => return Ok(failed(e)),
+        };
+        let stop = Stop::new();
+        self.probes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::clone(&stop));
+        // What the client says on this connection while the probe runs: a stop request, or its end.
+        let watcher = stream.try_clone().map(|mut reader| {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                loop {
+                    match wire::read::<Request>(&mut reader) {
+                        Ok(Request::StopProbe) => stop.signal(),
+                        Ok(_) => {}
+                        Err(_) => {
+                            stop.signal();
+                            return;
+                        }
+                    }
+                }
+            })
+        });
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let ended = tokio::runtime::Handle::current().block_on(probe_backend(
+            &self.app,
+            &backend,
+            plan.remote_named.is_some(),
+            &stop,
+            clock,
+        ));
+        self.probes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|s| !Arc::ptr_eq(s, &stop));
+        self.touch();
+        // The watcher ends when the connection does (the caller shuts it down after the answer).
+        drop(watcher);
+        Ok(match ended {
+            Ok(ended) => Reply::Probed {
+                ended: Box::new(ended),
+            },
+            Err(e) => failed(e),
+        })
+    }
+
     /// Whether the daemon has nothing to do: no client, and no task running, queued or waiting
     /// for the user (LIM-O13).
     fn idle_now(&self) -> bool {
-        if self.clients.load(Ordering::SeqCst) > 0 {
+        if self.connections.counts().0 > 0 {
             return false;
         }
         let runtime = &self.runtime;
@@ -646,12 +873,13 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
         started: Instant::now(),
         started_at: started_at.to_rfc3339(),
         options,
-        clients: AtomicU32::new(0),
+        connections: Connections::default(),
         stopping: AtomicBool::new(false),
         last_activity: Mutex::new(Instant::now()),
         seen: (Mutex::new(0), Condvar::new()),
         shutdown: tokio::sync::Notify::new(),
         stopped: Mutex::new(None),
+        probes: Mutex::new(Vec::new()),
         cut_answer: Mutex::new(
             std::env::var(crate::daemon::transport::CUT_ANSWER_ENV)
                 .ok()

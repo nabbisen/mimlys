@@ -206,6 +206,11 @@ pub struct Peer {
 /// directory's and the socket's owner are always checked against the real user.
 pub const PRETEND_UID_ENV: &str = "MIMLYS_PRETEND_UID";
 
+/// The test seam of the peer's pid: when set, **in a debug build only** (as `MIMLYS_RUN_DIR` is),
+/// a peer is taken as one whose pid the system did not give, so that a test makes the case that
+/// neither Linux nor macOS has (REQ-SEC-016: such a peer is refused).
+pub const PRETEND_NO_PID_ENV: &str = "MIMLYS_PRETEND_NO_PID";
+
 /// The user a peer must be: this process's own, or, in a debug build, the seam's.
 pub fn user_for_peers() -> u32 {
     if cfg!(debug_assertions)
@@ -223,9 +228,13 @@ impl Peer {
     /// get a peer from a connection, for the daemon (who may connect) and for the client (whose
     /// daemon it is), so that neither can use a peer it did not check.
     pub fn admit(cred: &tokio::net::unix::UCred) -> Result<Self, SocketError> {
+        let hidden = cfg!(debug_assertions) && std::env::var_os(PRETEND_NO_PID_ENV).is_some();
         Self {
             uid: cred.uid(),
-            pid: cred.pid().and_then(|p| u32::try_from(p).ok()),
+            pid: cred
+                .pid()
+                .and_then(|p| u32::try_from(p).ok())
+                .filter(|_| !hidden),
         }
         .check(user_for_peers())
     }
@@ -246,6 +255,34 @@ impl Peer {
             Some(pid) => format!("pid:{pid}"),
             None => "pid:unknown".to_owned(),
         }
+    }
+}
+
+/// Where a peer stands in relation to the daemon's own tree: what the daemon does with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tree {
+    /// Its session is none the daemon made: it is served.
+    Outside,
+    /// Its session is one the daemon made (the worker's, an MCP server's): refused.
+    Own,
+    /// Its session could not be read (it ended, or the system refused): refused, never served.
+    Unreadable,
+    /// The system gave no process id for it: the daemon cannot tell its own tree from it, and
+    /// refuses it (REQ-SEC-016). Without this arm the check would fail open. Linux and macOS both
+    /// give a pid, so nothing works less; a platform that did not would fail closed.
+    NoPid,
+}
+
+/// Judges `peer` against the sessions `leaders` lead. The one place that decides who is served: a
+/// peer with no pid is [`Tree::NoPid`] **whatever the leaders are**, the empty set included.
+pub fn judge_tree(peer: Peer, leaders: &[u32]) -> Tree {
+    let Some(pid) = peer.pid else {
+        return Tree::NoPid;
+    };
+    match in_own_tree(pid, leaders) {
+        Ok(false) => Tree::Outside,
+        Ok(true) => Tree::Own,
+        Err(_) => Tree::Unreadable,
     }
 }
 

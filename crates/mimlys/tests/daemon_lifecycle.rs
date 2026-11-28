@@ -216,7 +216,14 @@ fn req_pers_014_a_command_that_writes_beside_the_daemon_is_refused_naming_it() {
     let pid = serde_json::from_str::<Value>(started.stdout.trim()).unwrap()["daemon"]["pid"]
         .as_u64()
         .unwrap();
-    let refused = env.run(&["model", "probe"]);
+    // `toolchain grant` writes the store's record of a permission, which only the process that holds
+    // the store may do: it is not a request the daemon serves (`model probe` is, since 014c-5).
+    let refused = env.run(&[
+        "toolchain",
+        "grant",
+        "/toolchain-that-is-not-there",
+        "--yes",
+    ]);
     assert_eq!(refused.code(), 1, "{}\n{}", refused.stdout, refused.stderr);
     assert!(
         refused.stderr.contains("the daemon") && refused.stderr.contains(&format!("pid {pid}")),

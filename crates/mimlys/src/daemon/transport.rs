@@ -15,7 +15,9 @@
 use crate::client::{ConnectionBroken, Transport};
 use crate::config::Loaded;
 use crate::daemon::connect::{self, Daemon, Reach};
-use crate::daemon::wire::{self, Reply, Request};
+use crate::daemon::wire::{self, ProbeFailure, Reply, Request};
+use crate::probe::drive::Stop;
+use crate::probe::run::Ended;
 use mimlys_core::api::{Envelope, Line, Notice, Outcome, Response};
 use mimlys_core::ids::TaskId;
 use mimlys_core::runtime::RuntimeError;
@@ -34,6 +36,9 @@ pub const CUT_ANSWER_ENV: &str = "MIMLYS_DAEMON_CUT_ANSWER";
 /// (`MIMLYS_DAEMON_DELETE_AFTER_CUT`, with [`CUT_ANSWER_ENV`]; a debug build only): after the cut
 /// answer, the daemon deletes the request's task before the client asks again.
 pub const DELETE_AFTER_CUT_ENV: &str = "MIMLYS_DAEMON_DELETE_AFTER_CUT";
+
+/// How often the client looks for a stop signal to forward to a probe that runs in the daemon.
+const FORWARD_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What a connection attempt came to.
 enum Attempt {
@@ -99,6 +104,57 @@ impl Socket {
         };
         wire::write(&mut daemon.stream, &request).map_err(|e| broken(e.to_string()))?;
         wire::read(&mut daemon.stream).map_err(|e| broken(e.to_string()))
+    }
+
+    /// The probe of one backend, asked of the daemon on a connection of its own, which stays open
+    /// until the answer. Each stop signal the command receives is forwarded to the daemon on it,
+    /// and a client that goes away ends the connection, which the daemon takes as the first one.
+    /// Not sent again after a break: a probe that was cut was stopped and deleted what it made, and
+    /// the user asks again.
+    fn probe_through(
+        &self,
+        backend: &str,
+        stop: &Arc<Stop>,
+    ) -> Result<Ended, crate::app::AppError> {
+        let io = |detail: String| crate::app::AppError::Io { detail };
+        let mut daemon = match self.attempt() {
+            Attempt::Usable(daemon) => daemon,
+            Attempt::Refused(message) | Attempt::Broken(message) => return Err(io(message)),
+        };
+        wire::write(
+            &mut daemon.stream,
+            &Request::Probe {
+                backend: backend.to_owned(),
+            },
+        )
+        .map_err(|e| io(e.to_string()))?;
+        let mut writer = daemon.stream.try_clone().map_err(|e| io(e.to_string()))?;
+        let over = Arc::new(AtomicBool::new(false));
+        let forwarding = {
+            let (over, stop) = (Arc::clone(&over), Arc::clone(stop));
+            std::thread::spawn(move || {
+                let mut sent = 0;
+                while !over.load(Ordering::SeqCst) {
+                    while sent < stop.signalled() {
+                        sent += 1;
+                        let _ = wire::write(&mut writer, &Request::StopProbe);
+                    }
+                    std::thread::sleep(FORWARD_POLL);
+                }
+            })
+        };
+        let reply = wire::read::<Reply>(&mut daemon.stream);
+        over.store(true, Ordering::SeqCst);
+        let _ = forwarding.join();
+        match reply.map_err(|e| io(crate::messages::daemon_connection_lost(&e.to_string())))? {
+            Reply::Probed { ended } => Ok(*ended),
+            Reply::ProbeFailed { failure } => Err(match failure {
+                ProbeFailure::Runtime { error } => crate::app::AppError::Runtime(error),
+                ProbeFailure::Other { message } => io(message),
+            }),
+            Reply::Refused { refusal } => Err(io(refusal.message)),
+            other => Err(io(format!("the daemon answered {other:?} to a probe"))),
+        }
     }
 
     /// Begins the subscription: a thread that holds a connection and notifies the follower of
@@ -214,6 +270,14 @@ impl Transport for Socket {
             Ok(Reply::Failure { error }) => error,
             _ => None,
         }
+    }
+
+    fn probe(
+        &self,
+        backend: &str,
+        stop: &Arc<Stop>,
+    ) -> Option<Result<Ended, crate::app::AppError>> {
+        Some(self.probe_through(backend, stop))
     }
 
     fn queued(&self, task_id: TaskId) -> Option<Line> {

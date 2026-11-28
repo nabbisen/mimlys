@@ -428,6 +428,9 @@ pub struct Activity {
     pub pending: Vec<(TaskId, WaitWord)>,
     /// Tasks whose state is a word this release does not know, with the word.
     pub unknown_state: Vec<(TaskId, String)>,
+    /// Tasks in `created`: made and not started (held on purpose, or left by a daemon that ended
+    /// before its line started them, external design §19.5).
+    pub created: Vec<TaskId>,
 }
 
 impl Activity {
@@ -492,6 +495,7 @@ pub(super) fn activity(persistence: &dyn PersistenceRead) -> Result<Activity, Ru
         running: persistence.tasks_in_state("running")?,
         pending,
         unknown_state,
+        created: persistence.tasks_in_state("created")?,
     })
 }
 

@@ -219,3 +219,37 @@ fn req_sec_016_a_peer_in_a_session_a_child_leads_is_the_daemons_own_tree() {
     // No such process: the session cannot be read, which is an error and not "not the tree".
     assert!(in_own_tree(i32::MAX as u32, &[session]).is_err());
 }
+
+/// REQ-SEC-016 (014c-5): **a peer with no pid is refused**, whatever the daemon's own sessions
+/// are, the empty set included. Without it the check fails open: `in_own_tree` of nothing is
+/// "not the tree", and a peer the daemon cannot place would be served. (`mutation: a peer with no
+/// pid served`)
+#[test]
+fn req_sec_016_a_peer_with_no_pid_is_refused_whatever_the_daemons_sessions_are() {
+    let me = std::process::id();
+    let session = rustix::process::getsid(None)
+        .unwrap()
+        .as_raw_nonzero()
+        .get()
+        .cast_unsigned();
+    let nameless = Peer {
+        uid: own_uid(),
+        pid: None,
+    };
+    // No session of the daemon's own, and some: the same answer.
+    assert_eq!(judge_tree(nameless, &[]), Tree::NoPid);
+    assert_eq!(judge_tree(nameless, &[session, 1]), Tree::NoPid);
+    // The others, as before: outside, the tree, and a session that cannot be read.
+    let known = Peer {
+        uid: own_uid(),
+        pid: Some(me),
+    };
+    assert_eq!(judge_tree(known, &[]), Tree::Outside);
+    assert_eq!(judge_tree(known, &[session + 1]), Tree::Outside);
+    assert_eq!(judge_tree(known, &[session]), Tree::Own);
+    let gone = Peer {
+        uid: own_uid(),
+        pid: Some(i32::MAX as u32),
+    };
+    assert_eq!(judge_tree(gone, &[session]), Tree::Unreadable);
+}

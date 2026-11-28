@@ -77,7 +77,13 @@ pub async fn probe(app: &App, named: Option<&str>, out: &Output) -> Result<(), A
             .remote_named
             .as_ref()
             .is_some_and(|r| r.backend == backend.name);
-        let ended = probe_backend(app, backend, remote_named, &stop, Arc::clone(&clock)).await?;
+        // Where the store is held by a daemon, the probe is a request the daemon runs (the answer
+        // is the same `Ended`); otherwise this process owns the store and runs it itself.
+        let asked = tokio::task::block_in_place(|| app.client.probe(&backend.name, &stop));
+        let ended = match asked {
+            Some(answer) => answer?,
+            None => probe_backend(app, backend, remote_named, &stop, Arc::clone(&clock)).await?,
+        };
         match ended {
             Ended::Measured { last, left } => {
                 left_paths.extend(left);

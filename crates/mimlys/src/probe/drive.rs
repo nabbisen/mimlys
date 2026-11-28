@@ -42,6 +42,12 @@ impl Stop {
         self.requested.load(Ordering::SeqCst)
     }
 
+    /// How many stop signals have come: a client of a daemon forwards each of them to the daemon,
+    /// which makes them its own ([`Stop::signal`]).
+    pub fn signalled(&self) -> u32 {
+        self.signals.load(Ordering::SeqCst)
+    }
+
     /// Starts listening for the stop signals of the operating system: each calls
     /// [`Stop::signal`]. Made before anything is created, so that a signal that arrives meanwhile
     /// is taken (the default action, which ends the process at once, no longer applies).

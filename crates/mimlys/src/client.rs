@@ -62,6 +62,19 @@ pub trait Transport: Send + Sync {
     fn failure(&self, _task_id: TaskId) -> Option<RuntimeError> {
         None
     }
+
+    /// Runs the fitness probe of one backend (`mimlys model probe`, REQ-MDL-011) where the store
+    /// is held, when that is not this process: a transport to a daemon asks the daemon, which
+    /// owns the store (REQ-PERS-014) and runs the probe on it; `stop` is forwarded to it as the
+    /// signals of the command come. `None`: this transport does not run it, and the caller runs
+    /// it over its own store, as embedded mode does.
+    fn probe(
+        &self,
+        _backend: &str,
+        _stop: &Arc<crate::probe::drive::Stop>,
+    ) -> Option<Result<crate::probe::run::Ended, crate::app::AppError>> {
+        None
+    }
 }
 
 /// A connection that broke while a request was in flight, or could not be made: whether the
@@ -133,6 +146,16 @@ impl Client {
     /// The session every request carries.
     pub fn session(&self) -> &Session {
         &self.session
+    }
+
+    /// The probe of one backend, run where the store is held when that is not this process
+    /// ([`Transport::probe`]); `None` when the caller runs it itself.
+    pub fn probe(
+        &self,
+        backend: &str,
+        stop: &Arc<crate::probe::drive::Stop>,
+    ) -> Option<Result<crate::probe::run::Ended, crate::app::AppError>> {
+        self.transport.probe(backend, stop)
     }
 
     /// Sends `request` under a new id, and returns its reply, or the error the runtime gave.

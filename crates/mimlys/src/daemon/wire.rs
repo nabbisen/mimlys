@@ -96,6 +96,9 @@ pub enum RefusalKind {
     Secret,
     /// A peer of the daemon's own tree.
     OwnTree,
+    /// A peer whose process id the system did not give: the daemon cannot tell its own tree from
+    /// it (REQ-SEC-016). Added in 014c-5; neither Linux nor macOS ever gives rise to it.
+    NoPeerPid,
     /// The daemon is stopping.
     Stopping,
 }
@@ -159,6 +162,18 @@ pub enum Request {
     Subscribe,
     /// The daemon's status.
     Status,
+    /// Probe one backend's model (`mimlys model probe`, REQ-MDL-011), on the daemon's own store:
+    /// the probe builds a runtime of its own over the store, which only the process that holds the
+    /// store's lock may do (REQ-PERS-014). The answer is [`Reply::Probed`]. The connection stays
+    /// open while it runs, and the client may send [`Request::StopProbe`] on it.
+    Probe {
+        /// The backend, by its name in the configuration.
+        backend: String,
+    },
+    /// A stop signal reached the client that asked for a probe: the daemon makes it its own, as
+    /// the signal of a command does (REQ-CLI-005). Sent once for each signal, on the probe's
+    /// connection; a connection that ends has the same effect as the first.
+    StopProbe,
 }
 
 /// What the daemon answers.
@@ -211,6 +226,35 @@ pub enum Reply {
         /// Why.
         refusal: Refusal,
     },
+    /// The answer to `probe`: how the probe ended, as it does in embedded mode (a class and its
+    /// detail, or that the engine could not be reached, or what was not measured, or that it was
+    /// stopped).
+    Probed {
+        /// How it ended.
+        ended: Box<crate::probe::run::Ended>,
+    },
+    /// The answer to `probe` when the probe could not be run (the runtime refused, the scope could
+    /// not be made): nothing is recorded, and what was made is removed.
+    ProbeFailed {
+        /// What failed.
+        failure: ProbeFailure,
+    },
+}
+
+/// Why a probe could not be run, as the daemon says it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "failure", rename_all = "snake_case")]
+pub enum ProbeFailure {
+    /// The runtime refused (for example `conflict`: another task is running, LIM-X1).
+    Runtime {
+        /// The runtime's error.
+        error: RuntimeError,
+    },
+    /// Any other failure of the probe, in words.
+    Other {
+        /// What failed.
+        message: String,
+    },
 }
 
 /// What `mimlys daemon status` says first.
@@ -228,8 +272,14 @@ pub struct DaemonStatus {
     pub socket: String,
     /// The hash of the configuration it read.
     pub config_hash: String,
-    /// Clients connected now (a follower holds its connection; a request holds its own).
+    /// Client **processes** connected now, counted by the peer's pid (the one that asks for this
+    /// is one). A process holds several connections: a follower one that stays, a request its own
+    /// for a moment. 014c-5: until then this counted connections.
     pub clients: u32,
+    /// The connections open now, which those processes hold (additive: absent in what an earlier
+    /// build wrote, read as none).
+    #[serde(default)]
+    pub connections: u32,
     /// Tasks `running` now.
     pub running: Vec<TaskId>,
     /// Tasks waiting in line, each with what it waits behind.

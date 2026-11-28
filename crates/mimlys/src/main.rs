@@ -715,16 +715,16 @@ fn detach_of(command: &Command) -> bool {
 }
 
 /// Whether the daemon serves the command: every one that goes through the control API and the
-/// store's readers. Not `model probe` (it builds a runtime of its own over the store) and not
-/// `toolchain grant` and `toolchain revoke` (they write this machine's permissions and the
-/// store's record of them): those need the store itself, and are refused, naming the daemon,
-/// while one holds it.
+/// store's readers, and `model probe` (a request the daemon runs, on the store it holds: the
+/// probe builds a runtime of its own over the store, which only the process that holds the lock
+/// may do, REQ-PERS-014). Not `toolchain grant` and `toolchain revoke` (they write this machine's
+/// permissions and the store's record of them): those need the store itself, and are refused,
+/// naming the daemon, while one holds it.
 #[cfg(unix)]
 fn servable(command: &Command) -> bool {
     !matches!(
         command,
-        Command::Model(_)
-            | Command::Toolchain(ToolchainCommand::Grant { .. } | ToolchainCommand::Revoke { .. })
+        Command::Toolchain(ToolchainCommand::Grant { .. } | ToolchainCommand::Revoke { .. })
     )
 }
 

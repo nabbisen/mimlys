@@ -373,20 +373,27 @@ pub fn signal_interrupted(seconds: u64, rolled_back: bool) -> String {
 /// cannot be undone is not a reason the process can give: it says that it
 /// cannot tell.
 pub fn signal_waiting(tool: &str, effect: mimlys_core::action::EffectKind) -> String {
-    use mimlys_core::action::EffectKind;
-    let why = match effect {
-        EffectKind::ExternalWrite => {
-            "it changes something outside this machine and cannot be undone"
-        }
-        EffectKind::HostWrite => {
-            "it changes files outside the task's workspace and cannot be undone"
-        }
-        EffectKind::ExternalRead => {
-            "it has sent a request outside this machine that cannot be taken back"
-        }
-        _ => return signal_waiting_unknown(),
+    let Some(why) = why_it_cannot_be_undone(effect) else {
+        return signal_waiting_unknown();
     };
     format!("waiting for {tool} to finish: {why}; press Ctrl-C again to interrupt it anyway")
+}
+/// Why an action of this effect cannot be undone, in words; none for an effect that is not one of
+/// the three that cannot be undone.
+pub fn why_it_cannot_be_undone(effect: mimlys_core::action::EffectKind) -> Option<&'static str> {
+    use mimlys_core::action::EffectKind;
+    match effect {
+        EffectKind::ExternalWrite => {
+            Some("it changes something outside this machine and cannot be undone")
+        }
+        EffectKind::HostWrite => {
+            Some("it changes files outside the task's workspace and cannot be undone")
+        }
+        EffectKind::ExternalRead => {
+            Some("it has sent a request outside this machine that cannot be taken back")
+        }
+        _ => None,
+    }
 }
 /// The first stop signal found that an action is in flight, or that the store cannot say
 /// whether one is: the safe answer is to wait (REQ-CLI-005).
@@ -1351,6 +1358,13 @@ pub fn status_pending(task_id: &str, wait: &mimlys_core::runtime::WaitWord) -> S
             WaitWord::Known(WaitKind::Plan) => "the approval of its plan".to_owned(),
             WaitWord::Unknown(word) => format!("`{word}` {UNKNOWN_MARKER}"),
         }
+    )
+}
+/// Status: a task that was created and has not started: held on purpose, or left so by a daemon
+/// that ended before its line started it (external design §19.5).
+pub fn status_created(task_id: &str) -> String {
+    format!(
+        "not started     task {task_id} was created and has not started; start it with `mimlys task resume {task_id}`"
     )
 }
 /// Status: a task whose state a newer release wrote (REQ-MAIN-006).

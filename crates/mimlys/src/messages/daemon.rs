@@ -74,6 +74,12 @@ pub fn daemon_own_tree_refused(pid: u32) -> String {
     )
 }
 
+/// A client whose process id the system did not give (REQ-SEC-016): without it the daemon cannot
+/// tell its own tree (the worker's session, a tool server's) from a client, so it serves none.
+pub fn daemon_no_peer_pid_refused() -> String {
+    "refused: the system gave no process id for this client, and the daemon cannot tell its own tree (the worker, or a tool server it started) from it; nothing was applied".to_owned()
+}
+
 /// The daemon is stopping, and takes no new request.
 pub fn daemon_stopping() -> String {
     "the daemon is stopping".to_owned()
@@ -142,6 +148,58 @@ pub fn daemon_queued_not_started(task_id: &str) -> String {
     )
 }
 
+/// `daemon stop` waits for an action that cannot be undone (external design §19.5): which action
+/// of which task, why it is waited for, and until when at the latest (its own deadline, within the
+/// stop's own limit).
+pub fn daemon_stop_waits(
+    task_id: &str,
+    tool: &str,
+    effect: mimlys_core::action::EffectKind,
+    until: &str,
+) -> String {
+    let why = super::why_it_cannot_be_undone(effect)
+        .unwrap_or("mimlys cannot tell whether it can be undone");
+    format!(
+        "the daemon is stopping and waits for {tool}, an action of task {task_id}, to finish: {why}; it waits until {until} at the latest, and the task pauses when it is done"
+    )
+}
+
+/// `daemon stop`: the wait for an action that cannot be undone ended, and the action finished.
+pub fn daemon_stop_wait_finished(task_id: &str, tool: &str) -> String {
+    format!("the wait for {tool}, an action of task {task_id}, is over: it finished")
+}
+
+/// `daemon stop`: the wait ended and the action did not finish: the daemon ended at its limit, so
+/// what the action did is unknown (REQ-CLI-005).
+pub fn daemon_stop_wait_gave_up(task_id: &str, tool: &str) -> String {
+    format!(
+        "the wait for {tool}, an action of task {task_id}, is over: it had not finished when the daemon ended, so what it did is unknown; check before you resume (`mimlys task show {task_id}`)"
+    )
+}
+
+/// `model probe` through a daemon that runs a task: one task runs at a time (LIM-X1), the probe's
+/// own included, so it is refused, naming the task that runs and what to do.
+pub fn daemon_probe_refused_for_task(task_id: &str) -> String {
+    format!(
+        "task {task_id} is running in the daemon, and one task runs at a time (LIM-X1), the probe's included: run the probe when it has stopped (`mimlys task pause {task_id}` pauses it at its next boundary)"
+    )
+}
+
+/// `daemon restart`: a task that waited in line, put back in it.
+pub fn daemon_back_in_line(task_id: &str, behind: Option<&str>) -> String {
+    match behind {
+        Some(behind) => format!("task {task_id} is back in line, behind task {behind}"),
+        None => format!("task {task_id} is back in line and starts now"),
+    }
+}
+
+/// `daemon restart`: a task that waited in line that could not be put back.
+pub fn daemon_not_back_in_line(task_id: &str, why: &str) -> String {
+    format!(
+        "task {task_id} was not put back in line: {why}; start it with `mimlys task resume {task_id}`"
+    )
+}
+
 /// `daemon stop` with no daemon.
 pub const DAEMON_NONE_TO_STOP: &str = "no daemon is running";
 
@@ -180,7 +238,10 @@ pub fn daemon_status_lines(
                 " (this file differs: `mimlys daemon restart` applies it)"
             }
         ),
-        format!("clients: {}", status.clients),
+        format!(
+            "clients: {} (processes, counted by the peer's pid; {} connections open)",
+            status.clients, status.connections
+        ),
         format!(
             "tasks: {} running, {} queued, {} waiting for you",
             status.running.len(),

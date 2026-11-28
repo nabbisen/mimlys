@@ -1175,3 +1175,73 @@ fn req_mdl_011_a_probe_a_crash_ended_is_removed_by_the_next_start() {
         2 * points.len()
     );
 }
+
+/// Stops the daemon of a rig when the test ends.
+#[cfg(unix)]
+struct StopsDaemon<'a>(&'a Rig);
+
+#[cfg(unix)]
+impl Drop for StopsDaemon<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.run(&["daemon", "stop"]);
+    }
+}
+
+/// REQ-MDL-011, REQ-CLI-005, REQ-PERS-014 (014c-5): **a stop signal reaches a probe that runs in
+/// the daemon.** The probe is a request the daemon runs; Ctrl-C in the command is forwarded to it,
+/// the daemon ends the probe and deletes what it made, no class is recorded, the terminal says so,
+/// the exit is a success, and nothing of the user's changed.
+#[cfg(unix)]
+#[test]
+fn req_mdl_011_a_stop_signal_ends_a_probe_that_runs_in_the_daemon() {
+    let server = server(vec![Reply::Slow(
+        HOLD_MS,
+        Box::new(replace_red_with_blue()),
+    )]);
+    let rig = Rig::new(&[Entry::local("default", &server)], false);
+    let (code, started, said) = rig.run(&["daemon", "start"]);
+    assert_eq!(code, 0, "{started}\n{said}");
+    let _stops = StopsDaemon(&rig);
+    rig.user_task();
+    let before = rig.state();
+    let out = rig.dir.path().join("probe.stdout");
+    let err = rig.dir.path().join("probe.stderr");
+    let mut child = rig
+        .command(&["model", "probe"])
+        .stdout(std::fs::File::create(&out).unwrap())
+        .stderr(std::fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    until("the request never reached the model", || {
+        !server.decision_requests().is_empty()
+    });
+    // The probe runs in the daemon: its scope and its task are there while it does.
+    assert!(
+        std::fs::read_dir(rig.data().join("tmp"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().starts_with("probe-")),
+        "the probe's scope is there while it runs"
+    );
+    let signalled = std::time::Instant::now();
+    interrupt(&child);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            signalled.elapsed()
+                < Duration::from_millis(mimlys_core::limits::LIM_O1_STOP_MS as u64 + 3000),
+            "the probe did not stop"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert!(status.success(), "{status:?}");
+    let stderr = std::fs::read_to_string(&err).unwrap();
+    assert!(
+        stderr.contains("stopped:") && stderr.contains("no class was recorded"),
+        "{stderr}"
+    );
+    assert!(!rig.has_record_file(), "no class is recorded");
+    rig.assert_nothing_left(&before, "a stopped probe");
+}

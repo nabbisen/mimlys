@@ -64,6 +64,13 @@ impl Env {
     /// A fake backend that plays `script`, the profile asking for `write_file`'s approval, the
     /// probe tool declared as `probe`, and the test server as `rypsok`.
     fn new(script: &[Value]) -> Self {
+        Self::with(script, "", "")
+    }
+
+    /// As [`Env::new`], with more tools in the profile (`extra_tools`, a leading `, "name"`
+    /// list) and more configuration of the test server (`extra_server`, TOML lines that follow
+    /// its section).
+    fn with(script: &[Value], extra_tools: &str, extra_server: &str) -> Self {
         let data = tempfile::tempdir().unwrap();
         let config = data.path().join("config.toml");
         let script_path = data.path().join("script.json");
@@ -76,7 +83,7 @@ data_dir = {data:?}
 kind = "fake"
 script = {script:?}
 [policy.profiles.workspace]
-tools = [{builtin}]
+tools = [{builtin}{extra_tools}]
 approval_tools = ["write_file"]
 [host_tools.probe]
 command = {tool:?}
@@ -89,6 +96,7 @@ timeout_ms = 60000
 [servers.rypsok]
 command = {server:?}
 env_allow = ["PATH", "MIMLYS_TESTSERVER_RUN_AT_START"]
+{extra_server}
 "#,
             data = data.path().join("data").to_string_lossy(),
             script = script_path.to_string_lossy(),
@@ -821,4 +829,442 @@ fn req_cli_008_detach_without_a_daemon_is_refused_before_anything_is_created() {
     );
     let (_, tasks) = env.json(&["task", "list"]);
     assert_eq!(tasks.as_array().map_or(0, Vec::len), 0, "{tasks}");
+}
+
+/// The process of the daemon of `env`, from its record in the registry (a file of its own kind,
+/// `daemon-<id>.daemon`), which needs no client: for a daemon that refuses every one.
+fn daemon_pid_in_registry(env: &Env) -> Option<i32> {
+    std::fs::read_dir(env.registry.path())
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "daemon"))
+        .find_map(|e| {
+            let text = std::fs::read_to_string(e.path()).ok()?;
+            let record: Value = serde_json::from_str(&text).ok()?;
+            i32::try_from(record["pid"].as_i64()?).ok()
+        })
+}
+
+/// Ends the daemon of an environment that no client can reach, by the pid it recorded.
+struct EndsDaemon(Option<i32>);
+
+impl Drop for EndsDaemon {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.and_then(rustix::process::Pid::from_raw) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+        }
+    }
+}
+
+/// REQ-SEC-016 (014c-5), external design §19.5, §17.1: **a peer whose process id the system did not
+/// give is refused**, saying so, and the refusal is recorded (`daemon.refused`, `no_peer_pid`).
+/// Neither Linux nor macOS ever gives none: a debug build's seam hides it. Nothing was applied: no
+/// task exists. (`mutation: a peer with no pid served`)
+#[test]
+fn req_sec_016_a_peer_with_no_pid_is_refused_saying_so_and_the_refusal_is_recorded() {
+    let env = Env::new(&[complete()])
+        .env("MIMLYS_PRETEND_NO_PID", "1")
+        .env("MIMLYS_DAEMON_IDLE_MS", "1500");
+    let started = env.run(&["daemon", "start"]);
+    assert_eq!(started.code(), 0, "{}\n{}", started.stdout, started.stderr);
+    let _ends = EndsDaemon(daemon_pid_in_registry(&env));
+    let scope = env.scope();
+    let refused = env.run(&[
+        "run",
+        "goal",
+        "--detach",
+        "--scope",
+        scope.to_str().unwrap(),
+    ]);
+    assert_eq!(refused.code(), 1, "{}\n{}", refused.stdout, refused.stderr);
+    assert!(
+        refused.stderr.contains("the system gave no process id")
+            && refused.stderr.contains("own tree"),
+        "{}",
+        refused.stderr
+    );
+    // Nothing was applied, and the audit holds the refusal, whose reason is its own.
+    let (_, tasks) = env.json(&["task", "list"]);
+    assert_eq!(tasks.as_array().map_or(0, Vec::len), 0, "{tasks}");
+    let (_, all) = env.json(&["events"]);
+    let refusals: Vec<&Value> = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["record"]["event"] == "daemon.refused")
+        .collect();
+    assert!(
+        !refusals.is_empty()
+            && refusals
+                .iter()
+                .all(|e| e["record"]["reason"] == "no_peer_pid"),
+        "{all}"
+    );
+    // The daemon is not asked for its answer past the refusal: it ends by its idle time.
+    assert!(wait_for(Duration::from_secs(60), || {
+        daemon_pid_in_registry(&env).is_none()
+    }));
+}
+
+/// A daemon with one task running its slow tool and a second waiting in line behind it (and a
+/// third, when `third`): the ids, in the order they were made. `None` where this machine has no
+/// full tier (the tool needs one).
+fn with_a_line(test: &str, secs: &str, third: bool) -> Option<(Env, Vec<String>)> {
+    let env = Env::new(&[slow(secs), complete(), complete(), complete()]);
+    if !full_tier(&env, test) {
+        return None;
+    }
+    env.start_daemon();
+    let first = env.run_detached(&["--grant", "host_tool:probe"]);
+    assert!(
+        wait_for(Duration::from_secs(60), || sleepers(secs) >= 1),
+        "the tool runs"
+    );
+    let mut ids = vec![first.clone()];
+    let names = if third {
+        vec!["second", "third"]
+    } else {
+        vec!["second"]
+    };
+    for name in names {
+        let other = env.data.path().join(name);
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("b.txt"), "b\n").unwrap();
+        let queued = env.run(&[
+            "--json",
+            "run",
+            name,
+            "--detach",
+            "--scope",
+            other.to_str().unwrap(),
+        ]);
+        assert_eq!(queued.code(), 0, "{}\n{}", queued.stdout, queued.stderr);
+        assert!(
+            queued
+                .stderr
+                .contains(&format!("queued behind task {first}, running since")),
+            "{}",
+            queued.stderr
+        );
+        let value: Value = serde_json::from_str(queued.stdout.trim()).unwrap();
+        ids.push(value["task"]["task_id"].as_str().unwrap().to_owned());
+    }
+    Some((env, ids))
+}
+
+/// REQ-CLI-008 (014c-5), external design §19.5: **`stop` lists the tasks that waited in line**, each
+/// with how to resume it, beside the ones it paused. They stay `created`: nothing resumes.
+#[test]
+fn req_cli_008_stop_lists_the_tasks_that_waited_in_line_and_how_to_resume_them() {
+    let Some((env, ids)) = with_a_line(
+        "req_cli_008_stop_lists_the_tasks_that_waited_in_line_and_how_to_resume_them",
+        "1243",
+        false,
+    ) else {
+        return;
+    };
+    let (first, second) = (&ids[0], &ids[1]);
+    let stopped = env.run(&["daemon", "stop"]);
+    assert_eq!(stopped.code(), 0, "{}\n{}", stopped.stdout, stopped.stderr);
+    assert!(
+        stopped.stdout.contains(&format!(
+            "paused task {first} at its boundary; resume it with `mimlys task resume {first}`"
+        )),
+        "{}",
+        stopped.stdout
+    );
+    assert!(
+        stopped.stdout.contains(&format!(
+            "task {second} waited in line and did not start; start it with `mimlys task resume {second}`"
+        )),
+        "{}",
+        stopped.stdout
+    );
+    assert_eq!(env.state(second), "created", "nothing started it");
+    assert_eq!(env.state(first), "paused");
+}
+
+/// REQ-CLI-008 (014c-5), external design §19.5: **`restart` resumes what its stop paused and puts the
+/// tasks that waited in line back in it, in their order, each said by name.** The new daemon's line
+/// is the old one: the second, then the third, behind the first. (`mutation: restart leaves the
+/// queued tasks created`)
+#[test]
+fn req_cli_008_restart_puts_the_line_back_in_its_order_each_said_by_name() {
+    let Some((env, ids)) = with_a_line(
+        "req_cli_008_restart_puts_the_line_back_in_its_order_each_said_by_name",
+        "1244",
+        true,
+    ) else {
+        return;
+    };
+    let (first, second, third) = (&ids[0], &ids[1], &ids[2]);
+    let restarted = env.run(&["daemon", "restart"]);
+    assert_eq!(
+        restarted.code(),
+        0,
+        "{}\n{}",
+        restarted.stdout,
+        restarted.stderr
+    );
+    let said = |line: String| {
+        restarted
+            .stdout
+            .find(&line)
+            .unwrap_or_else(|| panic!("`{line}` is not said: {}", restarted.stdout))
+    };
+    let resumed = said(format!("resumed task {first}"));
+    let back_second = said(format!(
+        "task {second} is back in line, behind task {first}"
+    ));
+    let back_third = said(format!("task {third} is back in line, behind task {first}"));
+    assert!(
+        resumed < back_second && back_second < back_third,
+        "the paused one, then the line in its order: {}",
+        restarted.stdout
+    );
+    // The new daemon holds them, in that order.
+    let (_, status) = env.json(&["daemon", "status"]);
+    let queued: Vec<&str> = status["daemon"]["queued"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["task_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(queued, [second.as_str(), third.as_str()], "{status}");
+    // And the line works: the first goes, and the others run in their turn.
+    assert_eq!(env.run(&["task", "cancel", first]).code(), 0);
+    env.wait_state(second, "completed");
+    env.wait_state(third, "completed");
+}
+
+/// REQ-CLI-008 (014c-5), external design §19.5: **a daemon that ended any other way** (here a stop
+/// signal, which nobody answers) **leaves its queued tasks `created`, and `status` lists them.**
+#[test]
+fn req_cli_008_a_daemon_that_ended_another_way_leaves_the_line_created_and_status_lists_it() {
+    let Some((env, ids)) = with_a_line(
+        "req_cli_008_a_daemon_that_ended_another_way_leaves_the_line_created_and_status_lists_it",
+        "1245",
+        false,
+    ) else {
+        return;
+    };
+    let (first, second) = (&ids[0], &ids[1]);
+    let pid = rustix::process::Pid::from_raw(env.daemon_pid().unwrap()).unwrap();
+    rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+    assert!(
+        wait_for(Duration::from_secs(60), || {
+            daemon_pid_in_registry(&env).is_none()
+        }),
+        "the daemon ended"
+    );
+    assert_eq!(env.state(second), "created", "nothing started it");
+    let (_, status) = env.json(&["status"]);
+    assert!(
+        status["created"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|t| t.as_str() == Some(second.as_str()))),
+        "{status}"
+    );
+    let text = env.run(&["status"]);
+    assert!(
+        text.stdout.contains(&format!(
+            "task {second} was created and has not started; start it with `mimlys task resume {second}`"
+        )),
+        "{}",
+        text.stdout
+    );
+    // The one it paused is not "not started": it is `paused`, as `task list` says.
+    assert!(!text.stdout.contains(&format!("task {first} was created")));
+}
+
+/// REQ-CLI-008 (014c-5), external design §19.5: **`daemon status` counts client processes, by the
+/// peer's pid, and says so**, with the connections beside them.
+#[test]
+fn req_cli_008_status_counts_client_processes_and_the_connections_beside_them() {
+    let env = Env::new(&[slow("1246"), complete()]);
+    if !full_tier(
+        &env,
+        "req_cli_008_status_counts_client_processes_and_the_connections_beside_them",
+    ) {
+        return;
+    }
+    env.start_daemon();
+    // One follower process, which holds a connection for as long as it follows.
+    let scope = env.scope();
+    let mut follower = env
+        .command(&[
+            "run",
+            "goal",
+            "--grant",
+            "host_tool:probe",
+            "--scope",
+            scope.to_str().unwrap(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_for(Duration::from_secs(60), || sleepers("1246") >= 1),
+        "the tool runs"
+    );
+    let (_, status) = env.json(&["daemon", "status"]);
+    let (clients, connections) = (
+        status["daemon"]["clients"].as_u64().unwrap(),
+        status["daemon"]["connections"].as_u64().unwrap(),
+    );
+    // The follower and the process that asks: two processes.
+    assert_eq!(clients, 2, "{status}");
+    assert!(connections >= clients, "{status}");
+    let text = env.run(&["daemon", "status"]);
+    assert!(
+        text.stdout
+            .contains("clients: 2 (processes, counted by the peer's pid;"),
+        "{}",
+        text.stdout
+    );
+    let _ = follower.kill();
+    let _ = follower.wait();
+    let (_, tasks) = env.json(&["task", "list"]);
+    let id = tasks[0]["task_id"].as_str().unwrap().to_owned();
+    assert_eq!(env.run(&["task", "cancel", &id]).code(), 0);
+    env.wait_state(&id, "cancelled");
+}
+
+/// REQ-CLI-008 (014c-5), external design §19.5, REQ-CLI-005: **`daemon stop` says which action of
+/// which task it waits for, and until when at the latest, and says again when the wait is over.**
+/// `rypsok.slow`, an external write, runs for 6 s: the stop waits for it, does not interrupt it,
+/// and the task is paused after it.
+#[test]
+fn req_cli_008_stop_says_which_action_it_waits_for_and_until_when_and_again_when_it_ends() {
+    let env = Env::with(
+        &[
+            json!({"decision": "act", "tool": "rypsok.slow", "arguments": {"ms": 6000}}),
+            complete(),
+        ],
+        r#", "rypsok.slow""#,
+        "[servers.rypsok.tools.slow]\neffect = \"external_write\"\ntimeout_ms = 60000\n",
+    );
+    env.start_daemon();
+    let id = env.run_detached(&[]);
+    // An external write waits for the user's approval, and runs when it is given.
+    env.wait_state(&id, "waiting_user");
+    assert_eq!(env.run(&["approve", &id, "--detach"]).code(), 0);
+    assert!(
+        wait_for(Duration::from_secs(60), || {
+            event_named(&env.events(&id), "action.started").is_some()
+        }),
+        "the action runs: {}",
+        env.daemon_log()
+    );
+    let stopped = env.run(&["daemon", "stop"]);
+    assert_eq!(stopped.code(), 0, "{}\n{}", stopped.stdout, stopped.stderr);
+    let says = format!(
+        "waits for rypsok.slow, an action of task {id}, to finish: it changes something outside this machine and cannot be undone; it waits until 20"
+    );
+    assert!(stopped.stderr.contains(&says), "{}", stopped.stderr);
+    assert!(
+        stopped.stderr.contains("at the latest"),
+        "{}",
+        stopped.stderr
+    );
+    let over = format!("the wait for rypsok.slow, an action of task {id}, is over: it finished");
+    assert!(stopped.stderr.contains(&over), "{}", stopped.stderr);
+    // Said once, and again at the end: the first line comes before the second.
+    assert!(stopped.stderr.find(&says) < stopped.stderr.find(&over));
+    // It was waited for, never interrupted: the action succeeded and the task is paused after it.
+    assert!(stopped.stdout.contains(&format!("paused task {id}")));
+    assert_eq!(env.state(&id), "paused");
+    let finished: Vec<Value> = env
+        .events(&id)
+        .into_iter()
+        .filter(|e| e["event"] == "action.finished")
+        .collect();
+    assert_eq!(finished.len(), 1, "{finished:?}");
+    assert_eq!(finished[0]["status"], "succeeded", "{finished:?}");
+}
+
+/// REQ-MDL-011, REQ-PERS-014 (014c-5), external design §19.5: **`model probe` runs through the
+/// daemon that holds the store**, as a request, and answers as it does embedded: the class, which is
+/// recorded; nothing of the probe is left; the user's tasks are as they were. Embedded, the daemon's
+/// lock would have refused it. (`mutation: model probe not routed through the daemon`)
+#[test]
+fn req_mdl_011_model_probe_runs_through_the_daemon_that_holds_the_store() {
+    let env = Env::new(&[
+        json!({"decision": "act", "tool": "replace_in_file", "arguments": {"path": "probe.txt", "find": "red", "replace": "blue"}}),
+        complete(),
+    ])
+    .env("MIMLYS_DAEMON_IDLE_MS", "60000");
+    env.start_daemon();
+    let scope = env.scope();
+    let (code, held) = env.json(&[
+        "task",
+        "new",
+        "mine",
+        "--hold",
+        "--scope",
+        scope.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{held}");
+    let mine = held["task"]["task_id"].as_str().unwrap().to_owned();
+    let (code, probed) = env.json(&["model", "probe"]);
+    assert_eq!(code, 0, "{probed}\n{}", env.daemon_log());
+    assert_eq!(probed["probed"][0]["class"], "acts", "{probed}");
+    assert_eq!(probed["probed"][0]["backend"], "default", "{probed}");
+    // Recorded, as embedded does.
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(env.data.path().join("data/probe-results.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["backends"]["default"]["class"], "acts", "{record}");
+    // Nothing of the probe is left, and the user's task is as it was; the daemon serves still.
+    let (_, tasks) = env.json(&["task", "list"]);
+    let ids: Vec<&str> = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["task_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [mine.as_str()], "{tasks}");
+    let tmp = env.data.path().join("data/tmp");
+    let scopes = std::fs::read_dir(&tmp)
+        .map(|d| d.flatten().count())
+        .unwrap_or(0);
+    assert_eq!(scopes, 0, "the probe's scope is removed");
+    assert!(env.daemon_pid().is_some(), "the daemon goes on");
+}
+
+/// REQ-MDL-011, REQ-SCHED-008 (014c-5): **a probe asked while a task runs in the daemon is refused**,
+/// as a second running task is (LIM-X1), naming the one that runs; nothing is made or recorded,
+/// and the task goes on.
+#[test]
+fn req_mdl_011_a_probe_while_a_task_runs_in_the_daemon_is_refused_naming_it() {
+    let Some((env, ids)) = with_a_line(
+        "req_mdl_011_a_probe_while_a_task_runs_in_the_daemon_is_refused_naming_it",
+        "1247",
+        false,
+    ) else {
+        return;
+    };
+    let first = &ids[0];
+    let (code, probed) = env.json(&["model", "probe"]);
+    assert_eq!(code, 1, "{probed}");
+    assert_eq!(probed["error"]["kind"], "conflict", "{probed}");
+    assert!(
+        probed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(first.as_str()),
+        "{probed}"
+    );
+    assert!(
+        !env.data.path().join("data/probe-results.json").exists(),
+        "nothing is recorded"
+    );
+    let scopes = std::fs::read_dir(env.data.path().join("data/tmp"))
+        .map(|d| d.flatten().count())
+        .unwrap_or(0);
+    assert_eq!(scopes, 0, "nothing of the probe is left");
+    assert_eq!(env.state(first), "running", "the task goes on");
+    assert_eq!(env.run(&["task", "cancel", first]).code(), 0);
 }

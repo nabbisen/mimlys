@@ -10,7 +10,7 @@
 //!
 //! A test that cannot be served says why, by its name, as the skip tier does
 //! ([`super::skip`]): the test then runs embedded, as it always did. Three kinds:
-//! the **command** needs the store itself (`model probe`, `toolchain grant`), the **subject** is
+//! the **command** needs the store itself (`toolchain grant`), the **subject** is
 //! embedded mode itself (the store's lock, the registry's slots between runtimes), or the test
 //! runs its commands **outside** `run_bounded` (a pseudo-terminal, a process it signals), which
 //! this hook never sees.
@@ -247,9 +247,8 @@ pub fn before(cmd: &Command) {
         stop(&run_dir, &config);
         return;
     }
-    if word == "model"
-        || (word == "toolchain" && matches!(second.as_deref(), Some("grant" | "revoke")))
-    {
+    // `model probe` is a request the daemon runs (014c-5): it is served like the rest.
+    if word == "toolchain" && matches!(second.as_deref(), Some("grant" | "revoke")) {
         not_served(&format!(
             "`{word}` needs the store itself, which the daemon holds"
         ));

@@ -264,14 +264,124 @@ pub struct Stopped {
     pub queued: Vec<String>,
 }
 
-/// Sends `stop` to the daemon, waits for its answer (LIM-O24) and for its process to end.
+/// An action that cannot be undone, in a task the stop pauses, which the stop waits for.
+struct Waited {
+    task_id: mimlys_core::ids::TaskId,
+    action_id: mimlys_core::ids::ActionId,
+    tool: String,
+}
+
+/// While a stop waits for the daemon's answer: says, once for each, which action of which task the
+/// daemon waits for and until when at the latest (external design §19.5), so that a wait of up to
+/// LIM-O24 for something that cannot be undone is never silent. The client reads the store as any
+/// reader does (REQ-PERS-013): the daemon's answer is a single frame and is fixed for every
+/// version, so it carries nothing of this. The deadline is the action's own, counted from when the
+/// client first saw it in flight (it may have begun earlier, so this is a bound, never early), and
+/// never past the stop's own limit.
+fn watch_the_wait(
+    data_dir: PathBuf,
+    begun: Instant,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<Vec<Waited>> {
+    std::thread::spawn(move || {
+        use mimlys_core::clock::{Clock, SystemClock};
+        use mimlys_core::spi::PersistenceRead;
+        let mut waited: Vec<Waited> = Vec::new();
+        let Ok(store) = mimlys_persist::open_read_only(&data_dir) else {
+            return waited;
+        };
+        let poll = Duration::from_millis(crate::commands::events::EVENTS_POLL_MS);
+        let mut last = Instant::now()
+            .checked_sub(poll)
+            .unwrap_or_else(Instant::now);
+        while !done.load(std::sync::atomic::Ordering::SeqCst) {
+            if last.elapsed() >= poll {
+                last = Instant::now();
+                for task_id in store.tasks_in_state("running").unwrap_or_default() {
+                    let Ok(Some(action)) = store.load_running_action(task_id) else {
+                        continue;
+                    };
+                    let effect = action.content().effect();
+                    if mimlys_core::action::can_be_undone(effect)
+                        || waited.iter().any(|w| w.action_id == action.action_id)
+                    {
+                        continue;
+                    }
+                    let left = Duration::from_millis(LIM_O24_DAEMON_STOP_MS)
+                        .saturating_sub(begun.elapsed())
+                        .as_millis();
+                    let wait_ms = i64::try_from(left)
+                        .unwrap_or(i64::MAX)
+                        .min(action.content().deadline_ms().max(0));
+                    let until = SystemClock
+                        .now()
+                        .plus_millis(wait_ms)
+                        .map(|t| t.to_rfc3339())
+                        .unwrap_or_default();
+                    crate::output::diag(messages::daemon_stop_waits(
+                        &task_id.to_string(),
+                        action.content().tool(),
+                        effect.kind,
+                        &until,
+                    ));
+                    waited.push(Waited {
+                        task_id,
+                        action_id: action.action_id,
+                        tool: action.content().tool().to_owned(),
+                    });
+                }
+            }
+            std::thread::sleep(POLL);
+        }
+        waited
+    })
+}
+
+/// Says again, for each action the stop waited for, how the wait ended: the action finished, or the
+/// daemon ended at its limit before it did and what it did is unknown (REQ-CLI-005).
+fn say_the_wait_ended(data_dir: &std::path::Path, waited: &[Waited]) {
+    use mimlys_core::action::ActionStatus;
+    use mimlys_core::spi::PersistenceRead;
+    let store = mimlys_persist::open_read_only(data_dir).ok();
+    for w in waited {
+        let status = store
+            .as_ref()
+            .and_then(|s| s.load_actions(w.task_id).ok())
+            .and_then(|actions| actions.into_iter().find(|a| a.action_id == w.action_id))
+            .map(|a| a.status);
+        let finished = status
+            .as_ref()
+            .is_some_and(|s| s.is_terminal() && *s != ActionStatus::Unknown);
+        let (task, tool) = (w.task_id.to_string(), w.tool.as_str());
+        crate::output::diag(if finished {
+            messages::daemon_stop_wait_finished(&task, tool)
+        } else {
+            messages::daemon_stop_wait_gave_up(&task, tool)
+        });
+    }
+}
+
+/// Sends `stop` to the daemon, waits for its answer (LIM-O24) and for its process to end. While it
+/// waits it says what it waits for ([`watch_the_wait`]), and says again when that ends.
 fn stop_daemon(mut daemon: Box<Daemon>, loaded: &Loaded) -> Result<Stopped, AppError> {
+    let (_, data_dir) = places(loaded)?;
+    let begun = Instant::now();
     wire::write(&mut daemon.stream, &Request::Stop).map_err(|e| io(e.to_string()))?;
     daemon
         .stream
         .set_read_timeout(Some(Duration::from_millis(LIM_O24_DAEMON_STOP_MS)))
         .map_err(|e| io(e.to_string()))?;
-    let reply: Reply = wire::read(&mut daemon.stream).map_err(|e| io(e.to_string()))?;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = watch_the_wait(data_dir.clone(), begun, std::sync::Arc::clone(&done));
+    let reply = wire::read::<Reply>(&mut daemon.stream);
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let waited = watch.join().unwrap_or_default();
+    // The wait is over when the daemon has answered; a daemon that did not answer is the
+    // command's error, and says nothing of what the action came to.
+    if reply.is_ok() {
+        say_the_wait_ended(&data_dir, &waited);
+    }
+    let reply = reply.map_err(|e| io(e.to_string()))?;
     let Reply::Stopped {
         pid,
         paused,
@@ -281,7 +391,6 @@ fn stop_daemon(mut daemon: Box<Daemon>, loaded: &Loaded) -> Result<Stopped, AppE
         return Err(io(format!("the daemon answered {reply:?} to stop")));
     };
     // The daemon ends after it has answered: its lock is free when it has.
-    let (_, data_dir) = places(loaded)?;
     let begun = Instant::now();
     while begun.elapsed() < Duration::from_millis(LIM_O23_DAEMON_START_MS) {
         let free = mimlys_persist::open_read_only(&data_dir)
@@ -351,7 +460,15 @@ pub fn restart(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
         os_user: crate::app::os_user(),
     };
     let mut resumed = Vec::new();
-    for id in &stopped.paused {
+    let mut back_in_line = Vec::new();
+    // First what the stop paused, which ran ahead of the line; then the tasks that waited in it,
+    // in their order, so that the new daemon's line is the old one (external design §19.5).
+    for (id, queued) in stopped
+        .paused
+        .iter()
+        .map(|id| (id, false))
+        .chain(stopped.queued.iter().map(|id| (id, true)))
+    {
         let Ok(task_id) = uuid::Uuid::parse_str(id).map(TaskId::from_uuid) else {
             continue;
         };
@@ -367,19 +484,36 @@ pub fn restart(loaded: &Loaded, out: &Output) -> Result<(), AppError> {
             },
             &|_| {},
         )?;
-        match answer.outcome {
-            Outcome::Done(ControlReply::Task(_) | ControlReply::Queued { .. })
-            | Outcome::AlreadyApplied(_) => {
-                out.line(messages::daemon_resumed(id));
-                resumed.push(id.clone());
-            }
+        // What the daemon did with it: started it, put it in line behind a task, or refused.
+        let (started, behind) = match answer.outcome {
+            Outcome::Done(ControlReply::Queued { line, .. }) => (false, Some(line.behind)),
+            Outcome::Done(ControlReply::Task(_)) | Outcome::AlreadyApplied(_) => (true, None),
             Outcome::Failed(error) => {
-                crate::output::diag(messages::daemon_not_resumed(id, &error.to_string()));
+                crate::output::diag(if queued {
+                    messages::daemon_not_back_in_line(id, &error.to_string())
+                } else {
+                    messages::daemon_not_resumed(id, &error.to_string())
+                });
+                continue;
             }
-            Outcome::Done(_) => {}
+            Outcome::Done(_) => continue,
+        };
+        let behind = behind.map(|b| b.to_string());
+        if queued {
+            out.line(messages::daemon_back_in_line(id, behind.as_deref()));
+            back_in_line.push(id.clone());
+        } else {
+            out.line(if started {
+                messages::daemon_resumed(id)
+            } else {
+                messages::daemon_back_in_line(id, behind.as_deref())
+            });
+            resumed.push(id.clone());
         }
     }
-    out.value(&json!({ "daemon": { "restarted": true, "resumed": resumed } }));
+    out.value(&json!({
+        "daemon": { "restarted": true, "resumed": resumed, "back_in_line": back_in_line }
+    }));
     Ok(())
 }
 
@@ -442,6 +576,7 @@ pub fn daemon_json(
         "config_hash": status.config_hash,
         "same_configuration": same_configuration,
         "clients": status.clients,
+        "connections": status.connections,
         "running_tasks": status.running,
         "queued": status.queued.iter().map(|(id, line)| json!({
             "task_id": id,

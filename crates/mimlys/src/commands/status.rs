@@ -313,7 +313,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         policy.ceiling.cpu_share,
     );
     let activity = app.reader.activity()?;
-    let status = mimlys_core::runtime::RuntimeStatus {
+    let mut status = mimlys_core::runtime::RuntimeStatus {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         // Shown through `backend` and `backends`; this field of the runtime's own status is
         // emptied (the object is flattened into this one).
@@ -330,6 +330,7 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
         running: activity.running,
         pending: activity.pending,
         unknown_state: activity.unknown_state,
+        created: activity.created,
     };
     let store = app.store_view()?;
     for line in messages::status_head_lines(&status.version, &app.data_dir.to_string_lossy()) {
@@ -337,6 +338,13 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     }
     // Which mode is in force, and, when served, what `daemon status` says first.
     let (daemon, daemon_trouble) = daemon_mode(&app.loaded);
+    // A task that waits in a daemon's line is created and will start: `daemon status` lists it
+    // there, and it is not one that was left.
+    if let Some(d) = &daemon {
+        status
+            .created
+            .retain(|id| !d.queued.iter().any(|(queued, _)| queued == id));
+    }
     match &daemon {
         Some(d) => {
             out.line(messages::mode_served(d.pid, &d.runtime_version, &d.socket));
@@ -491,6 +499,9 @@ pub async fn run(app: &ReadApp, out: &Output) -> Result<(), AppError> {
     }
     for (id, word) in &status.unknown_state {
         out.line(messages::status_unknown_state(&id.to_string(), word));
+    }
+    for id in &status.created {
+        out.line(messages::status_created(&id.to_string()));
     }
     out.value(&Status {
         runtime: &status,
