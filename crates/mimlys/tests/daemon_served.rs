@@ -604,7 +604,7 @@ fn req_sec_016_a_request_from_the_daemons_own_tree_is_refused_and_recorded() {
     // The same, as a batch file: wait for the marker, ask the daemon to approve, say how it ended.
     #[cfg(windows)]
     let text = format!(
-        "@echo off\r\n:wait\r\nif exist \"{marker}\" (for %%A in (\"{marker}\") do if %%~zA GTR 0 goto go)\r\nping -n 2 127.0.0.1 >nul\r\ngoto wait\r\n:go\r\nset /p TASK=<\"{marker}\"\r\nset MIMLYS_RUN_DIR={run}\r\nset MIMLYS_CONFIG=\r\n\"{bin}\" --config \"{config}\" approve %TASK% >nul 2>\"{err}\"\r\necho %ERRORLEVEL%>\"{code}\"\r\n",
+        "@echo off\r\n:wait\r\nif exist \"{marker}\" (for %%A in (\"{marker}\") do if %%~zA GTR 0 goto go)\r\nping -n 2 127.0.0.1 >nul\r\ngoto wait\r\n:go\r\nset /p TASK=<\"{marker}\"\r\nset MIMLYS_RUN_DIR={run}\r\nset MIMLYS_CONFIG=\r\n\"{bin}\" --config \"{config}\" approve %TASK% >nul 2>\"{err}\"\r\n(echo %ERRORLEVEL%) >\"{code}\"\r\n",
         marker = marker.display(),
         run = run_dir.display(),
         bin = env!("CARGO_BIN_EXE_mimlys"),
@@ -959,7 +959,10 @@ fn daemon_pid_in_registry(env: &Env) -> Option<i32> {
         .find_map(|e| {
             let text = std::fs::read_to_string(e.path()).ok()?;
             let record: Value = serde_json::from_str(&text).ok()?;
-            i32::try_from(record["pid"].as_i64()?).ok()
+            let pid = i32::try_from(record["pid"].as_i64()?).ok()?;
+            // A daemon that was killed leaves its record until the next one is made (on Unix its
+            // socket too): the record of a process that is gone is no daemon.
+            common::pid_alive(u32::try_from(pid).ok()?).then_some(pid)
         })
 }
 
