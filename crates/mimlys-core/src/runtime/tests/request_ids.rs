@@ -715,6 +715,56 @@ fn req_arch_004_a_failure_keeps_its_detail_on_a_repeat() {
     assert_eq!(repeated.detail(), Some(first));
 }
 
+/// External design §4 and §17.1 (review of 014b-7, the lead's mutation): a promotion that failed
+/// while applying and whose restore **kept a path** (one edited since, left as it is) answers a
+/// repeat with the same `kept` as the first answer, and the list is not empty: the event records
+/// what the first answer held, never an empty list in its place.
+#[test]
+fn req_arch_004_a_failed_promotion_that_kept_a_path_answers_its_repeat_with_it() {
+    let h = Harness::new(vec![]);
+    let id = h.create_with(|c| c.hold = true);
+    h.workspaces.on_promote_apply(Box::new(|_| {
+        Err(crate::spi::WorkspaceError::Storage {
+            detail: "injected".into(),
+        })
+    }));
+    h.workspaces
+        .keep_on_revert(&["edited.txt", "dir/other.txt"]);
+    let (error, again) = failed_then_repeated(
+        &h,
+        Request::PromoteWorkspace {
+            task_id: id,
+            plan: one_file_plan(&h, id),
+        },
+    );
+    // The first answer kept the two paths.
+    let first = error
+        .detail()
+        .expect("a failed promotion names what it kept");
+    assert_eq!(
+        first["kept"],
+        serde_json::json!(["edited.txt", "dir/other.txt"]),
+        "{first}"
+    );
+    // The event holds them, as the first answer had them.
+    let recorded: Vec<Option<serde_json::Value>> = h
+        .persistence
+        .events()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            Event::WorkspacePromotionFailed { error_detail, .. } => Some(error_detail),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(recorded, vec![Some(first.clone())]);
+    // The repeat's `kept` equals the first answer's, and is not empty.
+    let repeated = again.did.into_reply().unwrap_err();
+    let kept = repeated.detail().expect("the repeat has the detail")["kept"].clone();
+    assert_eq!(kept, first["kept"]);
+    assert!(kept.as_array().is_some_and(|k| !k.is_empty()), "{kept}");
+    assert_eq!(repeated.to_string(), error.to_string());
+}
+
 /// External design §4 (REQ-MAIN-006; review of 014b-6): a failure recorded with an error kind that
 /// this release does not know (a newer release wrote it) is answered `internal` when sent again,
 /// and its message names the word; the event keeps the word, as it was written.

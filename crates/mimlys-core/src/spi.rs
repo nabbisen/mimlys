@@ -1476,6 +1476,8 @@ pub mod fake {
         reverted: Mutex<Vec<(PromotionId, EditedPaths)>>,
         fail_reverts: Mutex<bool>,
         edited: Mutex<Vec<String>>,
+        /// The paths a reversal that keeps edited paths reports as left (`RestoreReport::left`).
+        kept_on_revert: Mutex<Vec<String>>,
         /// The workspaces made and not removed: what a refused creation must not leave.
         materialized: Mutex<std::collections::BTreeSet<TaskId>>,
         /// From now on a materialization makes the workspace and then fails (a full disk).
@@ -1507,6 +1509,7 @@ pub mod fake {
                 reverted: Mutex::new(Vec::new()),
                 fail_reverts: Mutex::new(false),
                 edited: Mutex::new(Vec::new()),
+                kept_on_revert: Mutex::new(Vec::new()),
                 materialized: Mutex::new(Default::default()),
                 fail_materialize: Mutex::new(false),
                 fail_tools: Mutex::new(false),
@@ -1828,7 +1831,15 @@ pub mod fake {
                 .lock()
                 .expect("fake lock")
                 .push((promotion.promotion_id, edited));
-            Ok(RestoreReport::default())
+            // A reversal that keeps what was edited since leaves these paths as they are.
+            let left = match edited {
+                EditedPaths::Keep => self.kept_on_revert.lock().expect("fake lock").clone(),
+                EditedPaths::Overwrite => Vec::new(),
+            };
+            Ok(RestoreReport {
+                left,
+                ..RestoreReport::default()
+            })
         }
 
         fn delete_files(&self, task_id: TaskId, _rows: &DeletedRows) -> Result<(), WorkspaceError> {
@@ -1909,6 +1920,13 @@ pub mod fake {
         /// Promotions reverted from their backups, in order, with how edited paths were treated.
         pub fn reverted(&self) -> Vec<(PromotionId, EditedPaths)> {
             self.reverted.lock().expect("fake lock").clone()
+        }
+
+        /// From now on a reversal that keeps the paths edited since (the restore of a failed
+        /// promotion) leaves these paths as they are and reports them (`RestoreReport::left`).
+        pub fn keep_on_revert(&self, paths: &[&str]) {
+            *self.kept_on_revert.lock().expect("fake lock") =
+                paths.iter().map(|p| (*p).to_owned()).collect();
         }
 
         /// From now on the plan of a reversal reports these paths as edited since.

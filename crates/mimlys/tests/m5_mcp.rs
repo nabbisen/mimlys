@@ -822,12 +822,41 @@ fn m5_pinning_breaks_visibly() {
         .filter_map(|e| e["tool"].as_str())
         .collect();
     assert_eq!(unpinned, ["rypsok.web_search"]);
-    let rejected: Vec<String> = events
+    // The invariant, and not the boundary that sees the notice (review of 014b-5, decision 2; the
+    // MCP library handles a notification on a task of its own, so no order on the wire fixes
+    // which boundary has it): a changed tool is unpinned before its next call, and is never
+    // called under its old pin. The only call that was made is the one that changed the
+    // definition, and it was made before the unpin; nothing was started after it.
+    let at = |name: &str| names(&events).iter().position(|n| n == name);
+    let unpinned_at = at("tool.unpinned").expect("the definition was unpinned");
+    let started: Vec<usize> = names(&events)
         .iter()
-        .filter(|e| e["event"] == "decision.rejected")
-        .map(|e| e["code"].as_str().unwrap().to_owned())
+        .enumerate()
+        .filter(|(_, n)| *n == "action.started")
+        .map(|(i, _)| i)
         .collect();
-    assert_eq!(rejected, ["unknown_tool"]);
+    assert_eq!(
+        started.len(),
+        1,
+        "the changed tool was called under its old pin: {:?}",
+        names(&events)
+    );
+    assert!(
+        started[0] < unpinned_at,
+        "a call began after the unpin: {:?}",
+        names(&events)
+    );
+    // The proposal of the changed tool did not become a success: the one action that succeeded
+    // is the call that changed the definition.
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["event"] == "action.finished" && e["status"] == "succeeded")
+            .count(),
+        1,
+        "{:?}",
+        names(&events)
+    );
     // A new task pins the changed definition under a new hash (the server
     // restarts per process, so the change is re-issued first).
     let env2 = Env::new(
