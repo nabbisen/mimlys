@@ -26,8 +26,20 @@ use tokio::sync::Notify;
 /// flight), so a caller that must not block sends from a thread of its own.
 pub trait Transport: Send + Sync {
     /// Sends the envelope and waits for its response; `notice` is told what the user is to be
-    /// told while the request waits (a grant waits for the step in flight).
-    fn send(&self, envelope: Envelope, notice: &dyn Fn(Notice)) -> Response;
+    /// told while the request waits (a grant waits for the step in flight). A transport that
+    /// can lose its connection says so ([`ConnectionBroken`]): the request may or may not have
+    /// been handled, and the client sends it once more, with the same id (external design §4).
+    fn send(
+        &self,
+        envelope: Envelope,
+        notice: &dyn Fn(Notice),
+    ) -> Result<Response, ConnectionBroken>;
+
+    /// What the task waits behind in the daemon's line, if it waits (external design §19.5).
+    /// Embedded mode has no line.
+    fn queued(&self, _task_id: TaskId) -> Option<mimlys_core::api::Line> {
+        None
+    }
 
     /// A follower of the task begins: the driver takes the task if it is running. A transport to
     /// a daemon has nothing to do, the daemon owning the tasks it serves.
@@ -50,6 +62,15 @@ pub trait Transport: Send + Sync {
     fn failure(&self, _task_id: TaskId) -> Option<RuntimeError> {
         None
     }
+}
+
+/// A connection that broke while a request was in flight, or could not be made: whether the
+/// request took effect is not known to the transport, and the recorded outcome tells (external
+/// design §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectionBroken {
+    /// What failed.
+    pub detail: String,
 }
 
 /// The one client of a command.
@@ -182,14 +203,25 @@ impl Client {
         if deletion {
             self.deletions().insert(request_id);
         }
-        let response = self.transport.send(
-            Envelope {
-                request_id,
-                session: self.session.clone(),
-                request,
-            },
-            &say,
-        );
+        let envelope = Envelope {
+            request_id,
+            session: self.session.clone(),
+            request,
+        };
+        // A connection that broke is made again, and the same request is sent once more under the
+        // same id: the store answers what the first one did, and nothing is applied twice. It is
+        // never said that it is not known whether a request took effect (external design §4).
+        let response = match self.transport.send(envelope.clone(), &say) {
+            Ok(response) => response,
+            Err(_) => self.transport.send(envelope, &say).map_err(|broken| {
+                if deletion {
+                    self.deletions().remove(&request_id);
+                }
+                RuntimeError::Unavailable {
+                    component: crate::messages::daemon_connection_lost(&broken.detail),
+                }
+            })?,
+        };
         if response.request_id != request_id {
             return Err(unexpected(
                 "an answer to another request than the one that was sent",
@@ -232,6 +264,11 @@ impl Client {
     /// A follower of the task begins: the driver takes it if it is running.
     pub fn attach(&self, task_id: TaskId) {
         self.transport.attach(task_id);
+    }
+
+    /// What the task waits behind in the daemon's line, if it waits.
+    pub fn queued(&self, task_id: TaskId) -> Option<mimlys_core::api::Line> {
+        self.transport.queued(task_id)
     }
 
     /// Waits until something changed that a follower should look at (a step ended, a request was
@@ -545,6 +582,16 @@ fn task(reply: Reply) -> Result<Task, RuntimeError> {
         Reply::Task(task) => Ok(*task),
         Reply::Noted(task) => {
             crate::output::diag(crate::messages::request_noted(&task.task_id.to_string()));
+            Ok(*task)
+        }
+        // A resume that waits in line (the daemon's, external design §19.5): the task as it is,
+        // and the line, once.
+        Reply::Queued { task, line } => {
+            crate::output::diag(crate::messages::daemon_queued_line(
+                &task.task_id.to_string(),
+                &line.behind.to_string(),
+                &line.running_since.to_rfc3339(),
+            ));
             Ok(*task)
         }
         other => Err(unexpected_reply("a verb that returns a task", &other)),

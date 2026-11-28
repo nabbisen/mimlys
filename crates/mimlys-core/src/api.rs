@@ -403,6 +403,15 @@ pub enum Reply {
     /// request is taken in the step's own turn, at its end (a pause at the next boundary, a stop
     /// that cancels a task the step leaves `running`), and the reply says so at once.
     Noted(Box<Task>),
+    /// A resume that waits in line (external design §19.5; only a daemon's driver answers so):
+    /// the task as it is, still not running, and what it waits behind. It starts, by this
+    /// request, when the task ahead of it leaves `running`.
+    Queued {
+        /// The task as it is now.
+        task: Box<Task>,
+        /// What it waits behind.
+        line: Line,
+    },
     /// The step was asked to stop (`interrupt_step`); whether one was in flight to be asked.
     Interrupted {
         /// A step of the task was in flight.
@@ -424,6 +433,16 @@ pub enum Reply {
     StartRefusal(Option<StartRefusal>),
     /// The answer to `creation_forbidden`.
     CreationForbidden(bool),
+}
+
+/// What a task in line waits behind (external design §19.5): `queued behind task <id>, running
+/// since <time>`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Line {
+    /// The task that runs, which the task in line waits behind.
+    pub behind: TaskId,
+    /// Since when the daemon's driver has run it.
+    pub running_since: crate::clock::Instant,
 }
 
 /// What a client says to the user while a request waits (external design §4): the runtime tells

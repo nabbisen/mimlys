@@ -561,6 +561,64 @@ pub struct RuntimeSection {
     /// decision 5): an execution beyond it waits for a slot, and `status` says so.
     #[serde(default = "default_admission_slots")]
     pub admission_slots: usize,
+    /// How long a daemon with nothing to do waits before it exits: a duration (`30m`; from one
+    /// minute to a week), or `never` (LIM-O13, external design §19.5, from 0.14).
+    #[serde(default)]
+    pub daemon_idle: DaemonIdle,
+}
+
+/// `[runtime] daemon_idle` (LIM-O13): the idle time after which a daemon exits, or `never`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DaemonIdle {
+    /// The daemon runs until it is stopped.
+    Never,
+    /// It exits after this many milliseconds with no client and no task running, queued or
+    /// waiting for the user.
+    After(u64),
+}
+
+impl Default for DaemonIdle {
+    fn default() -> Self {
+        DaemonIdle::After(mimlys_core::limits::LIM_O13_DAEMON_IDLE_MS)
+    }
+}
+
+impl DaemonIdle {
+    /// The idle time, or none for `never`.
+    pub fn duration(self) -> Option<std::time::Duration> {
+        match self {
+            DaemonIdle::Never => None,
+            DaemonIdle::After(ms) => Some(std::time::Duration::from_millis(ms)),
+        }
+    }
+
+    /// The word the file writes it as.
+    pub fn text(self) -> String {
+        match self {
+            DaemonIdle::Never => "never".to_owned(),
+            DaemonIdle::After(ms) if ms % 60_000 == 0 => format!("{}m", ms / 60_000),
+            DaemonIdle::After(ms) => format!("{}s", ms / 1000),
+        }
+    }
+}
+
+impl Serialize for DaemonIdle {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text())
+    }
+}
+
+impl<'de> Deserialize<'de> for DaemonIdle {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        if text.trim() == "never" {
+            return Ok(DaemonIdle::Never);
+        }
+        let ms = parse_duration_ms(&text).map_err(serde::de::Error::custom)?;
+        u64::try_from(ms)
+            .map(DaemonIdle::After)
+            .map_err(|_| serde::de::Error::custom("a duration is not negative"))
+    }
 }
 
 fn default_admission_slots() -> usize {
@@ -572,6 +630,7 @@ impl Default for RuntimeSection {
         Self {
             data_dir: None,
             admission_slots: default_admission_slots(),
+            daemon_idle: DaemonIdle::default(),
         }
     }
 }
@@ -1343,6 +1402,19 @@ impl Config {
             self.runtime.admission_slots,
             mimlys_core::limits::LIM_X5_ADMISSION_SLOTS_RANGE,
         )?;
+        if let DaemonIdle::After(ms) = self.runtime.daemon_idle {
+            range(
+                "runtime.daemon_idle",
+                ms,
+                mimlys_core::limits::LIM_O13_DAEMON_IDLE_RANGE_MS,
+            )
+            .map_err(|e| {
+                ConfigError::new(
+                    "runtime.daemon_idle",
+                    format!("{}; use a duration from 1m to 7d, or `never`", e.reason),
+                )
+            })?;
+        }
         self.validate_backends()?;
         for (name, s) in &self.servers {
             if name.is_empty()

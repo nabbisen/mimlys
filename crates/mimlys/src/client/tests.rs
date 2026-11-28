@@ -43,10 +43,14 @@ impl Recording {
 }
 
 impl Transport for Recording {
-    fn send(&self, envelope: Envelope, _notice: &dyn Fn(Notice)) -> Response {
+    fn send(
+        &self,
+        envelope: Envelope,
+        _notice: &dyn Fn(Notice),
+    ) -> Result<Response, crate::client::ConnectionBroken> {
         let response = (self.answer)(&envelope);
         self.seen.lock().unwrap().push(envelope);
-        response
+        Ok(response)
     }
 }
 

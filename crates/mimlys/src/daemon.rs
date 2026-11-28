@@ -11,4 +11,13 @@
 pub mod wire;
 
 #[cfg(unix)]
+pub mod command;
+#[cfg(unix)]
+pub mod connect;
+#[cfg(unix)]
+pub mod log;
+#[cfg(unix)]
+pub mod server;
+
+#[cfg(unix)]
 pub mod socket;

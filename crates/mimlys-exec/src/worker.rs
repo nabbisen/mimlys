@@ -248,9 +248,22 @@ pub struct Worker {
     facts: Mutex<WorkerFacts>,
     /// The execution in flight, for the span of the log thread's lines.
     reader_span: mimlys_core::log_span::ReaderSpan,
+    /// The process of the worker that was started last and has not ended, 0 when none: what the
+    /// daemon asks, from another thread, without waiting for the lock of an execution
+    /// (REQ-SEC-016: the worker leads a session, which is the daemon's own tree).
+    pid: std::sync::atomic::AtomicU32,
 }
 
 impl Worker {
+    /// The process of the worker, when one runs. It leads a session of its own (the confinement's
+    /// spawn), and its host tools' groups are in that session.
+    pub fn process_id(&self) -> Option<u32> {
+        match self.pid.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
     /// A handle; the process starts at the first execution (or `start`).
     pub fn new(config: WorkerConfig) -> Arc<Self> {
         Arc::new(Self {
@@ -273,6 +286,7 @@ impl Worker {
             restarts: Mutex::new(BTreeMap::new()),
             facts: Mutex::new(WorkerFacts::default()),
             reader_span: mimlys_core::log_span::ReaderSpan::new(),
+            pid: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -552,6 +566,8 @@ impl Worker {
             task: task.map(|e| e.task_id),
             marker: spec.as_ref().and_then(|s| s.marker.clone()),
         };
+        self.pid
+            .store(live.child.id(), std::sync::atomic::Ordering::SeqCst);
         tracing::debug!(target: "mimlys_worker", "worker {} started, probing", live.child.id());
         let probing = Instant::now();
         write_frame(&mut live.stdin, &Request::Probe, limit).map_err(|e| e.to_string())?;
@@ -714,6 +730,12 @@ impl Worker {
     /// Ends a live worker: a shutdown request, the tree terminated if it does
     /// not end within LIM-O2, its record and its cgroup removed.
     fn end_live(&self, mut l: Live) {
+        let _ = self.pid.compare_exchange(
+            l.child.id(),
+            0,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         let _ = write_frame(&mut l.stdin, &Request::Shutdown, l.frame_limit);
         if !l.child.wait_within(Duration::from_millis(LIM_O2_CANCEL_MS)) {
             l.child.kill_tree();

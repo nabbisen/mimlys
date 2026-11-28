@@ -135,6 +135,10 @@ fn every_event() -> Vec<Event> {
         },
         Event::RuntimeStopped,
         Event::RuntimeOrphansKilled { count: 2 },
+        Event::DaemonRefused {
+            reason: "own_tree".into(),
+            peer_pid: Some(4242),
+        },
         Event::SnapshotJournalsRecovered {
             finished: 1,
             undone: 2,
@@ -191,6 +195,7 @@ fn req_obs_001_event_vocabulary_matches_ed_17_1() {
             "runtime.started",
             "runtime.stopped",
             "runtime.orphans_killed",
+            "daemon.refused",
             "snapshot.journals_recovered",
         ]
     );

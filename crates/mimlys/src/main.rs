@@ -207,6 +207,10 @@ enum Command {
     /// The user's runtimes.
     #[command(subcommand)]
     Runtime(RuntimeCommand),
+    /// The local daemon: one process per user and data directory that serves its clients over a
+    /// socket (Linux and macOS).
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
     /// The models: whether one acts on this machine.
     #[command(subcommand)]
     Model(ModelCommand),
@@ -216,6 +220,33 @@ enum Command {
     /// The toolchain paths host tools may read (RFC 011).
     #[command(subcommand)]
     Toolchain(ToolchainCommand),
+}
+
+#[derive(Subcommand)]
+enum DaemonCommand {
+    /// Start the daemon, detached: it leads a session of its own and returns once the daemon answers.
+    ///
+    /// A client that finds a daemon of its data directory sends its requests through it; without
+    /// one it runs embedded, as before. The daemon owns the store and runs every client's tasks
+    /// in one line. It exits by itself after `[runtime] daemon_idle` with nothing to do.
+    Start {
+        /// Stay attached to this terminal (for a service manager, or a test).
+        #[arg(long)]
+        foreground: bool,
+        /// What `start` runs in the process it makes: a new session, and the standard streams closed once it listens.
+        #[arg(long, hide = true, requires = "foreground")]
+        detached: bool,
+    },
+    /// Stop the daemon: running tasks pause at their next boundary, and are listed with how to resume them.
+    Stop,
+    /// Stop the daemon, start it again, and resume exactly the tasks the stop paused.
+    Restart,
+    /// What the daemon is: its process, its socket, its clients and tasks.
+    Status {
+        /// Also the last lines of its log.
+        #[arg(long, value_name = "LINES", num_args = 0..=1, default_missing_value = "20")]
+        log: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -515,11 +546,23 @@ async fn run(cli: Cli, out: &Output) -> Result<(), AppError> {
     if let Ok(text) = std::env::var("MIMLYS_DEBUG_PANIC_AFTER_CONFIG") {
         panic!("{text}");
     }
-    if let Some(warning) = logging::init(&loaded.config.logging, &loaded.secrets) {
+    // The daemon's own process logs to its file, which it opens itself.
+    let daemon_process = matches!(
+        &cli.command,
+        Command::Daemon(DaemonCommand::Start {
+            foreground: true,
+            ..
+        })
+    );
+    if !daemon_process && let Some(warning) = logging::init(&loaded.config.logging, &loaded.secrets)
+    {
         mimlys::output::diag(warning);
     }
     if let Command::Check = &cli.command {
         return commands::check::run(&loaded, out);
+    }
+    if let Command::Daemon(daemon) = cli.command {
+        return run_daemon(daemon, loaded, out).await;
     }
     // The registry of the user's runtimes belongs to no store: no app is opened for it.
     if let Command::Runtime(RuntimeCommand::Reap) = &cli.command {
@@ -661,6 +704,7 @@ fn changes_task(command: &Command) -> Option<&str> {
         | Command::Status { .. }
         | Command::Check
         | Command::Runtime(_)
+        | Command::Daemon(_)
         | Command::Model(_)
         | Command::Interpreters(_)
         | Command::Toolchain(_) => None,
@@ -720,6 +764,7 @@ impl Steps {
             | Command::Status { .. }
             | Command::Check
             | Command::Runtime(_)
+            | Command::Daemon(_)
             | Command::Model(_)
             | Command::Interpreters(_)
             | Command::Toolchain(_) => Steps::Never,
@@ -1031,6 +1076,46 @@ async fn dispatch(
         Command::Model(ModelCommand::Probe { backend }) => {
             commands::model::probe(app, backend.as_deref(), out).await
         }
-        Command::Check | Command::Runtime(_) => unreachable!("handled before the app opens"),
+        Command::Check | Command::Runtime(_) | Command::Daemon(_) => {
+            unreachable!("handled before the app opens")
+        }
     }
+}
+
+/// `mimlys daemon …` (RFC 014; external design §19.5): the lifecycle of the daemon. Linux and
+/// macOS; Windows has its own transport in a later release.
+#[cfg(unix)]
+async fn run_daemon(
+    command: DaemonCommand,
+    loaded: mimlys::config::Loaded,
+    out: &Output,
+) -> Result<(), AppError> {
+    use mimlys::daemon::command as lifecycle;
+    match command {
+        DaemonCommand::Start {
+            foreground: true,
+            detached,
+        } => lifecycle::serve_here(loaded, detached).await,
+        // These block on the daemon's answers, so they run apart from the executor's threads.
+        DaemonCommand::Start { .. } => {
+            tokio::task::block_in_place(|| lifecycle::start(&loaded, out))
+        }
+        DaemonCommand::Stop => tokio::task::block_in_place(|| lifecycle::stop(&loaded, out)),
+        DaemonCommand::Restart => tokio::task::block_in_place(|| lifecycle::restart(&loaded, out)),
+        DaemonCommand::Status { log } => {
+            tokio::task::block_in_place(|| lifecycle::status(&loaded, log, out))
+        }
+    }
+}
+
+/// The daemon is not part of this platform's release yet.
+#[cfg(not(unix))]
+async fn run_daemon(
+    _command: DaemonCommand,
+    _loaded: mimlys::config::Loaded,
+    _out: &Output,
+) -> Result<(), AppError> {
+    Err(AppError::Io {
+        detail: mimlys::messages::DAEMON_NOT_ON_THIS_PLATFORM.to_owned(),
+    })
 }

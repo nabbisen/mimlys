@@ -41,7 +41,7 @@ wat = "1"
 
 [target.'cfg(unix)'.dependencies]
 # `O_NONBLOCK` for the open of a project file (a named pipe never blocks it).
-rustix = { version = "1", features = ["fs", "process", "event"] }
+rustix = { version = "1", features = ["fs", "process", "event", "stdio"] }
 # The daemon's socket (RFC 014): the listener, and the peer's credentials, which tokio gives
 # in safe code on Linux and macOS (`UnixStream::peer_cred`).
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "signal", "io-std"] }

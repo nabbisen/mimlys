@@ -294,6 +294,17 @@ impl Server {
         std::mem::take(&mut *self.events.lock().expect("events lock"))
     }
 
+    /// The server's process, while one runs: it leads a session of its own (`setsid`), which is
+    /// how the daemon tells its own tree from its clients (REQ-SEC-016).
+    pub fn process_id(&self) -> Option<u32> {
+        self.live
+            .lock()
+            .expect("live lock")
+            .as_ref()
+            .filter(|l| !l.connection.is_closed())
+            .and_then(|l| l.connection.process_id())
+    }
+
     /// Whether the process is running (as far as the transport knows).
     pub async fn is_running(&self) -> bool {
         self.live

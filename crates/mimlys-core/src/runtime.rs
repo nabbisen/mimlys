@@ -857,6 +857,11 @@ impl Runtime {
         self.deps.persistence.as_ref()
     }
 
+    /// The tasks in `running` now, the ones LIM-X1 counts.
+    pub fn running_tasks(&self) -> Result<Vec<TaskId>, RuntimeError> {
+        Ok(self.deps.persistence.tasks_in_state("running")?)
+    }
+
     pub(crate) fn event(
         &self,
         actor: Actor,

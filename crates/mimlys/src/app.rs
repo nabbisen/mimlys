@@ -446,8 +446,26 @@ pub fn store_in_use(data_dir: &Path) -> AppError {
             mimlys_persist::LockState::Held(holder) => holder,
             _ => None,
         });
+    // The holder may be a daemon (REQ-PERS-014): said as that, so that the user knows what to
+    // stop. Found in the registry, where the daemon records itself.
+    let daemon = holder.as_ref().and_then(|h| {
+        let dir = crate::registry::default_dir().ok()?;
+        let registry = crate::registry::Registry::new(
+            dir,
+            crate::registry::Bounds::default(),
+            Arc::new(SystemClock),
+        );
+        registry
+            .daemon_of(&data_dir.to_string_lossy())
+            .ok()
+            .flatten()
+            .filter(|d| d.pid == h.pid)
+    });
     AppError::StoreInUse {
-        detail: crate::messages::store_in_use(holder.as_ref().map(|h| (h.pid, h.since.as_str()))),
+        detail: match (&daemon, &holder) {
+            (Some(_), Some(h)) => crate::messages::store_in_use_by_daemon(h.pid, &h.since),
+            _ => crate::messages::store_in_use(holder.as_ref().map(|h| (h.pid, h.since.as_str()))),
+        },
         pid: holder.map(|h| h.pid),
     }
 }

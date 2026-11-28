@@ -387,6 +387,17 @@ pub enum Event {
         /// How many.
         count: u32,
     },
+    /// The daemon refused a client (RFC 014, Amendment 1, item 5; REQ-SEC-016, THR-39): a request
+    /// from a process of its own tree, whose reason is `own_tree`. A peer of another user is
+    /// refused before anything is read and is named in the daemon's log only.
+    #[serde(rename = "daemon.refused")]
+    DaemonRefused {
+        /// Why: `own_tree`.
+        reason: String,
+        /// The peer's process, as the system reports it, when it gives one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_pid: Option<u32>,
+    },
     /// The start finished or undid snapshot journals a crash left (REQ-WS-012).
     #[serde(rename = "snapshot.journals_recovered")]
     SnapshotJournalsRecovered {
@@ -441,6 +452,7 @@ impl Event {
             Event::RuntimeStarted { .. } => "runtime.started",
             Event::RuntimeStopped => "runtime.stopped",
             Event::RuntimeOrphansKilled { .. } => "runtime.orphans_killed",
+            Event::DaemonRefused { .. } => "daemon.refused",
             Event::SnapshotJournalsRecovered { .. } => "snapshot.journals_recovered",
         }
     }

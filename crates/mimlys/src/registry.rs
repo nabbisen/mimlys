@@ -22,10 +22,12 @@
 //! the user's own regular file, and refuses (reaps, and says so) an entry it cannot parse.
 
 mod admission;
+mod daemon;
 #[cfg(test)]
 mod tests;
 
 pub use admission::{Wait, gate, gate_in, slots, slots_in};
+pub use daemon::{DAEMON_ENTRY_VERSION, DaemonEntry};
 
 use mimlys_core::clock::{Clock, Instant};
 use mimlys_core::limits::LIM_O11_REGISTRY_MS;
@@ -277,6 +279,8 @@ pub struct Handle {
     dir: PathBuf,
     stem: String,
     lock: Option<File>,
+    /// The extension of the text beside the lock file: `.entry`, or `.daemon` for a daemon's.
+    text: &'static str,
 }
 
 impl Handle {
@@ -290,7 +294,7 @@ impl Drop for Handle {
     fn drop(&mut self) {
         // Closing the file releases the lock: from here the entry is stale, whatever happens.
         drop(self.lock.take());
-        let _ = std::fs::remove_file(self.dir.join(format!("{}.entry", self.stem)));
+        let _ = std::fs::remove_file(self.dir.join(format!("{}{}", self.stem, self.text)));
         let _ = std::fs::remove_file(self.dir.join(format!("{}.lock", self.stem)));
     }
 }
@@ -586,6 +590,7 @@ fn create(dir: &Path, entry: &Entry) -> Result<Handle, Reason> {
         dir: dir.to_owned(),
         stem: stem.clone(),
         lock: Some(lock),
+        text: ".entry",
     };
     match handle.lock.as_ref().expect("just made").try_lock() {
         Ok(()) => {}

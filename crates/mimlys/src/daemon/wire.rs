@@ -8,7 +8,7 @@
 //! field is renamed or removed); the requests after them are the runtime's own, and a client and
 //! a daemon of different versions never exchange them (the hello refuses first).
 
-use mimlys_core::api::{Envelope, Notice, Response};
+use mimlys_core::api::{Envelope, Line, Notice, Response};
 use mimlys_core::ids::TaskId;
 use mimlys_core::limits::LIM_O22_DAEMON_FRAME_BYTES;
 use mimlys_core::runtime::RuntimeError;
@@ -193,16 +193,6 @@ pub enum Reply {
         /// Why.
         refusal: Refusal,
     },
-}
-
-/// What a queued task waits behind (external design §19.5): `queued behind task <id>, running
-/// since <time>`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Line {
-    /// The task that runs.
-    pub behind: TaskId,
-    /// Since when it runs.
-    pub running_since: String,
 }
 
 /// What `mimlys daemon status` says first.

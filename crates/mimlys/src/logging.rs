@@ -43,6 +43,72 @@ pub fn init(section: &LoggingSection, secrets: &[(String, String)]) -> Option<&'
         .then_some(crate::messages::DEBUG_PROMPTS_WARNING)
 }
 
+/// Installs the subscriber of a daemon: the same lines as [`init`], redacted as they are there, in
+/// the daemon's log file (`logs/daemon.log`, bounded by LIM-O20 and LIM-O21) and not on standard
+/// error, which the daemon has closed.
+#[cfg(unix)]
+pub fn init_daemon(
+    section: &LoggingSection,
+    secrets: &[(String, String)],
+    log: Arc<crate::daemon::log::RotatingLog>,
+) -> Option<&'static str> {
+    let filter = if section.debug_prompts {
+        EnvFilter::new(format!("{},{PROMPT_LOG_TARGET}=debug", section.level))
+    } else {
+        EnvFilter::new(format!("{},{PROMPT_LOG_TARGET}=off", section.level))
+    };
+    let redactor = Arc::new(Redactor::new(secrets));
+    let _ = tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_writer(move || RedactingFile {
+            redactor: Arc::clone(&redactor),
+            log: Arc::clone(&log),
+            buffer: Vec::new(),
+        })
+        .with_target(false)
+        .with_span_list(false)
+        .try_init();
+    section
+        .debug_prompts
+        .then_some(crate::messages::DEBUG_PROMPTS_WARNING)
+}
+
+/// The daemon's log file with every written line redacted.
+#[cfg(unix)]
+struct RedactingFile {
+    redactor: Arc<Redactor>,
+    log: Arc<crate::daemon::log::RotatingLog>,
+    buffer: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl Write for RedactingFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let text = String::from_utf8_lossy(&self.buffer).into_owned();
+        self.buffer.clear();
+        let (clean, _) = self.redactor.redact(&text);
+        // A log that cannot be written is dropped, as one on a closed standard error is.
+        let _ = self.log.write_line(clean.as_bytes());
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RedactingFile {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
 /// Standard error with every written line redacted.
 struct RedactingStderr {
     redactor: Arc<Redactor>,

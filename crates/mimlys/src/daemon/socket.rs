@@ -200,13 +200,34 @@ pub struct Peer {
     pub pid: Option<u32>,
 }
 
+/// The test seam of the peer check: `MIMLYS_PRETEND_UID` names the user the process takes
+/// itself for **when it judges a peer** (a debug build only, as `MIMLYS_RUN_DIR` is), so that a
+/// test makes a peer of "another user" without a second account. Nothing else reads it: the
+/// directory's and the socket's owner are always checked against the real user.
+pub const PRETEND_UID_ENV: &str = "MIMLYS_PRETEND_UID";
+
+/// The user a peer must be: this process's own, or, in a debug build, the seam's.
+pub fn user_for_peers() -> u32 {
+    if cfg!(debug_assertions)
+        && let Some(uid) = std::env::var(PRETEND_UID_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+    {
+        return uid;
+    }
+    own_uid()
+}
+
 impl Peer {
-    /// The peer a connection's credentials name.
-    pub fn of(cred: &tokio::net::unix::UCred) -> Self {
+    /// The peer a connection's credentials name, **if it is the user's own**: the one way to
+    /// get a peer from a connection, for the daemon (who may connect) and for the client (whose
+    /// daemon it is), so that neither can use a peer it did not check.
+    pub fn admit(cred: &tokio::net::unix::UCred) -> Result<Self, SocketError> {
         Self {
             uid: cred.uid(),
             pid: cred.pid().and_then(|p| u32::try_from(p).ok()),
         }
+        .check(user_for_peers())
     }
 
     /// Whether the peer is the user's own: its uid is the one the process runs as.

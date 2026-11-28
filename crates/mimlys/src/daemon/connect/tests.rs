@@ -1,0 +1,103 @@
+use super::*;
+use crate::config::Config;
+use std::os::unix::fs::PermissionsExt;
+
+fn loaded() -> Loaded {
+    Config::load(None).unwrap()
+}
+
+fn private(dir: &std::path::Path) {
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// REQ-CLI-008, external design §20: with no registry directory, or none of the daemon's sockets
+/// in it, there is no daemon, and the command runs embedded.
+#[test]
+fn req_cli_008_without_a_socket_there_is_no_daemon() {
+    let base = tempfile::tempdir().unwrap();
+    let data = base.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let run = base.path().join("run");
+    assert!(matches!(
+        reach(&run, &data, &loaded(), true),
+        Ok(Reach::None)
+    ));
+    std::fs::create_dir(&run).unwrap();
+    private(&run);
+    assert!(matches!(
+        reach(&run, &data, &loaded(), true),
+        Ok(Reach::None)
+    ));
+}
+
+/// REQ-SEC-016: a registry directory that is not 0700 is refused before anything is sent.
+#[test]
+fn req_sec_016_a_client_refuses_a_directory_that_is_not_0700() {
+    let base = tempfile::tempdir().unwrap();
+    let data = base.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let run = base.path().join("run");
+    std::fs::create_dir(&run).unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let refused = reach(&run, &data, &loaded(), true).err().unwrap();
+    assert!(matches!(
+        refused,
+        ReachError::Socket(SocketError::Directory {
+            fault: socket::Fault::Mode(0o755),
+            ..
+        })
+    ));
+}
+
+/// REQ-CLI-008, external design §20: a socket whose daemon is gone, with the store's lock free,
+/// is removed, and the client says that the daemon is not running.
+#[test]
+fn req_cli_008_a_dead_daemons_socket_is_removed() {
+    let base = tempfile::tempdir().unwrap();
+    let data = base.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let run = base.path().join("run");
+    std::fs::create_dir(&run).unwrap();
+    private(&run);
+    let path = socket::socket_path(&run, &data).unwrap().unwrap();
+    // A socket file that nobody listens on: bound and dropped.
+    drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(path.exists());
+    // Asked not to remove it, the client leaves it.
+    assert!(matches!(
+        reach(&run, &data, &loaded(), false),
+        Ok(Reach::Dead)
+    ));
+    assert!(path.exists(), "not removed when not asked");
+    assert!(matches!(
+        reach(&run, &data, &loaded(), true),
+        Ok(Reach::Dead)
+    ));
+    assert!(!path.exists(), "the stale socket was removed");
+    assert!(matches!(
+        reach(&run, &data, &loaded(), true),
+        Ok(Reach::None)
+    ));
+}
+
+/// REQ-SEC-016: a socket of mode 0660 is refused, and one that is not a socket.
+#[test]
+fn req_sec_016_a_client_refuses_a_socket_that_is_not_0600() {
+    let base = tempfile::tempdir().unwrap();
+    let data = base.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let run = base.path().join("run");
+    std::fs::create_dir(&run).unwrap();
+    private(&run);
+    let path = socket::socket_path(&run, &data).unwrap().unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660)).unwrap();
+    assert!(matches!(
+        reach(&run, &data, &loaded(), true).err().unwrap(),
+        ReachError::Socket(SocketError::File {
+            fault: socket::Fault::Mode(0o660),
+            ..
+        })
+    ));
+}

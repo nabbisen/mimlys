@@ -8,7 +8,7 @@
 //! terminal ends at a wait, as before. A follower never runs a step: it waits here for the driver
 //! to say that something changed.
 
-use crate::client::Transport;
+use crate::client::{ConnectionBroken, Transport};
 use mimlys_core::api::{Envelope, Notice, Response};
 use mimlys_core::driver::{Driver, Turn};
 use mimlys_core::ids::TaskId;
@@ -35,8 +35,19 @@ impl InProcess {
     /// is handed, inside the executor of the process.
     #[must_use]
     pub fn new(runtime: Arc<Runtime>) -> Arc<Self> {
+        Self::over(Driver::new(runtime))
+    }
+
+    /// The transport of a daemon's host: the same, over a driver that keeps a line (external
+    /// design §19.5): a resume that LIM-X1 does not allow yet waits and starts in its turn.
+    #[must_use]
+    pub fn with_line(runtime: Arc<Runtime>) -> Arc<Self> {
+        Self::over(Driver::with_line(runtime))
+    }
+
+    fn over(driver: Driver) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
-            driver: Driver::new(runtime),
+            driver,
             wake: Arc::new(Notify::new()),
             changed: Arc::new(Notify::new()),
             task: Mutex::new(None),
@@ -48,6 +59,12 @@ impl InProcess {
     #[must_use]
     pub fn driver(&self) -> &Driver {
         &self.driver
+    }
+
+    /// Starts the driver's loop now, on the executor of the caller (the daemon starts it at its
+    /// own start: its requests arrive on threads that have no executor).
+    pub fn start_driving(&self) {
+        self.ensure_driving();
     }
 
     /// Starts the driver's loop on the executor of the process, once. Outside an executor there
@@ -98,12 +115,21 @@ async fn drive(me: Weak<InProcess>, wake: Arc<Notify>) {
 }
 
 impl Transport for InProcess {
-    fn send(&self, envelope: Envelope, notice: &dyn Fn(Notice)) -> Response {
+    fn send(
+        &self,
+        envelope: Envelope,
+        notice: &dyn Fn(Notice),
+    ) -> Result<Response, ConnectionBroken> {
         let response = self.driver.handle_noticing(envelope, notice);
         // The request may have made a task `running`, or ended the wait of a task.
         self.ensure_driving();
         self.notify();
-        response
+        // An in-process connection does not break.
+        Ok(response)
+    }
+
+    fn queued(&self, task_id: TaskId) -> Option<mimlys_core::api::Line> {
+        self.driver.queued(task_id)
     }
 
     fn attach(&self, task_id: TaskId) {

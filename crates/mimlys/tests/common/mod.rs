@@ -155,8 +155,15 @@ pub struct Registry {
 
 impl Registry {
     pub fn new() -> Self {
+        // Under the system's temporary directory, not the target's: the daemon's socket is in
+        // this directory, and a path to a Unix socket is limited to about 104 bytes (external
+        // design §19.5), which the target directory of a checkout in a deep path passes.
         Self {
-            holder: fresh_holder("registry-"),
+            holder: tempfile::Builder::new()
+                .prefix("mly-")
+                .rand_bytes(8)
+                .tempdir_in(std::env::temp_dir())
+                .expect("a directory for a registry"),
         }
     }
 

@@ -78,6 +78,11 @@ impl Servers {
         &self.servers
     }
 
+    /// The processes of the servers that run: each leads a session of its own.
+    pub fn process_ids(&self) -> Vec<u32> {
+        self.servers.iter().filter_map(|s| s.process_id()).collect()
+    }
+
     /// Whether any server is configured.
     pub fn is_empty(&self) -> bool {
         self.servers.is_empty()
