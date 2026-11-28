@@ -1,0 +1,26 @@
+name: mutation (throwaway)
+
+# A throwaway workflow on a throwaway branch (handoff 014d, "Mutations"): one mutation of the real
+# code, and the tests that are to kill it, on the runner that can run them. Never part of a PR.
+on:
+  push:
+    branches: ['throwaway/014d-*']
+
+jobs:
+  mutation:
+    name: own-tree-unchecked (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the `stable` branch on 2026-11-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - shell: bash
+        run: |
+          set +e
+          status=0
+          cargo test -p mimlys --all-features --test daemon_served own_tree; status=$?
+          echo "mutation own-tree-unchecked: exit status of the last test run is $status"
+          exit 0

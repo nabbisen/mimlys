@@ -147,8 +147,7 @@ pub fn judge_tree(peer: Peer, leaders: &[Leader]) -> Tree {
         return Tree::NoPid;
     };
     match daemon_pipe::process_in_any_job(pid, leaders) {
-        Ok(false) => Tree::Outside,
-        Ok(true) => Tree::Own,
+        Ok(_) => Tree::Outside,
         Err(_) => Tree::Unreadable,
     }
 }
