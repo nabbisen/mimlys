@@ -185,8 +185,10 @@ fn greet(
     )
     .map_err(|e| hello_error(&e))?;
     let answer: HelloAnswer = wire::read(&mut stream).map_err(|e| hello_error(&e))?;
-    stream.set_read_timeout(None).map_err(io)?;
-    stream.set_write_timeout(None).map_err(io)?;
+    // Clearing the timeouts is a courtesy: a daemon that refused this client has closed its end
+    // already, and macOS answers `EINVAL` to a socket option of a socket whose peer has gone.
+    let _ = stream.set_read_timeout(None);
+    let _ = stream.set_write_timeout(None);
     Ok(Daemon {
         stream,
         hello,

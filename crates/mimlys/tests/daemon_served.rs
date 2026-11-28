@@ -34,6 +34,17 @@ fn ask() -> Value {
     json!({"decision": "ask_user", "question": "Which branch?"})
 }
 
+/// A host tool that runs for `secs` seconds: on Linux it leaves a sleeper in a session of its own
+/// too (the tree a cancel must end); macOS has no `setsid` command, and its tool only sleeps.
+fn slow(secs: &str) -> Value {
+    let mode = if cfg!(target_os = "linux") {
+        "setsid-sleep"
+    } else {
+        "sleep"
+    };
+    probe(&[mode, secs])
+}
+
 fn probe(args: &[&str]) -> Value {
     json!({"decision": "act", "tool": "run_host_tool", "arguments": {"tool": "probe", "args": args}})
 }
@@ -223,6 +234,17 @@ impl Env {
     }
 }
 
+/// Whether this machine runs host tools (the full tier); a test that needs one says that it did not
+/// run its subject here, as the skip tier does.
+fn full_tier(env: &Env, test: &str) -> bool {
+    let (_, status) = env.json(&["status"]);
+    if status["tier"] == "full" {
+        return true;
+    }
+    common::skip(test, &format!("tier {}", status["tier"]));
+    false
+}
+
 fn wait_for(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < limit {
@@ -234,10 +256,11 @@ fn wait_for(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
     done()
 }
 
-/// How many processes `sleep <secs>` run now.
+/// How many processes of a slow tool's tree run now: those whose command line ends with
+/// `sleep <secs>` (the tool, its shell and its sleepers).
 fn sleepers(secs: &str) -> usize {
     let out = Command::new("pgrep")
-        .args(["-f", &format!("^sleep {secs}$")])
+        .args(["-f", &format!("sleep {secs}$")])
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout)
@@ -331,19 +354,17 @@ fn req_arch_009_a_waiting_task_is_cancelled_from_another_terminal() {
 /// session of its own are running; a second client cancels the task; every sleeper ends.
 #[test]
 fn req_task_006_a_running_host_tool_is_cancelled_from_a_second_client() {
-    let env = Env::new(&[probe(&["setsid-sleep", "1236"]), complete()]);
-    let (_, status) = env.json(&["status"]);
-    if status["tier"] != "full" {
-        common::skip(
-            "req_task_006_a_running_host_tool_is_cancelled_from_a_second_client",
-            &format!("tier {}", status["tier"]),
-        );
+    let env = Env::new(&[slow("1236"), complete()]);
+    if !full_tier(
+        &env,
+        "req_task_006_a_running_host_tool_is_cancelled_from_a_second_client",
+    ) {
         return;
     }
     env.start_daemon();
     let id = env.run_detached(&["--grant", "host_tool:probe"]);
     assert!(
-        wait_for(Duration::from_secs(60), || sleepers("1236") >= 2),
+        wait_for(Duration::from_secs(60), || sleepers("1236") >= 1),
         "the host tool and its setsid child run"
     );
     let begun = std::time::Instant::now();
@@ -375,7 +396,13 @@ fn req_task_006_a_running_host_tool_is_cancelled_from_a_second_client() {
 #[test]
 fn req_cli_005_ctrl_c_in_a_following_client_pauses_and_closing_it_leaves_the_task_running() {
     // Ctrl-C: the pause.
-    let env = Env::new(&[probe(&["setsid-sleep", "1237"]), complete()]);
+    let env = Env::new(&[slow("1237"), complete()]);
+    if !full_tier(
+        &env,
+        "req_cli_005_ctrl_c_in_a_following_client_pauses_and_closing_it_leaves_the_task_running",
+    ) {
+        return;
+    }
     env.start_daemon();
     let scope = env.scope();
     let err_path = env.data.path().join("run.stderr");
@@ -419,7 +446,13 @@ fn req_cli_005_ctrl_c_in_a_following_client_pauses_and_closing_it_leaves_the_tas
 /// **leaves the task running**; the daemon goes on.
 #[test]
 fn req_cli_005_a_client_that_goes_away_leaves_the_task_running() {
-    let env = Env::new(&[probe(&["setsid-sleep", "1238"]), complete()]);
+    let env = Env::new(&[slow("1238"), complete()]);
+    if !full_tier(
+        &env,
+        "req_cli_005_a_client_that_goes_away_leaves_the_task_running",
+    ) {
+        return;
+    }
     env.start_daemon();
     let scope = env.scope();
     let mut run = env
@@ -543,19 +576,17 @@ fn req_arch_004_a_repeat_after_a_broken_connection_is_applied_once() {
 /// paused`)
 #[test]
 fn req_cli_008_stop_pauses_a_running_task_lists_it_and_resumes_nothing() {
-    let env = Env::new(&[probe(&["setsid-sleep", "1239"]), complete()]);
-    let (_, status) = env.json(&["status"]);
-    if status["tier"] != "full" {
-        common::skip(
-            "req_cli_008_stop_pauses_a_running_task_lists_it_and_resumes_nothing",
-            &format!("tier {}", status["tier"]),
-        );
+    let env = Env::new(&[slow("1239"), complete()]);
+    if !full_tier(
+        &env,
+        "req_cli_008_stop_pauses_a_running_task_lists_it_and_resumes_nothing",
+    ) {
         return;
     }
     env.start_daemon();
     let id = env.run_detached(&["--grant", "host_tool:probe"]);
     assert!(
-        wait_for(Duration::from_secs(60), || sleepers("1239") >= 2),
+        wait_for(Duration::from_secs(60), || sleepers("1239") >= 1),
         "the tool runs"
     );
     let (code, stopped) = env.json(&["daemon", "stop"]);
@@ -578,7 +609,13 @@ fn req_cli_008_stop_pauses_a_running_task_lists_it_and_resumes_nothing() {
 /// REQ-CLI-008: **`restart` resumes exactly what its stop paused**, and says so.
 #[test]
 fn req_cli_008_restart_resumes_exactly_the_tasks_its_stop_paused() {
-    let env = Env::new(&[probe(&["setsid-sleep", "1240"]), complete(), complete()]);
+    let env = Env::new(&[slow("1240"), complete(), complete()]);
+    if !full_tier(
+        &env,
+        "req_cli_008_restart_resumes_exactly_the_tasks_its_stop_paused",
+    ) {
+        return;
+    }
     env.start_daemon();
     let id = env.run_detached(&["--grant", "host_tool:probe"]);
     assert!(
@@ -599,8 +636,7 @@ fn req_cli_008_restart_resumes_exactly_the_tasks_its_stop_paused() {
 /// leaves `running`. A task that waits for the user keeps the daemon alive past its idle time.
 #[test]
 fn req_sched_008_a_second_task_waits_in_line_and_a_waiting_task_keeps_the_daemon_alive() {
-    let env = Env::new(&[probe(&["setsid-sleep", "3"]), complete(), complete()])
-        .env("MIMLYS_DAEMON_IDLE_MS", "400");
+    let env = Env::new(&[slow("3"), complete(), complete()]).env("MIMLYS_DAEMON_IDLE_MS", "400");
     env.start_daemon();
     let first = env.run_detached(&["--grant", "host_tool:probe"]);
     // The second, on a scope of its own (two tasks never share one), while the first runs.
