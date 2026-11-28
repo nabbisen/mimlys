@@ -153,6 +153,30 @@ pub fn daemon_did_not_start(code: Option<i32>, said: &str, log: &std::path::Path
     }
 }
 
+/// A client of `serve = "on_demand"` started a daemon, said once (external design §19.5): its
+/// process, what it does, when it goes, and how to end it.
+pub fn daemon_started_on_demand(pid: u32, idle: &str) -> String {
+    format!(
+        "started a daemon for this data directory (pid {pid}, `[runtime] serve = \"on_demand\"`): it runs the tasks of every command of yours, and ends by itself after {idle} with nothing to do (`mimlys daemon stop` ends it now)"
+    )
+}
+
+/// A client of `serve = "on_demand"` waits for a store that another process holds (a daemon that
+/// is starting, or a runtime of an embedded command), said once.
+pub fn daemon_waiting_for_the_store(holder: &str) -> String {
+    format!(
+        "waiting for the store, which another process holds, to be served by a daemon ({holder}); this command does not run embedded under `serve = \"on_demand\"`"
+    )
+}
+
+/// A client of `serve = "on_demand"` that waited for LIM-O23 and found the store still held by a
+/// process that is not a daemon that answers: the command fails, and does not run embedded.
+pub fn daemon_on_demand_store_held(holder: &str) -> String {
+    format!(
+        "the daemon did not start: the store is held by another process that is not a daemon ({holder}); under `serve = \"on_demand\"` this command does not run embedded: wait for it, or end it, and run the command again"
+    )
+}
+
 /// `daemon start`: no answer within LIM-O23.
 pub fn daemon_start_timed_out(ms: u64, log: &std::path::Path) -> String {
     format!(

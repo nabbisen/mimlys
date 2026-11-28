@@ -565,6 +565,24 @@ pub struct RuntimeSection {
     /// minute to a week), or `never` (LIM-O13, external design §19.5, from 0.14).
     #[serde(default)]
     pub daemon_idle: DaemonIdle,
+    /// Whether a client that finds no daemon starts one: `manual` (the default: it runs embedded,
+    /// as without a daemon) or `on_demand` (the first client starts one, detached, waits for it
+    /// and sends its request through it). External design §19.5, from 0.14.
+    #[serde(default)]
+    pub serve: ServeMode,
+}
+
+/// `[runtime] serve` (external design §19.5, "On-demand start"): what a client does when it finds no
+/// daemon for its data directory. An unknown word is an error of the configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServeMode {
+    /// A daemon is started by `mimlys daemon start` and by nothing else; a client that finds none
+    /// runs embedded.
+    #[default]
+    Manual,
+    /// The first client that finds no daemon starts one, and goes through it.
+    OnDemand,
 }
 
 /// `[runtime] daemon_idle` (LIM-O13): the idle time after which a daemon exits, or `never`.
@@ -631,6 +649,7 @@ impl Default for RuntimeSection {
             data_dir: None,
             admission_slots: default_admission_slots(),
             daemon_idle: DaemonIdle::default(),
+            serve: ServeMode::default(),
         }
     }
 }

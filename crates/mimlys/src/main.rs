@@ -737,8 +737,14 @@ fn route(
     if !servable(command) {
         return Ok(None);
     }
-    let Some(daemon) = lifecycle::find(loaded, false)? else {
-        return Ok(None);
+    let daemon = match lifecycle::find(loaded, false)? {
+        Some(daemon) => daemon,
+        // No daemon: `manual` (the default) runs embedded; `on_demand` starts one, and a start
+        // that fails is the command's failure, never a silent run of another mode (§19.5).
+        None if loaded.config.runtime.serve == mimlys::config::ServeMode::OnDemand => {
+            lifecycle::start_on_demand(loaded)?
+        }
+        None => return Ok(None),
     };
     if !daemon.usable() {
         let detail = match &daemon.answer.refusal {
