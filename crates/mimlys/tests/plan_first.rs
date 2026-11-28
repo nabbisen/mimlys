@@ -398,6 +398,9 @@ fn req_task_015_every_command_has_a_stated_meeting_with_a_plan_wait() {
         ("metrics", Reads),
         ("status", NoTask),
         ("check", NoTask),
+        // The daemon's own lifecycle: it acts on no task (a stop pauses the tasks that run, and
+        // says which; that is not a command on a task that waits for its plan).
+        ("daemon", NoTask),
         ("runtime", NoTask),
         ("model", NoTask),
         ("interpreters", NoTask),
