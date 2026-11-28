@@ -45,6 +45,19 @@ impl Declaration {
     }
 }
 
+/// What the runtime does with a server's process id the moment it exists, before the server runs
+/// anything it was asked: the daemon on Windows puts the process in a Job Object of its own
+/// there, to tell its own tree from its clients (REQ-SEC-016). A function, so that this crate
+/// knows nothing of the system's calls.
+#[derive(Clone)]
+pub struct SpawnHook(pub Arc<dyn Fn(u32) + Send + Sync>);
+
+impl std::fmt::Debug for SpawnHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpawnHook")
+    }
+}
+
 /// `[servers.<name>]`, resolved: secrets are values here.
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -68,6 +81,8 @@ pub struct ServerConfig {
     pub max_call_ms: Option<i64>,
     /// The declared tools, by tool name (without the server prefix).
     pub tools: BTreeMap<String, Declaration>,
+    /// Called with the process id of each start of the server, right after the spawn.
+    pub on_spawn: Option<SpawnHook>,
 }
 
 impl ServerConfig {
@@ -84,6 +99,7 @@ impl ServerConfig {
             shutdown_ms: LIM_O16_SERVER_SHUTDOWN_MS,
             max_call_ms: None,
             tools: BTreeMap::new(),
+            on_spawn: None,
         }
     }
 

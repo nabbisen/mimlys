@@ -15,7 +15,7 @@
 use crate::app::{App, AppError, os_user};
 use crate::backends::Backend;
 use crate::client::Transport as _;
-use crate::daemon::socket::{self, Peer};
+use crate::daemon::plat::{self, Peer};
 use crate::daemon::wire::{
     self, ClientHello, DaemonHello, DaemonStatus, HelloAnswer, ProbeFailure, Refusal, RefusalKind,
     Reply, Request,
@@ -35,7 +35,6 @@ use mimlys_core::task::TaskState;
 use mimlys_exec::frame::FrameError;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -184,7 +183,8 @@ impl Served {
     /// worker, and every MCP server that runs. A peer in one of those sessions is the daemon's
     /// own tree. Asked at each connection of the live objects, so it is current by construction:
     /// a server that has just started is in it and one that has ended is not.
-    fn session_leaders(&self) -> Vec<u32> {
+    #[cfg(unix)]
+    fn session_leaders(&self) -> Vec<plat::Leader> {
         let mut leaders = Vec::new();
         leaders.extend(self.app.worker.process_id());
         if let Some(fetch) = &self.app.fetch_worker {
@@ -194,15 +194,29 @@ impl Served {
         leaders
     }
 
+    /// The Job Objects the daemon made for its own tree: the worker's, the dependency step's, and
+    /// the one it put each tool server in. A peer in one of them is the daemon's own tree. Asked of
+    /// the live objects at each connection, as on Unix.
+    #[cfg(windows)]
+    fn session_leaders(&self) -> Vec<plat::Leader> {
+        let mut leaders = Vec::new();
+        leaders.extend(self.app.worker.tree_job());
+        if let Some(fetch) = &self.app.fetch_worker {
+            leaders.extend(fetch.tree_job());
+        }
+        leaders.extend(crate::daemon::marks::jobs());
+        leaders
+    }
+
     /// The refusal of a peer that is the daemon's own tree, or that the daemon cannot tell from
     /// it, and the reason the audit records. A peer with no pid is refused (REQ-SEC-016): the
     /// check below needs the pid, and serving a peer it cannot check would fail open.
     fn refuse_peer(&self, peer: Peer) -> Option<(Refusal, &'static str)> {
-        let tree = socket::judge_tree(peer, &self.session_leaders());
+        let tree = plat::judge_tree(peer, &self.session_leaders());
         let pid = peer.pid.unwrap_or_default();
         match tree {
-            socket::Tree::Outside => None,
-            socket::Tree::NoPid => Some((
+            plat::Tree::Outside => None,
+            plat::Tree::NoPid => Some((
                 Refusal {
                     kind: RefusalKind::NoPeerPid,
                     message: crate::messages::daemon_no_peer_pid_refused(),
@@ -210,8 +224,8 @@ impl Served {
                 },
                 REFUSED_NO_PEER_PID,
             )),
-            socket::Tree::Own | socket::Tree::Unreadable => {
-                if tree == socket::Tree::Unreadable {
+            plat::Tree::Own | plat::Tree::Unreadable => {
+                if tree == plat::Tree::Unreadable {
                     // A session that cannot be read is refused, never served.
                     tracing::warn!(pid, "the session of a client could not be read: refused");
                 }
@@ -278,7 +292,7 @@ impl Served {
 
     /// One connection, from its hello to its end. It is counted under its peer's process while it
     /// is open, and its beginning and its end are activity (LIM-O13).
-    fn connection(&self, stream: &mut UnixStream, peer: Peer) -> Result<(), FrameError> {
+    fn connection(&self, stream: &mut plat::Stream, peer: Peer) -> Result<(), FrameError> {
         let open = self.connections.open(peer.pid);
         self.touch();
         let result = self.serve_connection(stream, peer);
@@ -287,9 +301,9 @@ impl Served {
         result
     }
 
-    fn serve_connection(&self, stream: &mut UnixStream, peer: Peer) -> Result<(), FrameError> {
+    fn serve_connection(&self, stream: &mut plat::Stream, peer: Peer) -> Result<(), FrameError> {
         let timeout = Some(Duration::from_millis(LIM_O14_DAEMON_CONNECT_MS));
-        socket::set_timeouts(stream, timeout, timeout)?;
+        plat::set_timeouts(stream, timeout, timeout)?;
         let salt = wire::new_salt()?;
         wire::write(
             stream,
@@ -342,7 +356,7 @@ impl Served {
             return Ok(());
         }
         tracing::info!(pid = ?peer.pid, accepted, "client connected");
-        socket::set_timeouts(stream, None, None)?;
+        plat::set_timeouts(stream, None, None)?;
         loop {
             let request: Request = match wire::read(stream) {
                 Ok(request) => request,
@@ -466,7 +480,7 @@ impl Served {
 
     /// A connection that is told, by a frame, that something changed. It ends when the client
     /// goes (a write fails) or the daemon stops.
-    fn subscription(&self, stream: &mut UnixStream) -> Result<(), FrameError> {
+    fn subscription(&self, stream: &mut plat::Stream) -> Result<(), FrameError> {
         let (lock, changed) = &self.seen;
         let mut seen = *lock.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
@@ -678,7 +692,7 @@ impl Served {
     /// is the daemon's own task, and no second process owns the store. A stop request on the
     /// connection (or the connection's end) stops the probe as a signal stops one, and so does a
     /// stop of the daemon ([`Served::stop`]).
-    fn probe(&self, stream: &mut UnixStream, name: &str) -> Result<Reply, FrameError> {
+    fn probe(&self, stream: &mut plat::Stream, name: &str) -> Result<Reply, FrameError> {
         if self.stopping.load(Ordering::SeqCst) {
             return Ok(Reply::ProbeFailed {
                 failure: ProbeFailure::Runtime {
@@ -819,40 +833,7 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
             e.kind()
         ),
     })?;
-    socket::check_directory(&run_dir).map_err(|e| AppError::Io {
-        detail: e.to_string(),
-    })?;
-    let path = socket::socket_path(&run_dir, &data_dir)
-        .map_err(|e| AppError::Io {
-            detail: e.to_string(),
-        })?
-        .ok_or_else(|| AppError::Io {
-            detail: "the data directory is not there".to_owned(),
-        })?;
-    // The store's lock is ours: no daemon of this store lives, and what is at the socket's path
-    // is what a daemon that was killed left.
-    if std::fs::symlink_metadata(&path).is_ok() {
-        std::fs::remove_file(&path).map_err(|e| AppError::Io {
-            detail: format!(
-                "cannot remove the stale socket {}: {}",
-                path.display(),
-                e.kind()
-            ),
-        })?;
-    }
-    let listener = tokio::net::UnixListener::bind(&path).map_err(|e| AppError::Io {
-        detail: format!("cannot bind the socket {}: {}", path.display(), e.kind()),
-    })?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(socket::SOCKET_MODE))
-            .map_err(|e| AppError::Io {
-                detail: format!("cannot set the mode of {}: {}", path.display(), e.kind()),
-            })?;
-    }
-    socket::check_socket_file(&path).map_err(|e| AppError::Io {
-        detail: e.to_string(),
-    })?;
+    let (listener, path) = bind(&run_dir, &data_dir)?;
     let registry = Registry::new(run_dir, Bounds::default(), Arc::new(SystemClock));
     let started_at = SystemClock.now();
     let registered = registry
@@ -967,6 +948,120 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
     );
     // Listening and recorded: whoever started the daemon may now reach it.
     ready();
+    accept_until_stopped(&served, listener).await;
+    // (A socket's file is the daemon's to remove; a pipe goes with the process.)
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&path);
+    drop(registered);
+    let closed = served.app.close();
+    tracing::info!("the daemon has ended");
+    closed
+}
+
+/// Makes the daemon's listener: the socket, in the registry's directory, mode 0600, after the
+/// directory is checked (Unix); and its path.
+#[cfg(unix)]
+fn bind(
+    run_dir: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Result<(tokio::net::UnixListener, PathBuf), AppError> {
+    plat::check_directory(run_dir).map_err(|e| AppError::Io {
+        detail: e.to_string(),
+    })?;
+    let path = plat::socket_path(run_dir, data_dir)
+        .map_err(|e| AppError::Io {
+            detail: e.to_string(),
+        })?
+        .ok_or_else(|| AppError::Io {
+            detail: "the data directory is not there".to_owned(),
+        })?;
+    // The store's lock is ours: no daemon of this store lives, and what is at the socket's path
+    // is what a daemon that was killed left.
+    if std::fs::symlink_metadata(&path).is_ok() {
+        std::fs::remove_file(&path).map_err(|e| AppError::Io {
+            detail: format!(
+                "cannot remove the stale socket {}: {}",
+                path.display(),
+                e.kind()
+            ),
+        })?;
+    }
+    let listener = tokio::net::UnixListener::bind(&path).map_err(|e| AppError::Io {
+        detail: format!("cannot bind the socket {}: {}", path.display(), e.kind()),
+    })?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(plat::SOCKET_MODE))
+            .map_err(|e| AppError::Io {
+                detail: format!("cannot set the mode of {}: {}", path.display(), e.kind()),
+            })?;
+    }
+    plat::check_socket_file(&path).map_err(|e| AppError::Io {
+        detail: e.to_string(),
+    })?;
+    Ok((listener, path))
+}
+
+/// Makes the daemon's listener: its pipe, created as the first instance of its name with a DACL
+/// for the user's SID alone (Windows); and its name. A pipe that something else already holds is
+/// not the daemon's to take, and the daemon says so.
+#[cfg(windows)]
+fn bind(
+    _run_dir: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Result<(mimlys_exec::daemon_pipe::PipeListener, PathBuf), AppError> {
+    let io = |e: &dyn std::fmt::Display| AppError::Io {
+        detail: e.to_string(),
+    };
+    let name = plat::pipe_name(data_dir)
+        .map_err(|e| io(&e))?
+        .ok_or_else(|| AppError::Io {
+            detail: "the data directory is not there".to_owned(),
+        })?;
+    let sid = plat::own_sid().map_err(|e| io(&e))?;
+    let listener = mimlys_exec::daemon_pipe::PipeListener::bind(&name, &sid).map_err(|e| {
+        AppError::Io {
+            detail: format!(
+                "cannot create the pipe {name}: {e} (the name is held by a process that is not this daemon, or the system refused)"
+            ),
+        }
+    })?;
+    Ok((listener, PathBuf::from(name)))
+}
+
+/// Starts the thread of one connection that was admitted: the runtime's verbs reach the executor
+/// (a server is started, a cancel waits), so it runs inside the daemon's own; a defect in the
+/// handling of one request ends that connection, and never the daemon, which owns every client's
+/// tasks.
+fn start_connection(served: &Arc<Served>, stream: plat::Stream, peer: Peer) {
+    let served = Arc::clone(served);
+    let executor = tokio::runtime::Handle::current();
+    let spawned = std::thread::Builder::new()
+        .name("daemon-connection".into())
+        .spawn(move || {
+            let _inside = executor.enter();
+            let mut stream = stream;
+            let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                served.connection(&mut stream, peer)
+            }));
+            match ended {
+                Ok(Err(e)) => {
+                    tracing::debug!(pid = ?peer.pid, "connection ended: {e}");
+                }
+                Ok(Ok(())) => {}
+                Err(_) => {
+                    tracing::error!(pid = ?peer.pid, "a request panicked; its connection was closed");
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("a thread for a client could not be started: {e}");
+    }
+}
+
+/// Serves the clients that connect, until the daemon is stopped.
+#[cfg(unix)]
+async fn accept_until_stopped(served: &Arc<Served>, listener: tokio::net::UnixListener) {
     loop {
         tokio::select! {
             () = served.shutdown.notified() => break,
@@ -988,45 +1083,52 @@ pub async fn serve(app: App, options: Options, ready: impl FnOnce()) -> Result<(
                     }
                 };
                 let Ok(stream) = stream.into_std() else { continue };
-                if socket::set_nonblocking(&stream, false).is_err() {
+                if plat::set_nonblocking(&stream, false).is_err() {
                     continue;
                 }
-                let served = Arc::clone(&served);
-                let executor = tokio::runtime::Handle::current();
-                let spawned = std::thread::Builder::new()
-                    .name("daemon-connection".into())
-                    .spawn(move || {
-                        // The runtime's verbs reach the executor (a server is started, a cancel
-                        // waits): the thread of a connection runs inside the daemon's own.
-                        let _inside = executor.enter();
-                        let mut stream = stream;
-                        // A defect in the handling of one request ends that connection, and
-                        // never the daemon, which owns every client's tasks.
-                        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            served.connection(&mut stream, peer)
-                        }));
-                        match ended {
-                            Ok(Err(e)) => {
-                                tracing::debug!(pid = ?peer.pid, "connection ended: {e}");
-                            }
-                            Ok(Ok(())) => {}
-                            Err(_) => {
-                                tracing::error!(pid = ?peer.pid, "a request panicked; its connection was closed");
-                            }
-                        }
-                    });
-                if let Err(e) = spawned {
-                    tracing::warn!("a thread for a client could not be started: {e}");
-                }
+                start_connection(served, stream, peer);
             }
         }
     }
     drop(listener);
-    let _ = std::fs::remove_file(&path);
-    drop(registered);
-    let closed = served.app.close();
-    tracing::info!("the daemon has ended");
-    closed
+}
+
+/// Serves the clients that connect, until the daemon is stopped: a thread accepts (a blocking
+/// wait, which the stopper ends), and each client is checked, as on Unix, before anything is sent
+/// or read.
+#[cfg(windows)]
+async fn accept_until_stopped(
+    served: &Arc<Served>,
+    listener: mimlys_exec::daemon_pipe::PipeListener,
+) {
+    let stopper = listener.stopper();
+    let acceptor = {
+        let served = Arc::clone(served);
+        let executor = tokio::runtime::Handle::current();
+        std::thread::Builder::new()
+            .name("daemon-accept".into())
+            .spawn(move || {
+                let _inside = executor.enter();
+                loop {
+                    match listener.accept() {
+                        Ok(stream) => match Peer::admit(&stream) {
+                            Ok(peer) => start_connection(&served, stream, peer),
+                            Err(e) => tracing::warn!("{e}"),
+                        },
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return,
+                        Err(e) => {
+                            tracing::warn!("the pipe could not accept a client ({e})");
+                            std::thread::sleep(WAIT_POLL);
+                        }
+                    }
+                }
+            })
+    };
+    served.shutdown.notified().await;
+    stopper.stop();
+    if let Ok(acceptor) = acceptor {
+        let _ = tokio::task::spawn_blocking(move || acceptor.join()).await;
+    }
 }
 
 #[cfg(test)]

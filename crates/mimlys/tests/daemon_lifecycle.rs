@@ -2,12 +2,13 @@
 //! REQ-CLI-008, REQ-SEC-016, REQ-PERS-014): `mimlys daemon start | stop | status`, the socket's
 //! modes, the store's lock held by the daemon, the idle exit, a dead daemon.
 //!
-//! Each test environment owns one registry (and so one socket), one data directory and its own
-//! daemon, which the environment stops when it is dropped. Unix only: the daemon is Linux's and
-//! macOS's in this release (Windows is 014d's).
-#![cfg(unix)]
+//! Each test environment owns one registry (and so one socket, or one pipe's name), one data
+//! directory and its own daemon, which the environment stops when it is dropped. The tests of a
+//! socket's modes, its directory and its path are Unix's; those of a pipe's user, on Windows, are in
+//! the same file beside them.
 
 use serde_json::Value;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -77,12 +78,15 @@ impl Env {
         self.registry.path()
     }
 
+    /// What the daemon leaves in the registry's directory while it serves: its socket (Unix), and,
+    /// on Windows, where a pipe is no file, its record.
     fn sockets(&self) -> Vec<PathBuf> {
+        let extension = if cfg!(unix) { "sock" } else { "daemon" };
         std::fs::read_dir(self.socket_dir())
             .map(|d| {
                 d.flatten()
                     .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "sock"))
+                    .filter(|p| p.extension().is_some_and(|e| e == extension))
                     .collect()
             })
             .unwrap_or_default()
@@ -97,11 +101,9 @@ impl Drop for Env {
             .ok()
             .and_then(|v| v["daemon"]["pid"].as_u64());
         let _ = self.run(&["daemon", "stop"]);
-        if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok())
-            && let Some(pid) = rustix::process::Pid::from_raw(pid)
-        {
+        if let Some(pid) = pid.and_then(|p| u32::try_from(p).ok()) {
             std::thread::sleep(Duration::from_millis(200));
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            common::kill_pid(pid);
         }
     }
 }
@@ -139,7 +141,18 @@ fn req_cli_008_start_status_stop() {
     assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(status["same_configuration"], true);
     assert_eq!(status["running_tasks"], serde_json::json!([]));
-    assert!(status["socket"].as_str().unwrap().ends_with(".sock"));
+    if cfg!(unix) {
+        assert!(status["socket"].as_str().unwrap().ends_with(".sock"));
+    } else {
+        // A pipe, named from the user's SID and the data directory (external design §19.5).
+        assert!(
+            status["socket"]
+                .as_str()
+                .unwrap()
+                .starts_with(r"\\.\pipe\mimlys-d-"),
+            "{status}"
+        );
+    }
     // Its log is a file under the data directory.
     let log = PathBuf::from(status["log"].as_str().unwrap());
     assert!(log.starts_with(env.data.path().join("data")), "{log:?}");
@@ -175,15 +188,18 @@ fn req_sec_016_the_socket_is_0600_in_a_0700_directory_and_the_daemon_is_recorded
     assert_eq!(env.run(&["daemon", "start"]).code(), 0);
     let sockets = env.sockets();
     assert_eq!(sockets.len(), 1, "{sockets:?}");
-    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode(&sockets[0]), 0o600);
-    assert_eq!(mode(&env.socket_dir()), 0o700);
-    let name = sockets[0]
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    assert!(name.starts_with("d-") && name.len() == 19, "{name}");
+    #[cfg(unix)]
+    {
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&sockets[0]), 0o600);
+        assert_eq!(mode(&env.socket_dir()), 0o700);
+        let name = sockets[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("d-") && name.len() == 19, "{name}");
+    }
     // The record: `daemon-<id>.daemon` with its lock file; no `.entry`, which an older release
     // would call unusable and remove.
     let mut names: Vec<String> = std::fs::read_dir(env.socket_dir())
@@ -265,6 +281,7 @@ fn req_cli_008_an_idle_daemon_exits_by_itself_and_says_so_in_its_log() {
 
 /// REQ-CLI-008, external design §20: a socket whose daemon is dead, with the store's lock free, is
 /// removed and said once (`daemon not running`), and the command goes on.
+#[cfg(unix)]
 #[test]
 fn req_cli_008_a_dead_daemons_socket_is_removed_and_said_once() {
     let env = Env::new();
@@ -273,11 +290,11 @@ fn req_cli_008_a_dead_daemons_socket_is_removed_and_said_once() {
         .as_i64()
         .unwrap();
     // Killed: nothing closed its socket.
-    let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
-    rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
-    assert!(wait_for(Duration::from_secs(30), || {
-        rustix::process::test_kill_process(pid).is_err()
-    }));
+    let pid = u32::try_from(pid).unwrap();
+    common::kill_pid(pid);
+    assert!(wait_for(Duration::from_secs(30), || !common::pid_alive(
+        pid
+    )));
     assert_eq!(env.sockets().len(), 1, "the socket is left");
     let first = env.run(&["daemon", "status"]);
     assert_eq!(first.code(), 0, "{}\n{}", first.stdout, first.stderr);
@@ -299,6 +316,7 @@ fn req_cli_008_a_dead_daemons_socket_is_removed_and_said_once() {
 
 /// REQ-SEC-016, external design §20: a directory that is not the user's own, mode 0700, is
 /// refused before anything is sent: a registry directory of mode 0755.
+#[cfg(unix)]
 #[test]
 fn req_sec_016_a_client_refuses_a_directory_that_is_not_0700() {
     let env = Env::new();
@@ -317,8 +335,21 @@ fn req_sec_016_a_client_refuses_a_directory_that_is_not_0700() {
 
 /// The uid the test makes "another user" of (the debug seam of `MIMLYS_PRETEND_UID`: CI has no
 /// second account).
+#[cfg(unix)]
 fn other_uid() -> String {
     (rustix::process::geteuid().as_raw() + 1).to_string()
+}
+
+/// The user a peer is made "another user" of on Windows: a SID that is not the user's own (the seam
+/// of `MIMLYS_PRETEND_SID`; CI has no second account).
+#[cfg(windows)]
+fn other_user() -> (&'static str, String) {
+    ("MIMLYS_PRETEND_SID", "S-1-5-21-1-2-3-4".to_owned())
+}
+
+#[cfg(unix)]
+fn other_user() -> (&'static str, String) {
+    ("MIMLYS_PRETEND_UID", other_uid())
 }
 
 /// REQ-SEC-016, THR-39, external design §20: the check is mutual. **The daemon refuses a peer of
@@ -329,7 +360,7 @@ fn req_sec_016_the_daemon_refuses_a_peer_of_another_user() {
     let env = Env::new();
     let mut daemon = env
         .command(&["daemon", "start", "--foreground"])
-        .env("MIMLYS_PRETEND_UID", other_uid())
+        .env(other_user().0, other_user().1)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -358,10 +389,7 @@ fn req_sec_016_the_daemon_refuses_a_peer_of_another_user() {
 fn req_sec_016_the_client_refuses_a_daemon_of_another_user() {
     let env = Env::new();
     assert_eq!(env.run(&["daemon", "start"]).code(), 0);
-    let refused = env.run_with(
-        &["daemon", "status"],
-        &[("MIMLYS_PRETEND_UID", &other_uid())],
-    );
+    let refused = env.run_with(&["daemon", "status"], &[(other_user().0, &other_user().1)]);
     assert_eq!(refused.code(), 1, "{}\n{}", refused.stdout, refused.stderr);
     assert!(
         refused.stderr.contains("another user") && refused.stderr.contains("nothing was sent"),
@@ -373,6 +401,7 @@ fn req_sec_016_the_client_refuses_a_daemon_of_another_user() {
 }
 
 /// REQ-SEC-016: a socket path past the platform's limit is refused, saying why, and not truncated.
+#[cfg(unix)]
 #[test]
 fn req_sec_016_a_socket_path_past_the_limit_is_refused() {
     let env = Env::new();
@@ -386,4 +415,36 @@ fn req_sec_016_a_socket_path_past_the_limit_is_refused() {
         "{}",
         refused.stderr
     );
+}
+
+/// ED §19.5 (014d): **a daemon that was killed leaves no pipe**, so there is nothing stale to remove
+/// and nothing to say: the next command finds no daemon, goes on (the store's lock went with the
+/// process), and `daemon status` says that none runs. (On Unix the same case leaves a socket,
+/// which is removed and said once: the test above.)
+#[cfg(windows)]
+#[test]
+fn req_cli_008_a_killed_daemon_leaves_no_pipe_and_the_next_command_goes_on() {
+    let env = Env::new();
+    let started = env.run(&["--json", "daemon", "start"]);
+    let pid = serde_json::from_str::<Value>(started.stdout.trim()).unwrap()["daemon"]["pid"]
+        .as_u64()
+        .unwrap();
+    let pid = u32::try_from(pid).unwrap();
+    common::kill_pid(pid);
+    assert!(wait_for(Duration::from_secs(30), || !common::pid_alive(
+        pid
+    )));
+    let first = env.run(&["daemon", "status"]);
+    assert_eq!(first.code(), 0, "{}\n{}", first.stdout, first.stderr);
+    assert!(
+        !first.stderr.contains("daemon not running"),
+        "there is no stale pipe to say anything of: {}",
+        first.stderr
+    );
+    assert_eq!(env.status()["running"], false);
+    // Embedded again: the store is free, and a command that writes goes on.
+    let scope = env.data.path().join("scope");
+    std::fs::create_dir_all(&scope).unwrap();
+    let ran = env.run(&["run", "goal", "--scope", scope.to_str().unwrap()]);
+    assert_eq!(ran.code(), 0, "{}\n{}", ran.stdout, ran.stderr);
 }

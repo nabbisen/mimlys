@@ -612,19 +612,10 @@ fn mark_function_name_unavailable(servers: &mut [mimlys_mcp::ServerStatus]) {
 }
 
 /// The daemon of this store, and why it could not be reached when it could not.
-#[cfg(unix)]
 fn daemon_mode(
     loaded: &crate::config::Loaded,
 ) -> (Option<crate::daemon::wire::DaemonStatus>, Option<String>) {
     crate::daemon::command::mode(loaded)
-}
-
-/// Windows has no daemon in this release.
-#[cfg(not(unix))]
-fn daemon_mode(
-    _loaded: &crate::config::Loaded,
-) -> (Option<crate::daemon::wire::DaemonStatus>, Option<String>) {
-    (None, None)
 }
 
 #[cfg(test)]
